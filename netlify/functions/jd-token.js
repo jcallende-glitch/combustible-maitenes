@@ -14,11 +14,10 @@ exports.handler = async function(event) {
     const { grant_type, code, code_verifier, refresh_token } = body;
 
     const JD_CLIENT_ID = '0oavbnyqn09EHHLnh5d7';
-    const JD_CLIENT_SECRET = process.env.JD_CLIENT_SECRET;
     const JD_REDIRECT_URI = 'https://combustiblelosmaitenes.netlify.app/callback';
     const JD_TOKEN_URL = 'https://signin.johndeere.com/oauth2/aus78tnlaysMraFhC1t7/v1/token';
 
-    const params = new URLSearchParams({ grant_type, client_id: JD_CLIENT_ID, client_secret: JD_CLIENT_SECRET, redirect_uri: JD_REDIRECT_URI });
+    const params = new URLSearchParams({ grant_type, client_id: JD_CLIENT_ID, redirect_uri: JD_REDIRECT_URI });
     if (grant_type === 'authorization_code') { params.append('code', code); params.append('code_verifier', code_verifier); }
     if (grant_type === 'refresh_token') { params.append('refresh_token', refresh_token); }
 
