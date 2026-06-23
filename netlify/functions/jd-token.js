@@ -14,7 +14,7 @@ exports.handler = async function(event) {
     const { grant_type, code, code_verifier, refresh_token } = body;
 
     const JD_CLIENT_ID = '0oavbnyqn09EHHLnh5d7';
-    const JD_CLIENT_SECRET = '11b5kcmvkZLGGX198PzPM5ysl-ls6NNH2Wkkd4TGEC5Zw2nRbZzvn4vTZfRd_5ET';
+    const JD_CLIENT_SECRET = process.env.JD_CLIENT_SECRET;
     const JD_REDIRECT_URI = 'https://combustiblelosmaitenes.netlify.app/callback';
     const JD_TOKEN_URL = 'https://signin.johndeere.com/oauth2/aus78tnlaysMraFhC1t7/v1/token';
 
