@@ -1297,7 +1297,7 @@ window.renderTabla = function() {
   });
   document.getElementById('historial-container').innerHTML=`
     <div class="table-wrap"><table>
-      <thead><tr><th>Fecha/Hora</th><th>Equipo</th><th>Operador</th><th>Cultivos</th><th>Trabajo</th><th>Litros</th><th>Trabajado</th><th>Eficiencia</th><th>Totalizador</th><th>Obs.</th>${isAdmin?'<th>Acciones</th>':''}</tr></thead>
+      <thead><tr><th>Fecha/Hora</th><th>Equipo</th><th>Operador</th><th>Cultivos</th><th>Trabajo</th><th>Litros</th><th>Trabajado</th><th>Eficiencia</th><th>Totalizador</th><th>Obs.</th><th>Acciones</th></tr></thead>
       <tbody>${data.map(r=>{
         const tipo=r.medidor_tipo;
         let efHtml = '<span style="color:#9CA3AF">—</span>';
@@ -1335,12 +1335,12 @@ window.renderTabla = function() {
           <td class="td-mono" style="font-size:12px">${efHtml}</td>
           <td class="td-mono" style="font-size:12px">${alertaIcon} ${(r.totalizador||0).toLocaleString('es-CL')}</td>
           <td style="color:#6B7280;font-size:12px">${r.obs||'—'}</td>
-          ${isAdmin?`<td style="white-space:nowrap">
+          ${(isAdmin||isSupervisor||r.operador===currentUser)?`<td style="white-space:nowrap">
             <div style="display:flex;gap:6px;padding:2px 0">
               <button class="btn" style="background:var(--negro);color:var(--amarillo);border:1px solid #374151;font-size:11px;padding:5px 10px;border-radius:6px;cursor:pointer" onclick="editarRegistro('${r.id}')">✏️ Editar</button>
               <button class="btn btn-danger" onclick="eliminar('${r.id}',${r.litros||0})">✕</button>
             </div>
-          </td>`:''}
+          </td>`:'<td></td>'}
         </tr>`;}).join('')}
       </tbody>
     </table></div>`;
