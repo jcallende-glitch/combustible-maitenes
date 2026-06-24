@@ -66,14 +66,12 @@ async function generatePKCE() {
 }
 
 window.iniciarLoginJD = async function() {
-  const { verifier, challenge } = await generatePKCE();
-  localStorage.setItem('jd_pkce_verifier', verifier);
   const state = Math.random().toString(36).slice(2);
   localStorage.setItem('jd_state', state);
   const params = new URLSearchParams({
     response_type: 'code', client_id: JD_CLIENT_ID,
     redirect_uri: JD_REDIRECT_URI, scope: JD_SCOPES,
-    state, code_challenge: challenge, code_challenge_method: 'S256'
+    state
   });
   window.location.href = `${JD_AUTH_URL}?${params}`;
 }
@@ -83,12 +81,11 @@ async function manejarCallbackJD() {
   const code = params.get('code');
   const state = params.get('state');
   if (!code || state !== localStorage.getItem('jd_state')) return;
-  const verifier = localStorage.getItem('jd_pkce_verifier');
   try {
     const resp = await fetch('/.netlify/functions/jd-token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ grant_type: 'authorization_code', code, code_verifier: verifier })
+      body: JSON.stringify({ grant_type: 'authorization_code', code, redirect_uri: JD_REDIRECT_URI })
     });
     const data = await resp.json();
     if (data.access_token) {
