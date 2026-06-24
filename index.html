@@ -88,7 +88,7 @@ async function manejarCallbackJD() {
     const resp = await fetch('/.netlify/functions/jd-token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ grant_type: 'authorization_code', code, code_verifier: verifier })
+      body: JSON.stringify({ grant_type: 'authorization_code', code, code_verifier: verifier, redirect_uri: JD_REDIRECT_URI })
     });
     const data = await resp.json();
     if (data.access_token) {
@@ -141,21 +141,15 @@ async function getTokenValido() {
   return jdAccessToken || token;
 }
 
-async function jdApiCall(endpoint) {
-  const token = await getTokenValido();
-  if (!token) throw new Error('Sin token JD válido');
-  jdAccessToken = token;
-  const resp = await fetch('/.netlify/functions/jd-api', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ endpoint, token })
-  });
-  return await resp.json();
-}
-
 async function cargarOrganizacionJD() {
+  const token = await getTokenValido();
+  if (!token) return;
+  jdAccessToken = token;
   try {
-    const data = await jdApiCall('/organizations');
+    const resp = await fetch(`${JD_API_BASE}/organizations`, {
+      headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/vnd.deere.axiom.v3+json' }
+    });
+    const data = await resp.json();
     const orgs = data.values || [];
     if (orgs.length > 0) {
       jdOrganizationId = orgs[0].id;
@@ -181,10 +175,11 @@ window.obtenerHorasJDLink = async function() {
   const jdInfo = document.getElementById('jd-horas-info');
 
   try {
-    const data = await jdApiCall(`/organizations/${jdOrganizationId}/machines`);
+    const resp = await fetch(`${JD_API_BASE}/organizations/${jdOrganizationId}/machines`, {
+      headers: { 'Authorization': `Bearer ${jdAccessToken}`, 'Accept': 'application/vnd.deere.axiom.v3+json' }
+    });
+    const data = await resp.json();
     const machines = data.values || [];
-    console.log('MACHINES JD:', JSON.stringify(machines.map(m => ({ id: m.id, name: m.name, display: m.displayName }))));
-    console.log('TOTAL MACHINES:', machines.length);
 
     // Buscar máquina por nombre aproximado
     const eqNum = eq.replace(/[^0-9]/g,'');
@@ -194,8 +189,12 @@ window.obtenerHorasJDLink = async function() {
     });
 
     if (machine) {
+      // Consultar horas específicas
       const machineId = machine.id;
-      const dataHrs = await jdApiCall(`/machines/${machineId}/machineHoursOfOperation`);
+      const respHrs = await fetch(`${JD_API_BASE}/machines/${machineId}/machineHoursOfOperation`, {
+        headers: { 'Authorization': `Bearer ${jdAccessToken}`, 'Accept': 'application/vnd.deere.axiom.v3+json' }
+      });
+      const dataHrs = await respHrs.json();
       const horas = dataHrs.hours ?? dataHrs.machineHours ?? dataHrs.values?.[0]?.hours ?? null;
       if (horas != null) {
         document.getElementById('medidor-valor').value = parseFloat(horas).toFixed(1);
