@@ -17,20 +17,24 @@ exports.handler = async function(event) {
       return { statusCode: 400, headers, body: JSON.stringify({ error: 'Faltan endpoint o token' }) };
     }
 
-    const JD_API_BASE = 'https://partnerapi.deere.com/platform';
-    const url = `${JD_API_BASE}${endpoint}`;
+    const url = 'https://partnerapi.deere.com/platform' + endpoint;
+    console.log('JD API call:', url);
 
     const resp = await fetch(url, {
       headers: {
-        'Authorization': `Bearer ${token}`,
+        'Authorization': 'Bearer ' + token,
         'Accept': 'application/vnd.deere.axiom.v3+json'
       }
     });
 
-    const data = await resp.json();
-    return { statusCode: resp.status, headers, body: JSON.stringify(data) };
+    const text = await resp.text();
+    console.log('JD API status:', resp.status);
+    console.log('JD API response:', text.substring(0, 500));
+
+    return { statusCode: resp.status, headers, body: text };
 
   } catch(e) {
+    console.log('JD API error:', e.message);
     return { statusCode: 500, headers, body: JSON.stringify({ error: e.message }) };
   }
 };
