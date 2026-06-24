@@ -66,12 +66,14 @@ async function generatePKCE() {
 }
 
 window.iniciarLoginJD = async function() {
+  const { verifier, challenge } = await generatePKCE();
+  localStorage.setItem('jd_pkce_verifier', verifier);
   const state = Math.random().toString(36).slice(2);
   localStorage.setItem('jd_state', state);
   const params = new URLSearchParams({
     response_type: 'code', client_id: JD_CLIENT_ID,
     redirect_uri: JD_REDIRECT_URI, scope: JD_SCOPES,
-    state
+    state, code_challenge: challenge, code_challenge_method: 'S256'
   });
   window.location.href = `${JD_AUTH_URL}?${params}`;
 }
@@ -81,11 +83,12 @@ async function manejarCallbackJD() {
   const code = params.get('code');
   const state = params.get('state');
   if (!code || state !== localStorage.getItem('jd_state')) return;
+  const verifier = localStorage.getItem('jd_pkce_verifier');
   try {
     const resp = await fetch('/.netlify/functions/jd-token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ grant_type: 'authorization_code', code, redirect_uri: JD_REDIRECT_URI })
+      body: JSON.stringify({ grant_type: 'authorization_code', code, code_verifier: verifier })
     });
     const data = await resp.json();
     if (data.access_token) {
@@ -138,15 +141,21 @@ async function getTokenValido() {
   return jdAccessToken || token;
 }
 
-async function cargarOrganizacionJD() {
+async function jdApiCall(endpoint) {
   const token = await getTokenValido();
-  if (!token) return;
+  if (!token) throw new Error('Sin token JD válido');
   jdAccessToken = token;
+  const resp = await fetch('/.netlify/functions/jd-api', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ endpoint, token })
+  });
+  return await resp.json();
+}
+
+async function cargarOrganizacionJD() {
   try {
-    const resp = await fetch(`${JD_API_BASE}/organizations`, {
-      headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/vnd.deere.axiom.v3+json' }
-    });
-    const data = await resp.json();
+    const data = await jdApiCall('/organizations');
     const orgs = data.values || [];
     if (orgs.length > 0) {
       jdOrganizationId = orgs[0].id;
@@ -172,10 +181,7 @@ window.obtenerHorasJDLink = async function() {
   const jdInfo = document.getElementById('jd-horas-info');
 
   try {
-    const resp = await fetch(`${JD_API_BASE}/organizations/${jdOrganizationId}/machines`, {
-      headers: { 'Authorization': `Bearer ${jdAccessToken}`, 'Accept': 'application/vnd.deere.axiom.v3+json' }
-    });
-    const data = await resp.json();
+    const data = await jdApiCall(`/organizations/${jdOrganizationId}/machines`);
     const machines = data.values || [];
 
     // Buscar máquina por nombre aproximado
@@ -186,12 +192,8 @@ window.obtenerHorasJDLink = async function() {
     });
 
     if (machine) {
-      // Consultar horas específicas
       const machineId = machine.id;
-      const respHrs = await fetch(`${JD_API_BASE}/machines/${machineId}/machineHoursOfOperation`, {
-        headers: { 'Authorization': `Bearer ${jdAccessToken}`, 'Accept': 'application/vnd.deere.axiom.v3+json' }
-      });
-      const dataHrs = await respHrs.json();
+      const dataHrs = await jdApiCall(`/machines/${machineId}/machineHoursOfOperation`);
       const horas = dataHrs.hours ?? dataHrs.machineHours ?? dataHrs.values?.[0]?.hours ?? null;
       if (horas != null) {
         document.getElementById('medidor-valor').value = parseFloat(horas).toFixed(1);
