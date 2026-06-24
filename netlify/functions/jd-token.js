@@ -9,14 +9,12 @@ exports.handler = async function(event) {
   }
   try {
     const body = JSON.parse(event.body || '{}');
-    const { grant_type, code, redirect_uri, refresh_token, code_verifier } = body;
-    console.log('TOKEN REQUEST:', { grant_type, redirect_uri, code_verifier_length: code_verifier?.length });
+    const { grant_type, code, refresh_token, code_verifier } = body;
     const JD_CLIENT_ID = '0oavbnyqn09EHHLnh5d7';
     const JD_CLIENT_SECRET = process.env.JD_CLIENT_SECRET;
     const JD_TOKEN_URL = 'https://signin.johndeere.com/oauth2/aus78tnlaysMraFhC1t7/v1/token';
     const credentials = Buffer.from(`${JD_CLIENT_ID}:${JD_CLIENT_SECRET}`).toString('base64');
     const params = new URLSearchParams({ grant_type });
-    if (redirect_uri) params.append('redirect_uri', redirect_uri);
     if (grant_type === 'authorization_code') {
       params.append('code', code);
       if (code_verifier) params.append('code_verifier', code_verifier);
