@@ -1353,18 +1353,32 @@ window.editarRegistro = async function(id) {
   document.getElementById('edit-id').value = id;
   document.getElementById('edit-fecha').value = r.fecha || '';
   document.getElementById('edit-hora').value = r.hora || '';
-  document.getElementById('edit-equipo').value = r.equipo || '';
-  document.getElementById('edit-operador').value = r.operador || '';
   document.getElementById('edit-litros').value = r.litros || '';
   document.getElementById('edit-litros-original').value = r.litros || 0;
   document.getElementById('edit-medidor').value = r.medidor_valor != null ? r.medidor_valor : '';
   document.getElementById('edit-totalizador').value = r.totalizador || '';
-  document.getElementById('edit-cultivos').value = (r.centros || [r.centro]).filter(Boolean).join(', ');
-  // Trabajo: si era "Otro (especificar)" mostrar el detalle, si no el nombre
-  document.getElementById('edit-trabajo').value = r.trabajo === 'Otro (especificar)' ? (r.trabajo_detalle || r.trabajo || '') : (r.trabajo || '');
-  // Apero: igual
   document.getElementById('edit-apero').value = (r.apero === 'Otro (especificar)' || r.apero === 'LIBRE') ? (r.apero_detalle || r.apero || '') : (r.apero || '');
   document.getElementById('edit-obs').value = r.obs || '';
+
+  // Select Equipo
+  const selEq = document.getElementById('edit-equipo');
+  selEq.innerHTML = config.equipos.map(e => `<option value="${e}" ${e===r.equipo?'selected':''}>${e}</option>`).join('');
+
+  // Select Operador
+  const selOp = document.getElementById('edit-operador');
+  selOp.innerHTML = config.operadores.map(o => `<option value="${o}" ${o===r.operador?'selected':''}>${o}</option>`).join('');
+
+  // Select Cultivos (multiple)
+  const centrosActuales = (r.centros || [r.centro]).filter(Boolean);
+  const selCult = document.getElementById('edit-cultivos');
+  selCult.innerHTML = config.centros.map(c => `<option value="${c}" ${centrosActuales.includes(c)?'selected':''}>${c}</option>`).join('');
+
+  // Select Trabajo
+  const trabajos = [...new Set([...TRABAJOS_GENERAL, ...TRABAJOS_AVELLANOS])];
+  const selTrab = document.getElementById('edit-trabajo');
+  selTrab.innerHTML = '<option value="">— Sin trabajo —</option>' +
+    trabajos.map(t => `<option value="${t}" ${t===r.trabajo?'selected':''}>${t}</option>`).join('');
+
   document.getElementById('modal-editar').style.display = 'flex';
 }
 
@@ -1382,7 +1396,7 @@ window.guardarEdicion = async function() {
   const operador = document.getElementById('edit-operador').value.trim();
   const medidor_valor = parseFloat(document.getElementById('edit-medidor').value);
   const totalizador = parseFloat(document.getElementById('edit-totalizador').value);
-  const cultivosStr = document.getElementById('edit-cultivos').value;
+  const cultivosStr = Array.from(document.getElementById('edit-cultivos').selectedOptions).map(o=>o.value).join(',');
   const trabajo = document.getElementById('edit-trabajo').value.trim();
   const apero = document.getElementById('edit-apero').value.trim();
   const obs = document.getElementById('edit-obs').value.trim();
@@ -2336,12 +2350,12 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       <div class="field"><label>Fecha</label><input type="date" id="edit-fecha"></div>
       <div class="field"><label>Hora</label><input type="text" id="edit-hora" placeholder="HH:MM" maxlength="5"></div>
     </div>
-    <div class="field"><label>Equipo</label><input type="text" id="edit-equipo"></div>
-    <div class="field"><label>Operador</label><input type="text" id="edit-operador"></div>
+    <div class="field"><label>Equipo</label><div class="select-wrapper"><select id="edit-equipo"></select></div></div>
+    <div class="field"><label>Operador</label><div class="select-wrapper"><select id="edit-operador"></select></div></div>
     <div class="field">
       <label>Cultivos / Centros de costo</label>
-      <input type="text" id="edit-cultivos" placeholder="Ej: Trigo, Maíz">
-      <div class="hint">Separar con comas si son varios</div>
+      <select id="edit-cultivos" multiple size="4" style="height:auto;min-height:90px;padding:6px"></select>
+      <div class="hint">Mantén Ctrl (o Cmd) para seleccionar varios</div>
     </div>
     <div class="grid-2">
       <div class="field">
@@ -2352,7 +2366,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       <div class="field"><label>Horómetro / Odómetro</label><input type="number" id="edit-medidor" min="0" step="0.1"></div>
     </div>
     <div class="field"><label>Totalizador SAMOA</label><input type="number" id="edit-totalizador" min="0" step="1"></div>
-    <div class="field"><label>Tipo de trabajo</label><input type="text" id="edit-trabajo" placeholder="Ej: Incorporación"></div>
+    <div class="field"><label>Tipo de trabajo</label><div class="select-wrapper"><select id="edit-trabajo"><option value="">— Sin trabajo —</option></select></div></div>
     <div class="field"><label>Apero utilizado</label><input type="text" id="edit-apero" placeholder="Ej: UFO"></div>
     <div class="field"><label>Observación</label><input type="text" id="edit-obs"></div>
     <div class="modal-actions">
