@@ -17,7 +17,8 @@ exports.handler = async function(event) {
       return { statusCode: 400, headers, body: JSON.stringify({ error: 'Faltan endpoint o token' }) };
     }
 
-    const url = 'https://partnerapi.deere.com/platform' + endpoint;
+    const fixedEndpoint = endpoint.replace('/machines', '/equipment');
+    const url = 'https://partnerapi.deere.com/platform' + fixedEndpoint;
     console.log('JD API call:', url);
 
     const resp = await fetch(url, {
