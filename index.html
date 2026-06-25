@@ -213,28 +213,23 @@ window.obtenerHorasJDLink = async function() {
   if (btn) { btn.disabled = false; btn.textContent = '📡 Obtener horas desde JDLink'; }
 }
 
-// ─── ESP32 LECTURA EN TIEMPO REAL ──────────────────────────
+// ─── ESP32 LECTURA EN TIEMPO REAL (desactivado hasta instalar Piusi) ──
 let unsubESP32 = null;
 
 function iniciarLecturaESP32() {
+  if (!modoESP32) return; // modo manual: no leer ESP32
   if (unsubESP32) { unsubESP32(); unsubESP32 = null; }
   const esp32Info = document.getElementById('esp32-info');
-  if (esp32Info) esp32Info.innerHTML = '<span style="color:#F5A623;font-size:12px">📡 Conectando con caudalímetro...</span>';
+  if (esp32Info) { esp32Info.style.display = 'block'; esp32Info.innerHTML = '<span style="color:#F5A623;font-size:12px">📡 Conectando con caudalímetro...</span>'; }
   unsubESP32 = onSnapshot(doc(db, 'esp32_test', 'lectura_actual'), snap => {
     if (!snap.exists()) return;
     const data = snap.data();
     const litros = data.litros || 0;
     const ts = data.ts || 0;
     const segsAtras = Math.floor((Date.now() - ts) / 1000);
-    // Auto-rellenar campo litros
     const litrosInput = document.getElementById('litros');
-    if (litrosInput) {
-      litrosInput.value = parseFloat(litros).toFixed(1);
-      calcularEficiencia();
-    }
-    if (esp32Info) {
-      esp32Info.innerHTML = `<span style="color:#2D7D46;font-size:12px">📡 ESP32: <strong>${parseFloat(litros).toFixed(1)} L</strong> · actualizado hace ${segsAtras}s</span>`;
-    }
+    if (litrosInput) { litrosInput.value = parseFloat(litros).toFixed(1); calcularEficiencia(); }
+    if (esp32Info) esp32Info.innerHTML = `<span style="color:#2D7D46;font-size:12px">📡 ESP32: <strong>${parseFloat(litros).toFixed(1)} L</strong> · actualizado hace ${segsAtras}s</span>`;
   });
 }
 
@@ -445,6 +440,7 @@ const DEFAULT_CONFIG = {
   centros: ['Trigo','Maíz','Semillero Canola','Arveja','Achicoria','Remolacha','Avellanos','Mantención','Otros (especificar)']
 };
 
+let modoESP32 = false; // false = manual, true = automático ESP32
 let currentUser = null;
 let isAdmin = false;
 let isSupervisor = false;
@@ -462,6 +458,7 @@ let aperoObsTexto = '';
 
 window.addEventListener('DOMContentLoaded', async () => {
   await loadConfig();
+  await cargarModoESP32();
   suscribirSaldo();
   // Restaurar token JD guardado (persiste entre sesiones)
   const savedToken = localStorage.getItem('jd_token');
@@ -474,6 +471,32 @@ window.addEventListener('DOMContentLoaded', async () => {
   }
   showScreen('login');
 });
+
+async function cargarModoESP32() {
+  try {
+    const snap = await getDoc(doc(db, 'config', 'sistema'));
+    if (snap.exists()) modoESP32 = snap.data().modoESP32 || false;
+  } catch(e) {}
+}
+
+window.guardarModoESP32 = async function(valor) {
+  modoESP32 = valor;
+  try {
+    await setDoc(doc(db, 'config', 'sistema'), { modoESP32: valor }, { merge: true });
+    toast(valor ? '✓ Modo automático ESP32 activado' : '✓ Modo manual activado', true);
+    actualizarToggleESP32();
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
+function actualizarToggleESP32() {
+  const btnManual = document.getElementById('esp32-btn-manual');
+  const btnAuto = document.getElementById('esp32-btn-auto');
+  if (!btnManual || !btnAuto) return;
+  btnManual.style.background = !modoESP32 ? 'var(--negro)' : 'var(--blanco)';
+  btnManual.style.color = !modoESP32 ? 'var(--blanco)' : 'var(--acero)';
+  btnAuto.style.background = modoESP32 ? 'var(--verde)' : 'var(--blanco)';
+  btnAuto.style.color = modoESP32 ? 'var(--blanco)' : 'var(--acero)';
+}
 
 async function loadConfig() {
   try {
@@ -1839,7 +1862,7 @@ window.setTab = function(id,el) {
   document.getElementById('tc-'+id).classList.add('active');
   if(el)el.classList.add('active');
   if(['historial','admin','analytics','informes'].includes(id)) loadHistorial();
-  if(id==='config') { renderConfigListas(); if(isAdmin) cargarPines(); }
+  if(id==='config') { renderConfigListas(); if(isAdmin) cargarPines(); actualizarToggleESP32(); }
   if(id==='mantencion') { initMantencion(); }
   if(id==='registro' && isAdmin) escucharSolicitudesAdmin();
 }
@@ -2425,9 +2448,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       <!-- PASO 2: Datos después de cargar -->
       <div id="panel-paso2" class="panel" style="display:none">
         <div class="panel-title">Paso 2 · Datos después de cargar</div>
-        <div id="esp32-info" style="margin-bottom:12px;padding:8px 12px;background:var(--fondo);border-radius:6px;font-size:12px;color:var(--acero)">
-          📡 Esperando datos del caudalímetro ESP32...
-        </div>
+        <div id="esp32-info" style="display:none"></div>
         <div class="grid-2">
           <div class="field">
             <label>Litros despachados</label>
@@ -2573,6 +2594,15 @@ tbody td{padding:10px 12px;vertical-align:middle;}
           <div class="anterior-row"><span>Alerta saldo bajo:</span><strong>2.500 L</strong></div>
           <div class="anterior-row"><span>Capacidad estanque:</span><strong>15.000 L</strong></div>
         </div>
+      </div>
+      <div class="panel">
+        <div class="panel-title">📡 Caudalímetro ESP32</div>
+        <p style="font-size:13px;color:var(--acero);margin-bottom:14px">Elige cómo se ingresan los litros despachados en el Paso 2. Cuando el Piusi K600 esté instalado y calibrado, activa el modo automático.</p>
+        <div style="display:flex;border:1px solid var(--borde);border-radius:6px;overflow:hidden;margin-bottom:10px">
+          <button id="esp32-btn-manual" onclick="guardarModoESP32(false)" style="flex:1;padding:10px;font-size:13px;font-weight:600;cursor:pointer;border:none;font-family:var(--sans);transition:all .15s">✏️ Manual</button>
+          <button id="esp32-btn-auto" onclick="guardarModoESP32(true)" style="flex:1;padding:10px;font-size:13px;font-weight:600;cursor:pointer;border:none;font-family:var(--sans);transition:all .15s">📡 Automático ESP32</button>
+        </div>
+        <div style="font-size:12px;color:var(--acero)">Manual: el operador escribe los litros · Automático: se leen desde el caudalímetro en tiempo real</div>
       </div>
       <div class="panel" id="panel-jdlink-config">
         <div class="panel-title">🟢 John Deere Operations Center</div>
