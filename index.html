@@ -213,14 +213,15 @@ window.obtenerHorasJDLink = async function() {
   if (btn) { btn.disabled = false; btn.textContent = '📡 Obtener horas desde JDLink'; }
 }
 
-// ─── ESP32 LECTURA EN TIEMPO REAL (desactivado hasta instalar Piusi) ──
+// ─── ESP32 LECTURA EN TIEMPO REAL ──────────────────────────
 let unsubESP32 = null;
+let modoESP32 = false;
 
 function iniciarLecturaESP32() {
-  if (!modoESP32) return; // modo manual: no leer ESP32
+  if (!modoESP32) return;
   if (unsubESP32) { unsubESP32(); unsubESP32 = null; }
   const esp32Info = document.getElementById('esp32-info');
-  if (esp32Info) { esp32Info.style.display = 'block'; esp32Info.innerHTML = '<span style="color:#F5A623;font-size:12px">📡 Conectando con caudalímetro...</span>'; }
+  if (esp32Info) { esp32Info.style.display = 'block'; esp32Info.innerHTML = '<span style="color:#F5A623;font-size:12px">📡 Conectando caudalímetro...</span>'; }
   unsubESP32 = onSnapshot(doc(db, 'esp32_test', 'lectura_actual'), snap => {
     if (!snap.exists()) return;
     const data = snap.data();
@@ -235,6 +236,59 @@ function iniciarLecturaESP32() {
 
 function detenerLecturaESP32() {
   if (unsubESP32) { unsubESP32(); unsubESP32 = null; }
+}
+
+// ─── ESTIMACIÓN POR TIEMPO ─────────────────────────────────
+let intervaloEstimacion = null;
+let tiempoInicioEstimacion = null;
+const LITROS_POR_MINUTO_EST = 70.0;
+
+function iniciarEstimacionESP32() {
+  tiempoInicioEstimacion = Date.now();
+  if (intervaloEstimacion) clearInterval(intervaloEstimacion);
+  const esp32Info = document.getElementById('esp32-info');
+  if (esp32Info) esp32Info.style.display = 'block';
+  intervaloEstimacion = setInterval(() => {
+    const minutos = (Date.now() - tiempoInicioEstimacion) / 60000;
+    const litrosEst = minutos * LITROS_POR_MINUTO_EST;
+    const info = document.getElementById('esp32-info');
+    if (info) info.innerHTML = `<span style="color:#F5A623;font-size:12px">⏱ Tiempo: <strong>${minutos.toFixed(1)} min</strong> · Estimado: <strong>${litrosEst.toFixed(0)} L</strong> <span style="color:#9CA3AF;font-size:11px">(referencia 70 L/min)</span></span>`;
+  }, 5000);
+  // Mostrar inmediatamente
+  if (esp32Info) esp32Info.innerHTML = `<span style="color:#F5A623;font-size:12px">⏱ Tiempo: <strong>0.0 min</strong> · Estimado: <strong>0 L</strong> <span style="color:#9CA3AF;font-size:11px">(referencia 70 L/min)</span></span>`;
+}
+
+function detenerEstimacionESP32() {
+  if (intervaloEstimacion) { clearInterval(intervaloEstimacion); intervaloEstimacion = null; }
+  tiempoInicioEstimacion = null;
+  const esp32Info = document.getElementById('esp32-info');
+  if (esp32Info) { esp32Info.style.display = 'none'; esp32Info.innerHTML = ''; }
+}
+
+async function cargarModoESP32() {
+  try {
+    const snap = await getDoc(doc(db, 'config', 'sistema'));
+    if (snap.exists()) modoESP32 = snap.data().modoESP32 || false;
+  } catch(e) {}
+}
+
+window.guardarModoESP32 = async function(valor) {
+  modoESP32 = valor;
+  try {
+    await setDoc(doc(db, 'config', 'sistema'), { modoESP32: valor }, { merge: true });
+    toast(valor ? '✓ Modo automático ESP32 activado' : '✓ Modo manual activado', true);
+    actualizarToggleESP32();
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
+function actualizarToggleESP32() {
+  const btnManual = document.getElementById('esp32-btn-manual');
+  const btnAuto = document.getElementById('esp32-btn-auto');
+  if (!btnManual || !btnAuto) return;
+  btnManual.style.background = !modoESP32 ? 'var(--negro)' : 'var(--blanco)';
+  btnManual.style.color = !modoESP32 ? 'var(--blanco)' : 'var(--acero)';
+  btnAuto.style.background = modoESP32 ? 'var(--verde)' : 'var(--blanco)';
+  btnAuto.style.color = modoESP32 ? 'var(--blanco)' : 'var(--acero)';
 }
 
 window.desconectarJD = function() {
@@ -440,7 +494,6 @@ const DEFAULT_CONFIG = {
   centros: ['Trigo','Maíz','Semillero Canola','Arveja','Achicoria','Remolacha','Avellanos','Mantención','Otros (especificar)']
 };
 
-let modoESP32 = false; // false = manual, true = automático ESP32
 let currentUser = null;
 let isAdmin = false;
 let isSupervisor = false;
@@ -471,32 +524,6 @@ window.addEventListener('DOMContentLoaded', async () => {
   }
   showScreen('login');
 });
-
-async function cargarModoESP32() {
-  try {
-    const snap = await getDoc(doc(db, 'config', 'sistema'));
-    if (snap.exists()) modoESP32 = snap.data().modoESP32 || false;
-  } catch(e) {}
-}
-
-window.guardarModoESP32 = async function(valor) {
-  modoESP32 = valor;
-  try {
-    await setDoc(doc(db, 'config', 'sistema'), { modoESP32: valor }, { merge: true });
-    toast(valor ? '✓ Modo automático ESP32 activado' : '✓ Modo manual activado', true);
-    actualizarToggleESP32();
-  } catch(e) { toast('Error: ' + e.message, false); }
-}
-
-function actualizarToggleESP32() {
-  const btnManual = document.getElementById('esp32-btn-manual');
-  const btnAuto = document.getElementById('esp32-btn-auto');
-  if (!btnManual || !btnAuto) return;
-  btnManual.style.background = !modoESP32 ? 'var(--negro)' : 'var(--blanco)';
-  btnManual.style.color = !modoESP32 ? 'var(--blanco)' : 'var(--acero)';
-  btnAuto.style.background = modoESP32 ? 'var(--verde)' : 'var(--blanco)';
-  btnAuto.style.color = modoESP32 ? 'var(--blanco)' : 'var(--acero)';
-}
 
 async function loadConfig() {
   try {
@@ -785,11 +812,13 @@ window.confirmarPaso1YEncender = async function() {
     const data = await resp.json();
     if (data.success) {
       toast('✓ Bomba encendida', true);
+      try { await setDoc(doc(db, 'config', 'sistema'), { bombaActiva: true }, { merge: true }); } catch(e) {}
       document.getElementById('panel-paso1').style.display = 'none';
       document.getElementById('panel-cargando').style.display = 'block';
       document.getElementById('panel-paso2').style.display = 'block';
       document.getElementById('equipo-cargando').textContent = eq;
       iniciarLecturaESP32();
+      iniciarEstimacionESP32();
     } else {
       toast('Error: ' + (data.error || 'desconocido'), false);
     }
@@ -920,13 +949,14 @@ function renderTrabajoSelector() {
   // Vehículos km no usan tipo de trabajo ni apero
   const eq = document.getElementById('equipo').value;
   if (tipoEquipo(eq) === 'km') { container.innerHTML = ''; return; }
+  // VARIOS usa todos los trabajos sin restricción (tratado como admin)
 
   if (centrosSeleccionados.length === 0) { container.innerHTML = ''; return; }
 
   const esAvellanos = centrosSeleccionados.includes('Avellanos');
-  // Camila ve todos los trabajos de ambas listas combinados
+  // Camila/admin/VARIOS ven todos los trabajos combinados
   let lista;
-  if (isSupervisor || isAdmin) {
+  if (isSupervisor || isAdmin || eq === 'VARIOS (especificar)') {
     const todos = [...new Set([...TRABAJOS_GENERAL, ...TRABAJOS_AVELLANOS])];
     lista = todos;
   } else {
@@ -965,8 +995,8 @@ function renderAperoSelector() {
   const esAvellanos = centrosSeleccionados.includes('Avellanos');
   const equipoActual = document.getElementById('equipo').value;
 
-  // Supervisora/admin: mostrar todos los aperos sin filtro de tractor
-  if (isSupervisor || isAdmin) { renderAperoSinFiltro(wrap); return; }
+  // Supervisora/admin/VARIOS: mostrar todos los aperos sin filtro de tractor
+  if (isSupervisor || isAdmin || equipoActual === 'VARIOS (especificar)') { renderAperoSinFiltro(wrap); return; }
 
   if (esAvellanos) { renderAperoAvellanos(wrap, equipoActual); return; }
   renderAperoGeneral(wrap, equipoActual);
@@ -1119,6 +1149,7 @@ window.validarPaso1 = function() {
 
   // Vehículos km (camionetas) no requieren trabajo ni apero
   const esKm = tipoEquipo(eq) === 'km';
+  // VARIOS: requiere texto descriptivo pero puede usar cualquier trabajo/apero
 
   if (!esKm) {
     // Validar trabajo seleccionado
@@ -1198,6 +1229,10 @@ window.onEquipoChange = async function() {
     } else {
       variosWrap.innerHTML = '';
     }
+  }
+  // VARIOS puede usar todos los cultivos, trabajos y aperos sin restricción
+  if (eq === 'VARIOS (especificar)') {
+    trabajoSeleccionado = null; aperoSeleccionado = null; aperoObsTexto = '';
   }
 
   if (trabajoSeleccionado) renderTrabajoSelector();
@@ -1413,6 +1448,8 @@ window.registrar = async function() {
     if (variosWrap) variosWrap.innerHTML = '';
     limpiarPreview(); renderCentrosSelector(); renderTrabajoSelector();
     detenerLecturaESP32();
+    detenerEstimacionESP32();
+    try { await setDoc(doc(db, 'config', 'sistema'), { bombaActiva: false }, { merge: true }); } catch(e) {}
     document.getElementById('panel-paso2').style.display = 'none';
     document.getElementById('panel-cargando').style.display = 'none';
     document.getElementById('panel-paso1').style.display = 'block';
@@ -2448,7 +2485,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       <!-- PASO 2: Datos después de cargar -->
       <div id="panel-paso2" class="panel" style="display:none">
         <div class="panel-title">Paso 2 · Datos después de cargar</div>
-        <div id="esp32-info" style="display:none"></div>
+        <div id="esp32-info" style="display:none;margin-bottom:12px;padding:8px 12px;background:var(--fondo);border-radius:6px;"></div>
         <div class="grid-2">
           <div class="field">
             <label>Litros despachados</label>
@@ -2597,12 +2634,12 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       </div>
       <div class="panel">
         <div class="panel-title">📡 Caudalímetro ESP32</div>
-        <p style="font-size:13px;color:var(--acero);margin-bottom:14px">Elige cómo se ingresan los litros despachados en el Paso 2. Cuando el Piusi K600 esté instalado y calibrado, activa el modo automático.</p>
+        <p style="font-size:13px;color:var(--acero);margin-bottom:14px">Elige cómo se ingresan los litros. Cuando el Piusi K600 esté instalado activa el modo automático.</p>
         <div style="display:flex;border:1px solid var(--borde);border-radius:6px;overflow:hidden;margin-bottom:10px">
-          <button id="esp32-btn-manual" onclick="guardarModoESP32(false)" style="flex:1;padding:10px;font-size:13px;font-weight:600;cursor:pointer;border:none;font-family:var(--sans);transition:all .15s">✏️ Manual</button>
-          <button id="esp32-btn-auto" onclick="guardarModoESP32(true)" style="flex:1;padding:10px;font-size:13px;font-weight:600;cursor:pointer;border:none;font-family:var(--sans);transition:all .15s">📡 Automático ESP32</button>
+          <button id="esp32-btn-manual" onclick="guardarModoESP32(false)" style="flex:1;padding:10px;font-size:13px;font-weight:600;cursor:pointer;border:none;font-family:var(--sans)">✏️ Manual</button>
+          <button id="esp32-btn-auto" onclick="guardarModoESP32(true)" style="flex:1;padding:10px;font-size:13px;font-weight:600;cursor:pointer;border:none;font-family:var(--sans)">📡 Automático ESP32</button>
         </div>
-        <div style="font-size:12px;color:var(--acero)">Manual: el operador escribe los litros · Automático: se leen desde el caudalímetro en tiempo real</div>
+        <div style="font-size:12px;color:var(--acero)">Manual: operador escribe los litros · Automático: se leen desde el caudalímetro en tiempo real</div>
       </div>
       <div class="panel" id="panel-jdlink-config">
         <div class="panel-title">🟢 John Deere Operations Center</div>
