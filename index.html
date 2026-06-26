@@ -1594,7 +1594,7 @@ window.renderTabla = function() {
 
   document.getElementById('historial-container').innerHTML=`
     <div class="table-wrap"><table>
-      <thead><tr><th>Fecha/Hora</th><th>Equipo</th><th>Operador</th><th>Cultivos</th><th>Trabajo</th><th>Litros</th><th>Trabajado</th><th>Eficiencia</th><th>Totalizador</th><th>Obs.</th>${isAdmin?'<th></th>':''}</tr></thead>
+      <thead><tr><th>Fecha/Hora</th><th>Equipo</th><th>Operador</th><th>Cultivos</th><th>Trabajo</th><th>Litros</th><th>Trabajado</th><th>Eficiencia</th><th>Totalizador</th><th>Obs.</th><th></th></tr></thead>
       <tbody>${data.map(r=>{
         const tipo=r.medidor_tipo;
 
@@ -1638,10 +1638,77 @@ window.renderTabla = function() {
           <td class="td-mono" style="font-size:12px">${efHtml}</td>
           <td class="td-mono" style="font-size:12px">${alertaIcon} ${(r.totalizador||0).toLocaleString('es-CL')}</td>
           <td style="color:#6B7280;font-size:12px">${r.obs||'—'}</td>
-          ${isAdmin?`<td><button class="btn btn-danger" onclick="eliminar('${r.id}',${r.litros||0})">✕</button></td>`:''}
+          ${(isAdmin||isSupervisor||r.operador===currentUser)?`<td style="white-space:nowrap">
+            <div style="display:flex;gap:6px;padding:2px 0">
+              <button class="btn" style="background:var(--negro);color:var(--amarillo);border:1px solid #374151;font-size:11px;padding:5px 10px;border-radius:6px;cursor:pointer" onclick="editarRegistro('${r.id}')">✏️ Editar</button>
+              <button class="btn btn-danger" onclick="eliminar('${r.id}',${r.litros||0})">✕</button>
+            </div>
+          </td>`:'<td></td>'}
         </tr>`;}).join('')}
       </tbody>
     </table></div>`;
+}
+
+// ─── EDITAR REGISTRO ──────────────────────────────────────
+window.editarRegistro = async function(id) {
+  const r = registros.find(x => x.id === id);
+  if (!r) { toast('Registro no encontrado', false); return; }
+  document.getElementById('edit-id').value = id;
+  document.getElementById('edit-fecha').value = r.fecha || '';
+  document.getElementById('edit-hora').value = r.hora || '';
+  document.getElementById('edit-litros').value = r.litros || '';
+  document.getElementById('edit-litros-original').value = r.litros || 0;
+  document.getElementById('edit-medidor').value = r.medidor_valor != null ? r.medidor_valor : '';
+  document.getElementById('edit-totalizador').value = r.totalizador || '';
+  document.getElementById('edit-obs').value = r.obs || '';
+  const selEq = document.getElementById('edit-equipo');
+  selEq.innerHTML = config.equipos.map(e => `<option value="${e}" ${e===r.equipo?'selected':''}>${e}</option>`).join('');
+  const selOp = document.getElementById('edit-operador');
+  selOp.innerHTML = config.operadores.map(o => `<option value="${o}" ${o===r.operador?'selected':''}>${o}</option>`).join('');
+  const centrosActuales = (r.centros || [r.centro]).filter(Boolean);
+  const selCult = document.getElementById('edit-cultivos');
+  selCult.innerHTML = config.centros.map(c => `<option value="${c}" ${centrosActuales.includes(c)?'selected':''}>${c}</option>`).join('');
+  document.getElementById('modal-editar').style.display = 'flex';
+}
+
+window.cerrarEditar = function() {
+  document.getElementById('modal-editar').style.display = 'none';
+}
+
+window.guardarEdicion = async function() {
+  const id = document.getElementById('edit-id').value;
+  const litrosNuevos = parseFloat(document.getElementById('edit-litros').value);
+  const litrosOriginales = parseFloat(document.getElementById('edit-litros-original').value) || 0;
+  const fecha = document.getElementById('edit-fecha').value;
+  const hora = document.getElementById('edit-hora').value.trim();
+  const equipo = document.getElementById('edit-equipo').value;
+  const operador = document.getElementById('edit-operador').value;
+  const medidor_valor = parseFloat(document.getElementById('edit-medidor').value);
+  const totalizador = parseFloat(document.getElementById('edit-totalizador').value);
+  const centros = Array.from(document.getElementById('edit-cultivos').selectedOptions).map(o=>o.value).filter(Boolean);
+  const obs = document.getElementById('edit-obs').value.trim();
+  if (!fecha || !hora || !equipo || !operador || isNaN(litrosNuevos) || litrosNuevos <= 0) {
+    toast('Completá los campos obligatorios', false); return;
+  }
+  if (!centros.length) { toast('Seleccioná al menos un cultivo', false); return; }
+  const btn = document.getElementById('btn-guardar-edicion');
+  btn.disabled = true; btn.textContent = 'Guardando...';
+  try {
+    const difLitros = litrosOriginales - litrosNuevos;
+    if (Math.abs(difLitros) > 0.01) {
+      await updateDoc(doc(db, 'estanque', 'saldo'), { litros: increment(difLitros) });
+    }
+    await updateDoc(doc(db, 'registros', id), {
+      fecha, hora, equipo, operador, centros, centro: centros[0],
+      litros: litrosNuevos,
+      medidor_valor: isNaN(medidor_valor) ? null : medidor_valor,
+      totalizador: isNaN(totalizador) ? null : totalizador,
+      obs: obs || null, editado_por: currentUser, editado_ts: Date.now()
+    });
+    cerrarEditar();
+    toast('✓ Registro actualizado', true);
+  } catch(e) { toast('Error: ' + e.message, false); }
+  btn.disabled = false; btn.textContent = '✓ Guardar cambios';
 }
 
 window.eliminar = async function(id,litros) {
@@ -2679,6 +2746,36 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="cerrarCargaCisterna()" style="flex:1;justify-content:center">Cancelar</button>
       <button class="btn btn-verde" id="btn-cisterna" onclick="registrarCisterna()" style="flex:2">Confirmar carga</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL EDITAR -->
+<div class="modal-overlay" id="modal-editar">
+  <div class="modal-box" style="max-width:520px;max-height:90vh;overflow-y:auto">
+    <div class="modal-title">✏️ Editar registro</div>
+    <input type="hidden" id="edit-id">
+    <input type="hidden" id="edit-litros-original">
+    <div class="grid-2">
+      <div class="field"><label>Fecha</label><input type="date" id="edit-fecha"></div>
+      <div class="field"><label>Hora</label><input type="text" id="edit-hora" placeholder="HH:MM" maxlength="5"></div>
+    </div>
+    <div class="field"><label>Equipo</label><div class="select-wrapper"><select id="edit-equipo"></select></div></div>
+    <div class="field"><label>Operador</label><div class="select-wrapper"><select id="edit-operador"></select></div></div>
+    <div class="field">
+      <label>Cultivos</label>
+      <select id="edit-cultivos" multiple size="4" style="height:auto;min-height:90px;padding:6px"></select>
+      <div class="hint">Mantén Ctrl para seleccionar varios</div>
+    </div>
+    <div class="grid-2">
+      <div class="field"><label>Litros</label><input type="number" id="edit-litros" min="0" step="0.1"></div>
+      <div class="field"><label>Horómetro / Odómetro</label><input type="number" id="edit-medidor" min="0" step="0.1"></div>
+    </div>
+    <div class="field"><label>Totalizador SAMOA</label><input type="number" id="edit-totalizador" min="0" step="1"></div>
+    <div class="field"><label>Observación</label><input type="text" id="edit-obs"></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="cerrarEditar()" style="flex:1;justify-content:center">Cancelar</button>
+      <button class="btn btn-verde" id="btn-guardar-edicion" onclick="guardarEdicion()" style="flex:2">✓ Guardar cambios</button>
     </div>
   </div>
 </div>
