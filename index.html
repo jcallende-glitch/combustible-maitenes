@@ -38,7 +38,7 @@ const EQUIPO_OPERADOR = {
 };
 const CAPACIDAD = 15000;
 const ALERTA_LITROS = 2500;
-const MARGEN_TOTALIZADOR = 3;
+const MARGEN_TOTALIZADOR = 5;
 const WA_PHONE = '56983419231';
 const WA_KEY = '8974364';
 const PIN_INICIAL = '0000';
@@ -486,7 +486,7 @@ const APEROS_GENERAL_DETALLE = {
 
 const DEFAULT_CONFIG = {
   equipos: ['JD 8330','JD 7205J','JD 6170J','JD 6910','JD 3350 T','JD 3350','JD 2850','JD 5600','JD 5090','JD 5076','Kubota 2320','Clinton','Bobcat','Miniexcavadora LongYan','Excavadora','Toyota Hilux','Ford Ranger','Toyota JCAZ','VARIOS (especificar)'],
-  operadores: ['José Jarpa','Víctor Rodríguez','Cristian Cádiz','Rafael Riquelme','Patricio Cádiz','Edgardo Ruíz','Matías Jarpa','Israel','Luis Alberto','Eduardo Faundez','JC Allende','Camila Faundez','Otros (especificar)'],
+  operadores: ['José Jarpa','Víctor Rodríguez','Cristian Cádiz','Rafael Riquelme','Patricio Cádiz','Edgardo Ruíz','Matías Jarpa','Israel','Luis Alberto','Eduardo Faundez','JC Allende','Camila Faundez','Juan Uribe','Otros (especificar)'],
   centros: ['Trigo','Maíz','Semillero Canola','Arveja','Achicoria','Remolacha','Avellanos','Mantención','Otros (especificar)']
 };
 
@@ -949,8 +949,9 @@ function renderTrabajoSelector() {
   if (centrosSeleccionados.length === 0) { container.innerHTML = ''; return; }
 
   const esAvellanos = centrosSeleccionados.includes('Avellanos');
+  // Camila ve todos los trabajos de ambas listas combinados
   let lista;
-  if (isSupervisor || isAdmin || eq === 'VARIOS (especificar)') {
+  if (isSupervisor || isAdmin) {
     const todos = [...new Set([...TRABAJOS_GENERAL, ...TRABAJOS_AVELLANOS])];
     lista = todos;
   } else {
@@ -1202,6 +1203,17 @@ function actualizarResumenCultivos() {
   </div>`;
 }
 
+window.onOperadorSelectChange = function() {
+  const val = document.getElementById('operador-select').value;
+  const wrap = document.getElementById('operador-otro-wrap');
+  if (!wrap) return;
+  if (val === 'Otros (especificar)') {
+    wrap.innerHTML = `<div class="field" style="margin-top:8px"><input type="text" id="operador-otro-input" placeholder="Especificar nombre del operador..."></div>`;
+  } else {
+    wrap.innerHTML = '';
+  }
+}
+
 window.onEquipoChange = async function() {
   const eq = document.getElementById('equipo').value;
   if (!eq) return;
@@ -1222,9 +1234,6 @@ window.onEquipoChange = async function() {
     } else {
       variosWrap.innerHTML = '';
     }
-  }
-  if (eq === 'VARIOS (especificar)') {
-    trabajoSeleccionado = null; aperoSeleccionado = null; aperoObsTexto = '';
   }
 
   if (trabajoSeleccionado) renderTrabajoSelector();
@@ -1360,7 +1369,11 @@ window.registrar = async function() {
   const mv = parseFloat(document.getElementById('medidor-valor').value);
   const tot = parseFloat(document.getElementById('totalizador').value);
   const obs = document.getElementById('obs').value.trim();
-  const operadorRegistro = isAdmin ? (document.getElementById('operador-select').value || currentUser) : currentUser;
+  let operadorRegistro = isAdmin ? (document.getElementById('operador-select').value || currentUser) : currentUser;
+  if (isAdmin && operadorRegistro === 'Otros (especificar)') {
+    const otroInput = document.getElementById('operador-otro-input');
+    operadorRegistro = otroInput && otroInput.value.trim() ? otroInput.value.trim() : operadorRegistro;
+  }
 
   if (!eq || centrosSeleccionados.length===0 || isNaN(lt)||lt<=0 || isNaN(mv)||mv<0 || isNaN(tot)||tot<=0) {
     toast('Completá todos los campos y seleccioná al menos un cultivo', false); return;
@@ -1434,6 +1447,8 @@ window.registrar = async function() {
     document.getElementById('medidor-valor').value='';
     document.getElementById('totalizador').value='';
     document.getElementById('obs').value='';
+    const opOtroWrap = document.getElementById('operador-otro-wrap');
+    if (opOtroWrap) opOtroWrap.innerHTML = '';
     centrosSeleccionados=[];
     trabajoSeleccionado = null; aperoSeleccionado = null; aperoObsTexto = '';
     const variosWrap = document.getElementById('equipo-varios-wrap');
@@ -2480,7 +2495,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         </div>
         <div id="operador-field" style="display:none" class="field">
           <label>Operador</label>
-          <div class="select-wrapper"><select id="operador-select"></select></div>
+          <div class="select-wrapper"><select id="operador-select" onchange="onOperadorSelectChange()"></select></div><div id="operador-otro-wrap"></div>
         </div>
         <div class="field">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
@@ -2686,7 +2701,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       <div class="panel">
         <div class="panel-title">Parámetros del sistema</div>
         <div class="anterior-box">
-          <div class="anterior-row"><span>Margen tolerancia totalizador:</span><strong>± 3 L</strong></div>
+          <div class="anterior-row"><span>Margen tolerancia totalizador:</span><strong>± 5 L</strong></div>
           <div class="anterior-row"><span>Alerta saldo bajo:</span><strong>2.500 L</strong></div>
           <div class="anterior-row"><span>Capacidad estanque:</span><strong>15.000 L</strong></div>
         </div>
