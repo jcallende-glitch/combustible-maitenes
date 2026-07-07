@@ -1386,10 +1386,27 @@ window.registrar = async function() {
     if (difTot > MARGEN_TOTALIZADOR) alertaTotalizador = true;
   }
 
-  let eficiencia = null; let diffMedidor = null;
-  if (ultimoRegistroEquipo?.medidor_valor) {
+  let eficiencia = null; let diffMedidor = null; let alertaTrabajado = false;
+  if (ultimoRegistroEquipo?.medidor_valor != null) {
     diffMedidor = mv - ultimoRegistroEquipo.medidor_valor;
+    if (diffMedidor <= 0) alertaTrabajado = true;
     if (diffMedidor > 0 && lt > 0) eficiencia = medidor==='km' ? diffMedidor/lt : lt/diffMedidor;
+  }
+
+  // Verificar desviación de eficiencia vs promedio histórico ANTES de guardar,
+  // así podemos marcar la columna correcta (Eficiencia) desde el momento del registro
+  let alertaEficiencia = false; let promedioEfHist = null; let desviacionEf = null;
+  if (eficiencia !== null) {
+    try {
+      const q2 = query(collection(db,'registros'), where('equipo','==',eq), orderBy('ts','desc'), limit(20));
+      const snap2 = await getDocs(q2);
+      const historial = snap2.docs.map(d=>d.data()).filter(r=>r.eficiencia && r.eficiencia > 0);
+      if (historial.length >= 3) {
+        promedioEfHist = historial.reduce((s,r)=>s+r.eficiencia,0) / historial.length;
+        desviacionEf = Math.abs(eficiencia - promedioEfHist) / promedioEfHist * 100;
+        if (desviacionEf > 20) alertaEficiencia = true;
+      }
+    } catch(e) { console.warn('Error calculando desviación eficiencia:', e); }
   }
 
   // Distribución por cultivo
@@ -1420,26 +1437,18 @@ window.registrar = async function() {
       litros: lt, medidor_tipo: medidor, medidor_valor: mv,
       totalizador: tot, diff_medidor: diffMedidor, eficiencia,
       alerta_totalizador: alertaTotalizador, dif_totalizador: difTot,
-      alerta_eficiencia: false, // se actualiza post-guardado
+      alerta_trabajado: alertaTrabajado,
+      alerta_eficiencia: alertaEficiencia,
       obs, ts: Date.now()
     });
     await updateDoc(doc(db,'estanque','saldo'), { litros: increment(-lt) });
     if (alertaTotalizador) enviarAlertaWsp(`⚠️ *ALERTA TOTALIZADOR · Los Maitenes*\n\nEquipo: *${eq}*\nOperador: *${operadorRegistro}*\nFecha: ${fecha} ${hora}\nLitros: ${lt.toFixed(1)} L\nDiferencia: *${difTot.toFixed(1)} L*\n\nVerificar cámara.`);
 
-    // Alerta eficiencia — verificar desviación vs promedio histórico
-    if (eficiencia !== null) {
-      const q2 = query(collection(db,'registros'), where('equipo','==',eq), orderBy('ts','desc'), limit(20));
-      const snap2 = await getDocs(q2);
-      const historial = snap2.docs.map(d=>d.data()).filter(r=>r.eficiencia && r.eficiencia > 0);
-      if (historial.length >= 3) {
-        const promedio = historial.reduce((s,r)=>s+r.eficiencia,0) / historial.length;
-        const desviacion = Math.abs(eficiencia - promedio) / promedio * 100;
-        if (desviacion > 20) {
-          const tipo = medidor === 'km' ? 'km/L' : 'L/hr';
-          const tendencia = eficiencia > promedio ? '⬆️ Mayor consumo' : '⬇️ Menor consumo';
-          enviarAlertaWsp(`⚠️ *ALERTA EFICIENCIA · Los Maitenes*\n\nEquipo: *${eq}*\nOperador: *${operadorRegistro}*\nFecha: ${fecha} ${hora}\n\nEficiencia esta carga: *${eficiencia.toFixed(2)} ${tipo}*\nPromedio histórico: ${promedio.toFixed(2)} ${tipo}\nDesviación: *${desviacion.toFixed(0)}%* ${tendencia}\n\nVerificar estado del equipo.`);
-        }
-      }
+    // Alerta eficiencia por WhatsApp (usa el mismo cálculo hecho antes de guardar)
+    if (alertaEficiencia && promedioEfHist != null) {
+      const tipoEf = medidor === 'km' ? 'km/L' : 'L/hr';
+      const tendencia = eficiencia > promedioEfHist ? '⬆️ Mayor consumo' : '⬇️ Menor consumo';
+      enviarAlertaWsp(`⚠️ *ALERTA EFICIENCIA · Los Maitenes*\n\nEquipo: *${eq}*\nOperador: *${operadorRegistro}*\nFecha: ${fecha} ${hora}\n\nEficiencia esta carga: *${eficiencia.toFixed(2)} ${tipoEf}*\nPromedio histórico: ${promedioEfHist.toFixed(2)} ${tipoEf}\nDesviación: *${desviacionEf.toFixed(0)}%* ${tendencia}\n\nVerificar estado del equipo.`);
     }
 
     // Reset completo: volver al paso 1 para la siguiente carga
@@ -1500,34 +1509,54 @@ window.recalcularEficiencia = async function() {
 
     for (const eq of equipos) {
       const registrosEq = porEquipo[eq]; // ya ordenados por ts asc
+      let ventanaEficiencias = []; // últimas hasta 20 eficiencias válidas, en orden cronológico
+
       for (let i = 0; i < registrosEq.length; i++) {
         const actual = registrosEq[i];
         const anterior = i > 0 ? registrosEq[i - 1] : null;
 
         let eficiencia = null;
         let diffMedidor = null;
+        let alertaTrabajado = false;
+        let alertaEficiencia = false;
 
         if (anterior && anterior.medidor_valor != null && actual.medidor_valor != null) {
-          const diff = actual.medidor_valor - anterior.medidor_valor;
+          diffMedidor = actual.medidor_valor - anterior.medidor_valor;
           const lt = actual.litros || 0;
-          if (diff > 0 && lt > 0) {
-            diffMedidor = diff;
+          if (diffMedidor <= 0) alertaTrabajado = true;
+          if (diffMedidor > 0 && lt > 0) {
             const tipo = actual.medidor_tipo || 'hr';
-            eficiencia = tipo === 'km' ? diff / lt : lt / diff;
+            eficiencia = tipo === 'km' ? diffMedidor / lt : lt / diffMedidor;
           }
         }
 
-        // Solo actualizar si el valor cambió o faltaba
+        if (eficiencia !== null && ventanaEficiencias.length >= 3) {
+          const promedio = ventanaEficiencias.reduce((a,b)=>a+b,0) / ventanaEficiencias.length;
+          const desviacion = Math.abs(eficiencia - promedio) / promedio * 100;
+          if (desviacion > 20) alertaEficiencia = true;
+        }
+
+        // Solo actualizar si algún valor cambió o faltaba
         const mismaEf = actual.eficiencia === eficiencia;
         const mismoMed = actual.diff_medidor === diffMedidor;
-        if (!mismaEf || !mismoMed) {
+        const mismaAlertaEf = (actual.alerta_eficiencia || false) === alertaEficiencia;
+        const mismaAlertaTrab = (actual.alerta_trabajado || false) === alertaTrabajado;
+        if (!mismaEf || !mismoMed || !mismaAlertaEf || !mismaAlertaTrab) {
           await updateDoc(doc(db, 'registros', actual.id), {
             eficiencia: eficiencia,
-            diff_medidor: diffMedidor
+            diff_medidor: diffMedidor,
+            alerta_trabajado: alertaTrabajado,
+            alerta_eficiencia: alertaEficiencia
           });
           actualizados++;
         } else {
           sinDatos++;
+        }
+
+        // Mantener ventana de las últimas 20 eficiencias válidas (orden cronológico)
+        if (eficiencia !== null) {
+          ventanaEficiencias.push(eficiencia);
+          if (ventanaEficiencias.length > 20) ventanaEficiencias.shift();
         }
       }
     }
@@ -1613,7 +1642,7 @@ window.renderTabla = function() {
       <tbody>${data.map(r=>{
         const tipo=r.medidor_tipo;
 
-        // Eficiencia con color relativo al promedio del equipo
+        // Eficiencia con color relativo al promedio del equipo — ⚠️ propio si supera el umbral oficial (alerta_eficiencia)
         let efHtml = '<span style="color:#9CA3AF">—</span>';
         if (r.eficiencia && r.eficiencia > 0) {
           const esKm = tipo === 'km';
@@ -1633,25 +1662,36 @@ window.renderTabla = function() {
               else if (desv < -15) { color = 'var(--verde)'; icono = ' ⬇️'; }
             }
           }
-          efHtml = `<span style="color:${color};font-weight:${color!=='inherit'?'600':'400'}">${efStr}${icono}</span>`;
+          if (r.alerta_eficiencia) color = 'var(--rojo)';
+          efHtml = `<span style="color:${color};font-weight:${color!=='inherit'?'600':'400'}">${r.alerta_eficiencia?'⚠️ ':''}${efStr}${icono}</span>`;
         }
 
         const cultivos=(r.centros||[r.centro]).join(', ');
-        const alertaIcon=r.alerta_totalizador?'⚠️':'✅';
         const trabajoStr = r.trabajo === 'Otro (especificar)' ? (r.trabajo_detalle||'Otro') : (r.trabajo||'—');
         const aperoStr = r.apero ? (r.apero === 'Otro (especificar)' ? (r.apero_detalle||'Otro') : (r.apero === 'LIBRE' ? (r.apero_detalle||'') : r.apero)) : '';
-        const trabajadoStr = r.diff_medidor > 0 ? `${r.diff_medidor.toFixed(tipo==='km'?0:1)} ${tipo}` : '—';
 
-        return `<tr ${r.alerta_totalizador?'style="background:#FFF5F5"':''}>
+        // Trabajado: ⚠️ propio si el medidor no avanzó (igual o menor al anterior)
+        let trabajadoHtml = '<span style="color:#9CA3AF">—</span>';
+        if (r.diff_medidor != null) {
+          const valStr = `${r.diff_medidor.toFixed(tipo==='km'?0:1)} ${tipo}`;
+          trabajadoHtml = r.alerta_trabajado
+            ? `<span style="color:var(--rojo);font-weight:600">⚠️ ${valStr}</span>`
+            : `<span class="badge badge-${tipo}">${valStr}</span>`;
+        }
+
+        // Cualquier advertencia (en cualquier columna) resalta la fila
+        const tieneAlerta = r.alerta_totalizador || r.alerta_eficiencia || r.alerta_trabajado;
+
+        return `<tr ${tieneAlerta?'style="background:#FFF5F5"':''}>
           <td class="td-mono">${r.fecha}<br><span style="color:#9CA3AF;font-size:11px">${r.hora}</span></td>
           <td>${r.equipo==='VARIOS (especificar)'?(r.equipo_detalle?`VARIOS<br><span style="color:#9CA3AF;font-size:11px">${r.equipo_detalle}</span>`:'VARIOS'):r.equipo}</td>
           <td>${r.operador}</td>
           <td style="font-size:12px">${cultivos}</td>
           <td style="font-size:12px">${trabajoStr}${aperoStr?'<br><span style="color:#9CA3AF">'+aperoStr+'</span>':''}</td>
           <td class="td-mono" style="color:var(--amarillo);font-weight:600">${(r.litros||0).toFixed(1)} L</td>
-          <td class="td-mono" style="font-size:12px"><span class="badge badge-${tipo}">${trabajadoStr}</span></td>
+          <td class="td-mono" style="font-size:12px">${trabajadoHtml}</td>
           <td class="td-mono" style="font-size:12px">${efHtml}</td>
-          <td class="td-mono" style="font-size:12px">${alertaIcon} ${(r.totalizador||0).toLocaleString('es-CL')}</td>
+          <td class="td-mono" style="font-size:12px">${r.alerta_totalizador?'⚠️':'✅'} ${(r.totalizador||0).toLocaleString('es-CL')}</td>
           <td style="color:#6B7280;font-size:12px">${r.obs||'—'}</td>
           ${(isAdmin||isSupervisor||r.operador===currentUser)?`<td style="white-space:nowrap">
             <div style="display:flex;gap:6px;padding:2px 0">
