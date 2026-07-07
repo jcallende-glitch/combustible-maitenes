@@ -141,21 +141,49 @@ async function getTokenValido() {
   return jdAccessToken || token;
 }
 
-async function cargarOrganizacionJD() {
+// Llama SIEMPRE a través del proxy jd-api.js (Netlify Function), nunca directo
+// desde el navegador a partnerapi.deere.com — evita problemas de CORS y permite
+// aplicar ahí las correcciones de endpoint (ej. /machines -> /equipment).
+// 'endpointOrUrl' puede ser una ruta relativa ("/organizations") o una URL
+// completa (la que viene en los "links" de una respuesta anterior de JD).
+async function callJDApi(endpointOrUrl) {
   const token = await getTokenValido();
-  if (!token) return;
+  if (!token) return { status: 401, data: null };
   jdAccessToken = token;
   try {
-    const resp = await fetch(`${JD_API_BASE}/organizations`, {
-      headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/vnd.deere.axiom.v3+json' }
+    const resp = await fetch('/.netlify/functions/jd-api', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endpoint: endpointOrUrl, token })
     });
-    const data = await resp.json();
-    const orgs = data.values || [];
-    if (orgs.length > 0) {
-      jdOrganizationId = orgs[0].id;
-      localStorage.setItem('jd_org_id', jdOrganizationId);
+    const text = await resp.text();
+    let data = null;
+    try { data = JSON.parse(text); } catch(e) {}
+    return { status: resp.status, data };
+  } catch(e) {
+    console.warn('Error llamando jd-api:', e);
+    return { status: 0, data: null };
+  }
+}
+
+async function cargarOrganizacionJD() {
+  const { status, data } = await callJDApi('/organizations');
+  if (status !== 200 || !data) { console.warn('Error org JD, status:', status); return; }
+  const orgs = data.values || [];
+  if (orgs.length > 0) {
+    jdOrganizationId = orgs[0].id;
+    localStorage.setItem('jd_org_id', jdOrganizationId);
+  }
+  // Diagnóstico: si /fleet trae un link "connections" pendiente, la app todavía
+  // no tiene el permiso de esa organización aceptado del todo (causa típica de 403).
+  try {
+    const fleet = await callJDApi('/fleet');
+    const linkConexion = fleet.data?.links?.find(l => (l.rel||'').toLowerCase().includes('connections'));
+    if (linkConexion) {
+      console.warn('JD: falta completar la conexión de la organización ->', linkConexion.uri);
+      toast('⚠️ Falta autorizar la organización en connections.deere.com — revisa la consola', false);
     }
-  } catch(e) { console.warn('Error org JD:', e); }
+  } catch(e) { console.warn('Error chequeando /fleet:', e); }
 }
 
 window.obtenerHorasJDLink = async function() {
@@ -166,7 +194,6 @@ window.obtenerHorasJDLink = async function() {
     actualizarBotonesJDLink(eq);
     return;
   }
-  jdAccessToken = token;
   if (!jdOrganizationId) jdOrganizationId = localStorage.getItem('jd_org_id');
   if (!jdOrganizationId) await cargarOrganizacionJD();
 
@@ -175,37 +202,53 @@ window.obtenerHorasJDLink = async function() {
   const jdInfo = document.getElementById('jd-horas-info');
 
   try {
-    const resp = await fetch(`${JD_API_BASE}/organizations/${jdOrganizationId}/machines`, {
-      headers: { 'Authorization': `Bearer ${jdAccessToken}`, 'Accept': 'application/vnd.deere.axiom.v3+json' }
-    });
-    const data = await resp.json();
-    const machines = data.values || [];
+    const { status, data } = await callJDApi(`/organizations/${jdOrganizationId}/equipment`);
+    if (status !== 200 || !data) {
+      if (jdInfo) jdInfo.innerHTML = `<span style="color:#C0392B;font-size:12px">Error al consultar JDLink (HTTP ${status}). Revisa la consola.</span>`;
+      console.warn('JD equipment error, status:', status, data);
+      if (btn) { btn.disabled = false; btn.textContent = '📡 Obtener horas desde JDLink'; }
+      return;
+    }
+    const equipos = data.values || [];
 
-    // Buscar máquina por nombre aproximado
+    // Buscar máquina por nombre aproximado (comparando solo dígitos, ej "6170" en "JD 6170J")
     const eqNum = eq.replace(/[^0-9]/g,'');
-    const machine = machines.find(m => {
-      const nombre = (m.name || m.displayName || '').replace(/[^0-9]/g,'');
+    const machine = equipos.find(m => {
+      const nombre = (m.name || m.equipmentName || m.displayName || '').replace(/[^0-9]/g,'');
       return nombre === eqNum;
     });
 
-    if (machine) {
-      // Consultar horas específicas
-      const machineId = machine.id;
-      const respHrs = await fetch(`${JD_API_BASE}/machines/${machineId}/machineHoursOfOperation`, {
-        headers: { 'Authorization': `Bearer ${jdAccessToken}`, 'Accept': 'application/vnd.deere.axiom.v3+json' }
-      });
-      const dataHrs = await respHrs.json();
-      const horas = dataHrs.hours ?? dataHrs.machineHours ?? dataHrs.values?.[0]?.hours ?? null;
-      if (horas != null) {
-        document.getElementById('medidor-valor').value = parseFloat(horas).toFixed(1);
-        if (jdInfo) jdInfo.innerHTML = `<span style="color:#2D7D46;font-size:12px">✓ Horas desde Operations Center: <strong>${parseFloat(horas).toFixed(1)} hr</strong></span>`;
-        validarPaso1();
-        toast('✓ Horas actualizadas desde JDLink', true);
-      } else {
-        if (jdInfo) jdInfo.innerHTML = `<span style="color:#F5A623;font-size:12px">⚠️ Sin datos de horas disponibles. Ingresa manualmente.</span>`;
-      }
-    } else {
+    if (!machine) {
       if (jdInfo) jdInfo.innerHTML = `<span style="color:#F5A623;font-size:12px">⚠️ ${eq} no encontrado en Operations Center. Ingresa las horas manualmente.</span>`;
+      console.log('JD equipos disponibles:', equipos.map(m => m.name || m.equipmentName || m.displayName));
+      if (btn) { btn.disabled = false; btn.textContent = '📡 Obtener horas desde JDLink'; }
+      return;
+    }
+
+    // IMPORTANTE: mostramos el objeto completo en consola — la API de JD es hipermedia,
+    // así que el link exacto para las horas puede variar. Si esto sigue sin funcionar,
+    // hay que revisar aquí qué "rel" trae el link correcto y ajustar el buscador de abajo.
+    console.log('JD equipo encontrado, objeto completo:', machine);
+
+    const linkHoras = (machine.links || []).find(l => /hour/i.test(l.rel || ''));
+
+    if (!linkHoras) {
+      if (jdInfo) jdInfo.innerHTML = `<span style="color:#F5A623;font-size:12px">⚠️ ${eq} encontrado, pero sin link de horas disponible. Revisa la consola (F12) y avísale a Claude qué "links" aparecen.</span>`;
+      if (btn) { btn.disabled = false; btn.textContent = '📡 Obtener horas desde JDLink'; }
+      return;
+    }
+
+    const { status: statusHrs, data: dataHrs } = await callJDApi(linkHoras.uri);
+    const horas = dataHrs?.hours ?? dataHrs?.machineHours ?? dataHrs?.values?.[0]?.hours ?? null;
+
+    if (statusHrs === 200 && horas != null) {
+      document.getElementById('medidor-valor').value = parseFloat(horas).toFixed(1);
+      if (jdInfo) jdInfo.innerHTML = `<span style="color:#2D7D46;font-size:12px">✓ Horas desde Operations Center: <strong>${parseFloat(horas).toFixed(1)} hr</strong></span>`;
+      validarPaso1();
+      toast('✓ Horas actualizadas desde JDLink', true);
+    } else {
+      if (jdInfo) jdInfo.innerHTML = `<span style="color:#F5A623;font-size:12px">⚠️ Sin datos de horas disponibles (HTTP ${statusHrs}). Ingresa manualmente.</span>`;
+      console.warn('JD hoursOfOperation error:', statusHrs, dataHrs);
     }
   } catch(e) {
     if (jdInfo) jdInfo.innerHTML = `<span style="color:#C0392B;font-size:12px">Error al consultar JDLink: ${e.message}</span>`;
