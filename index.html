@@ -175,6 +175,7 @@ async function cargarOrganizacionJD() {
   if (orgs.length > 0) {
     jdOrganizationId = orgs[0].id;
     localStorage.setItem('jd_org_id', jdOrganizationId);
+    console.log('JD organización completa (revisar "links" para el endpoint correcto de equipment):', JSON.stringify(orgs[0], null, 2));
   }
   // Diagnóstico: si /fleet trae un link "connections" pendiente, la app todavía
   // no tiene el permiso de esa organización aceptado del todo (causa típica de 403).
