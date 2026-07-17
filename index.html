@@ -61,7 +61,10 @@ let jdAccessToken = null;
 let jdOrganizationId = null;
 
 async function generatePKCE() {
-  const verifier = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32)))).replace(/[^a-zA-Z0-9]/g,'').slice(0,43);
+  // Se generan 64 bytes aleatorios (en vez de 32) para garantizar que, incluso después
+  // de quitar caracteres no alfanuméricos del base64, el resultado siempre supere
+  // los 43 caracteres mínimos que exige el estándar PKCE. Antes a veces quedaba corto.
+  const verifier = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(64)))).replace(/[^a-zA-Z0-9]/g,'').slice(0,128);
   const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
   const challenge = btoa(String.fromCharCode(...new Uint8Array(hash))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
   return { verifier, challenge };
