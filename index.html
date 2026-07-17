@@ -260,8 +260,12 @@ window.obtenerHorasJDLink = async function() {
     if (linkHoras) {
       ({ status: statusHrs, data: dataHrs } = await callJDApi(linkHoras.uri));
     } else {
-      const endpointEngineHours = `/machines/${machine.id}/engineHours`;
-      console.log('JD intentando endpoint oficial de horas:', endpointEngineHours);
+      // El "id" numérico pertenece al sistema nuevo (isg/equipment); el endpoint de horas
+      // pertenece al sistema "platform" más antiguo, que probablemente espera el ERID
+      // (Equipment Reference ID, formato UUID) en vez de ese id numérico.
+      const principalId = machine.ERID || machine.id;
+      const endpointEngineHours = `/machines/${principalId}/engineHours`;
+      console.log('JD intentando endpoint oficial de horas con ID:', principalId, '->', endpointEngineHours);
       const resultado = await callJDApi(endpointEngineHours);
       statusHrs = resultado.status; dataHrs = resultado.data;
       console.log('JD engineHours status:', statusHrs, 'data:', dataHrs);
