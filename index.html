@@ -59,6 +59,7 @@ const EQUIPOS_JDLINK = ['JD 6170J', 'JD 6910', 'JD 5090'];
 
 let jdAccessToken = null;
 let jdOrganizationId = null;
+let jdMachinesLink = null;
 
 async function generatePKCE() {
   // Se generan 64 bytes aleatorios (en vez de 32) para garantizar que, incluso después
@@ -179,6 +180,17 @@ async function cargarOrganizacionJD() {
     jdOrganizationId = orgs[0].id;
     localStorage.setItem('jd_org_id', jdOrganizationId);
     console.log('JD organización completa (revisar "links" para el endpoint correcto de equipment):', JSON.stringify(orgs[0], null, 2));
+    // La API real usa un host y ruta distintos a los que asumíamos (api.deere.com/isg/equipment,
+    // no partnerapi.deere.com/platform/.../equipment) — por eso seguimos el link "machines" tal
+    // cual lo entrega la organización, en vez de construir la URL manualmente.
+    const machinesLink = (orgs[0].links || []).find(l => l.rel === 'machines');
+    if (machinesLink) {
+      jdMachinesLink = machinesLink.uri;
+      localStorage.setItem('jd_machines_link', jdMachinesLink);
+      console.log('JD link de machines encontrado:', jdMachinesLink);
+    } else {
+      console.warn('JD: no se encontró un link con rel "machines" en la organización');
+    }
   }
   // Diagnóstico: si /fleet trae un link "connections" pendiente, la app todavía
   // no tiene el permiso de esa organización aceptado del todo (causa típica de 403).
@@ -202,13 +214,16 @@ window.obtenerHorasJDLink = async function() {
   }
   if (!jdOrganizationId) jdOrganizationId = localStorage.getItem('jd_org_id');
   if (!jdOrganizationId) await cargarOrganizacionJD();
+  if (!jdMachinesLink) jdMachinesLink = localStorage.getItem('jd_machines_link');
+  if (!jdMachinesLink) await cargarOrganizacionJD();
 
   const btn = document.getElementById('btn-obtener-horas');
   if (btn) { btn.disabled = true; btn.textContent = '📡 Consultando...'; }
   const jdInfo = document.getElementById('jd-horas-info');
 
   try {
-    const { status, data } = await callJDApi(`/organizations/${jdOrganizationId}/equipment`);
+    const { status, data } = await callJDApi(jdMachinesLink);
+    console.log('JD equipment (via link machines) status:', status, 'data:', data);
     if (status !== 200 || !data) {
       if (jdInfo) jdInfo.innerHTML = `<span style="color:#C0392B;font-size:12px">Error al consultar JDLink (HTTP ${status}). Revisa la consola.</span>`;
       console.warn('JD equipment error, status:', status, data);
@@ -563,6 +578,8 @@ window.addEventListener('DOMContentLoaded', async () => {
   if (savedToken) jdAccessToken = savedToken;
   const savedOrg = localStorage.getItem('jd_org_id');
   if (savedOrg) jdOrganizationId = savedOrg;
+  const savedMachinesLink = localStorage.getItem('jd_machines_link');
+  if (savedMachinesLink) jdMachinesLink = savedMachinesLink;
   // Manejar callback OAuth de John Deere
   if (window.location.search.includes('code=')) {
     await manejarCallbackJD();
