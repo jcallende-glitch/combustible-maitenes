@@ -260,10 +260,10 @@ window.obtenerHorasJDLink = async function() {
     if (linkHoras) {
       ({ status: statusHrs, data: dataHrs } = await callJDApi(linkHoras.uri));
     } else {
-      // El "id" numérico pertenece al sistema nuevo (isg/equipment); el endpoint de horas
-      // pertenece al sistema "platform" más antiguo, que probablemente espera el ERID
-      // (Equipment Reference ID, formato UUID) en vez de ese id numérico.
-      const principalId = machine.ERID || machine.id;
+      // La API confirmó explícitamente "Invalid id" cuando probamos con el ERID,
+      // así que este endpoint espera el id numérico (el mismo que usa map.deere.com
+      // en su URL: map.deere.com/machines/{id}/...).
+      const principalId = machine.id;
       const endpointEngineHours = `/machines/${principalId}/engineHours`;
       console.log('JD intentando endpoint oficial de horas con ID:', principalId, '->', endpointEngineHours);
       const resultado = await callJDApi(endpointEngineHours);
