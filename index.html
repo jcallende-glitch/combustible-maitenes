@@ -34,8 +34,10 @@ const EQUIPO_OPERADOR = {
   'Luis Alberto': 'Kubota 2320',
   'Edgardo Ruíz': 'Bobcat',
   'Eduardo Faundez': 'Toyota Hilux',
-  'JC Allende': 'Ford Ranger'
+  'JC Allende': 'Ford Ranger',
+  'JCAZ': 'Toyota JCAZ'
 };
+const CULTIVO_OPERADOR_DEFAULT = { 'JCAZ': 'Mantención' };
 const CAPACIDAD = 15000;
 const ALERTA_LITROS = 2500;
 const MARGEN_TOTALIZADOR = 5;
@@ -529,7 +531,7 @@ const APEROS_GENERAL_DETALLE = {
 
 const DEFAULT_CONFIG = {
   equipos: ['JD 8330','JD 7205J','JD 6170J','JD 6910','JD 3350 T','JD 3350','JD 2850','JD 5600','JD 5090','JD 5076','Kubota 2320','Clinton','Bobcat','Miniexcavadora LongYan','Excavadora','Toyota Hilux','Ford Ranger','Toyota JCAZ','VARIOS (especificar)'],
-  operadores: ['José Jarpa','Víctor Rodríguez','Cristian Cádiz','Rafael Riquelme','Patricio Cádiz','Edgardo Ruíz','Matías Jarpa','Israel','Luis Alberto','Eduardo Faundez','JC Allende','Camila Faundez','Juan Uribe','Otros (especificar)'],
+  operadores: ['José Jarpa','Víctor Rodríguez','Cristian Cádiz','Rafael Riquelme','Patricio Cádiz','Edgardo Ruíz','Matías Jarpa','Israel','Luis Alberto','Eduardo Faundez','JC Allende','Camila Faundez','Juan Uribe','JCAZ','Otros (especificar)'],
   centros: ['Trigo','Maíz','Semillero Canola','Arveja','Achicoria','Remolacha','Avellanos','Mantención','Otros (especificar)']
 };
 
@@ -574,6 +576,13 @@ async function loadConfig() {
         const idx = config.centros.indexOf('Avellanos');
         if (idx >= 0) config.centros.splice(idx, 0, 'Remolacha');
         else config.centros.push('Remolacha');
+        await setDoc(doc(db, 'config', 'datos'), config);
+      }
+      // Asegurar que JCAZ esté en la lista de operadores (migración automática)
+      if (!config.operadores.includes('JCAZ')) {
+        const idxOtros = config.operadores.indexOf('Otros (especificar)');
+        if (idxOtros >= 0) config.operadores.splice(idxOtros, 0, 'JCAZ');
+        else config.operadores.push('JCAZ');
         await setDoc(doc(db, 'config', 'datos'), config);
       }
     } else {
@@ -843,6 +852,10 @@ window.confirmarPaso1YEncender = async function() {
   if (!eq || centrosSeleccionados.length === 0 || isNaN(mv) || mv < 0) {
     toast('Completá equipo, cultivo y horómetro antes de encender', false); return;
   }
+  if (ultimoRegistroEquipo?.medidor_valor != null && mv < ultimoRegistroEquipo.medidor_valor) {
+    toast(`⛔ El horómetro/odómetro (${mv}) no puede ser menor al último registrado (${ultimoRegistroEquipo.medidor_valor.toFixed(1)})`, false);
+    return;
+  }
 
   const btn = document.getElementById('btn-bomba-on');
   btn.disabled = true; btn.textContent = 'Encendiendo...';
@@ -932,8 +945,14 @@ function initRegistro() {
     document.getElementById('equipo-fijo').style.display = 'none';
     document.getElementById('equipo-selector').style.display = 'block';
     document.getElementById('btn-cambiar-equipo').style.display = 'none';
+    // El admin ve el selector normal (puede cambiarlo), pero viene preseleccionado con su equipo por defecto
+    if (isAdmin && equipoAsignado) {
+      document.getElementById('equipo').value = equipoAsignado;
+      setMedidor(tipoEquipo(equipoAsignado));
+      cargarUltimoRegistro(equipoAsignado);
+    }
   }
-  centrosSeleccionados = [];
+  centrosSeleccionados = CULTIVO_OPERADOR_DEFAULT[currentUser] ? [CULTIVO_OPERADOR_DEFAULT[currentUser]] : [];
   trabajoSeleccionado = null; aperoSeleccionado = null; aperoObsTexto = '';
   renderCentrosSelector();
   renderTrabajoSelector();
@@ -964,15 +983,8 @@ window.toggleCultivo = function(c) {
   if (idx >= 0) {
     centrosSeleccionados.splice(idx, 1);
   } else {
-    // Camila (supervisora) puede combinar cualquier cultivo sin restricciones
-    if (isSupervisor || isAdmin) {
-      centrosSeleccionados.push(c);
-    } else if (c === 'Avellanos') {
-      centrosSeleccionados = ['Avellanos']; // exclusivo para operadores normales
-    } else {
-      centrosSeleccionados = centrosSeleccionados.filter(x => x !== 'Avellanos');
-      centrosSeleccionados.push(c);
-    }
+    // Cualquier usuario puede combinar cualquier cultivo, incluido Avellanos
+    centrosSeleccionados.push(c);
   }
   trabajoSeleccionado = null; aperoSeleccionado = null; aperoObsTexto = '';
   renderCentrosSelector();
@@ -991,15 +1003,8 @@ function renderTrabajoSelector() {
 
   if (centrosSeleccionados.length === 0) { container.innerHTML = ''; return; }
 
-  const esAvellanos = centrosSeleccionados.includes('Avellanos');
-  // Camila ve todos los trabajos de ambas listas combinados
-  let lista;
-  if (isSupervisor || isAdmin) {
-    const todos = [...new Set([...TRABAJOS_GENERAL, ...TRABAJOS_AVELLANOS])];
-    lista = todos;
-  } else {
-    lista = esAvellanos ? TRABAJOS_AVELLANOS : TRABAJOS_GENERAL;
-  }
+  // Todos los usuarios ven la lista combinada de ambos tipos de trabajo
+  const lista = [...new Set([...TRABAJOS_GENERAL, ...TRABAJOS_AVELLANOS])];
 
   container.innerHTML = `
     <div class="cultivos-label">Tipo de trabajo</div>
@@ -1030,14 +1035,8 @@ function renderTrabajoOtro() {
 function renderAperoSelector() {
   const wrap = document.getElementById('apero-selector-wrap');
   if (!wrap) return;
-  const esAvellanos = centrosSeleccionados.includes('Avellanos');
-  const equipoActual = document.getElementById('equipo').value;
-
-  // Supervisora/admin/VARIOS: mostrar todos los aperos sin filtro de tractor
-  if (isSupervisor || isAdmin || equipoActual === 'VARIOS (especificar)') { renderAperoSinFiltro(wrap); return; }
-
-  if (esAvellanos) { renderAperoAvellanos(wrap, equipoActual); return; }
-  renderAperoGeneral(wrap, equipoActual);
+  // Todos los usuarios ven todos los aperos disponibles, sin filtro por tractor
+  renderAperoSinFiltro(wrap);
 }
 
 function renderAperoSinFiltro(wrap) {
@@ -1221,6 +1220,10 @@ window.validarPaso1 = function() {
 
   const btn = document.getElementById('btn-bomba-on');
   if (!btn) return;
+  // Bloqueo duro: el medidor no puede ser menor al último registro de este equipo
+  if (ok && ultimoRegistroEquipo?.medidor_valor != null && mv !== '' && parseFloat(mv) < ultimoRegistroEquipo.medidor_valor) {
+    ok = false;
+  }
   const horarioOk = dentroDeHorarioPermitido() || excepcionHorarioActiva || isAdmin;
   btn.disabled = !ok || !horarioOk;
 }
@@ -1420,6 +1423,10 @@ window.registrar = async function() {
 
   if (!eq || centrosSeleccionados.length===0 || isNaN(lt)||lt<=0 || isNaN(mv)||mv<0 || isNaN(tot)||tot<=0) {
     toast('Completá todos los campos y seleccioná al menos un cultivo', false); return;
+  }
+  if (ultimoRegistroEquipo?.medidor_valor != null && mv < ultimoRegistroEquipo.medidor_valor) {
+    toast(`⛔ El horómetro/odómetro (${mv}) no puede ser menor al último registrado (${ultimoRegistroEquipo.medidor_valor.toFixed(1)})`, false);
+    return;
   }
   if (lt > saldo) { toast(`⚠️ Sin suficiente combustible (${Math.round(saldo).toLocaleString('es-CL')} L)`, false); return; }
 
