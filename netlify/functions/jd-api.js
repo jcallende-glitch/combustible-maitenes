@@ -13,7 +13,6 @@ exports.handler = async function(event) {
     if (!endpoint || !token) {
       return { statusCode: 400, headers, body: JSON.stringify({ error: 'Faltan endpoint o token' }) };
     }
-
     // La API de John Deere es hipermedia: muchas respuestas traen un "link" con la
     // URL COMPLETA a seguir (ej. para horas de un equipo específico). Si nos pasan
     // una URL completa la usamos tal cual; si es una ruta relativa, la armamos nosotros.
@@ -21,11 +20,16 @@ exports.handler = async function(event) {
     if (endpoint.startsWith('http')) {
       url = endpoint;
     } else {
-      // Corrección conocida: el endpoint correcto es /equipment, no /machines
-      const fixedEndpoint = endpoint.replace('/machines', '/equipment');
+      // OJO: este reemplazo SOLO aplica al listado de equipos de una organización
+      // (/organizations/{id}/machines -> /organizations/{id}/equipment). NO debe tocar
+      // otros endpoints que legítimamente usan "/machines/" en su ruta, como el endpoint
+      // oficial /machines/{principalId}/engineHours -- de lo contrario se rompe ese
+      // endpoint (fue exactamente el bug que causaba 404 en engineHours).
+      const fixedEndpoint = endpoint.match(/^\/organizations\/[^/]+\/machines$/)
+        ? endpoint.replace('/machines', '/equipment')
+        : endpoint;
       url = 'https://partnerapi.deere.com/platform' + fixedEndpoint;
     }
-
     console.log('JD API call:', url);
     const resp = await fetch(url, {
       headers: {
