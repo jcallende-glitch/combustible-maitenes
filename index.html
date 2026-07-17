@@ -251,23 +251,23 @@ window.obtenerHorasJDLink = async function() {
     // hay que revisar aquí qué "rel" trae el link correcto y ajustar el buscador de abajo.
     console.log('JD equipo encontrado, objeto completo:', machine);
 
-    // Este esquema de equipo (api.deere.com/isg/equipment) no trae un array "links" para
-    // navegar a sub-recursos como en /organizations — hay que construir la URL de horas
-    // directamente usando el ID del equipo.
+    // Endpoint oficial confirmado en developer.deere.com: GET /machines/{principalId}/engineHours
+    // (usa "machines", no "equipment"; y corre sobre partnerapi.deere.com/platform, que ya
+    // funciona bien para /organizations)
     const linkHoras = (machine.links || []).find(l => /hour/i.test(l.rel || ''));
     let statusHrs, dataHrs;
 
     if (linkHoras) {
       ({ status: statusHrs, data: dataHrs } = await callJDApi(linkHoras.uri));
     } else {
-      const urlEngineHours = `https://api.deere.com/isg/equipment/${machine.id}/engineHours`;
-      console.log('JD intentando endpoint de horas de motor:', urlEngineHours);
-      const resultado = await callJDApi(urlEngineHours);
+      const endpointEngineHours = `/machines/${machine.id}/engineHours`;
+      console.log('JD intentando endpoint oficial de horas:', endpointEngineHours);
+      const resultado = await callJDApi(endpointEngineHours);
       statusHrs = resultado.status; dataHrs = resultado.data;
       console.log('JD engineHours status:', statusHrs, 'data:', dataHrs);
     }
 
-    const horas = dataHrs?.hours ?? dataHrs?.machineHours ?? dataHrs?.engineHours ?? dataHrs?.values?.[0]?.hours ?? null;
+    const horas = dataHrs?.hours ?? dataHrs?.machineHours ?? dataHrs?.engineHours ?? dataHrs?.values?.[0]?.hours ?? dataHrs?.values?.[0]?.engineHours ?? null;
 
     if (statusHrs === 200 && horas != null) {
       document.getElementById('medidor-valor').value = parseFloat(horas).toFixed(1);
