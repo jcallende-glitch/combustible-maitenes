@@ -58,8 +58,32 @@ const JD_SCOPES = 'ag1 ag2 ag3 eq1 eq2 org1 org2 offline_access openid email pro
 const EQUIPOS_JDLINK = ['JD 6170J', 'JD 6910', 'JD 5090'];
 
 let jdAccessToken = null;
+let jdRefreshToken = null;
+let jdExpireAt = 0;
 let jdOrganizationId = null;
 let jdMachinesLink = null;
+
+// El token de JDLink se guarda en Firestore (no en localStorage) para que
+// cualquier dispositivo (celular, PC, etc.) comparta la misma conexión una vez
+// que el admin se loguea una sola vez desde cualquiera de ellos.
+async function cargarConfigJD() {
+  try {
+    const snap = await getDoc(doc(db, 'config', 'jdlink'));
+    if (snap.exists()) {
+      const d = snap.data();
+      jdAccessToken = d.token || null;
+      jdRefreshToken = d.refreshToken || null;
+      jdExpireAt = d.expireAt || 0;
+      jdOrganizationId = d.orgId || null;
+      jdMachinesLink = d.machinesLink || null;
+    }
+  } catch(e) { console.warn('Error cargando config JD:', e); }
+}
+
+async function guardarConfigJD(campos) {
+  try { await setDoc(doc(db, 'config', 'jdlink'), campos, { merge: true }); }
+  catch(e) { console.warn('Error guardando config JD:', e); }
+}
 
 async function generatePKCE() {
   // Se generan 64 bytes aleatorios (en vez de 32) para garantizar que, incluso después
@@ -99,10 +123,9 @@ async function manejarCallbackJD() {
     const data = await resp.json();
     if (data.access_token) {
       jdAccessToken = data.access_token;
-      localStorage.setItem('jd_token', data.access_token);
-      if (data.refresh_token) localStorage.setItem('jd_refresh_token', data.refresh_token);
-      const expireAt = Date.now() + (data.expires_in || 3600) * 1000;
-      localStorage.setItem('jd_expire_at', expireAt.toString());
+      jdRefreshToken = data.refresh_token || jdRefreshToken;
+      jdExpireAt = Date.now() + (data.expires_in || 3600) * 1000;
+      await guardarConfigJD({ token: jdAccessToken, refreshToken: jdRefreshToken, expireAt: jdExpireAt });
       window.history.replaceState({}, document.title, window.location.pathname);
       await cargarOrganizacionJD();
       toast('✓ Conectado a John Deere Operations Center', true);
@@ -114,21 +137,19 @@ async function manejarCallbackJD() {
 }
 
 async function renovarTokenJD() {
-  const refreshToken = localStorage.getItem('jd_refresh_token');
-  if (!refreshToken) return false;
+  if (!jdRefreshToken) return false;
   try {
     const resp = await fetch('/.netlify/functions/jd-token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: refreshToken })
+      body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: jdRefreshToken })
     });
     const data = await resp.json();
     if (data.access_token) {
       jdAccessToken = data.access_token;
-      localStorage.setItem('jd_token', data.access_token);
-      if (data.refresh_token) localStorage.setItem('jd_refresh_token', data.refresh_token);
-      const expireAt = Date.now() + (data.expires_in || 3600) * 1000;
-      localStorage.setItem('jd_expire_at', expireAt.toString());
+      jdRefreshToken = data.refresh_token || jdRefreshToken;
+      jdExpireAt = Date.now() + (data.expires_in || 3600) * 1000;
+      await guardarConfigJD({ token: jdAccessToken, refreshToken: jdRefreshToken, expireAt: jdExpireAt });
       return true;
     }
   } catch(e) { console.warn('Error renovando token JD:', e); }
@@ -136,15 +157,13 @@ async function renovarTokenJD() {
 }
 
 async function getTokenValido() {
-  const expireAt = parseInt(localStorage.getItem('jd_expire_at') || '0');
-  const token = localStorage.getItem('jd_token');
-  if (!token) return null;
+  if (!jdAccessToken) return null;
   // Si faltan menos de 5 minutos para expirar, renovar
-  if (Date.now() > expireAt - 5 * 60 * 1000) {
+  if (Date.now() > jdExpireAt - 5 * 60 * 1000) {
     const ok = await renovarTokenJD();
     if (!ok) return null;
   }
-  return jdAccessToken || token;
+  return jdAccessToken;
 }
 
 // Llama SIEMPRE a través del proxy jd-api.js (Netlify Function), nunca directo
@@ -178,7 +197,6 @@ async function cargarOrganizacionJD() {
   const orgs = data.values || [];
   if (orgs.length > 0) {
     jdOrganizationId = orgs[0].id;
-    localStorage.setItem('jd_org_id', jdOrganizationId);
     console.log('JD organización completa (revisar "links" para el endpoint correcto de equipment):', JSON.stringify(orgs[0], null, 2));
     // La API real usa un host y ruta distintos a los que asumíamos (api.deere.com/isg/equipment,
     // no partnerapi.deere.com/platform/.../equipment) — por eso seguimos el link "machines" tal
@@ -186,11 +204,11 @@ async function cargarOrganizacionJD() {
     const machinesLink = (orgs[0].links || []).find(l => l.rel === 'machines');
     if (machinesLink) {
       jdMachinesLink = machinesLink.uri;
-      localStorage.setItem('jd_machines_link', jdMachinesLink);
       console.log('JD link de machines encontrado:', jdMachinesLink);
     } else {
       console.warn('JD: no se encontró un link con rel "machines" en la organización');
     }
+    await guardarConfigJD({ orgId: jdOrganizationId, machinesLink: jdMachinesLink });
   }
   // Diagnóstico: si /fleet trae un link "connections" pendiente, la app todavía
   // no tiene el permiso de esa organización aceptado del todo (causa típica de 403).
@@ -212,9 +230,7 @@ window.obtenerHorasJDLink = async function() {
     actualizarBotonesJDLink(eq);
     return;
   }
-  if (!jdOrganizationId) jdOrganizationId = localStorage.getItem('jd_org_id');
   if (!jdOrganizationId) await cargarOrganizacionJD();
-  if (!jdMachinesLink) jdMachinesLink = localStorage.getItem('jd_machines_link');
   if (!jdMachinesLink) await cargarOrganizacionJD();
 
   const btn = document.getElementById('btn-obtener-horas');
@@ -363,12 +379,10 @@ function actualizarToggleESP32() {
   btnAuto.style.color = modoESP32 ? 'var(--blanco)' : 'var(--acero)';
 }
 
-window.desconectarJD = function() {
-  localStorage.removeItem('jd_token');
-  localStorage.removeItem('jd_refresh_token');
-  localStorage.removeItem('jd_expire_at');
-  localStorage.removeItem('jd_org_id');
-  jdAccessToken = null; jdOrganizationId = null;
+window.desconectarJD = async function() {
+  jdAccessToken = null; jdRefreshToken = null; jdExpireAt = 0;
+  jdOrganizationId = null; jdMachinesLink = null;
+  await guardarConfigJD({ token: null, refreshToken: null, expireAt: 0, orgId: null, machinesLink: null });
   actualizarPanelJDConfig();
   toast('John Deere desconectado', true);
 }
@@ -378,11 +392,9 @@ function actualizarPanelJDConfig() {
   const btnConectar = document.getElementById('btn-jdlink-config');
   const btnDesconectar = document.getElementById('btn-jdlink-desconectar');
   if (!estado) return;
-  const token = localStorage.getItem('jd_token');
-  const expireAt = parseInt(localStorage.getItem('jd_expire_at') || '0');
-  const conectado = !!token;
+  const conectado = !!jdAccessToken;
   if (conectado) {
-    const expDate = new Date(expireAt).toLocaleString('es-CL');
+    const expDate = new Date(jdExpireAt).toLocaleString('es-CL');
     estado.innerHTML = `<span style="color:#2D7D46">✓ Conectado</span> · Token válido hasta ~${expDate}`;
     if (btnConectar) btnConectar.style.display = 'none';
     if (btnDesconectar) btnDesconectar.style.display = 'flex';
@@ -403,8 +415,7 @@ function actualizarBotonesJDLink(eq) {
   if (!esJD || tipoEquipo(eq) === 'km') {
     btnLogin.style.display = 'none'; btnHoras.style.display = 'none'; return;
   }
-  const token = jdAccessToken || localStorage.getItem('jd_token');
-  if (token) {
+  if (jdAccessToken) {
     btnLogin.style.display = 'none'; btnHoras.style.display = 'flex';
   } else {
     btnLogin.style.display = 'flex'; btnHoras.style.display = 'none';
@@ -585,13 +596,8 @@ window.addEventListener('DOMContentLoaded', async () => {
   await loadConfig();
   await cargarModoESP32();
   suscribirSaldo();
-  // Restaurar token JD guardado (persiste entre sesiones)
-  const savedToken = localStorage.getItem('jd_token');
-  if (savedToken) jdAccessToken = savedToken;
-  const savedOrg = localStorage.getItem('jd_org_id');
-  if (savedOrg) jdOrganizationId = savedOrg;
-  const savedMachinesLink = localStorage.getItem('jd_machines_link');
-  if (savedMachinesLink) jdMachinesLink = savedMachinesLink;
+  // Cargar la conexión de John Deere desde Firestore (compartida entre todos los dispositivos)
+  await cargarConfigJD();
   // Manejar callback OAuth de John Deere
   if (window.location.search.includes('code=')) {
     await manejarCallbackJD();
