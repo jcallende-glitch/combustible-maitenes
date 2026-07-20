@@ -272,7 +272,7 @@ window.obtenerHorasJDLink = async function() {
       console.log('JD engineHours status:', statusHrs, 'data:', dataHrs);
     }
 
-    const horas = dataHrs?.hours ?? dataHrs?.machineHours ?? dataHrs?.engineHours ?? dataHrs?.values?.[0]?.hours ?? dataHrs?.values?.[0]?.engineHours ?? null;
+    const horas = dataHrs?.values?.[0]?.reading?.valueAsDouble ?? dataHrs?.hours ?? dataHrs?.machineHours ?? dataHrs?.engineHours ?? dataHrs?.values?.[0]?.hours ?? dataHrs?.values?.[0]?.engineHours ?? null;
 
     if (statusHrs === 200 && horas != null) {
       document.getElementById('medidor-valor').value = parseFloat(horas).toFixed(1);
