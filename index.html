@@ -560,7 +560,7 @@ const APEROS_GENERAL_DETALLE = {
 };
 
 const DEFAULT_CONFIG = {
-  equipos: ['JD 8330','JD 7205J','JD 6170J','JD 6910','JD 3350 T','JD 3350','JD 2850','JD 5600','JD 5090','JD 5076','Kubota 2320','Clinton','Bobcat','Miniexcavadora LongYan','Excavadora','Toyota Hilux','Ford Ranger','Toyota JCAZ','VARIOS (especificar)'],
+  equipos: ['JD 8330','JD 7205J','JD 6170J','JD 6910','JD 3350 T','JD 3350','JD 2850','JD 5600','JD 5090','JD 5076','Kubota 2320','Clinton','Bobcat','Miniexcavadora LongYan','Excavadora','Toyota Hilux','Ford Ranger','Toyota JCAZ','Otro (especificar)'],
   operadores: ['José Jarpa','Víctor Rodríguez','Cristian Cádiz','Rafael Riquelme','Patricio Cádiz','Edgardo Ruíz','Matías Jarpa','Israel','Luis Alberto','Eduardo Faundez','JC Allende','Camila Faundez','Juan Uribe','JCAZ','Otros (especificar)'],
   centros: ['Trigo','Maíz','Semillero Canola','Arveja','Achicoria','Remolacha','Avellanos','Mantención','Otros (especificar)']
 };
@@ -615,6 +615,12 @@ async function loadConfig() {
         const idxOtros = config.operadores.indexOf('Otros (especificar)');
         if (idxOtros >= 0) config.operadores.splice(idxOtros, 0, 'JCAZ');
         else config.operadores.push('JCAZ');
+        await setDoc(doc(db, 'config', 'datos'), config);
+      }
+      // Migración automática: renombrar el antiguo "VARIOS (especificar)" a "Otro (especificar)"
+      const idxVarios = config.equipos.indexOf('VARIOS (especificar)');
+      if (idxVarios >= 0) {
+        config.equipos[idxVarios] = 'Otro (especificar)';
         await setDoc(doc(db, 'config', 'datos'), config);
       }
     } else {
@@ -880,11 +886,13 @@ window.confirmarPaso1YEncender = async function() {
   if (!horarioOk) { toast('⛔ Fuera de horario autorizado (Lun-Vie 8:00-18:00)', false); return; }
 
   const eq = document.getElementById('equipo').value;
-  const mv = parseFloat(document.getElementById('medidor-valor').value);
-  if (!eq || centrosSeleccionados.length === 0 || isNaN(mv) || mv < 0) {
-    toast('Completá equipo, cultivo y horómetro antes de encender', false); return;
+  const esOtroEquipo = eq === 'Otro (especificar)';
+  const mvRaw = document.getElementById('medidor-valor').value;
+  const mv = mvRaw === '' ? null : parseFloat(mvRaw);
+  if (!eq || centrosSeleccionados.length === 0 || (!esOtroEquipo && (mv === null || isNaN(mv) || mv < 0))) {
+    toast(esOtroEquipo ? 'Completá equipo y cultivo antes de encender' : 'Completá equipo, cultivo y horómetro antes de encender', false); return;
   }
-  if (eq !== 'VARIOS (especificar)' && ultimoRegistroEquipo?.medidor_valor != null && mv < ultimoRegistroEquipo.medidor_valor) {
+  if (!esOtroEquipo && ultimoRegistroEquipo?.medidor_valor != null && mv < ultimoRegistroEquipo.medidor_valor) {
     toast(`⛔ El horómetro/odómetro (${mv}) no puede ser menor al último registrado (${ultimoRegistroEquipo.medidor_valor.toFixed(1)})`, false);
     return;
   }
@@ -1026,9 +1034,9 @@ function renderTrabajoSelector() {
   const container = document.getElementById('trabajo-selector-wrap');
   if (!container) return;
 
-  // Vehículos km no usan tipo de trabajo ni apero
+  // Vehículos km y equipo "Otro (especificar)" no usan tipo de trabajo ni apero
   const eq = document.getElementById('equipo').value;
-  if (tipoEquipo(eq) === 'km') { container.innerHTML = ''; return; }
+  if (tipoEquipo(eq) === 'km' || eq === 'Otro (especificar)') { container.innerHTML = ''; return; }
 
   if (centrosSeleccionados.length === 0) { container.innerHTML = ''; return; }
 
@@ -1205,18 +1213,24 @@ function renderAperoOtro() {
 window.validarPaso1 = function() {
   const eq = document.getElementById('equipo').value;
   const mv = document.getElementById('medidor-valor').value;
-  let ok = eq && centrosSeleccionados.length > 0 && mv !== '' && parseFloat(mv) >= 0;
+  const esOtroEquipo = eq === 'Otro (especificar)';
 
-  // Si eligió VARIOS, exigir texto descriptivo
-  if (ok && eq === 'VARIOS (especificar)') {
-    const variosInput = document.getElementById('equipo-varios-input');
-    ok = ok && !!variosInput && variosInput.value.trim().length > 0;
+  // Para "Otro (especificar)" el horómetro/odómetro NO es obligatorio
+  let ok = eq && centrosSeleccionados.length > 0;
+  if (!esOtroEquipo) {
+    ok = ok && mv !== '' && parseFloat(mv) >= 0;
   }
 
-  // Vehículos km (camionetas) no requieren trabajo ni apero
+  // Si eligió "Otro (especificar)" como equipo, exigir texto descriptivo
+  if (ok && esOtroEquipo) {
+    const otroInput = document.getElementById('equipo-varios-input');
+    ok = ok && !!otroInput && otroInput.value.trim().length > 0;
+  }
+
+  // Vehículos km (camionetas) y equipo "Otro (especificar)" no requieren trabajo ni apero
   const esKm = tipoEquipo(eq) === 'km';
 
-  if (!esKm) {
+  if (!esKm && !esOtroEquipo) {
     // Validar trabajo seleccionado
     if (ok) {
       ok = !!trabajoSeleccionado;
@@ -1250,8 +1264,8 @@ window.validarPaso1 = function() {
   const btn = document.getElementById('btn-bomba-on');
   if (!btn) return;
   // Bloqueo duro: el medidor no puede ser menor al último registro de este equipo
-  // (no aplica a "VARIOS", porque cada carga puede ser un equipo físico distinto)
-  if (ok && eq !== 'VARIOS (especificar)' && ultimoRegistroEquipo?.medidor_valor != null && mv !== '' && parseFloat(mv) < ultimoRegistroEquipo.medidor_valor) {
+  // (no aplica a "Otro (especificar)", porque cada carga puede ser un equipo físico distinto)
+  if (ok && !esOtroEquipo && ultimoRegistroEquipo?.medidor_valor != null && mv !== '' && parseFloat(mv) < ultimoRegistroEquipo.medidor_valor) {
     ok = false;
   }
   const horarioOk = dentroDeHorarioPermitido() || excepcionHorarioActiva || isAdmin;
@@ -1295,17 +1309,17 @@ window.onEquipoChange = async function() {
   if (!eq) return;
   setMedidor(tipoEquipo(eq));
 
-  // Vehículos km no usan trabajo ni apero — limpiar
-  if (tipoEquipo(eq) === 'km') {
+  // Vehículos km y equipo "Otro (especificar)" no usan trabajo ni apero — limpiar
+  if (tipoEquipo(eq) === 'km' || eq === 'Otro (especificar)') {
     trabajoSeleccionado = null; aperoSeleccionado = null; aperoObsTexto = '';
   }
 
   await cargarUltimoRegistro(eq);
 
-  // Mostrar campo texto si eligió VARIOS
+  // Mostrar campo texto si eligió "Otro (especificar)"
   const variosWrap = document.getElementById('equipo-varios-wrap');
   if (variosWrap) {
-    if (eq === 'VARIOS (especificar)') {
+    if (eq === 'Otro (especificar)') {
       variosWrap.innerHTML = `<div class="field" style="margin-top:8px"><input type="text" id="equipo-varios-input" placeholder="Especificar equipo (ej: Camión, Tractor externo...)" oninput="validarPaso1()"></div>`;
     } else {
       variosWrap.innerHTML = '';
@@ -1440,9 +1454,11 @@ function limpiarPreview() {
 window.registrar = async function() {
   const { fecha, hora } = getNow();
   const eq = document.getElementById('equipo').value;
-  const eqDetalle = eq === 'VARIOS (especificar)' ? (document.getElementById('equipo-varios-input')?.value.trim() || '') : null;
+  const esOtroEquipo = eq === 'Otro (especificar)';
+  const eqDetalle = esOtroEquipo ? (document.getElementById('equipo-varios-input')?.value.trim() || '') : null;
   const lt = parseFloat(document.getElementById('litros').value);
-  const mv = parseFloat(document.getElementById('medidor-valor').value);
+  const mvRaw = document.getElementById('medidor-valor').value;
+  const mv = mvRaw === '' ? null : parseFloat(mvRaw);
   const tot = parseFloat(document.getElementById('totalizador').value);
   const obs = document.getElementById('obs').value.trim();
   let operadorRegistro = isAdmin ? (document.getElementById('operador-select').value || currentUser) : currentUser;
@@ -1451,10 +1467,10 @@ window.registrar = async function() {
     operadorRegistro = otroInput && otroInput.value.trim() ? otroInput.value.trim() : operadorRegistro;
   }
 
-  if (!eq || centrosSeleccionados.length===0 || isNaN(lt)||lt<=0 || isNaN(mv)||mv<0 || isNaN(tot)||tot<=0) {
+  if (!eq || centrosSeleccionados.length===0 || isNaN(lt)||lt<=0 || (!esOtroEquipo && (mv === null || isNaN(mv) || mv < 0)) || isNaN(tot)||tot<=0) {
     toast('Completá todos los campos y seleccioná al menos un cultivo', false); return;
   }
-  if (eq !== 'VARIOS (especificar)' && ultimoRegistroEquipo?.medidor_valor != null && mv < ultimoRegistroEquipo.medidor_valor) {
+  if (!esOtroEquipo && ultimoRegistroEquipo?.medidor_valor != null && mv < ultimoRegistroEquipo.medidor_valor) {
     toast(`⛔ El horómetro/odómetro (${mv}) no puede ser menor al último registrado (${ultimoRegistroEquipo.medidor_valor.toFixed(1)})`, false);
     return;
   }
@@ -1467,7 +1483,7 @@ window.registrar = async function() {
   }
 
   let eficiencia = null; let diffMedidor = null; let alertaTrabajado = false;
-  if (ultimoRegistroEquipo?.medidor_valor != null) {
+  if (mv != null && ultimoRegistroEquipo?.medidor_valor != null) {
     diffMedidor = mv - ultimoRegistroEquipo.medidor_valor;
     if (diffMedidor <= 0) alertaTrabajado = true;
     if (diffMedidor > 0 && lt > 0) eficiencia = medidor==='km' ? diffMedidor/lt : lt/diffMedidor;
@@ -1764,7 +1780,7 @@ window.renderTabla = function() {
 
         return `<tr ${tieneAlerta?'style="background:#FFF5F5"':''}>
           <td class="td-mono">${r.fecha}<br><span style="color:#9CA3AF;font-size:11px">${r.hora}</span></td>
-          <td>${r.equipo==='VARIOS (especificar)'?(r.equipo_detalle?`VARIOS<br><span style="color:#9CA3AF;font-size:11px">${r.equipo_detalle}</span>`:'VARIOS'):r.equipo}</td>
+          <td>${r.equipo_detalle?`${r.equipo}<br><span style="color:#9CA3AF;font-size:11px">${r.equipo_detalle}</span>`:r.equipo}</td>
           <td>${r.operador}</td>
           <td style="font-size:12px">${cultivos}</td>
           <td style="font-size:12px">${trabajoStr}${aperoStr?'<br><span style="color:#9CA3AF">'+aperoStr+'</span>':''}</td>
@@ -1857,7 +1873,7 @@ window.exportarExcel = function() {
   let data=[...registros];
   if(!isAdmin && !isSupervisor) data=data.filter(r=>r.operador===currentUser);
   if(!data.length){toast('No hay registros',false);return;}
-  const rows=data.map(r=>({'Fecha':r.fecha,'Hora':r.hora,'Equipo':r.equipo==='VARIOS (especificar)'?(r.equipo_detalle?`VARIOS: ${r.equipo_detalle}`:'VARIOS'):r.equipo,'Operador':r.operador,'Cultivos':(r.centros||[r.centro]).join(' / '),'Trabajo':r.trabajo==='Otro (especificar)'?(r.trabajo_detalle||'Otro'):(r.trabajo||''),'Apero':r.apero?(r.apero==='Otro (especificar)'?(r.apero_detalle||'Otro'):(r.apero==='LIBRE'?(r.apero_detalle||''):r.apero)):'','Litros':r.litros,'Tipo Medidor':r.medidor_tipo==='km'?'Kilómetros':'Horas','Medidor Actual':r.medidor_valor,'Trabajado':r.diff_medidor||'','Eficiencia':r.eficiencia?(r.medidor_tipo==='km'?r.eficiencia.toFixed(2)+' km/L':r.eficiencia.toFixed(2)+' L/hr'):'','Totalizador':r.totalizador||'','Alerta':r.alerta_totalizador?'SÍ':'','Dif.Totalizador':r.dif_totalizador||'','Observación':r.obs||''}));
+  const rows=data.map(r=>({'Fecha':r.fecha,'Hora':r.hora,'Equipo':r.equipo_detalle?`${r.equipo}: ${r.equipo_detalle}`:r.equipo,'Operador':r.operador,'Cultivos':(r.centros||[r.centro]).join(' / '),'Trabajo':r.trabajo==='Otro (especificar)'?(r.trabajo_detalle||'Otro'):(r.trabajo||''),'Apero':r.apero?(r.apero==='Otro (especificar)'?(r.apero_detalle||'Otro'):(r.apero==='LIBRE'?(r.apero_detalle||''):r.apero)):'','Litros':r.litros,'Tipo Medidor':r.medidor_tipo==='km'?'Kilómetros':'Horas','Medidor Actual':r.medidor_valor,'Trabajado':r.diff_medidor||'','Eficiencia':r.eficiencia?(r.medidor_tipo==='km'?r.eficiencia.toFixed(2)+' km/L':r.eficiencia.toFixed(2)+' L/hr'):'','Totalizador':r.totalizador||'','Alerta':r.alerta_totalizador?'SÍ':'','Dif.Totalizador':r.dif_totalizador||'','Observación':r.obs||''}));
   const ws=XLSX.utils.json_to_sheet(rows);
   const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,'Combustible');
   XLSX.writeFile(wb,`maitenes-combustible-${new Date().toISOString().slice(0,10)}.xlsx`);
@@ -2130,7 +2146,7 @@ let mantTipoActual = null;  // { id, nombre, intervalo, categoria }
 let mantRegistros = {};     // cache: equipo → { tipoId → último registro }
 
 function equiposHr() {
-  return config.equipos.filter(e => tipoEquipo(e) === 'hr' && e !== 'VARIOS (especificar)');
+  return config.equipos.filter(e => tipoEquipo(e) === 'hr' && e !== 'Otro (especificar)');
 }
 
 function initMantencion() {
