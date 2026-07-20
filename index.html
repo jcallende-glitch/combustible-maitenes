@@ -292,6 +292,7 @@ window.obtenerHorasJDLink = async function() {
 
     if (statusHrs === 200 && horas != null) {
       document.getElementById('medidor-valor').value = parseFloat(horas).toFixed(1);
+      origenMedidor = 'jdlink';
       if (jdInfo) jdInfo.innerHTML = `<span style="color:#2D7D46;font-size:12px">✓ Horas desde Operations Center: <strong>${parseFloat(horas).toFixed(1)} hr</strong></span>`;
       validarPaso1();
       toast('✓ Horas actualizadas desde JDLink', true);
@@ -591,6 +592,10 @@ let centrosSeleccionados = [];
 let trabajoSeleccionado = null;
 let aperoSeleccionado = null;
 let aperoObsTexto = '';
+// Origen del valor cargado en "medidor-valor": 'jdlink' si vino de Operations Center,
+// 'manual' si el operador lo escribió a mano. Se resetea cada vez que cambia el equipo
+// o se limpia el formulario, y se guarda junto con el registro para mostrarlo en el historial.
+let origenMedidor = null;
 
 window.addEventListener('DOMContentLoaded', async () => {
   await loadConfig();
@@ -993,6 +998,7 @@ function initRegistro() {
   }
   centrosSeleccionados = CULTIVO_OPERADOR_DEFAULT[currentUser] ? [CULTIVO_OPERADOR_DEFAULT[currentUser]] : [];
   trabajoSeleccionado = null; aperoSeleccionado = null; aperoObsTexto = '';
+  origenMedidor = null;
   renderCentrosSelector();
   renderTrabajoSelector();
   limpiarPreview();
@@ -1303,6 +1309,9 @@ window.onEquipoChange = async function() {
   const eq = document.getElementById('equipo').value;
   if (!eq) return;
   setMedidor(tipoEquipo(eq));
+  // Cambió el equipo: el valor de horómetro que hubiera queda obsoleto, así que
+  // reseteamos el origen (todavía no sabemos si el próximo valor será manual o JDLink)
+  origenMedidor = null;
 
   // Vehículos km no usan trabajo ni apero — limpiar
   if (tipoEquipo(eq) === 'km') {
@@ -1323,6 +1332,14 @@ window.onEquipoChange = async function() {
 
   if (trabajoSeleccionado) renderTrabajoSelector();
   actualizarBotonesJDLink(eq);
+  validarPaso1();
+}
+
+// Se dispara cuando el operador escribe el horómetro/odómetro a mano.
+// Marcamos el origen como 'manual' — si después usa el botón de JDLink, ese
+// handler vuelve a poner 'jdlink' encima.
+window.onMedidorInput = function() {
+  origenMedidor = 'manual';
   validarPaso1();
 }
 
@@ -1434,6 +1451,7 @@ window.toggleCambioEquipo = function() {
     btn.style.color = 'var(--acero)';
     document.getElementById('equipo').value = equipoAsignado;
     setMedidor(tipoEquipo(equipoAsignado));
+    origenMedidor = null;
     cargarUltimoRegistro(equipoAsignado);
     limpiarPreview();
   }
@@ -1524,6 +1542,7 @@ window.registrar = async function() {
       apero: aperoSeleccionado,
       apero_detalle: (aperoSeleccionado === OTRO || aperoSeleccionado === 'LIBRE') ? aperoObsTexto : null,
       litros: lt, medidor_tipo: medidor, medidor_valor: mv,
+      medidor_origen: origenMedidor || 'manual',
       totalizador: tot, diff_medidor: diffMedidor, eficiencia,
       alerta_totalizador: alertaTotalizador, dif_totalizador: difTot,
       alerta_trabajado: alertaTrabajado,
@@ -1545,6 +1564,7 @@ window.registrar = async function() {
     document.getElementById('medidor-valor').value='';
     document.getElementById('totalizador').value='';
     document.getElementById('obs').value='';
+    origenMedidor = null;
     const opOtroWrap = document.getElementById('operador-otro-wrap');
     if (opOtroWrap) opOtroWrap.innerHTML = '';
     centrosSeleccionados=[];
@@ -1759,13 +1779,18 @@ window.renderTabla = function() {
         const trabajoStr = r.trabajo === 'Otro (especificar)' ? (r.trabajo_detalle||'Otro') : (r.trabajo||'—');
         const aperoStr = r.apero ? (r.apero === 'Otro (especificar)' ? (r.apero_detalle||'Otro') : (r.apero === 'LIBRE' ? (r.apero_detalle||'') : r.apero)) : '';
 
-        // Trabajado: ⚠️ propio si el medidor no avanzó (igual o menor al anterior)
+        // Trabajado: ⚠️ propio si el medidor no avanzó (igual o menor al anterior).
+        // Además, un pequeño ícono indica si la lectura del medidor vino de JDLink (📡)
+        // o fue ingresada a mano (✏️) — solo si el dato está disponible (registros nuevos).
         let trabajadoHtml = '<span style="color:#9CA3AF">—</span>';
         if (r.diff_medidor != null) {
           const valStr = `${r.diff_medidor.toFixed(tipo==='km'?0:1)} ${tipo}`;
+          const origenIcono = r.medidor_origen === 'jdlink'
+            ? ` <span title="Horas obtenidas desde John Deere Operations Center" style="cursor:help">📡</span>`
+            : (r.medidor_origen === 'manual' ? ` <span title="Horómetro/odómetro ingresado manualmente" style="cursor:help">✏️</span>` : '');
           trabajadoHtml = r.alerta_trabajado
-            ? `<span style="color:var(--rojo);font-weight:600">⚠️ ${valStr}</span>`
-            : `<span class="badge badge-${tipo}">${valStr}</span>`;
+            ? `<span style="color:var(--rojo);font-weight:600">⚠️ ${valStr}</span>${origenIcono}`
+            : `<span class="badge badge-${tipo}">${valStr}</span>${origenIcono}`;
         }
 
         // Cualquier advertencia (en cualquier columna) resalta la fila
@@ -1866,7 +1891,7 @@ window.exportarExcel = function() {
   let data=[...registros];
   if(!isAdmin && !isSupervisor) data=data.filter(r=>r.operador===currentUser);
   if(!data.length){toast('No hay registros',false);return;}
-  const rows=data.map(r=>({'Fecha':r.fecha,'Hora':r.hora,'Equipo':r.equipo==='VARIOS (especificar)'?(r.equipo_detalle?`VARIOS: ${r.equipo_detalle}`:'VARIOS'):r.equipo,'Operador':r.operador,'Cultivos':(r.centros||[r.centro]).join(' / '),'Trabajo':r.trabajo==='Otro (especificar)'?(r.trabajo_detalle||'Otro'):(r.trabajo||''),'Apero':r.apero?(r.apero==='Otro (especificar)'?(r.apero_detalle||'Otro'):(r.apero==='LIBRE'?(r.apero_detalle||''):r.apero)):'','Litros':r.litros,'Tipo Medidor':r.medidor_tipo==='km'?'Kilómetros':'Horas','Medidor Actual':r.medidor_valor,'Trabajado':r.diff_medidor||'','Eficiencia':r.eficiencia?(r.medidor_tipo==='km'?r.eficiencia.toFixed(2)+' km/L':r.eficiencia.toFixed(2)+' L/hr'):'','Totalizador':r.totalizador||'','Alerta':r.alerta_totalizador?'SÍ':'','Dif.Totalizador':r.dif_totalizador||'','Observación':r.obs||''}));
+  const rows=data.map(r=>({'Fecha':r.fecha,'Hora':r.hora,'Equipo':r.equipo==='VARIOS (especificar)'?(r.equipo_detalle?`VARIOS: ${r.equipo_detalle}`:'VARIOS'):r.equipo,'Operador':r.operador,'Cultivos':(r.centros||[r.centro]).join(' / '),'Trabajo':r.trabajo==='Otro (especificar)'?(r.trabajo_detalle||'Otro'):(r.trabajo||''),'Apero':r.apero?(r.apero==='Otro (especificar)'?(r.apero_detalle||'Otro'):(r.apero==='LIBRE'?(r.apero_detalle||''):r.apero)):'','Litros':r.litros,'Tipo Medidor':r.medidor_tipo==='km'?'Kilómetros':'Horas','Medidor Actual':r.medidor_valor,'Origen Medidor':r.medidor_origen==='jdlink'?'JDLink':(r.medidor_origen==='manual'?'Manual':''),'Trabajado':r.diff_medidor||'','Eficiencia':r.eficiencia?(r.medidor_tipo==='km'?r.eficiencia.toFixed(2)+' km/L':r.eficiencia.toFixed(2)+' L/hr'):'','Totalizador':r.totalizador||'','Alerta':r.alerta_totalizador?'SÍ':'','Dif.Totalizador':r.dif_totalizador||'','Observación':r.obs||''}));
   const ws=XLSX.utils.json_to_sheet(rows);
   const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,'Combustible');
   XLSX.writeFile(wb,`maitenes-combustible-${new Date().toISOString().slice(0,10)}.xlsx`);
@@ -2657,7 +2682,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
             <button class="medidor-btn active" id="btn-hr" onclick="setMedidor('hr')">HORAS</button>
           </div>
           <div style="display:flex;gap:8px;align-items:center;margin-top:8px;">
-            <input type="number" id="medidor-valor" min="0" step="0.1" placeholder="0" style="flex:1" oninput="validarPaso1()">
+            <input type="number" id="medidor-valor" min="0" step="0.1" placeholder="0" style="flex:1" oninput="onMedidorInput()">
             <span style="font-size:12px;color:var(--acero)" id="medidor-unidad">hr</span>
           </div>
           <div class="hint" id="medidor-label-hint">Horómetro actual (hr)</div>
