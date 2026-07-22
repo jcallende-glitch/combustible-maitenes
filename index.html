@@ -44,35 +44,7 @@ const MARGEN_TOTALIZADOR = 5;
 const WA_PHONE = '56983419231';
 const WA_KEY = '8974364';
 const PIN_INICIAL = '0000';
-const TUYA_FUNCTION_URL = 'https://us-central1-combustible-los-maitenes.cloudfunctions.net/controlBomba'; // sin uso: control de bomba migrado a Shelly Cloud
-
-// ─── SHELLY CLOUD (control de la bomba, reemplaza a Tuya) ──
-const SHELLY_SERVER = 'https://shelly-275-eu.shelly.cloud';
-const SHELLY_AUTH_KEY = 'NDVmMTk3dWlk0167718175DB38F81DA5C7CA339041319E247739E9DF934C52B5F8F05EE32F9503C876005A3CACE9';
-const SHELLY_DEVICE_ID = 'd885acf0b964';
-
-// Enciende (true) o apaga (false) el relé Shelly "Petróleo" a través de Shelly Cloud.
-// Devuelve true si la llamada fue exitosa, false si falló.
-async function controlarBombaShelly(encender) {
-  try {
-    const params = new URLSearchParams({
-      id: SHELLY_DEVICE_ID,
-      channel: '0',
-      turn: encender ? 'on' : 'off',
-      auth_key: SHELLY_AUTH_KEY
-    });
-    const resp = await fetch(`${SHELLY_SERVER}/device/relay/control`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: params.toString()
-    });
-    const data = await resp.json();
-    return data && data.isok === true;
-  } catch (e) {
-    console.warn('Error controlando Shelly:', e);
-    return false;
-  }
-}
+const TUYA_FUNCTION_URL = 'https://us-central1-combustible-los-maitenes.cloudfunctions.net/controlBomba';
 
 // ─── JOHN DEERE JDLINK ─────────────────────────────────────
 const JD_CLIENT_ID = '0oavbnyqn09EHHLnh5d7';
@@ -86,8 +58,32 @@ const JD_SCOPES = 'ag1 ag2 ag3 eq1 eq2 org1 org2 offline_access openid email pro
 const EQUIPOS_JDLINK = ['JD 6170J', 'JD 6910', 'JD 5090'];
 
 let jdAccessToken = null;
+let jdRefreshToken = null;
+let jdExpireAt = 0;
 let jdOrganizationId = null;
 let jdMachinesLink = null;
+
+// El token de JDLink se guarda en Firestore (no en localStorage) para que
+// cualquier dispositivo (celular, PC, etc.) comparta la misma conexión una vez
+// que el admin se loguea una sola vez desde cualquiera de ellos.
+async function cargarConfigJD() {
+  try {
+    const snap = await getDoc(doc(db, 'config', 'jdlink'));
+    if (snap.exists()) {
+      const d = snap.data();
+      jdAccessToken = d.token || null;
+      jdRefreshToken = d.refreshToken || null;
+      jdExpireAt = d.expireAt || 0;
+      jdOrganizationId = d.orgId || null;
+      jdMachinesLink = d.machinesLink || null;
+    }
+  } catch(e) { console.warn('Error cargando config JD:', e); }
+}
+
+async function guardarConfigJD(campos) {
+  try { await setDoc(doc(db, 'config', 'jdlink'), campos, { merge: true }); }
+  catch(e) { console.warn('Error guardando config JD:', e); }
+}
 
 async function generatePKCE() {
   // Se generan 64 bytes aleatorios (en vez de 32) para garantizar que, incluso después
@@ -127,10 +123,9 @@ async function manejarCallbackJD() {
     const data = await resp.json();
     if (data.access_token) {
       jdAccessToken = data.access_token;
-      localStorage.setItem('jd_token', data.access_token);
-      if (data.refresh_token) localStorage.setItem('jd_refresh_token', data.refresh_token);
-      const expireAt = Date.now() + (data.expires_in || 3600) * 1000;
-      localStorage.setItem('jd_expire_at', expireAt.toString());
+      jdRefreshToken = data.refresh_token || jdRefreshToken;
+      jdExpireAt = Date.now() + (data.expires_in || 3600) * 1000;
+      await guardarConfigJD({ token: jdAccessToken, refreshToken: jdRefreshToken, expireAt: jdExpireAt });
       window.history.replaceState({}, document.title, window.location.pathname);
       await cargarOrganizacionJD();
       toast('✓ Conectado a John Deere Operations Center', true);
@@ -142,21 +137,19 @@ async function manejarCallbackJD() {
 }
 
 async function renovarTokenJD() {
-  const refreshToken = localStorage.getItem('jd_refresh_token');
-  if (!refreshToken) return false;
+  if (!jdRefreshToken) return false;
   try {
     const resp = await fetch('/.netlify/functions/jd-token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: refreshToken })
+      body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: jdRefreshToken })
     });
     const data = await resp.json();
     if (data.access_token) {
       jdAccessToken = data.access_token;
-      localStorage.setItem('jd_token', data.access_token);
-      if (data.refresh_token) localStorage.setItem('jd_refresh_token', data.refresh_token);
-      const expireAt = Date.now() + (data.expires_in || 3600) * 1000;
-      localStorage.setItem('jd_expire_at', expireAt.toString());
+      jdRefreshToken = data.refresh_token || jdRefreshToken;
+      jdExpireAt = Date.now() + (data.expires_in || 3600) * 1000;
+      await guardarConfigJD({ token: jdAccessToken, refreshToken: jdRefreshToken, expireAt: jdExpireAt });
       return true;
     }
   } catch(e) { console.warn('Error renovando token JD:', e); }
@@ -164,15 +157,13 @@ async function renovarTokenJD() {
 }
 
 async function getTokenValido() {
-  const expireAt = parseInt(localStorage.getItem('jd_expire_at') || '0');
-  const token = localStorage.getItem('jd_token');
-  if (!token) return null;
+  if (!jdAccessToken) return null;
   // Si faltan menos de 5 minutos para expirar, renovar
-  if (Date.now() > expireAt - 5 * 60 * 1000) {
+  if (Date.now() > jdExpireAt - 5 * 60 * 1000) {
     const ok = await renovarTokenJD();
     if (!ok) return null;
   }
-  return jdAccessToken || token;
+  return jdAccessToken;
 }
 
 // Llama SIEMPRE a través del proxy jd-api.js (Netlify Function), nunca directo
@@ -206,7 +197,6 @@ async function cargarOrganizacionJD() {
   const orgs = data.values || [];
   if (orgs.length > 0) {
     jdOrganizationId = orgs[0].id;
-    localStorage.setItem('jd_org_id', jdOrganizationId);
     console.log('JD organización completa (revisar "links" para el endpoint correcto de equipment):', JSON.stringify(orgs[0], null, 2));
     // La API real usa un host y ruta distintos a los que asumíamos (api.deere.com/isg/equipment,
     // no partnerapi.deere.com/platform/.../equipment) — por eso seguimos el link "machines" tal
@@ -214,11 +204,11 @@ async function cargarOrganizacionJD() {
     const machinesLink = (orgs[0].links || []).find(l => l.rel === 'machines');
     if (machinesLink) {
       jdMachinesLink = machinesLink.uri;
-      localStorage.setItem('jd_machines_link', jdMachinesLink);
       console.log('JD link de machines encontrado:', jdMachinesLink);
     } else {
       console.warn('JD: no se encontró un link con rel "machines" en la organización');
     }
+    await guardarConfigJD({ orgId: jdOrganizationId, machinesLink: jdMachinesLink });
   }
   // Diagnóstico: si /fleet trae un link "connections" pendiente, la app todavía
   // no tiene el permiso de esa organización aceptado del todo (causa típica de 403).
@@ -240,9 +230,7 @@ window.obtenerHorasJDLink = async function() {
     actualizarBotonesJDLink(eq);
     return;
   }
-  if (!jdOrganizationId) jdOrganizationId = localStorage.getItem('jd_org_id');
   if (!jdOrganizationId) await cargarOrganizacionJD();
-  if (!jdMachinesLink) jdMachinesLink = localStorage.getItem('jd_machines_link');
   if (!jdMachinesLink) await cargarOrganizacionJD();
 
   const btn = document.getElementById('btn-obtener-horas');
@@ -262,10 +250,17 @@ window.obtenerHorasJDLink = async function() {
 
     // Buscar máquina por nombre aproximado (comparando solo dígitos, ej "6170" en "JD 6170J")
     const eqNum = eq.replace(/[^0-9]/g,'');
-    const machine = equipos.find(m => {
+    const candidatos = equipos.filter(m => {
       const nombre = (m.name || m.equipmentName || m.displayName || '').replace(/[^0-9]/g,'');
       return nombre === eqNum;
     });
+    // Si hay más de un equipo con el mismo nombre/dígitos en Operations Center (ej. un
+    // registro duplicado o archivado), preferimos siempre el que tenga organizationRole.principalId
+    // disponible — quedarnos con el primero "a ciegas" fue lo que causó el 404 el 22/07/2026.
+    if (candidatos.length > 1) {
+      console.warn(`JD: se encontraron ${candidatos.length} equipos que coinciden con "${eq}" en Operations Center. Candidatos:`, candidatos);
+    }
+    const machine = candidatos.find(m => m.organizationRole?.principalId) || candidatos[0];
 
     if (!machine) {
       if (jdInfo) jdInfo.innerHTML = `<span style="color:#F5A623;font-size:12px">⚠️ ${eq} no encontrado en Operations Center. Ingresa las horas manualmente.</span>`;
@@ -288,10 +283,11 @@ window.obtenerHorasJDLink = async function() {
     if (linkHoras) {
       ({ status: statusHrs, data: dataHrs } = await callJDApi(linkHoras.uri));
     } else {
-      // La API confirmó explícitamente "Invalid id" cuando probamos con el ERID,
-      // así que este endpoint espera el id numérico (el mismo que usa map.deere.com
-      // en su URL: map.deere.com/machines/{id}/...).
-      const principalId = machine.id;
+      // Soporte de John Deere confirmó: el endpoint requiere el "Principal Equipment Id"
+      // (ej. 2778685), que es DISTINTO tanto del "id" (7191534, sistema isg/equipment)
+      // como del ERID. Este principalId suele venir embebido en organizationRole.
+      const principalId = machine.organizationRole?.principalId || machine.principalId || machine.id;
+      console.log('JD principalId elegido:', principalId, '(organizationRole.principalId:', machine.organizationRole?.principalId, ')');
       const endpointEngineHours = `/machines/${principalId}/engineHours`;
       console.log('JD intentando endpoint oficial de horas con ID:', principalId, '->', endpointEngineHours);
       const resultado = await callJDApi(endpointEngineHours);
@@ -299,10 +295,11 @@ window.obtenerHorasJDLink = async function() {
       console.log('JD engineHours status:', statusHrs, 'data:', dataHrs);
     }
 
-    const horas = dataHrs?.hours ?? dataHrs?.machineHours ?? dataHrs?.engineHours ?? dataHrs?.values?.[0]?.hours ?? dataHrs?.values?.[0]?.engineHours ?? null;
+    const horas = dataHrs?.values?.[0]?.reading?.valueAsDouble ?? dataHrs?.hours ?? dataHrs?.machineHours ?? dataHrs?.engineHours ?? dataHrs?.values?.[0]?.hours ?? dataHrs?.values?.[0]?.engineHours ?? null;
 
     if (statusHrs === 200 && horas != null) {
       document.getElementById('medidor-valor').value = parseFloat(horas).toFixed(1);
+      origenMedidor = 'jdlink';
       if (jdInfo) jdInfo.innerHTML = `<span style="color:#2D7D46;font-size:12px">✓ Horas desde Operations Center: <strong>${parseFloat(horas).toFixed(1)} hr</strong></span>`;
       validarPaso1();
       toast('✓ Horas actualizadas desde JDLink', true);
@@ -390,12 +387,10 @@ function actualizarToggleESP32() {
   btnAuto.style.color = modoESP32 ? 'var(--blanco)' : 'var(--acero)';
 }
 
-window.desconectarJD = function() {
-  localStorage.removeItem('jd_token');
-  localStorage.removeItem('jd_refresh_token');
-  localStorage.removeItem('jd_expire_at');
-  localStorage.removeItem('jd_org_id');
-  jdAccessToken = null; jdOrganizationId = null;
+window.desconectarJD = async function() {
+  jdAccessToken = null; jdRefreshToken = null; jdExpireAt = 0;
+  jdOrganizationId = null; jdMachinesLink = null;
+  await guardarConfigJD({ token: null, refreshToken: null, expireAt: 0, orgId: null, machinesLink: null });
   actualizarPanelJDConfig();
   toast('John Deere desconectado', true);
 }
@@ -405,11 +400,9 @@ function actualizarPanelJDConfig() {
   const btnConectar = document.getElementById('btn-jdlink-config');
   const btnDesconectar = document.getElementById('btn-jdlink-desconectar');
   if (!estado) return;
-  const token = localStorage.getItem('jd_token');
-  const expireAt = parseInt(localStorage.getItem('jd_expire_at') || '0');
-  const conectado = !!token;
+  const conectado = !!jdAccessToken;
   if (conectado) {
-    const expDate = new Date(expireAt).toLocaleString('es-CL');
+    const expDate = new Date(jdExpireAt).toLocaleString('es-CL');
     estado.innerHTML = `<span style="color:#2D7D46">✓ Conectado</span> · Token válido hasta ~${expDate}`;
     if (btnConectar) btnConectar.style.display = 'none';
     if (btnDesconectar) btnDesconectar.style.display = 'flex';
@@ -430,8 +423,7 @@ function actualizarBotonesJDLink(eq) {
   if (!esJD || tipoEquipo(eq) === 'km') {
     btnLogin.style.display = 'none'; btnHoras.style.display = 'none'; return;
   }
-  const token = jdAccessToken || localStorage.getItem('jd_token');
-  if (token) {
+  if (jdAccessToken) {
     btnLogin.style.display = 'none'; btnHoras.style.display = 'flex';
   } else {
     btnLogin.style.display = 'flex'; btnHoras.style.display = 'none';
@@ -588,7 +580,7 @@ const APEROS_GENERAL_DETALLE = {
 };
 
 const DEFAULT_CONFIG = {
-  equipos: ['JD 8330','JD 7205J','JD 6170J','JD 6910','JD 3350 T','JD 3350','JD 2850','JD 5600','JD 5090','JD 5076','Kubota 2320','Clinton','Bobcat','Miniexcavadora LongYan','Excavadora','Toyota Hilux','Ford Ranger','Toyota JCAZ','Otro (especificar)'],
+  equipos: ['JD 8330','JD 7205J','JD 6170J','JD 6910','JD 3350 T','JD 3350','JD 2850','JD 5600','JD 5090','JD 5076','Kubota 2320','Clinton','Bobcat','Miniexcavadora LongYan','Excavadora','Toyota Hilux','Ford Ranger','Toyota JCAZ','VARIOS (especificar)'],
   operadores: ['José Jarpa','Víctor Rodríguez','Cristian Cádiz','Rafael Riquelme','Patricio Cádiz','Edgardo Ruíz','Matías Jarpa','Israel','Luis Alberto','Eduardo Faundez','JC Allende','Camila Faundez','Juan Uribe','JCAZ','Otros (especificar)'],
   centros: ['Trigo','Maíz','Semillero Canola','Arveja','Achicoria','Remolacha','Avellanos','Mantención','Otros (especificar)']
 };
@@ -603,23 +595,21 @@ let config = { ...DEFAULT_CONFIG };
 let saldo = 0;
 let unsubReg = null;
 let ultimoRegistroEquipo = null;
-let ultimoTotalizadorGlobal = null; // último totalizador SAMOA registrado, sea cual sea el equipo (el medidor es único para todo el estanque)
 let centrosSeleccionados = [];
 let trabajoSeleccionado = null;
 let aperoSeleccionado = null;
 let aperoObsTexto = '';
+// Origen del valor cargado en "medidor-valor": 'jdlink' si vino de Operations Center,
+// 'manual' si el operador lo escribió a mano. Se resetea cada vez que cambia el equipo
+// o se limpia el formulario, y se guarda junto con el registro para mostrarlo en el historial.
+let origenMedidor = null;
 
 window.addEventListener('DOMContentLoaded', async () => {
   await loadConfig();
   await cargarModoESP32();
   suscribirSaldo();
-  // Restaurar token JD guardado (persiste entre sesiones)
-  const savedToken = localStorage.getItem('jd_token');
-  if (savedToken) jdAccessToken = savedToken;
-  const savedOrg = localStorage.getItem('jd_org_id');
-  if (savedOrg) jdOrganizationId = savedOrg;
-  const savedMachinesLink = localStorage.getItem('jd_machines_link');
-  if (savedMachinesLink) jdMachinesLink = savedMachinesLink;
+  // Cargar la conexión de John Deere desde Firestore (compartida entre todos los dispositivos)
+  await cargarConfigJD();
   // Manejar callback OAuth de John Deere
   if (window.location.search.includes('code=')) {
     await manejarCallbackJD();
@@ -644,12 +634,6 @@ async function loadConfig() {
         const idxOtros = config.operadores.indexOf('Otros (especificar)');
         if (idxOtros >= 0) config.operadores.splice(idxOtros, 0, 'JCAZ');
         else config.operadores.push('JCAZ');
-        await setDoc(doc(db, 'config', 'datos'), config);
-      }
-      // Migración automática: renombrar el antiguo "VARIOS (especificar)" a "Otro (especificar)"
-      const idxVarios = config.equipos.indexOf('VARIOS (especificar)');
-      if (idxVarios >= 0) {
-        config.equipos[idxVarios] = 'Otro (especificar)';
         await setDoc(doc(db, 'config', 'datos'), config);
       }
     } else {
@@ -685,55 +669,6 @@ function suscribirSaldo() {
     renderSaldo();
   });
 }
-
-// Genera el SVG del velocímetro (gauge) del saldo del estanque.
-// Usa los mismos umbrales de color que renderSaldo(): rojo bajo ALERTA_LITROS,
-// ámbar entre ALERTA_LITROS y 5000, verde sobre 5000.
-function generarVelocimetroSVG(valor, capacidad) {
-  const val = Math.min(Math.max(valor, 0), capacidad);
-  const cx = 150, cy = 150, r = 120;
-
-  function polar(cx, cy, r, angleDeg) {
-    const a = angleDeg * Math.PI / 180;
-    return { x: cx + r * Math.cos(a), y: cy - r * Math.sin(a) };
-  }
-  function arcPath(cx, cy, r, startAngle, endAngle) {
-    const s = polar(cx, cy, r, startAngle);
-    const e = polar(cx, cy, r, endAngle);
-    const largeArc = (startAngle - endAngle) > 180 ? 1 : 0;
-    return `M ${s.x} ${s.y} A ${r} ${r} 0 ${largeArc} 1 ${e.x} ${e.y}`;
-  }
-
-  const zonas = [
-    { desde: 0, hasta: ALERTA_LITROS, color: '#C0392B' },
-    { desde: ALERTA_LITROS, hasta: 5000, color: '#F5A623' },
-    { desde: 5000, hasta: capacidad, color: '#2D7D46' }
-  ];
-  let zonasSVG = '';
-  zonas.forEach(z => {
-    const a1 = 180 - (z.desde / capacidad) * 180;
-    const a2 = 180 - (z.hasta / capacidad) * 180;
-    zonasSVG += `<path d="${arcPath(cx, cy, r, a1, a2)}" stroke="${z.color}" stroke-width="22" fill="none"/>`;
-  });
-
-  let ticksSVG = '';
-  const pasoTick = capacidad / 5;
-  for (let v = 0; v <= capacidad; v += pasoTick) {
-    const a = 180 - (v / capacidad) * 180;
-    const p1 = polar(cx, cy, r - 14, a);
-    const p2 = polar(cx, cy, r + 14, a);
-    ticksSVG += `<line x1="${p1.x}" y1="${p1.y}" x2="${p2.x}" y2="${p2.y}" stroke="#6B7280" stroke-width="2"/>`;
-    const lp = polar(cx, cy, r + 26, a);
-    ticksSVG += `<text x="${lp.x}" y="${lp.y}" text-anchor="middle" dominant-baseline="middle" font-size="11" fill="#6B7280" font-family="var(--sans)">${Math.round(v/1000)}k</text>`;
-  }
-
-  const needleAngle = 180 - (val / capacidad) * 180;
-  const tip = polar(cx, cy, r - 18, needleAngle);
-  const needleSVG = `<line x1="${cx}" y1="${cy}" x2="${tip.x}" y2="${tip.y}" stroke="#FFFFFF" stroke-width="4" stroke-linecap="round"/><circle cx="${cx}" cy="${cy}" r="8" fill="#FFFFFF"/>`;
-
-  return `<svg viewBox="0 0 300 180" style="width:100%;max-width:260px;display:block;margin:0 auto" role="img"><title>Nivel de estanque: ${Math.round(val).toLocaleString('es-CL')} de ${capacidad.toLocaleString('es-CL')} litros</title>${zonasSVG}${ticksSVG}${needleSVG}</svg>`;
-}
-
 function renderSaldo() {
   const pct = Math.min(100, Math.max(0, (saldo / CAPACIDAD) * 100));
   const alerta = saldo <= ALERTA_LITROS;
@@ -744,7 +679,7 @@ function renderSaldo() {
         <div><div class="estanque-label">SALDO ESTANQUE</div><div class="estanque-valor" style="color:${color}">${Math.round(saldo).toLocaleString('es-CL')} <span>L</span></div></div>
         <div class="estanque-pct" style="color:${color}">${pct.toFixed(0)}%</div>
       </div>
-      ${generarVelocimetroSVG(saldo, CAPACIDAD)}
+      <div class="barra-fondo"><div class="barra-relleno" style="width:${pct}%;background:${color}"></div></div>
       ${alerta?`<div class="alerta-msg">⚠️ Stock bajo — menos de ${ALERTA_LITROS.toLocaleString('es-CL')} L</div>`:''}
       <div class="estanque-cap">Capacidad: ${CAPACIDAD.toLocaleString('es-CL')} L</div>
     </div>`;
@@ -817,7 +752,7 @@ window.guardarPin = async function() {
   cerrarCambioPin(); toast('✓ PIN actualizado', true);
 }
 
-// ─── CONTROL BOMBA (ESP32 vía Firestore — reemplaza a Tuya/Tongou) ────────
+// ─── CONTROL BOMBA (TONGOU/TUYA) ───────────────────────────
 function dentroDeHorarioPermitido() {
   const ahora = new Date();
   const dia = ahora.getDay(); // 0=Domingo, 1=Lunes... 6=Sábado
@@ -964,13 +899,11 @@ window.confirmarPaso1YEncender = async function() {
   if (!horarioOk) { toast('⛔ Fuera de horario autorizado (Lun-Vie 8:00-18:00)', false); return; }
 
   const eq = document.getElementById('equipo').value;
-  const esOtroEquipo = eq === 'Otro (especificar)';
-  const mvRaw = document.getElementById('medidor-valor').value;
-  const mv = mvRaw === '' ? null : parseFloat(mvRaw);
-  if (!eq || centrosSeleccionados.length === 0 || (!esOtroEquipo && (mv === null || isNaN(mv) || mv < 0))) {
-    toast(esOtroEquipo ? 'Completá equipo y cultivo antes de encender' : 'Completá equipo, cultivo y horómetro antes de encender', false); return;
+  const mv = parseFloat(document.getElementById('medidor-valor').value);
+  if (!eq || centrosSeleccionados.length === 0 || isNaN(mv) || mv < 0) {
+    toast('Completá equipo, cultivo y horómetro antes de encender', false); return;
   }
-  if (!esOtroEquipo && ultimoRegistroEquipo?.medidor_valor != null && mv < ultimoRegistroEquipo.medidor_valor) {
+  if (ultimoRegistroEquipo?.medidor_valor != null && mv < ultimoRegistroEquipo.medidor_valor) {
     toast(`⛔ El horómetro/odómetro (${mv}) no puede ser menor al último registrado (${ultimoRegistroEquipo.medidor_valor.toFixed(1)})`, false);
     return;
   }
@@ -978,29 +911,32 @@ window.confirmarPaso1YEncender = async function() {
   const btn = document.getElementById('btn-bomba-on');
   btn.disabled = true; btn.textContent = 'Encendiendo...';
   try {
-    // Encender el relé Shelly "Petróleo" directo vía Shelly Cloud (reemplaza a Tuya)
-    const encendioOk = await controlarBombaShelly(true);
-    if (!encendioOk) {
-      toast('⚠️ No se pudo confirmar el encendido de la bomba en Shelly. Verificar manualmente.', false);
-    } else {
+    const resp = await fetch(`${TUYA_FUNCTION_URL}?accion=on`);
+    const data = await resp.json();
+    if (data.success) {
       toast('✓ Bomba encendida', true);
+      try { await setDoc(doc(db, 'config', 'sistema'), { bombaActiva: true }, { merge: true }); } catch(e) {}
+      document.getElementById('panel-paso1').style.display = 'none';
+      document.getElementById('panel-cargando').style.display = 'block';
+      document.getElementById('panel-paso2').style.display = 'block';
+      document.getElementById('equipo-cargando').textContent = eq;
+      iniciarLecturaESP32();
+      iniciarEstimacionESP32();
+    } else {
+      toast('Error: ' + (data.error || 'desconocido'), false);
     }
-    try { await setDoc(doc(db, 'config', 'sistema'), { bombaActiva: true }, { merge: true }); } catch(e) {}
-    document.getElementById('panel-paso1').style.display = 'none';
-    document.getElementById('panel-cargando').style.display = 'block';
-    document.getElementById('panel-paso2').style.display = 'block';
-    document.getElementById('equipo-cargando').textContent = eq;
-    iniciarLecturaESP32();
-    iniciarEstimacionESP32();
   } catch(e) {
-    toast('Error al encender la bomba: ' + e.message, false);
+    toast('Error de conexión: ' + e.message, false);
   }
   btn.disabled = false; btn.textContent = '🔌 Confirmar datos y encender bomba';
 }
 
 async function apagarBomba() {
-  // Apagar el relé Shelly "Petróleo" directo vía Shelly Cloud (reemplaza a Tuya)
-  return await controlarBombaShelly(false);
+  try {
+    const resp = await fetch(`${TUYA_FUNCTION_URL}?accion=off`);
+    const data = await resp.json();
+    return data.success;
+  } catch(e) { return false; }
 }
 
 // ─── CISTERNA ──────────────────────────────────────────────
@@ -1069,6 +1005,7 @@ function initRegistro() {
   }
   centrosSeleccionados = CULTIVO_OPERADOR_DEFAULT[currentUser] ? [CULTIVO_OPERADOR_DEFAULT[currentUser]] : [];
   trabajoSeleccionado = null; aperoSeleccionado = null; aperoObsTexto = '';
+  origenMedidor = null;
   renderCentrosSelector();
   renderTrabajoSelector();
   limpiarPreview();
@@ -1112,9 +1049,9 @@ function renderTrabajoSelector() {
   const container = document.getElementById('trabajo-selector-wrap');
   if (!container) return;
 
-  // Vehículos km y equipo "Otro (especificar)" no usan tipo de trabajo ni apero
+  // Vehículos km no usan tipo de trabajo ni apero
   const eq = document.getElementById('equipo').value;
-  if (tipoEquipo(eq) === 'km' || eq === 'Otro (especificar)') { container.innerHTML = ''; return; }
+  if (tipoEquipo(eq) === 'km') { container.innerHTML = ''; return; }
 
   if (centrosSeleccionados.length === 0) { container.innerHTML = ''; return; }
 
@@ -1291,24 +1228,18 @@ function renderAperoOtro() {
 window.validarPaso1 = function() {
   const eq = document.getElementById('equipo').value;
   const mv = document.getElementById('medidor-valor').value;
-  const esOtroEquipo = eq === 'Otro (especificar)';
+  let ok = eq && centrosSeleccionados.length > 0 && mv !== '' && parseFloat(mv) >= 0;
 
-  // Para "Otro (especificar)" el horómetro/odómetro NO es obligatorio
-  let ok = eq && centrosSeleccionados.length > 0;
-  if (!esOtroEquipo) {
-    ok = ok && mv !== '' && parseFloat(mv) >= 0;
+  // Si eligió VARIOS, exigir texto descriptivo
+  if (ok && eq === 'VARIOS (especificar)') {
+    const variosInput = document.getElementById('equipo-varios-input');
+    ok = ok && !!variosInput && variosInput.value.trim().length > 0;
   }
 
-  // Si eligió "Otro (especificar)" como equipo, exigir texto descriptivo
-  if (ok && esOtroEquipo) {
-    const otroInput = document.getElementById('equipo-varios-input');
-    ok = ok && !!otroInput && otroInput.value.trim().length > 0;
-  }
-
-  // Vehículos km (camionetas) y equipo "Otro (especificar)" no requieren trabajo ni apero
+  // Vehículos km (camionetas) no requieren trabajo ni apero
   const esKm = tipoEquipo(eq) === 'km';
 
-  if (!esKm && !esOtroEquipo) {
+  if (!esKm) {
     // Validar trabajo seleccionado
     if (ok) {
       ok = !!trabajoSeleccionado;
@@ -1342,8 +1273,7 @@ window.validarPaso1 = function() {
   const btn = document.getElementById('btn-bomba-on');
   if (!btn) return;
   // Bloqueo duro: el medidor no puede ser menor al último registro de este equipo
-  // (no aplica a "Otro (especificar)", porque cada carga puede ser un equipo físico distinto)
-  if (ok && !esOtroEquipo && ultimoRegistroEquipo?.medidor_valor != null && mv !== '' && parseFloat(mv) < ultimoRegistroEquipo.medidor_valor) {
+  if (ok && ultimoRegistroEquipo?.medidor_valor != null && mv !== '' && parseFloat(mv) < ultimoRegistroEquipo.medidor_valor) {
     ok = false;
   }
   const horarioOk = dentroDeHorarioPermitido() || excepcionHorarioActiva || isAdmin;
@@ -1386,18 +1316,21 @@ window.onEquipoChange = async function() {
   const eq = document.getElementById('equipo').value;
   if (!eq) return;
   setMedidor(tipoEquipo(eq));
+  // Cambió el equipo: el valor de horómetro que hubiera queda obsoleto, así que
+  // reseteamos el origen (todavía no sabemos si el próximo valor será manual o JDLink)
+  origenMedidor = null;
 
-  // Vehículos km y equipo "Otro (especificar)" no usan trabajo ni apero — limpiar
-  if (tipoEquipo(eq) === 'km' || eq === 'Otro (especificar)') {
+  // Vehículos km no usan trabajo ni apero — limpiar
+  if (tipoEquipo(eq) === 'km') {
     trabajoSeleccionado = null; aperoSeleccionado = null; aperoObsTexto = '';
   }
 
   await cargarUltimoRegistro(eq);
 
-  // Mostrar campo texto si eligió "Otro (especificar)"
+  // Mostrar campo texto si eligió VARIOS
   const variosWrap = document.getElementById('equipo-varios-wrap');
   if (variosWrap) {
-    if (eq === 'Otro (especificar)') {
+    if (eq === 'VARIOS (especificar)') {
       variosWrap.innerHTML = `<div class="field" style="margin-top:8px"><input type="text" id="equipo-varios-input" placeholder="Especificar equipo (ej: Camión, Tractor externo...)" oninput="validarPaso1()"></div>`;
     } else {
       variosWrap.innerHTML = '';
@@ -1406,6 +1339,14 @@ window.onEquipoChange = async function() {
 
   if (trabajoSeleccionado) renderTrabajoSelector();
   actualizarBotonesJDLink(eq);
+  validarPaso1();
+}
+
+// Se dispara cuando el operador escribe el horómetro/odómetro a mano.
+// Marcamos el origen como 'manual' — si después usa el botón de JDLink, ese
+// handler vuelve a poner 'jdlink' encima.
+window.onMedidorInput = function() {
+  origenMedidor = 'manual';
   validarPaso1();
 }
 
@@ -1426,24 +1367,13 @@ async function cargarUltimoRegistro(equipo) {
           <div class="anterior-row"><span>Operador:</span><strong>${r.operador}</strong></div>
           <div class="anterior-row"><span>Litros:</span><strong>${(r.litros||0).toFixed(1)} L</strong></div>
           <div class="anterior-row"><span>${tipo==='km'?'Odómetro':'Horómetro'} anterior:</span><strong>${(r.medidor_valor||0).toFixed(tipo==='km'?0:1)} ${tipo}</strong></div>
+          <div class="anterior-row"><span>Totalizador anterior:</span><strong>${(r.totalizador||0).toLocaleString('es-CL')} L</strong></div>
           <div class="anterior-row"><span>Cultivos:</span><strong>${cultivos}</strong></div>
         </div>`;
     } else {
       document.getElementById('info-anterior').innerHTML = '<span style="color:#9CA3AF;font-size:12px">Sin registros anteriores.</span>';
     }
   } catch(e) { document.getElementById('info-anterior').innerHTML = '<span style="color:#9CA3AF;font-size:12px">Error al buscar.</span>'; }
-
-  // El totalizador SAMOA es un único medidor físico para todo el estanque, no por equipo.
-  // Por eso la validación de descuadre debe compararse contra la ÚLTIMA carga registrada
-  // en general (sea cual sea el equipo), no contra el último registro de este equipo en particular.
-  try {
-    const snapGlobal = await getDocs(query(collection(db,'registros'), orderBy('ts','desc'), limit(1)));
-    ultimoTotalizadorGlobal = snapGlobal.empty ? null : (snapGlobal.docs[0].data().totalizador ?? null);
-    const infoAnterior = document.getElementById('info-anterior');
-    if (infoAnterior && ultimoTotalizadorGlobal != null) {
-      infoAnterior.insertAdjacentHTML('beforeend', `<div style="margin-top:6px;font-size:12px;color:var(--acero)">Totalizador actual del estanque (última carga de cualquier equipo): <strong>${ultimoTotalizadorGlobal.toLocaleString('es-CL')}</strong></div>`);
-    }
-  } catch(e) { ultimoTotalizadorGlobal = null; }
 }
 
 window.setMedidor = function(tipo) {
@@ -1499,10 +1429,9 @@ window.calcularEficiencia = function() {
     html += `<div class="preview-row verde" style="background:#EFF6FF;color:#1D4ED8">📋 Primer registro de este equipo — sin eficiencia previa para comparar</div>`;
   }
 
-  // Validación totalizador (medidor único del estanque: se compara contra la última
-  // carga global, no contra la última de este equipo)
-  if (!isNaN(tot) && tot > 0 && ultimoTotalizadorGlobal) {
-    const dif = Math.abs((tot - ultimoTotalizadorGlobal) - lt);
+  // Validación totalizador
+  if (!isNaN(tot) && tot > 0 && ultimoRegistroEquipo?.totalizador) {
+    const dif = Math.abs((tot - ultimoRegistroEquipo.totalizador) - lt);
     html += dif <= MARGEN_TOTALIZADOR
       ? `<div class="preview-row verde">✅ Totalizador OK — diferencia: ${dif.toFixed(1)} L</div>`
       : `<div class="preview-row rojo">⚠️ Diferencia totalizador: ${dif.toFixed(1)} L (máx ${MARGEN_TOTALIZADOR} L)</div>`;
@@ -1529,6 +1458,7 @@ window.toggleCambioEquipo = function() {
     btn.style.color = 'var(--acero)';
     document.getElementById('equipo').value = equipoAsignado;
     setMedidor(tipoEquipo(equipoAsignado));
+    origenMedidor = null;
     cargarUltimoRegistro(equipoAsignado);
     limpiarPreview();
   }
@@ -1544,11 +1474,9 @@ function limpiarPreview() {
 window.registrar = async function() {
   const { fecha, hora } = getNow();
   const eq = document.getElementById('equipo').value;
-  const esOtroEquipo = eq === 'Otro (especificar)';
-  const eqDetalle = esOtroEquipo ? (document.getElementById('equipo-varios-input')?.value.trim() || '') : null;
+  const eqDetalle = eq === 'VARIOS (especificar)' ? (document.getElementById('equipo-varios-input')?.value.trim() || '') : null;
   const lt = parseFloat(document.getElementById('litros').value);
-  const mvRaw = document.getElementById('medidor-valor').value;
-  const mv = mvRaw === '' ? null : parseFloat(mvRaw);
+  const mv = parseFloat(document.getElementById('medidor-valor').value);
   const tot = parseFloat(document.getElementById('totalizador').value);
   const obs = document.getElementById('obs').value.trim();
   let operadorRegistro = isAdmin ? (document.getElementById('operador-select').value || currentUser) : currentUser;
@@ -1557,23 +1485,23 @@ window.registrar = async function() {
     operadorRegistro = otroInput && otroInput.value.trim() ? otroInput.value.trim() : operadorRegistro;
   }
 
-  if (!eq || centrosSeleccionados.length===0 || isNaN(lt)||lt<=0 || (!esOtroEquipo && (mv === null || isNaN(mv) || mv < 0)) || isNaN(tot)||tot<=0) {
+  if (!eq || centrosSeleccionados.length===0 || isNaN(lt)||lt<=0 || isNaN(mv)||mv<0 || isNaN(tot)||tot<=0) {
     toast('Completá todos los campos y seleccioná al menos un cultivo', false); return;
   }
-  if (!esOtroEquipo && ultimoRegistroEquipo?.medidor_valor != null && mv < ultimoRegistroEquipo.medidor_valor) {
+  if (ultimoRegistroEquipo?.medidor_valor != null && mv < ultimoRegistroEquipo.medidor_valor) {
     toast(`⛔ El horómetro/odómetro (${mv}) no puede ser menor al último registrado (${ultimoRegistroEquipo.medidor_valor.toFixed(1)})`, false);
     return;
   }
   if (lt > saldo) { toast(`⚠️ Sin suficiente combustible (${Math.round(saldo).toLocaleString('es-CL')} L)`, false); return; }
 
   let alertaTotalizador = false; let difTot = 0;
-  if (ultimoTotalizadorGlobal) {
-    difTot = Math.abs((tot - ultimoTotalizadorGlobal) - lt);
+  if (ultimoRegistroEquipo?.totalizador) {
+    difTot = Math.abs((tot - ultimoRegistroEquipo.totalizador) - lt);
     if (difTot > MARGEN_TOTALIZADOR) alertaTotalizador = true;
   }
 
   let eficiencia = null; let diffMedidor = null; let alertaTrabajado = false;
-  if (mv != null && ultimoRegistroEquipo?.medidor_valor != null) {
+  if (ultimoRegistroEquipo?.medidor_valor != null) {
     diffMedidor = mv - ultimoRegistroEquipo.medidor_valor;
     if (diffMedidor <= 0) alertaTrabajado = true;
     if (diffMedidor > 0 && lt > 0) eficiencia = medidor==='km' ? diffMedidor/lt : lt/diffMedidor;
@@ -1621,6 +1549,7 @@ window.registrar = async function() {
       apero: aperoSeleccionado,
       apero_detalle: (aperoSeleccionado === OTRO || aperoSeleccionado === 'LIBRE') ? aperoObsTexto : null,
       litros: lt, medidor_tipo: medidor, medidor_valor: mv,
+      medidor_origen: origenMedidor || 'manual',
       totalizador: tot, diff_medidor: diffMedidor, eficiencia,
       alerta_totalizador: alertaTotalizador, dif_totalizador: difTot,
       alerta_trabajado: alertaTrabajado,
@@ -1642,6 +1571,7 @@ window.registrar = async function() {
     document.getElementById('medidor-valor').value='';
     document.getElementById('totalizador').value='';
     document.getElementById('obs').value='';
+    origenMedidor = null;
     const opOtroWrap = document.getElementById('operador-otro-wrap');
     if (opOtroWrap) opOtroWrap.innerHTML = '';
     centrosSeleccionados=[];
@@ -1856,13 +1786,18 @@ window.renderTabla = function() {
         const trabajoStr = r.trabajo === 'Otro (especificar)' ? (r.trabajo_detalle||'Otro') : (r.trabajo||'—');
         const aperoStr = r.apero ? (r.apero === 'Otro (especificar)' ? (r.apero_detalle||'Otro') : (r.apero === 'LIBRE' ? (r.apero_detalle||'') : r.apero)) : '';
 
-        // Trabajado: ⚠️ propio si el medidor no avanzó (igual o menor al anterior)
+        // Trabajado: ⚠️ propio si el medidor no avanzó (igual o menor al anterior).
+        // Además, un pequeño ícono indica si la lectura del medidor vino de JDLink (📡)
+        // o fue ingresada a mano (✏️) — solo si el dato está disponible (registros nuevos).
         let trabajadoHtml = '<span style="color:#9CA3AF">—</span>';
         if (r.diff_medidor != null) {
           const valStr = `${r.diff_medidor.toFixed(tipo==='km'?0:1)} ${tipo}`;
+          const origenIcono = r.medidor_origen === 'jdlink'
+            ? ` <span title="Horas obtenidas desde John Deere Operations Center" style="cursor:help">📡</span>`
+            : (r.medidor_origen === 'manual' ? ` <span title="Horómetro/odómetro ingresado manualmente" style="cursor:help">✏️</span>` : '');
           trabajadoHtml = r.alerta_trabajado
-            ? `<span style="color:var(--rojo);font-weight:600">⚠️ ${valStr}</span>`
-            : `<span class="badge badge-${tipo}">${valStr}</span>`;
+            ? `<span style="color:var(--rojo);font-weight:600">⚠️ ${valStr}</span>${origenIcono}`
+            : `<span class="badge badge-${tipo}">${valStr}</span>${origenIcono}`;
         }
 
         // Cualquier advertencia (en cualquier columna) resalta la fila
@@ -1870,7 +1805,7 @@ window.renderTabla = function() {
 
         return `<tr ${tieneAlerta?'style="background:#FFF5F5"':''}>
           <td class="td-mono">${r.fecha}<br><span style="color:#9CA3AF;font-size:11px">${r.hora}</span></td>
-          <td>${r.equipo_detalle?`${r.equipo}<br><span style="color:#9CA3AF;font-size:11px">${r.equipo_detalle}</span>`:r.equipo}</td>
+          <td>${r.equipo==='VARIOS (especificar)'?(r.equipo_detalle?`VARIOS<br><span style="color:#9CA3AF;font-size:11px">${r.equipo_detalle}</span>`:'VARIOS'):r.equipo}</td>
           <td>${r.operador}</td>
           <td style="font-size:12px">${cultivos}</td>
           <td style="font-size:12px">${trabajoStr}${aperoStr?'<br><span style="color:#9CA3AF">'+aperoStr+'</span>':''}</td>
@@ -1963,7 +1898,7 @@ window.exportarExcel = function() {
   let data=[...registros];
   if(!isAdmin && !isSupervisor) data=data.filter(r=>r.operador===currentUser);
   if(!data.length){toast('No hay registros',false);return;}
-  const rows=data.map(r=>({'Fecha':r.fecha,'Hora':r.hora,'Equipo':r.equipo_detalle?`${r.equipo}: ${r.equipo_detalle}`:r.equipo,'Operador':r.operador,'Cultivos':(r.centros||[r.centro]).join(' / '),'Trabajo':r.trabajo==='Otro (especificar)'?(r.trabajo_detalle||'Otro'):(r.trabajo||''),'Apero':r.apero?(r.apero==='Otro (especificar)'?(r.apero_detalle||'Otro'):(r.apero==='LIBRE'?(r.apero_detalle||''):r.apero)):'','Litros':r.litros,'Tipo Medidor':r.medidor_tipo==='km'?'Kilómetros':'Horas','Medidor Actual':r.medidor_valor,'Trabajado':r.diff_medidor||'','Eficiencia':r.eficiencia?(r.medidor_tipo==='km'?r.eficiencia.toFixed(2)+' km/L':r.eficiencia.toFixed(2)+' L/hr'):'','Totalizador':r.totalizador||'','Alerta':r.alerta_totalizador?'SÍ':'','Dif.Totalizador':r.dif_totalizador||'','Observación':r.obs||''}));
+  const rows=data.map(r=>({'Fecha':r.fecha,'Hora':r.hora,'Equipo':r.equipo==='VARIOS (especificar)'?(r.equipo_detalle?`VARIOS: ${r.equipo_detalle}`:'VARIOS'):r.equipo,'Operador':r.operador,'Cultivos':(r.centros||[r.centro]).join(' / '),'Trabajo':r.trabajo==='Otro (especificar)'?(r.trabajo_detalle||'Otro'):(r.trabajo||''),'Apero':r.apero?(r.apero==='Otro (especificar)'?(r.apero_detalle||'Otro'):(r.apero==='LIBRE'?(r.apero_detalle||''):r.apero)):'','Litros':r.litros,'Tipo Medidor':r.medidor_tipo==='km'?'Kilómetros':'Horas','Medidor Actual':r.medidor_valor,'Origen Medidor':r.medidor_origen==='jdlink'?'JDLink':(r.medidor_origen==='manual'?'Manual':''),'Trabajado':r.diff_medidor||'','Eficiencia':r.eficiencia?(r.medidor_tipo==='km'?r.eficiencia.toFixed(2)+' km/L':r.eficiencia.toFixed(2)+' L/hr'):'','Totalizador':r.totalizador||'','Alerta':r.alerta_totalizador?'SÍ':'','Dif.Totalizador':r.dif_totalizador||'','Observación':r.obs||''}));
   const ws=XLSX.utils.json_to_sheet(rows);
   const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,'Combustible');
   XLSX.writeFile(wb,`maitenes-combustible-${new Date().toISOString().slice(0,10)}.xlsx`);
@@ -2236,7 +2171,7 @@ let mantTipoActual = null;  // { id, nombre, intervalo, categoria }
 let mantRegistros = {};     // cache: equipo → { tipoId → último registro }
 
 function equiposHr() {
-  return config.equipos.filter(e => tipoEquipo(e) === 'hr' && e !== 'Otro (especificar)');
+  return config.equipos.filter(e => tipoEquipo(e) === 'hr' && e !== 'VARIOS (especificar)');
 }
 
 function initMantencion() {
@@ -2754,7 +2689,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
             <button class="medidor-btn active" id="btn-hr" onclick="setMedidor('hr')">HORAS</button>
           </div>
           <div style="display:flex;gap:8px;align-items:center;margin-top:8px;">
-            <input type="number" id="medidor-valor" min="0" step="0.1" placeholder="0" style="flex:1" oninput="validarPaso1()">
+            <input type="number" id="medidor-valor" min="0" step="0.1" placeholder="0" style="flex:1" oninput="onMedidorInput()">
             <span style="font-size:12px;color:var(--acero)" id="medidor-unidad">hr</span>
           </div>
           <div class="hint" id="medidor-label-hint">Horómetro actual (hr)</div>
