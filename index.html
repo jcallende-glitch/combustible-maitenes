@@ -684,6 +684,55 @@ function suscribirSaldo() {
     renderSaldo();
   });
 }
+
+// Genera el SVG del velocímetro (gauge) del saldo del estanque.
+// Usa los mismos umbrales de color que renderSaldo(): rojo bajo ALERTA_LITROS,
+// ámbar entre ALERTA_LITROS y 5000, verde sobre 5000.
+function generarVelocimetroSVG(valor, capacidad) {
+  const val = Math.min(Math.max(valor, 0), capacidad);
+  const cx = 150, cy = 150, r = 120;
+
+  function polar(cx, cy, r, angleDeg) {
+    const a = angleDeg * Math.PI / 180;
+    return { x: cx + r * Math.cos(a), y: cy - r * Math.sin(a) };
+  }
+  function arcPath(cx, cy, r, startAngle, endAngle) {
+    const s = polar(cx, cy, r, startAngle);
+    const e = polar(cx, cy, r, endAngle);
+    const largeArc = (startAngle - endAngle) > 180 ? 1 : 0;
+    return `M ${s.x} ${s.y} A ${r} ${r} 0 ${largeArc} 0 ${e.x} ${e.y}`;
+  }
+
+  const zonas = [
+    { desde: 0, hasta: ALERTA_LITROS, color: '#C0392B' },
+    { desde: ALERTA_LITROS, hasta: 5000, color: '#F5A623' },
+    { desde: 5000, hasta: capacidad, color: '#2D7D46' }
+  ];
+  let zonasSVG = '';
+  zonas.forEach(z => {
+    const a1 = 180 - (z.desde / capacidad) * 180;
+    const a2 = 180 - (z.hasta / capacidad) * 180;
+    zonasSVG += `<path d="${arcPath(cx, cy, r, a1, a2)}" stroke="${z.color}" stroke-width="22" fill="none"/>`;
+  });
+
+  let ticksSVG = '';
+  const pasoTick = capacidad / 5;
+  for (let v = 0; v <= capacidad; v += pasoTick) {
+    const a = 180 - (v / capacidad) * 180;
+    const p1 = polar(cx, cy, r - 14, a);
+    const p2 = polar(cx, cy, r + 14, a);
+    ticksSVG += `<line x1="${p1.x}" y1="${p1.y}" x2="${p2.x}" y2="${p2.y}" stroke="#6B7280" stroke-width="2"/>`;
+    const lp = polar(cx, cy, r + 26, a);
+    ticksSVG += `<text x="${lp.x}" y="${lp.y}" text-anchor="middle" dominant-baseline="middle" font-size="11" fill="#6B7280" font-family="var(--sans)">${Math.round(v/1000)}k</text>`;
+  }
+
+  const needleAngle = 180 - (val / capacidad) * 180;
+  const tip = polar(cx, cy, r - 18, needleAngle);
+  const needleSVG = `<line x1="${cx}" y1="${cy}" x2="${tip.x}" y2="${tip.y}" stroke="#FFFFFF" stroke-width="4" stroke-linecap="round"/><circle cx="${cx}" cy="${cy}" r="8" fill="#FFFFFF"/>`;
+
+  return `<svg viewBox="0 0 300 180" style="width:100%;max-width:260px;display:block;margin:0 auto" role="img"><title>Nivel de estanque: ${Math.round(val).toLocaleString('es-CL')} de ${capacidad.toLocaleString('es-CL')} litros</title>${zonasSVG}${ticksSVG}${needleSVG}</svg>`;
+}
+
 function renderSaldo() {
   const pct = Math.min(100, Math.max(0, (saldo / CAPACIDAD) * 100));
   const alerta = saldo <= ALERTA_LITROS;
@@ -694,7 +743,7 @@ function renderSaldo() {
         <div><div class="estanque-label">SALDO ESTANQUE</div><div class="estanque-valor" style="color:${color}">${Math.round(saldo).toLocaleString('es-CL')} <span>L</span></div></div>
         <div class="estanque-pct" style="color:${color}">${pct.toFixed(0)}%</div>
       </div>
-      <div class="barra-fondo"><div class="barra-relleno" style="width:${pct}%;background:${color}"></div></div>
+      ${generarVelocimetroSVG(saldo, CAPACIDAD)}
       ${alerta?`<div class="alerta-msg">⚠️ Stock bajo — menos de ${ALERTA_LITROS.toLocaleString('es-CL')} L</div>`:''}
       <div class="estanque-cap">Capacidad: ${CAPACIDAD.toLocaleString('es-CL')} L</div>
     </div>`;
