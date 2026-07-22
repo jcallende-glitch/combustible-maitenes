@@ -700,7 +700,7 @@ function generarVelocimetroSVG(valor, capacidad) {
     const s = polar(cx, cy, r, startAngle);
     const e = polar(cx, cy, r, endAngle);
     const largeArc = (startAngle - endAngle) > 180 ? 1 : 0;
-    return `M ${s.x} ${s.y} A ${r} ${r} 0 ${largeArc} 0 ${e.x} ${e.y}`;
+    return `M ${s.x} ${s.y} A ${r} ${r} 0 ${largeArc} 1 ${e.x} ${e.y}`;
   }
 
   const zonas = [
