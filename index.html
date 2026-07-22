@@ -603,6 +603,7 @@ let config = { ...DEFAULT_CONFIG };
 let saldo = 0;
 let unsubReg = null;
 let ultimoRegistroEquipo = null;
+let ultimoTotalizadorGlobal = null; // último totalizador SAMOA registrado, sea cual sea el equipo (el medidor es único para todo el estanque)
 let centrosSeleccionados = [];
 let trabajoSeleccionado = null;
 let aperoSeleccionado = null;
@@ -1425,13 +1426,24 @@ async function cargarUltimoRegistro(equipo) {
           <div class="anterior-row"><span>Operador:</span><strong>${r.operador}</strong></div>
           <div class="anterior-row"><span>Litros:</span><strong>${(r.litros||0).toFixed(1)} L</strong></div>
           <div class="anterior-row"><span>${tipo==='km'?'Odómetro':'Horómetro'} anterior:</span><strong>${(r.medidor_valor||0).toFixed(tipo==='km'?0:1)} ${tipo}</strong></div>
-          <div class="anterior-row"><span>Totalizador anterior:</span><strong>${(r.totalizador||0).toLocaleString('es-CL')} L</strong></div>
           <div class="anterior-row"><span>Cultivos:</span><strong>${cultivos}</strong></div>
         </div>`;
     } else {
       document.getElementById('info-anterior').innerHTML = '<span style="color:#9CA3AF;font-size:12px">Sin registros anteriores.</span>';
     }
   } catch(e) { document.getElementById('info-anterior').innerHTML = '<span style="color:#9CA3AF;font-size:12px">Error al buscar.</span>'; }
+
+  // El totalizador SAMOA es un único medidor físico para todo el estanque, no por equipo.
+  // Por eso la validación de descuadre debe compararse contra la ÚLTIMA carga registrada
+  // en general (sea cual sea el equipo), no contra el último registro de este equipo en particular.
+  try {
+    const snapGlobal = await getDocs(query(collection(db,'registros'), orderBy('ts','desc'), limit(1)));
+    ultimoTotalizadorGlobal = snapGlobal.empty ? null : (snapGlobal.docs[0].data().totalizador ?? null);
+    const infoAnterior = document.getElementById('info-anterior');
+    if (infoAnterior && ultimoTotalizadorGlobal != null) {
+      infoAnterior.insertAdjacentHTML('beforeend', `<div style="margin-top:6px;font-size:12px;color:var(--acero)">Totalizador actual del estanque (última carga de cualquier equipo): <strong>${ultimoTotalizadorGlobal.toLocaleString('es-CL')}</strong></div>`);
+    }
+  } catch(e) { ultimoTotalizadorGlobal = null; }
 }
 
 window.setMedidor = function(tipo) {
@@ -1487,9 +1499,10 @@ window.calcularEficiencia = function() {
     html += `<div class="preview-row verde" style="background:#EFF6FF;color:#1D4ED8">📋 Primer registro de este equipo — sin eficiencia previa para comparar</div>`;
   }
 
-  // Validación totalizador
-  if (!isNaN(tot) && tot > 0 && ultimoRegistroEquipo?.totalizador) {
-    const dif = Math.abs((tot - ultimoRegistroEquipo.totalizador) - lt);
+  // Validación totalizador (medidor único del estanque: se compara contra la última
+  // carga global, no contra la última de este equipo)
+  if (!isNaN(tot) && tot > 0 && ultimoTotalizadorGlobal) {
+    const dif = Math.abs((tot - ultimoTotalizadorGlobal) - lt);
     html += dif <= MARGEN_TOTALIZADOR
       ? `<div class="preview-row verde">✅ Totalizador OK — diferencia: ${dif.toFixed(1)} L</div>`
       : `<div class="preview-row rojo">⚠️ Diferencia totalizador: ${dif.toFixed(1)} L (máx ${MARGEN_TOTALIZADOR} L)</div>`;
@@ -1554,8 +1567,8 @@ window.registrar = async function() {
   if (lt > saldo) { toast(`⚠️ Sin suficiente combustible (${Math.round(saldo).toLocaleString('es-CL')} L)`, false); return; }
 
   let alertaTotalizador = false; let difTot = 0;
-  if (ultimoRegistroEquipo?.totalizador) {
-    difTot = Math.abs((tot - ultimoRegistroEquipo.totalizador) - lt);
+  if (ultimoTotalizadorGlobal) {
+    difTot = Math.abs((tot - ultimoTotalizadorGlobal) - lt);
     if (difTot > MARGEN_TOTALIZADOR) alertaTotalizador = true;
   }
 
