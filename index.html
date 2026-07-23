@@ -1775,6 +1775,66 @@ window.recalcularEficiencia = async function() {
 }
 
 
+window.recalcularTotalizador = async function() {
+  if (!isAdmin) return;
+  const btn = document.getElementById('btn-recalcular-totalizador');
+  const log = document.getElementById('recalculo-log-totalizador');
+  btn.disabled = true;
+  btn.textContent = 'Calculando...';
+  log.style.display = 'block';
+  log.innerHTML = '<div style="color:#9CA3AF">Cargando registros...</div>';
+
+  try {
+    // El totalizador SAMOA es un único medidor físico para todo el estanque (no por equipo),
+    // así que se recorre TODO el historial en orden cronológico global, sin agrupar por equipo.
+    const snap = await getDocs(query(collection(db, 'registros'), orderBy('ts', 'asc')));
+    const todos = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+    let actualizados = 0;
+    let sinDatos = 0;
+    let anteriorTotalizador = null;
+    log.innerHTML = `<div style="color:#9CA3AF">Procesando ${todos.length} registros...</div>`;
+
+    for (let i = 0; i < todos.length; i++) {
+      const actual = todos[i];
+
+      let difTot = 0;
+      let alertaTotalizador = false;
+      if (anteriorTotalizador != null && actual.totalizador != null) {
+        difTot = Math.abs((actual.totalizador - anteriorTotalizador) - (actual.litros || 0));
+        if (difTot > MARGEN_TOTALIZADOR) alertaTotalizador = true;
+      }
+
+      const mismaAlerta = (actual.alerta_totalizador || false) === alertaTotalizador;
+      const mismaDif = Math.abs((actual.dif_totalizador || 0) - difTot) < 0.001;
+      if (!mismaAlerta || !mismaDif) {
+        await updateDoc(doc(db, 'registros', actual.id), {
+          alerta_totalizador: alertaTotalizador,
+          dif_totalizador: difTot
+        });
+        actualizados++;
+      } else {
+        sinDatos++;
+      }
+
+      if (actual.totalizador != null) anteriorTotalizador = actual.totalizador;
+    }
+
+    log.innerHTML = `
+      <div style="color:var(--verde);font-weight:600">✅ Recálculo completado</div>
+      <div style="color:var(--acero);font-size:13px;margin-top:4px">• ${actualizados} registros actualizados</div>
+      <div style="color:var(--acero);font-size:13px">• ${sinDatos} sin cambios</div>
+      <div style="color:var(--acero);font-size:13px">• ${todos.length} registros totales procesados</div>`;
+    toast('✅ Totalizador recalculado', true);
+  } catch(e) {
+    log.innerHTML = `<div style="color:var(--rojo)">❌ Error: ${e.message}</div>`;
+    toast('Error al recalcular: ' + e.message, false);
+  }
+  btn.disabled = false;
+  btn.textContent = '⚡ Recalcular descuadre de totalizador histórico';
+}
+
+
 function loadHistorial() {
   if (unsubReg) unsubReg();
   const q = query(collection(db,'registros'), orderBy('ts','desc'));
@@ -2972,6 +3032,9 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         <p style="font-size:13px;color:var(--acero);margin-bottom:14px">Recalcula la eficiencia (L/hr o km/L) de todos los registros históricos en base al horómetro/odómetro entre cargas consecutivas de cada equipo.</p>
         <button class="btn btn-secondary" id="btn-recalcular" onclick="recalcularEficiencia()" style="width:100%;justify-content:center">⚡ Recalcular eficiencia histórica</button>
         <div id="recalculo-log" style="display:none;margin-top:12px;background:var(--fondo);border:1px solid var(--borde);border-radius:6px;padding:12px;font-size:13px;line-height:1.8"></div>
+        <p style="font-size:13px;color:var(--acero);margin:16px 0 14px">Recalcula el descuadre del totalizador SAMOA (medidor único de todo el estanque) comparando cada carga contra la anterior en orden cronológico global, sin importar el equipo.</p>
+        <button class="btn btn-secondary" id="btn-recalcular-totalizador" onclick="recalcularTotalizador()" style="width:100%;justify-content:center">⚡ Recalcular descuadre de totalizador histórico</button>
+        <div id="recalculo-log-totalizador" style="display:none;margin-top:12px;background:var(--fondo);border:1px solid var(--borde);border-radius:6px;padding:12px;font-size:13px;line-height:1.8"></div>
       </div>
     </div>
   </main>
