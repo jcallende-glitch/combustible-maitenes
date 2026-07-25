@@ -1077,6 +1077,7 @@ function initRegistro() {
     document.getElementById('equipo').value = equipoAsignado;
     setMedidor(tipoEquipo(equipoAsignado));
     cargarUltimoRegistro(equipoAsignado);
+    precargarHorometroWiFi(equipoAsignado);
   } else {
     document.getElementById('equipo-fijo').style.display = 'none';
     document.getElementById('equipo-selector').style.display = 'block';
@@ -1086,6 +1087,7 @@ function initRegistro() {
       document.getElementById('equipo').value = equipoAsignado;
       setMedidor(tipoEquipo(equipoAsignado));
       cargarUltimoRegistro(equipoAsignado);
+      precargarHorometroWiFi(equipoAsignado);
     }
   }
   centrosSeleccionados = CULTIVO_OPERADOR_DEFAULT[currentUser] ? [CULTIVO_OPERADOR_DEFAULT[currentUser]] : [];
@@ -1102,6 +1104,42 @@ function initRegistro() {
   if (avisoHorario && isAdmin) avisoHorario.style.display = 'none';
   actualizarVisibilidadHorario();
   validarPaso1();
+}
+
+// ─── HORÓMETRO WIFI (Heltec) ───────────────────────────────
+// Mapea el nombre del equipo (tal como aparece en el selector) al ID del
+// documento correspondiente en la colección "horometros" de Firestore.
+// Se agregan más entradas acá a medida que se instalen más horómetros WiFi.
+const EQUIPOS_HOROMETRO_WIFI = {
+  'Kubota 2320': 'Kubota_2320'
+};
+
+async function precargarHorometroWiFi(eq) {
+  const infoEl = document.getElementById('horometro-wifi-info');
+  const docId = EQUIPOS_HOROMETRO_WIFI[eq];
+  if (!docId) { if (infoEl) infoEl.innerHTML = ''; return; }
+  if (infoEl) infoEl.innerHTML = '<span style="color:#F5A623;font-size:12px">📡 Consultando horómetro WiFi...</span>';
+  try {
+    const snap = await getDoc(doc(db, 'horometros', docId));
+    if (snap.exists()) {
+      const data = snap.data();
+      const horas = data.horasTotal;
+      if (horas != null) {
+        const mvInput = document.getElementById('medidor-valor');
+        if (mvInput) mvInput.value = parseFloat(horas).toFixed(1);
+        validarPaso1();
+        const actualizado = data.ultimaActualizacion || '';
+        if (infoEl) infoEl.innerHTML = `<span style="color:#2D7D46;font-size:12px">✓ Horómetro WiFi: <strong>${parseFloat(horas).toFixed(1)} hr</strong>${actualizado ? ` · actualizado ${actualizado}` : ''}</span>`;
+      } else {
+        if (infoEl) infoEl.innerHTML = '';
+      }
+    } else {
+      if (infoEl) infoEl.innerHTML = '';
+    }
+  } catch(e) {
+    console.warn('Error leyendo horómetro WiFi:', e);
+    if (infoEl) infoEl.innerHTML = '';
+  }
 }
 
 // ─── SELECTOR MÚLTIPLE DE CULTIVOS ────────────────────────
@@ -1414,6 +1452,7 @@ window.onEquipoChange = async function() {
   }
 
   await cargarUltimoRegistro(eq);
+  await precargarHorometroWiFi(eq);
 
   // Mostrar campo texto si eligió "Otro (especificar)"
   const variosWrap = document.getElementById('equipo-varios-wrap');
@@ -1543,6 +1582,7 @@ window.toggleCambioEquipo = function() {
     document.getElementById('equipo').value = equipoAsignado;
     setMedidor(tipoEquipo(equipoAsignado));
     cargarUltimoRegistro(equipoAsignado);
+    precargarHorometroWiFi(equipoAsignado);
     limpiarPreview();
   }
 }
@@ -2832,6 +2872,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
             <span style="font-size:12px;color:var(--acero)" id="medidor-unidad">hr</span>
           </div>
           <div class="hint" id="medidor-label-hint">Horómetro actual (hr)</div>
+          <div id="horometro-wifi-info" style="margin-top:6px"></div>
           <button id="btn-jdlink" onclick="iniciarLoginJD()" style="display:none;margin-top:8px;width:100%;background:#367C2B;color:white;border:none;padding:9px 14px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;display:none;align-items:center;justify-content:center;gap:6px">
             🔗 Conectar con John Deere Operations Center
           </button>
