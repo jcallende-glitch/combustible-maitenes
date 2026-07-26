@@ -1330,6 +1330,7 @@ window.onEquipoChange = async function() {
 
   if (trabajoSeleccionado) renderTrabajoSelector();
   actualizarBotonesJDLink(eq);
+  if (EQUIPOS_JDLINK.includes(eq) && jdAccessToken) obtenerHorasJDLink();
   validarPaso1();
 }
 
