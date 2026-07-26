@@ -983,6 +983,8 @@ function initRegistro() {
     document.getElementById('equipo').value = equipoAsignado;
     setMedidor(tipoEquipo(equipoAsignado));
     cargarUltimoRegistro(equipoAsignado);
+    actualizarBotonesJDLink(equipoAsignado);
+    if (EQUIPOS_JDLINK.includes(equipoAsignado) && jdAccessToken) obtenerHorasJDLink();
   } else {
     document.getElementById('equipo-fijo').style.display = 'none';
     document.getElementById('equipo-selector').style.display = 'block';
@@ -992,6 +994,8 @@ function initRegistro() {
       document.getElementById('equipo').value = equipoAsignado;
       setMedidor(tipoEquipo(equipoAsignado));
       cargarUltimoRegistro(equipoAsignado);
+      actualizarBotonesJDLink(equipoAsignado);
+      if (EQUIPOS_JDLINK.includes(equipoAsignado) && jdAccessToken) obtenerHorasJDLink();
     }
   }
   centrosSeleccionados = CULTIVO_OPERADOR_DEFAULT[currentUser] ? [CULTIVO_OPERADOR_DEFAULT[currentUser]] : [];
@@ -1438,6 +1442,8 @@ window.toggleCambioEquipo = function() {
     document.getElementById('equipo').value = equipoAsignado;
     setMedidor(tipoEquipo(equipoAsignado));
     cargarUltimoRegistro(equipoAsignado);
+    actualizarBotonesJDLink(equipoAsignado);
+    if (EQUIPOS_JDLINK.includes(equipoAsignado) && jdAccessToken) obtenerHorasJDLink();
     limpiarPreview();
   }
 }
