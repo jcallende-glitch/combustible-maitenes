@@ -366,6 +366,7 @@ function detenerLecturaESP32() {
 }
 
 function iniciarEstimacionESP32() {
+  if (modoESP32) return; // en modo automático ya se muestran los datos reales del ESP32, no hace falta estimar
   tiempoInicioEstimacion = Date.now();
   if (intervaloEstimacion) clearInterval(intervaloEstimacion);
   const esp32Info = document.getElementById('esp32-info');
@@ -390,6 +391,32 @@ async function cargarModoESP32() {
     const snap = await getDoc(doc(db, 'config', 'sistema'));
     if (snap.exists()) modoESP32 = snap.data().modoESP32 || false;
   } catch(e) {}
+}
+
+const TOTALIZADOR_INICIAL = 620133;
+let totalizadorGlobal = null;
+
+// El totalizador ya no se lee/escribe a mano — es un contador único que la app
+// mantiene en Firestore (config/sistema), parte de 620.133 y va sumando los litros
+// de cada carga. Si se elimina una carga, se le resta esa misma cantidad de litros.
+async function cargarTotalizadorGlobal() {
+  try {
+    const snap = await getDoc(doc(db, 'config', 'sistema'));
+    if (snap.exists() && snap.data().totalizadorGlobal != null) {
+      totalizadorGlobal = snap.data().totalizadorGlobal;
+    } else {
+      totalizadorGlobal = TOTALIZADOR_INICIAL;
+      await setDoc(doc(db, 'config', 'sistema'), { totalizadorGlobal }, { merge: true });
+    }
+  } catch(e) {
+    console.warn('Error cargando totalizador global:', e);
+    totalizadorGlobal = TOTALIZADOR_INICIAL;
+  }
+}
+
+async function guardarTotalizadorGlobal() {
+  try { await setDoc(doc(db, 'config', 'sistema'), { totalizadorGlobal }, { merge: true }); }
+  catch(e) { console.warn('Error guardando totalizador global:', e); }
 }
 
 window.guardarModoESP32 = async function(valor) {
@@ -623,11 +650,12 @@ let centrosSeleccionados = [];
 let trabajoSeleccionado = null;
 let aperoSeleccionado = null;
 let aperoObsTexto = '';
-let totalizadorAuto = true; // true = seguimos autocalculando el totalizador; false = el operador ya lo editó a mano
+
 
 window.addEventListener('DOMContentLoaded', async () => {
   await loadConfig();
   await cargarModoESP32();
+  await cargarTotalizadorGlobal();
   suscribirSaldo();
   // Cargar la conexión de John Deere desde Firestore (compartida entre todos los dispositivos)
   await cargarConfigJD();
@@ -1411,17 +1439,13 @@ window.setMedidor = function(tipo) {
   document.getElementById('medidor-label-hint').textContent = tipo==='km'?'Odómetro actual (km)':'Horómetro actual (hr)';
 }
 
-window.onTotalizadorManualEdit = function() {
-  totalizadorAuto = false;
-  calcularEficiencia();
-}
-
 window.calcularEficiencia = function() {
   const lt = parseFloat(document.getElementById('litros').value);
-  // Auto-calcular totalizador = totalizador anterior + litros cargados, mientras
-  // el operador no lo haya editado manualmente (ver onTotalizadorManualEdit()).
-  if (totalizadorAuto && !isNaN(lt) && lt > 0 && ultimoRegistroEquipo?.totalizador != null) {
-    document.getElementById('totalizador').value = Math.round(ultimoRegistroEquipo.totalizador + lt);
+  // El totalizador ya no lo edita el operador — es totalizadorGlobal (contador único
+  // persistente en Firestore) + los litros de esta carga.
+  const totalizadorInput = document.getElementById('totalizador');
+  if (totalizadorInput && totalizadorGlobal != null) {
+    totalizadorInput.value = !isNaN(lt) && lt > 0 ? Math.round(totalizadorGlobal + lt) : totalizadorGlobal;
   }
   const mv = parseFloat(document.getElementById('medidor-valor').value);
   const tot = parseFloat(document.getElementById('totalizador').value);
@@ -1507,7 +1531,6 @@ function limpiarPreview() {
   document.getElementById('cultivos-resumen').innerHTML = '';
   document.getElementById('info-anterior').innerHTML = '<span style="color:#9CA3AF;font-size:12px">Seleccioná un equipo para ver el último registro.</span>';
   ultimoRegistroEquipo = null;
-  totalizadorAuto = true;
 }
 
 window.registrar = async function() {
@@ -1535,9 +1558,13 @@ window.registrar = async function() {
   }
   if (lt > saldo) { toast(`⚠️ Sin suficiente combustible (${Math.round(saldo).toLocaleString('es-CL')} L)`, false); return; }
 
+  // El totalizador ahora es un contador global (no por equipo), así que la comparación
+  // se hace contra totalizadorGlobal (su valor antes de sumar esta carga) — como "tot" ya
+  // es exactamente totalizadorGlobal + lt (calculado, no leído a mano), esta diferencia
+  // siempre da 0; se mantiene el campo por compatibilidad con reportes históricos.
   let alertaTotalizador = false; let difTot = 0;
-  if (ultimoRegistroEquipo?.totalizador) {
-    difTot = Math.abs((tot - ultimoRegistroEquipo.totalizador) - lt);
+  if (totalizadorGlobal != null) {
+    difTot = Math.abs((tot - totalizadorGlobal) - lt);
     if (difTot > MARGEN_TOTALIZADOR) alertaTotalizador = true;
   }
 
@@ -1597,6 +1624,9 @@ window.registrar = async function() {
       obs, ts: Date.now()
     });
     await updateDoc(doc(db,'estanque','saldo'), { litros: increment(-lt) });
+    // Actualizar el contador global del totalizador (tot ya es totalizadorGlobal + lt)
+    totalizadorGlobal = tot;
+    await guardarTotalizadorGlobal();
     if (alertaTotalizador) enviarAlertaWsp(`⚠️ *ALERTA TOTALIZADOR · Los Maitenes*\n\nEquipo: *${eq}*\nOperador: *${operadorRegistro}*\nFecha: ${fecha} ${hora}\nLitros: ${lt.toFixed(1)} L\nDiferencia: *${difTot.toFixed(1)} L*\n\nVerificar cámara.`);
 
     // Alerta eficiencia por WhatsApp (usa el mismo cálculo hecho antes de guardar)
@@ -1907,6 +1937,12 @@ window.guardarEdicion = async function() {
     const difLitros = litrosOriginales - litrosNuevos;
     if (Math.abs(difLitros) > 0.01) {
       await updateDoc(doc(db, 'estanque', 'saldo'), { litros: increment(difLitros) });
+      // Si cambian los litros de una carga ya guardada, el contador global del
+      // totalizador se ajusta en la misma proporción (resta la diferencia).
+      if (totalizadorGlobal != null) {
+        totalizadorGlobal = totalizadorGlobal - difLitros;
+        await guardarTotalizadorGlobal();
+      }
     }
     await updateDoc(doc(db, 'registros', id), {
       fecha, hora, equipo, operador, centros, centro: centros[0],
@@ -1922,9 +1958,14 @@ window.guardarEdicion = async function() {
 }
 
 window.eliminar = async function(id,litros) {
-  if(!confirm('¿Eliminar? Los litros volverán al saldo.'))return;
+  if(!confirm('¿Eliminar? Los litros volverán al saldo y se descontarán del totalizador.'))return;
   await deleteDoc(doc(db,'registros',id));
   await updateDoc(doc(db,'estanque','saldo'),{litros:increment(parseFloat(litros)||0)});
+  // Descontar del contador global del totalizador, como si esta carga nunca hubiera pasado
+  if (totalizadorGlobal != null) {
+    totalizadorGlobal = totalizadorGlobal - (parseFloat(litros)||0);
+    await guardarTotalizadorGlobal();
+  }
   toast('Eliminado',false);
 }
 
@@ -2762,8 +2803,8 @@ tbody td{padding:10px 12px;vertical-align:middle;}
           </div>
           <div class="field">
             <label>Totalizador SAMOA</label>
-            <input type="number" id="totalizador" min="0" step="1" placeholder="Ej: 60940" oninput="onTotalizadorManualEdit()">
-            <div class="hint">Número acumulado del caudalímetro</div>
+            <input type="number" id="totalizador" min="0" step="1" placeholder="Ej: 60940" readonly style="background:var(--fondo);color:var(--acero);cursor:not-allowed">
+            <div class="hint">Se calcula automáticamente (no editable)</div>
           </div>
         </div>
         <div id="preview-eficiencia" class="preview-eficiencia"></div>
