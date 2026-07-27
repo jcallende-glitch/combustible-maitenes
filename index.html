@@ -330,29 +330,39 @@ let intervaloEstimacion = null;
 let tiempoInicioEstimacion = null;
 const LITROS_POR_MINUTO_EST = 34.0;
 
+let esp32BaselineLitros = null;
+
 function iniciarLecturaESP32() {
   if (!modoESP32) return;
   if (unsubESP32) { unsubESP32(); unsubESP32 = null; }
+  esp32BaselineLitros = null; // se fija con la primera lectura que llegue tras encender la bomba
   const esp32Info = document.getElementById('esp32-info');
   if (esp32Info) { esp32Info.style.display = 'block'; esp32Info.innerHTML = '<span style="color:#F5A623;font-size:12px">📡 Conectando caudalímetro...</span>'; }
   unsubESP32 = onSnapshot(doc(db, 'esp32_test', 'lectura_actual'), snap => {
     if (!snap.exists()) return;
     const data = snap.data();
-    // "litrosActual" es el conteo real en vivo basado en pulsos del Piusi (pulsos / 33.5).
-    // El campo viejo "litros" queda de una versión anterior del sketch y no se actualiza más.
-    const litros = data.litrosActual ?? data.litros ?? 0;
+    // "litrosActual" es el conteo TOTAL ACUMULADO en vivo basado en pulsos del Piusi
+    // (pulsos / 33.5), no algo que empiece en 0 en cada carga. El campo viejo "litros"
+    // queda de una versión anterior del sketch y no se actualiza más.
+    const litrosAcumulado = data.litrosActual ?? data.litros ?? 0;
+    // Tomamos como referencia el primer valor que llega al encender la bomba, y mostramos
+    // solo la diferencia — así esta carga siempre arranca en 0 L, sin arrastrar el
+    // acumulado histórico del ESP32.
+    if (esp32BaselineLitros === null) esp32BaselineLitros = litrosAcumulado;
+    const litros = Math.max(0, litrosAcumulado - esp32BaselineLitros);
     // El campo "ts" que envía el ESP32 es su millis() interno (tiempo desde que encendió),
     // no una fecha real — no sirve para calcular "hace cuánto" contra Date.now(). Como este
     // callback se dispara en tiempo real apenas cambia el documento, el dato mostrado
     // siempre corresponde a la lectura más reciente.
     const litrosInput = document.getElementById('litros');
-    if (litrosInput) { litrosInput.value = parseFloat(litros).toFixed(1); calcularEficiencia(); }
-    if (esp32Info) esp32Info.innerHTML = `<span style="color:#2D7D46;font-size:12px">📡 ESP32: <strong>${parseFloat(litros).toFixed(1)} L</strong> · ${data.pulsos != null ? data.pulsos + ' pulsos · ' : ''}en vivo</span>`;
+    if (litrosInput) { litrosInput.value = litros.toFixed(1); calcularEficiencia(); }
+    if (esp32Info) esp32Info.innerHTML = `<span style="color:#2D7D46;font-size:12px">📡 ESP32: <strong>${litros.toFixed(1)} L</strong> · ${data.pulsos != null ? data.pulsos + ' pulsos · ' : ''}en vivo</span>`;
   });
 }
 
 function detenerLecturaESP32() {
   if (unsubESP32) { unsubESP32(); unsubESP32 = null; }
+  esp32BaselineLitros = null;
 }
 
 function iniciarEstimacionESP32() {
