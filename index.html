@@ -344,7 +344,11 @@ function iniciarLecturaESP32() {
     // "litrosActual" es el conteo TOTAL ACUMULADO en vivo basado en pulsos del Piusi
     // (pulsos / 33.5), no algo que empiece en 0 en cada carga. El campo viejo "litros"
     // queda de una versión anterior del sketch y no se actualiza más.
-    const litrosAcumulado = data.litrosActual ?? data.litros ?? 0;
+    // Preferimos calcular los litros nosotros mismos a partir de "pulsos" usando la
+    // calibración editable (pulsosPorLitro, ajustable en Configurar sin tocar el ESP32).
+    // Si por algún motivo no llegan pulsos, usamos como respaldo lo que el propio
+    // dispositivo haya calculado con su constante interna fija.
+    const litrosAcumulado = data.pulsos != null ? (data.pulsos / pulsosPorLitro) : (data.litrosActual ?? data.litros ?? 0);
     // Tomamos como referencia el primer valor que llega al encender la bomba, y mostramos
     // solo la diferencia — así esta carga siempre arranca en 0 L, sin arrastrar el
     // acumulado histórico del ESP32.
@@ -386,11 +390,29 @@ function detenerEstimacionESP32() {
   if (esp32Info) { esp32Info.style.display = 'none'; esp32Info.innerHTML = ''; }
 }
 
+const PULSOS_POR_LITRO_DEFAULT = 33.5;
+let pulsosPorLitro = PULSOS_POR_LITRO_DEFAULT;
+
 async function cargarModoESP32() {
   try {
     const snap = await getDoc(doc(db, 'config', 'sistema'));
-    if (snap.exists()) modoESP32 = snap.data().modoESP32 || false;
+    if (snap.exists()) {
+      const d = snap.data();
+      modoESP32 = d.modoESP32 || false;
+      pulsosPorLitro = d.pulsosPorLitro || PULSOS_POR_LITRO_DEFAULT;
+    }
   } catch(e) {}
+}
+
+window.guardarCalibracionPulsos = async function() {
+  const input = document.getElementById('pulsos-por-litro-input');
+  const valor = parseFloat(input.value);
+  if (isNaN(valor) || valor <= 0) { toast('Ingresá un número válido de pulsos por litro', false); return; }
+  pulsosPorLitro = valor;
+  try {
+    await setDoc(doc(db, 'config', 'sistema'), { pulsosPorLitro: valor }, { merge: true });
+    toast(`✓ Calibración guardada: ${valor} pulsos/litro`, true);
+  } catch(e) { toast('Error: ' + e.message, false); }
 }
 
 const TOTALIZADOR_INICIAL = 620133;
@@ -436,6 +458,8 @@ function actualizarToggleESP32() {
   btnManual.style.color = !modoESP32 ? 'var(--blanco)' : 'var(--acero)';
   btnAuto.style.background = modoESP32 ? 'var(--verde)' : 'var(--blanco)';
   btnAuto.style.color = modoESP32 ? 'var(--blanco)' : 'var(--acero)';
+  const inputCalib = document.getElementById('pulsos-por-litro-input');
+  if (inputCalib) inputCalib.value = pulsosPorLitro;
 }
 
 window.desconectarJD = async function() {
@@ -2950,6 +2974,14 @@ tbody td{padding:10px 12px;vertical-align:middle;}
           <button id="esp32-btn-auto" onclick="guardarModoESP32(true)" style="flex:1;padding:10px;font-size:13px;font-weight:600;cursor:pointer;border:none;font-family:var(--sans)">📡 Automático ESP32</button>
         </div>
         <div style="font-size:12px;color:var(--acero)">Manual: operador escribe los litros · Automático: se leen desde el caudalímetro en tiempo real</div>
+        <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--borde)">
+          <label>Calibración (pulsos por litro)</label>
+          <div style="display:flex;gap:8px;margin-top:6px">
+            <input type="number" id="pulsos-por-litro-input" min="1" step="0.1" placeholder="Ej: 33.5" style="flex:1">
+            <button class="btn btn-secondary" onclick="guardarCalibracionPulsos()" style="white-space:nowrap">Guardar</button>
+          </div>
+          <div class="hint">Litros = pulsos ÷ este número. Ajustalo aquí si calibrás el Piusi con un volumen conocido — no hace falta tocar el ESP32.</div>
+        </div>
       </div>
       <div class="panel" id="panel-jdlink-config">
         <div class="panel-title">🟢 John Deere Operations Center</div>
