@@ -578,8 +578,9 @@ let solicitudPendienteId = null;   // ID Firestore de la solicitud del operador
 let unsubSolicitud = null;          // listener en tiempo real de esa solicitud
 let unsubSolicitudesAdmin = null;   // listener de todas las solicitudes (solo admin)
 
-const EQUIPO_TIPO = { 'Toyota Hilux':'km', 'Ford Ranger':'km', 'Toyota JCAZ':'km' };
-function tipoEquipo(eq) { return EQUIPO_TIPO[eq] || 'hr'; }
+const EQUIPO_TIPO_DEFAULT = { 'Toyota Hilux':'km', 'Ford Ranger':'km', 'Toyota JCAZ':'km' };
+let tiposEquipo = {}; // se carga desde Firestore (config.datos.tiposEquipo) — editable desde Configurar
+function tipoEquipo(eq) { return tiposEquipo[eq] || 'hr'; }
 
 const TRABAJOS_GENERAL = ['Incorporación','Preparación suelo siembra','Siembra','Fertilización','Fumigación','Riego','Cosecha','Otro (especificar)'];
 const TRABAJOS_AVELLANOS = ['Preparación suelo pre plantación','Plantación','Postcosecha','Nebulizador','Fumigación','Sierpes','Fertilización','Cosecha','Otro (especificar)'];
@@ -722,6 +723,35 @@ const APEROS_GENERAL_DETALLE = {
   ]
 };
 
+// ─── APEROS EDITABLES (Configurar) ──────────────────────────
+// Se cargan desde Firestore (config.datos.aperos) y reemplazan, para la selección
+// en pantalla, a las listas hardcodeadas de arriba. Cada apero: { nombre, trabajos, equipos }
+// trabajos/equipos vacíos ([]) significa "sin restricción" (aplica a todos).
+let aperosConfig = [];
+
+// Migración única: la primera vez que corre esta versión, arma la lista editable
+// de aperos a partir de las listas hardcodeadas históricas (APEROS_AVELLANOS,
+// APEROS_GENERAL_DETALLE, etc.), sin restringir por equipo (equipos: []) para no
+// alterar el comportamiento actual — la restricción por equipo queda como algo que
+// el admin agrega desde ahora en adelante, desde Configurar.
+function construirAperosDesdeHardcode() {
+  const trabajosPorApero = {}; // nombre → Set(trabajos)
+  function addApero(nombre, trabajo) {
+    if (!nombre || nombre === OTRO) return; // "Otro (especificar)" siempre disponible, no se administra
+    if (!trabajosPorApero[nombre]) trabajosPorApero[nombre] = new Set();
+    trabajosPorApero[nombre].add(trabajo);
+  }
+  Object.entries(APEROS_AVELLANOS).forEach(([trabajo, cfg]) => {
+    if (Array.isArray(cfg.aperos)) cfg.aperos.forEach(a => addApero(a, trabajo));
+  });
+  Object.keys(APERO_AUTOMATICO_FUMIGACION).forEach(tractor => addApero(APERO_AUTOMATICO_FUMIGACION[tractor], 'Fumigación'));
+  Object.values(APEROS_POR_TRACTOR_COSECHA).forEach(lista => lista.forEach(a => addApero(a, 'Cosecha')));
+  Object.entries(APEROS_GENERAL_DETALLE).forEach(([trabajo, lista]) => lista.forEach(a => addApero(a.nombre, trabajo)));
+  return Object.entries(trabajosPorApero).map(([nombre, trabajosSet]) => ({
+    nombre, trabajos: [...trabajosSet], equipos: []
+  }));
+}
+
 const DEFAULT_CONFIG = {
   equipos: ['JD 8330','JD 7205J','JD 6170J','JD 6910','JD 3350 T','JD 3350','JD 2850','JD 5600','JD 5090','JD 5076','Kubota 2320','Clinton','Bobcat','Miniexcavadora LongYan','Excavadora','Toyota Hilux','Ford Ranger','Toyota JCAZ','Otro (especificar)'],
   operadores: ['José Jarpa','Víctor Rodríguez','Cristian Cádiz','Rafael Riquelme','Patricio Cádiz','Edgardo Ruíz','Matías Jarpa','Israel','Luis Alberto','Eduardo Faundez','JC Allende','Camila Faundez','Juan Uribe','JCAZ','Otros (especificar)'],
@@ -783,9 +813,24 @@ async function loadConfig() {
         config.equipos[idxVarios] = 'Otro (especificar)';
         await setDoc(doc(db, 'config', 'datos'), config);
       }
+      // Migración automática: tipo km/hr de cada equipo, ahora editable desde Configurar
+      // (antes vivía hardcodeado en el código, en EQUIPO_TIPO_DEFAULT)
+      if (!config.tiposEquipo) {
+        config.tiposEquipo = { ...EQUIPO_TIPO_DEFAULT };
+        await setDoc(doc(db, 'config', 'datos'), config);
+      }
+      // Migración automática: aperos, ahora editables y asignables a equipos desde Configurar
+      // (antes vivían hardcodeados en APEROS_AVELLANOS / APEROS_GENERAL_DETALLE)
+      if (!config.aperos) {
+        config.aperos = construirAperosDesdeHardcode();
+        await setDoc(doc(db, 'config', 'datos'), config);
+      }
     } else {
-      await setDoc(doc(db, 'config', 'datos'), DEFAULT_CONFIG);
+      config = { ...DEFAULT_CONFIG, tiposEquipo: { ...EQUIPO_TIPO_DEFAULT }, aperos: construirAperosDesdeHardcode() };
+      await setDoc(doc(db, 'config', 'datos'), config);
     }
+    tiposEquipo = config.tiposEquipo || {};
+    aperosConfig = config.aperos || [];
   } catch(e) { console.error(e); }
 }
 async function saveConfig() { await setDoc(doc(db, 'config', 'datos'), config); }
@@ -1253,27 +1298,19 @@ function renderAperoSinFiltro(wrap) {
     return;
   }
 
-  // Reunir todos los aperos de avellanos + general para el trabajo seleccionado
-  const aperoSet = new Set();
-
-  const cfgAv = APEROS_AVELLANOS[trabajoSeleccionado];
-  if (cfgAv?.aperos) cfgAv.aperos.forEach(a => aperoSet.add(a));
-
-  const detalleGen = APEROS_GENERAL_DETALLE[trabajoSeleccionado];
-  if (detalleGen) detalleGen.forEach(a => aperoSet.add(a.nombre));
-
-  // Cosecha avellanos tiene aperos por tractor, añadirlos todos
-  if (trabajoSeleccionado === 'Cosecha') {
-    Object.values(APEROS_POR_TRACTOR_COSECHA).forEach(lista => lista.forEach(a => aperoSet.add(a)));
-  }
-
-  const aperos = [...aperoSet];
-  if (aperos.length === 0) { wrap.innerHTML = ''; return; }
+  // Aperos disponibles para el trabajo (y, si el apero tiene equipos asignados, para
+  // el equipo actualmente seleccionado). Vienen de la lista editable en Configurar.
+  const equipoActual = document.getElementById('equipo').value;
+  const aperos = aperosConfig
+    .filter(a => !a.trabajos || a.trabajos.length === 0 || a.trabajos.includes(trabajoSeleccionado))
+    .filter(a => !a.equipos || a.equipos.length === 0 || a.equipos.includes(equipoActual))
+    .map(a => a.nombre);
+  aperos.push(OTRO); // siempre disponible como comodín
 
   wrap.innerHTML = `
     <div style="margin-top:10px">
       <div class="cultivos-label">Apero utilizado</div>
-      <div class="centros-selector">${aperos.map(a => `<div class="cultivo-chip ${aperoSeleccionado===a?'sel':''}" onclick="seleccionarApero('${a}')">${a}</div>`).join('')}</div>
+      <div class="centros-selector">${aperos.map(a => `<div class="cultivo-chip ${aperoSeleccionado===a?'sel':''}" onclick='seleccionarApero(${JSON.stringify(a)})'>${a}</div>`).join('')}</div>
       <div id="apero-otro-wrap"></div>
     </div>`;
   if (aperoSeleccionado === OTRO) renderAperoOtro();
@@ -1478,6 +1515,11 @@ window.onEquipoChange = async function() {
   // Vehículos km y equipo "Otro (especificar)" no usan trabajo ni apero — limpiar
   if (tipoEquipo(eq) === 'km' || eq === 'Otro (especificar)') {
     trabajoSeleccionado = null; aperoSeleccionado = null; aperoObsTexto = '';
+  } else {
+    // El apero disponible puede depender del equipo (si algún apero fue restringido
+    // a equipos específicos desde Configurar), así que se limpia para que el
+    // operador vuelva a elegir uno válido para el equipo recién seleccionado.
+    aperoSeleccionado = null; aperoObsTexto = '';
   }
 
   await cargarUltimoRegistro(eq);
@@ -2279,20 +2321,186 @@ window.resetearPin = async function(operador) {
 window.agregar = async function(tipo) {
   const ids={equipos:'nuevo-equipo',operadores:'nuevo-operador',centros:'nuevo-centro'};
   const inp=document.getElementById(ids[tipo]); const val=inp.value.trim(); if(!val)return;
-  config[tipo].push(val); await saveConfig(); inp.value='';
+  config[tipo].push(val);
+  if (tipo === 'equipos') {
+    const tipoSel = document.getElementById('nuevo-equipo-tipo');
+    if (!config.tiposEquipo) config.tiposEquipo = {};
+    config.tiposEquipo[val] = tipoSel ? tipoSel.value : 'hr';
+    tiposEquipo = config.tiposEquipo;
+  }
+  await saveConfig(); inp.value='';
   renderConfigListas(); initRegistro(); toast('✓ Agregado',true);
 }
 window.eliminarItem = async function(tipo,idx) {
   if(!confirm('¿Eliminar?'))return;
-  config[tipo].splice(idx,1); await saveConfig();
+  const val = config[tipo][idx];
+  config[tipo].splice(idx,1);
+  if (tipo === 'equipos' && config.tiposEquipo) delete config.tiposEquipo[val];
+  // Si se elimina un equipo, sacarlo también de las restricciones de aperos
+  if (tipo === 'equipos' && Array.isArray(config.aperos)) {
+    config.aperos.forEach(a => {
+      if (Array.isArray(a.equipos)) {
+        const i = a.equipos.indexOf(val);
+        if (i >= 0) a.equipos.splice(i, 1);
+      }
+    });
+    aperosConfig = config.aperos;
+  }
+  await saveConfig();
   renderConfigListas(); initRegistro();
+}
+window.cambiarTipoEquipo = async function(equipo) {
+  const actual = tipoEquipo(equipo);
+  const nuevo = actual === 'km' ? 'hr' : 'km';
+  const etiquetaActual = actual === 'km' ? 'Kilómetros (km/L)' : 'Horas (L/hr)';
+  const etiquetaNueva = nuevo === 'km' ? 'Kilómetros (km/L)' : 'Horas (L/hr)';
+  if (!confirm(`Cambiar "${equipo}" de ${etiquetaActual} a ${etiquetaNueva}?\n\n⚠️ Esto afecta cómo se valida y calcula el horómetro/odómetro de este equipo hacia adelante. Los registros históricos no se modifican.`)) return;
+  if (!config.tiposEquipo) config.tiposEquipo = {};
+  config.tiposEquipo[equipo] = nuevo;
+  tiposEquipo = config.tiposEquipo;
+  await saveConfig();
+  renderConfigListas();
+  toast(`✓ ${equipo} ahora se registra en ${nuevo==='km'?'km/L':'L/hr'}`, true);
 }
 function renderConfigListas() {
   ['equipos','operadores','centros'].forEach(tipo=>{
     document.getElementById('lista-'+tipo).innerHTML=
-      config[tipo].map((v,i)=>`<div class="config-item"><span>${v}${tipo==='equipos'?` <span class="badge badge-${tipoEquipo(v)}" style="font-size:10px;margin-left:6px">${tipoEquipo(v)==='km'?'km/L':'L/hr'}</span>`:''}</span><button class="btn btn-danger" onclick="eliminarItem('${tipo}',${i})">✕</button></div>`).join('')
+      config[tipo].map((v,i)=>`<div class="config-item"><span>${v}${tipo==='equipos'?` <span class="badge badge-${tipoEquipo(v)}" style='font-size:10px;margin-left:6px;cursor:pointer' title="Click para cambiar entre km/hr" onclick='cambiarTipoEquipo(${JSON.stringify(v)})'>${tipoEquipo(v)==='km'?'km/L ⇄':'L/hr ⇄'}</span>`:''}</span><button class="btn btn-danger" onclick="eliminarItem('${tipo}',${i})">✕</button></div>`).join('')
       ||'<div style="color:#9CA3AF;font-size:13px;padding:8px">Sin registros.</div>';
   });
+}
+
+// ─── APEROS / IMPLEMENTOS (Configurar) ──────────────────────
+// Estado en memoria del formulario "agregar apero nuevo"
+let nuevoAperoTrabajos = [];
+let nuevoAperoEquipos = [];
+// Estado en memoria del editor de asignación de un apero existente
+let edicionAperoIndex = null;
+let edicionAperoTrabajos = [];
+let edicionAperoEquipos = [];
+
+function listaTrabajosDisponibles() {
+  return [...new Set([...TRABAJOS_GENERAL, ...TRABAJOS_AVELLANOS])].filter(t => t !== OTRO);
+}
+function listaEquiposDisponibles() {
+  return config.equipos.filter(e => e !== 'Otro (especificar)');
+}
+
+function renderPanelAperos() {
+  const cont = document.getElementById('lista-aperos');
+  if (cont) {
+    cont.innerHTML = aperosConfig.length ? aperosConfig.map((a,i) => `
+      <div class="config-item" style="flex-direction:column;align-items:stretch;gap:6px">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+          <strong style="font-size:14px">${a.nombre}</strong>
+          <div style="display:flex;gap:6px">
+            <button class="btn btn-secondary" style="font-size:11px;padding:6px 10px" onclick="abrirEdicionApero(${i})">✏️ Asignar</button>
+            <button class="btn btn-danger" onclick="eliminarApero(${i})">✕</button>
+          </div>
+        </div>
+        <div style="font-size:12px;color:var(--acero)"><strong>Trabajos:</strong> ${a.trabajos && a.trabajos.length ? a.trabajos.join(', ') : 'Todos'}</div>
+        <div style="font-size:12px;color:var(--acero)"><strong>Equipos:</strong> ${a.equipos && a.equipos.length ? a.equipos.join(', ') : 'Todos'}</div>
+        <div id="apero-editor-${i}"></div>
+      </div>`).join('') : '<div style="color:#9CA3AF;font-size:13px;padding:8px">Sin aperos configurados.</div>';
+  }
+
+  const wrapT = document.getElementById('nuevo-apero-trabajos');
+  if (wrapT) wrapT.innerHTML = listaTrabajosDisponibles().map(t => `<div class="cultivo-chip ${nuevoAperoTrabajos.includes(t)?'sel':''}" onclick='toggleNuevoAperoTrabajo(${JSON.stringify(t)})'>${t}</div>`).join('');
+  const wrapE = document.getElementById('nuevo-apero-equipos');
+  if (wrapE) wrapE.innerHTML = listaEquiposDisponibles().map(e => `<div class="cultivo-chip ${nuevoAperoEquipos.includes(e)?'sel':''}" onclick='toggleNuevoAperoEquipo(${JSON.stringify(e)})'>${e}</div>`).join('');
+}
+
+window.toggleNuevoAperoTrabajo = function(t) {
+  const i = nuevoAperoTrabajos.indexOf(t);
+  if (i >= 0) nuevoAperoTrabajos.splice(i,1); else nuevoAperoTrabajos.push(t);
+  renderPanelAperos();
+}
+window.toggleNuevoAperoEquipo = function(e) {
+  const i = nuevoAperoEquipos.indexOf(e);
+  if (i >= 0) nuevoAperoEquipos.splice(i,1); else nuevoAperoEquipos.push(e);
+  renderPanelAperos();
+}
+
+window.agregarApero = async function() {
+  const inp = document.getElementById('nuevo-apero-nombre');
+  const nombre = inp.value.trim();
+  if (!nombre) { toast('Ingresá el nombre del apero', false); return; }
+  if (nombre === OTRO) { toast('Ese nombre está reservado', false); return; }
+  if (aperosConfig.some(a => a.nombre.toLowerCase() === nombre.toLowerCase())) { toast('Ya existe un apero con ese nombre', false); return; }
+  aperosConfig.push({ nombre, trabajos: [...nuevoAperoTrabajos], equipos: [...nuevoAperoEquipos] });
+  config.aperos = aperosConfig;
+  try {
+    await saveConfig();
+    inp.value = '';
+    nuevoAperoTrabajos = []; nuevoAperoEquipos = [];
+    renderPanelAperos();
+    toast('✓ Apero agregado', true);
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
+window.eliminarApero = async function(idx) {
+  const a = aperosConfig[idx];
+  if (!a) return;
+  if (!confirm(`¿Eliminar el apero "${a.nombre}"?`)) return;
+  aperosConfig.splice(idx,1);
+  config.aperos = aperosConfig;
+  try {
+    await saveConfig();
+    renderPanelAperos();
+    toast('Apero eliminado', false);
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
+window.abrirEdicionApero = function(idx) {
+  const a = aperosConfig[idx];
+  if (!a) return;
+  edicionAperoIndex = idx;
+  edicionAperoTrabajos = [...(a.trabajos || [])];
+  edicionAperoEquipos = [...(a.equipos || [])];
+  renderEditorApero(idx);
+}
+
+function renderEditorApero(idx) {
+  const cont = document.getElementById(`apero-editor-${idx}`);
+  if (!cont) return;
+  cont.innerHTML = `
+    <div style="background:var(--fondo);border:1px solid var(--borde);border-radius:6px;padding:10px;margin-top:4px">
+      <div class="cultivos-label">Trabajos donde aparece (vacío = todos)</div>
+      <div class="centros-selector">${listaTrabajosDisponibles().map(t => `<div class="cultivo-chip ${edicionAperoTrabajos.includes(t)?'sel':''}" onclick='toggleEdicionAperoTrabajo(${JSON.stringify(t)},${idx})'>${t}</div>`).join('')}</div>
+      <div class="cultivos-label" style="margin-top:10px">Equipos habilitados (vacío = todos)</div>
+      <div class="centros-selector">${listaEquiposDisponibles().map(e => `<div class="cultivo-chip ${edicionAperoEquipos.includes(e)?'sel':''}" onclick='toggleEdicionAperoEquipo(${JSON.stringify(e)},${idx})'>${e}</div>`).join('')}</div>
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="cerrarEdicionApero(${idx})">Cancelar</button>
+        <button class="btn btn-verde" style="flex:1" onclick="guardarEdicionApero(${idx})">✓ Guardar</button>
+      </div>
+    </div>`;
+}
+window.toggleEdicionAperoTrabajo = function(t, idx) {
+  const i = edicionAperoTrabajos.indexOf(t);
+  if (i >= 0) edicionAperoTrabajos.splice(i,1); else edicionAperoTrabajos.push(t);
+  renderEditorApero(idx);
+}
+window.toggleEdicionAperoEquipo = function(e, idx) {
+  const i = edicionAperoEquipos.indexOf(e);
+  if (i >= 0) edicionAperoEquipos.splice(i,1); else edicionAperoEquipos.push(e);
+  renderEditorApero(idx);
+}
+window.cerrarEdicionApero = function(idx) {
+  edicionAperoIndex = null;
+  const cont = document.getElementById(`apero-editor-${idx}`);
+  if (cont) cont.innerHTML = '';
+}
+window.guardarEdicionApero = async function(idx) {
+  if (!aperosConfig[idx]) return;
+  aperosConfig[idx].trabajos = [...edicionAperoTrabajos];
+  aperosConfig[idx].equipos = [...edicionAperoEquipos];
+  config.aperos = aperosConfig;
+  try {
+    await saveConfig();
+    edicionAperoIndex = null;
+    renderPanelAperos();
+    toast('✓ Asignación actualizada', true);
+  } catch(e) { toast('Error: ' + e.message, false); }
 }
 
 // ─── TABS ─────────────────────────────────────────────────
@@ -2303,7 +2511,7 @@ window.setTab = function(id,el) {
   document.getElementById('tc-'+id).classList.add('active');
   if(el)el.classList.add('active');
   if(['historial','admin','analytics','informes'].includes(id)) loadHistorial();
-  if(id==='config') { renderConfigListas(); if(isAdmin) cargarPines(); actualizarToggleESP32(); }
+  if(id==='config') { renderConfigListas(); renderPanelAperos(); if(isAdmin) cargarPines(); actualizarToggleESP32(); }
   if(id==='mantencion') { initMantencion(); }
   if(id==='registro' && isAdmin) escucharSolicitudesAdmin();
 }
@@ -3011,7 +3219,34 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       <div class="panel">
         <div class="panel-title">Equipos</div>
         <div class="config-lista" id="lista-equipos"></div>
-        <div class="config-add"><input type="text" id="nuevo-equipo" placeholder="Ej: JD 6130"><button class="btn-add" onclick="agregar('equipos')">+ Agregar</button></div>
+        <div class="config-add">
+          <input type="text" id="nuevo-equipo" placeholder="Ej: JD 6130">
+          <div class="select-wrapper" style="width:130px;flex-shrink:0">
+            <select id="nuevo-equipo-tipo">
+              <option value="hr">Horas (L/hr)</option>
+              <option value="km">Kilómetros (km/L)</option>
+            </select>
+          </div>
+          <button class="btn-add" onclick="agregar('equipos')">+ Agregar</button>
+        </div>
+        <div class="hint">Click en la etiqueta km/L ó L/hr de cada equipo para cambiar su tipo de medidor.</div>
+      </div>
+      <div class="panel">
+        <div class="panel-title">🔩 Aperos / Implementos</div>
+        <p class="hint" style="margin-bottom:12px">Cada apero puede asignarse a uno o más tipos de trabajo y, opcionalmente, restringirse a equipos específicos. Si no se marca ningún equipo, queda disponible para todos.</p>
+        <div class="config-lista" id="lista-aperos"></div>
+        <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--borde)">
+          <div class="field"><label>Nombre del nuevo apero</label><input type="text" id="nuevo-apero-nombre" placeholder="Ej: Rastra de discos"></div>
+          <div class="field">
+            <label>Tipos de trabajo donde aparece (opcional)</label>
+            <div class="centros-selector" id="nuevo-apero-trabajos"></div>
+          </div>
+          <div class="field">
+            <label>Equipos habilitados (opcional — vacío = todos)</label>
+            <div class="centros-selector" id="nuevo-apero-equipos"></div>
+          </div>
+          <button class="btn-add" style="width:100%;justify-content:center" onclick="agregarApero()">+ Agregar apero</button>
+        </div>
       </div>
       <div class="panel">
         <div class="panel-title">Operadores</div>
