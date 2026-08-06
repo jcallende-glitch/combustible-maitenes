@@ -472,6 +472,20 @@ async function cargarModoESP32() {
   } catch(e) {}
 }
 
+// El horario permitido y las excepciones por equipo viven en config/sistema y se
+// escuchan en tiempo real: si el admin cambia algo desde Configurar, se refleja
+// de inmediato en todos los dispositivos sin necesidad de recargar la app.
+function suscribirHorarioConfig() {
+  onSnapshot(doc(db, 'config', 'sistema'), snap => {
+    if (!snap.exists()) return;
+    const d = snap.data();
+    if (d.horarioPermitido) horarioConfig = d.horarioPermitido;
+    excepcionesEquipoHorario = d.excepcionesEquipo || {};
+    actualizarVisibilidadHorario();
+    if (document.getElementById('tc-config')?.classList.contains('active')) renderPanelHorario();
+  });
+}
+
 window.guardarCalibracionPulsos = async function() {
   const input = document.getElementById('pulsos-por-litro-input');
   const valor = parseFloat(input.value);
@@ -572,7 +586,11 @@ function actualizarBotonesJDLink(eq) {
     btnLogin.style.display = 'flex'; btnHoras.style.display = 'none';
   }
 }
-const HORARIO_PERMITIDO = { diaInicio: 1, diaFin: 5, horaInicio: 8, horaFin: 18 }; // Lun(1)-Vie(5), 8:00-18:00
+// El horario permitido y las excepciones por equipo ahora son editables desde
+// Configurar y se guardan en Firestore (config/sistema), con listener en tiempo
+// real para que un cambio del admin se refleje de inmediato en todos los dispositivos.
+let horarioConfig = { dias: [1,2,3,4,5], horaInicio: 8, horaFin: 18 }; // default: Lun-Vie 8:00-18:00
+let excepcionesEquipoHorario = {}; // { equipo: { indefinido:true } } o { equipo: { hasta: msEpoch } }
 let excepcionHorarioActiva = false;
 let solicitudPendienteId = null;   // ID Firestore de la solicitud del operador
 let unsubSolicitud = null;          // listener en tiempo real de esa solicitud
@@ -581,6 +599,33 @@ let unsubSolicitudesAdmin = null;   // listener de todas las solicitudes (solo a
 const EQUIPO_TIPO_DEFAULT = { 'Toyota Hilux':'km', 'Ford Ranger':'km', 'Toyota JCAZ':'km' };
 let tiposEquipo = {}; // se carga desde Firestore (config.datos.tiposEquipo) — editable desde Configurar
 function tipoEquipo(eq) { return tiposEquipo[eq] || 'hr'; }
+
+// ─── REQUISITOS POR EQUIPO (Configurar) ─────────────────────
+// Determina si un equipo, al cargar combustible, exige seleccionar cultivo,
+// tipo de trabajo y/o apero. Editable desde Configurar. Por defecto (equipos
+// no migrados aún) los 3 quedan en true, salvo que el propio equipo sea tipo
+// "km" (vehículos), que nunca exige trabajo/apero sin importar la config.
+const EQUIPOS_SIN_TRABAJO_DEFAULT = ['Excavadora', 'Miniexcavadora LongYan'];
+let requisitosEquipo = {}; // se carga desde Firestore (config.datos.requisitosEquipo)
+
+function construirRequisitosDesdeDefault() {
+  const req = {};
+  (config.equipos || []).forEach(eq => {
+    const sinTrabajo = EQUIPOS_SIN_TRABAJO_DEFAULT.includes(eq);
+    req[eq] = { cultivo: true, trabajo: !sinTrabajo, apero: !sinTrabajo };
+  });
+  return req;
+}
+
+function requisitosDe(eq) {
+  const r = (requisitosEquipo && requisitosEquipo[eq]) || {};
+  const esKm = tipoEquipo(eq) === 'km';
+  return {
+    cultivo: r.cultivo !== false,
+    trabajo: r.trabajo !== false && !esKm,
+    apero: r.apero !== false && !esKm
+  };
+}
 
 const TRABAJOS_GENERAL = ['Incorporación','Preparación suelo siembra','Siembra','Fertilización','Fumigación','Riego','Cosecha','Otro (especificar)'];
 const TRABAJOS_AVELLANOS = ['Preparación suelo pre plantación','Plantación','Postcosecha','Nebulizador','Fumigación','Sierpes','Fertilización','Cosecha','Otro (especificar)'];
@@ -772,6 +817,7 @@ let centrosSeleccionados = [];
 let trabajoSeleccionado = null;
 let aperoSeleccionado = null;
 let aperoObsTexto = '';
+let centroObsTexto = ''; // detalle de texto libre cuando el cultivo es "Otros (especificar)"
 
 
 window.addEventListener('DOMContentLoaded', async () => {
@@ -779,6 +825,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   await cargarModoESP32();
   await cargarTotalizadorGlobal();
   suscribirSaldo();
+  suscribirHorarioConfig();
   // Cargar la conexión de John Deere desde Firestore (compartida entre todos los dispositivos)
   await cargarConfigJD();
   // Manejar callback OAuth de John Deere
@@ -825,12 +872,20 @@ async function loadConfig() {
         config.aperos = construirAperosDesdeHardcode();
         await setDoc(doc(db, 'config', 'datos'), config);
       }
+      // Migración automática: requisitos por equipo (cultivo/trabajo/apero),
+      // ahora editables desde Configurar en vez de estar implícitos en el código
+      if (!config.requisitosEquipo) {
+        config.requisitosEquipo = construirRequisitosDesdeDefault();
+        await setDoc(doc(db, 'config', 'datos'), config);
+      }
     } else {
       config = { ...DEFAULT_CONFIG, tiposEquipo: { ...EQUIPO_TIPO_DEFAULT }, aperos: construirAperosDesdeHardcode() };
+      config.requisitosEquipo = construirRequisitosDesdeDefault();
       await setDoc(doc(db, 'config', 'datos'), config);
     }
     tiposEquipo = config.tiposEquipo || {};
     aperosConfig = config.aperos || [];
+    requisitosEquipo = config.requisitosEquipo || {};
   } catch(e) { console.error(e); }
 }
 async function saveConfig() { await setDoc(doc(db, 'config', 'datos'), config); }
@@ -908,7 +963,7 @@ window.intentarLogin = async function() {
   if (unsubSolicitud) { unsubSolicitud(); unsubSolicitud = null; }
   // Resetear mensaje del aviso horario
   const msgAviso = document.getElementById('estado-solicitud-msg');
-  if (msgAviso) msgAviso.textContent = '⛔ Fuera de horario (Lun-Vie 8:00-18:00)';
+  if (msgAviso) msgAviso.textContent = `⛔ Fuera de horario (${textoHorarioPermitido()})`;
   initRegistro(); showScreen('app'); setTab('registro', document.querySelector('.tab'));
   if (isAdmin) escucharSolicitudesAdmin();
   if (result.pinInicial) setTimeout(() => mostrarCambioPin(true), 500);
@@ -949,10 +1004,28 @@ function dentroDeHorarioPermitido() {
   const ahora = new Date();
   const dia = ahora.getDay(); // 0=Domingo, 1=Lunes... 6=Sábado
   const hora = ahora.getHours() + ahora.getMinutes() / 60;
-  const { diaInicio, diaFin, horaInicio, horaFin } = HORARIO_PERMITIDO;
-  const diaOk = dia >= diaInicio && dia <= diaFin;
-  const horaOk = hora >= horaInicio && hora < horaFin;
+  const dias = horarioConfig.dias || [1,2,3,4,5];
+  const diaOk = dias.includes(dia);
+  const horaOk = hora >= horarioConfig.horaInicio && hora < horarioConfig.horaFin;
   return diaOk && horaOk;
+}
+
+// Un equipo puede quedar habilitado sin restricción de horario, ya sea de forma
+// indefinida o hasta una fecha/hora límite (configurable desde Configurar).
+function equipoExcepcionActiva(eq) {
+  const exc = excepcionesEquipoHorario[eq];
+  if (!exc) return false;
+  if (exc.indefinido) return true;
+  if (exc.hasta && Date.now() < exc.hasta) return true;
+  return false;
+}
+
+function textoHorarioPermitido() {
+  const NOMBRES_DIAS = { 0:'Dom', 1:'Lun', 2:'Mar', 3:'Mié', 4:'Jue', 5:'Vie', 6:'Sáb' };
+  const orden = [1,2,3,4,5,6,0];
+  const dias = (horarioConfig.dias || [1,2,3,4,5]).slice().sort((a,b)=>orden.indexOf(a)-orden.indexOf(b));
+  const diasStr = dias.map(d=>NOMBRES_DIAS[d]).join('-');
+  return `${diasStr} ${horarioConfig.horaInicio}:00-${horarioConfig.horaFin}:00`;
 }
 
 function actualizarVisibilidadHorario() {
@@ -960,7 +1033,8 @@ function actualizarVisibilidadHorario() {
   if (!aviso) return;
   // Admin nunca ve el aviso — puede cargar siempre
   if (isAdmin) { aviso.style.display = 'none'; validarPaso1(); return; }
-  const fueraHorario = !dentroDeHorarioPermitido() && !excepcionHorarioActiva;
+  const eq = document.getElementById('equipo')?.value || '';
+  const fueraHorario = !dentroDeHorarioPermitido() && !excepcionHorarioActiva && !equipoExcepcionActiva(eq);
   aviso.style.display = fueraHorario ? 'flex' : 'none';
   aviso.style.background = 'var(--rojo)';
   const btnSolicitar = document.getElementById('btn-solicitar');
@@ -1035,7 +1109,7 @@ function actualizarAvisoSolicitud(estado) {
   } else if (estado === 'rechazado') {
     aviso.style.background = 'var(--rojo)';
     const msg = aviso.querySelector('#estado-solicitud-msg');
-    if (msg) msg.textContent = '⛔ Fuera de horario (Lun-Vie 8:00-18:00)';
+    if (msg) msg.textContent = `⛔ Fuera de horario (${textoHorarioPermitido()})`;
     const btnSol = document.getElementById('btn-solicitar');
     if (btnSol) { btnSol.disabled = false; btnSol.textContent = '📲 Solicitar autorización'; }
   }
@@ -1087,15 +1161,16 @@ window.responderSolicitud = async function(id, estado) {
 }
 
 window.confirmarPaso1YEncender = async function() {
-  const horarioOk = dentroDeHorarioPermitido() || excepcionHorarioActiva || isAdmin;
-  if (!horarioOk) { toast('⛔ Fuera de horario autorizado (Lun-Vie 8:00-18:00)', false); return; }
-
   const eq = document.getElementById('equipo').value;
+  const horarioOk = dentroDeHorarioPermitido() || excepcionHorarioActiva || isAdmin || equipoExcepcionActiva(eq);
+  if (!horarioOk) { toast(`⛔ Fuera de horario autorizado (${textoHorarioPermitido()})`, false); return; }
+
   const esOtroEquipo = eq === 'Otro (especificar)';
+  const req = requisitosDe(eq);
   const mvRaw = document.getElementById('medidor-valor').value;
   const mv = mvRaw === '' ? null : parseFloat(mvRaw);
-  if (!eq || centrosSeleccionados.length === 0 || (!esOtroEquipo && (mv === null || isNaN(mv) || mv < 0))) {
-    toast(esOtroEquipo ? 'Completá equipo y cultivo antes de encender' : 'Completá equipo, cultivo y horómetro antes de encender', false); return;
+  if (!eq || (req.cultivo && centrosSeleccionados.length === 0) || (!esOtroEquipo && (mv === null || isNaN(mv) || mv < 0))) {
+    toast(esOtroEquipo ? 'Completá equipo y cultivo antes de encender' : (req.cultivo ? 'Completá equipo, cultivo y horómetro antes de encender' : 'Completá equipo y horómetro antes de encender'), false); return;
   }
   if (!esOtroEquipo && ultimoRegistroEquipo?.medidor_valor != null && mv < ultimoRegistroEquipo.medidor_valor) {
     toast(`⛔ El horómetro/odómetro (${mv}) no puede ser menor al último registrado (${ultimoRegistroEquipo.medidor_valor.toFixed(1)})`, false);
@@ -1201,7 +1276,7 @@ function initRegistro() {
     }
   }
   centrosSeleccionados = CULTIVO_OPERADOR_DEFAULT[currentUser] ? [CULTIVO_OPERADOR_DEFAULT[currentUser]] : [];
-  trabajoSeleccionado = null; aperoSeleccionado = null; aperoObsTexto = '';
+  trabajoSeleccionado = null; aperoSeleccionado = null; aperoObsTexto = ''; centroObsTexto = '';
   renderCentrosSelector();
   renderTrabajoSelector();
   limpiarPreview();
@@ -1223,7 +1298,21 @@ function renderCentrosSelector() {
     const sel = centrosSeleccionados.includes(c);
     return `<div class="cultivo-chip ${sel?'sel':''}" onclick="toggleCultivo('${c}')">${c}</div>`;
   }).join('');
+  renderCentroOtroInput();
   actualizarResumenCultivos();
+}
+
+// Si el cultivo "Otros (especificar)" está seleccionado, muestra un campo de
+// texto libre para detallar cuál es (igual patrón que "Otro" en equipo/apero).
+function renderCentroOtroInput() {
+  const wrap = document.getElementById('centro-otro-wrap');
+  if (!wrap) return;
+  if (centrosSeleccionados.includes('Otros (especificar)')) {
+    wrap.innerHTML = `<div class="field" style="margin-top:8px"><input type="text" id="centro-otro-input" placeholder="Especificar cultivo/centro de costo..." value="${centroObsTexto}" oninput="centroObsTexto=this.value;validarPaso1()"></div>`;
+  } else {
+    wrap.innerHTML = '';
+    centroObsTexto = '';
+  }
 }
 
 window.toggleCultivo = function(c) {
@@ -1245,9 +1334,11 @@ function renderTrabajoSelector() {
   const container = document.getElementById('trabajo-selector-wrap');
   if (!container) return;
 
-  // Vehículos km y equipo "Otro (especificar)" no usan tipo de trabajo ni apero
+  // Vehículos km, equipo "Otro (especificar)", cultivo "Mantención" u "Otros
+  // (especificar)", o equipos configurados sin requerir trabajo (ej. Excavadora,
+  // Miniexcavadora) no usan tipo de trabajo ni apero
   const eq = document.getElementById('equipo').value;
-  if (tipoEquipo(eq) === 'km' || eq === 'Otro (especificar)') { container.innerHTML = ''; return; }
+  if (tipoEquipo(eq) === 'km' || eq === 'Otro (especificar)' || centrosSeleccionados.includes('Mantención') || centrosSeleccionados.includes('Otros (especificar)') || !requisitosDe(eq).trabajo) { container.innerHTML = ''; return; }
 
   if (centrosSeleccionados.length === 0) { container.innerHTML = ''; return; }
 
@@ -1417,52 +1508,59 @@ window.validarPaso1 = function() {
   const eq = document.getElementById('equipo').value;
   const mv = document.getElementById('medidor-valor').value;
   const esOtroEquipo = eq === 'Otro (especificar)';
+  const req = requisitosDe(eq);
+  const faltantes = [];
 
-  // Para "Otro (especificar)" el horómetro/odómetro NO es obligatorio
-  let ok = eq && centrosSeleccionados.length > 0;
+  if (!eq) faltantes.push('Selecciona un equipo');
+
+  // Si el equipo no exige cultivo (configurable en Configurar), no se bloquea por eso
+  if (req.cultivo && centrosSeleccionados.length === 0) faltantes.push('Selecciona al menos un cultivo');
+
   if (!esOtroEquipo) {
-    ok = ok && mv !== '' && parseFloat(mv) >= 0;
+    if (mv === '' || isNaN(parseFloat(mv)) || parseFloat(mv) < 0) {
+      faltantes.push(medidor === 'km' ? 'Ingresa el odómetro' : 'Ingresa el horómetro');
+    }
   }
 
   // Si eligió "Otro (especificar)" como equipo, exigir texto descriptivo
-  if (ok && esOtroEquipo) {
+  if (esOtroEquipo) {
     const otroInput = document.getElementById('equipo-varios-input');
-    ok = ok && !!otroInput && otroInput.value.trim().length > 0;
+    if (!otroInput || !otroInput.value.trim()) faltantes.push('Especifica el equipo');
   }
 
-  // Vehículos km (camionetas) y equipo "Otro (especificar)" no requieren trabajo ni apero
+  // Si eligió "Otros (especificar)" como cultivo, exigir texto descriptivo
+  const esCentroOtro = centrosSeleccionados.includes('Otros (especificar)');
+  if (esCentroOtro && !centroObsTexto.trim()) faltantes.push('Especifica el cultivo');
+
+  // Vehículos km (camionetas), equipo "Otro (especificar)", cultivo "Mantención"
+  // u "Otros (especificar)", o equipos configurados sin requerir trabajo, no
+  // requieren tipo de trabajo ni apero
   const esKm = tipoEquipo(eq) === 'km';
+  const esMantencion = centrosSeleccionados.includes('Mantención');
 
-  if (!esKm && !esOtroEquipo) {
-    // Validar trabajo seleccionado
-    if (ok) {
-      ok = !!trabajoSeleccionado;
-      if (trabajoSeleccionado === OTRO) {
-        ok = ok && aperoObsTexto.trim().length > 0;
-      }
+  if (!esKm && !esOtroEquipo && !esMantencion && !esCentroOtro && req.trabajo) {
+    if (!trabajoSeleccionado) {
+      faltantes.push('Selecciona el tipo de trabajo');
+    } else if (trabajoSeleccionado === OTRO && !aperoObsTexto.trim()) {
+      faltantes.push('Especifica el trabajo realizado');
     }
 
-    // Validar apero obligatorio (aplica a Avellanos y General, excepto Riego y Otro)
+    // Validar apero obligatorio (aplica a Avellanos y General, excepto Riego y
+    // Otro, y solo si el equipo requiere apero según su configuración)
     const esAvellanos = centrosSeleccionados.includes('Avellanos');
-    if (ok && trabajoSeleccionado !== OTRO && trabajoSeleccionado !== 'Riego') {
-      if (esAvellanos) {
-        const cfg = APEROS_AVELLANOS[trabajoSeleccionado];
-        if (cfg) {
-          ok = ok && !!aperoSeleccionado;
-          if (aperoSeleccionado === OTRO) ok = ok && aperoObsTexto.trim().length > 0;
-        }
-      } else {
-        const detalle = APEROS_GENERAL_DETALLE[trabajoSeleccionado];
-        if (detalle) {
-          ok = ok && !!aperoSeleccionado;
-          if (aperoSeleccionado === OTRO) ok = ok && aperoObsTexto.trim().length > 0;
+    if (trabajoSeleccionado && req.apero && trabajoSeleccionado !== OTRO && trabajoSeleccionado !== 'Riego') {
+      const cfg = esAvellanos ? APEROS_AVELLANOS[trabajoSeleccionado] : APEROS_GENERAL_DETALLE[trabajoSeleccionado];
+      if (cfg) {
+        if (!aperoSeleccionado) {
+          faltantes.push('Selecciona el apero utilizado');
+        } else if (aperoSeleccionado === OTRO && !aperoObsTexto.trim()) {
+          faltantes.push('Especifica el apero utilizado');
         }
       }
-    }
-    if (ok && trabajoSeleccionado === 'Riego' && !esAvellanos) {
-      ok = ok && aperoObsTexto.trim().length >= 0;
     }
   }
+
+  let ok = faltantes.length === 0;
 
   const btn = document.getElementById('btn-bomba-on');
   if (!btn) return;
@@ -1470,9 +1568,23 @@ window.validarPaso1 = function() {
   // (no aplica a "Otro (especificar)", porque cada carga puede ser un equipo físico distinto)
   if (ok && !esOtroEquipo && ultimoRegistroEquipo?.medidor_valor != null && mv !== '' && parseFloat(mv) < ultimoRegistroEquipo.medidor_valor) {
     ok = false;
+    faltantes.push(`El ${medidor==='km'?'odómetro':'horómetro'} no puede ser menor al último registrado (${ultimoRegistroEquipo.medidor_valor.toFixed(1)})`);
   }
-  const horarioOk = dentroDeHorarioPermitido() || excepcionHorarioActiva || isAdmin;
+  const horarioOk = dentroDeHorarioPermitido() || excepcionHorarioActiva || isAdmin || equipoExcepcionActiva(eq);
   btn.disabled = !ok || !horarioOk;
+
+  // Mostrar junto al botón qué falta completar, para que el operador sepa por
+  // qué no puede encender la bomba (en vez de quedar el botón gris sin explicación)
+  const msgEl = document.getElementById('paso1-faltantes');
+  if (msgEl) {
+    if (!ok && faltantes.length) {
+      msgEl.style.display = 'block';
+      msgEl.textContent = `⚠️ Falta: ${faltantes.join(' · ')}`;
+    } else {
+      msgEl.style.display = 'none';
+      msgEl.textContent = '';
+    }
+  }
 }
 
 function actualizarResumenCultivos() {
@@ -1537,6 +1649,7 @@ window.onEquipoChange = async function() {
   if (trabajoSeleccionado) renderTrabajoSelector();
   actualizarBotonesJDLink(eq);
   if (EQUIPOS_JDLINK.includes(eq) && jdAccessToken) obtenerHorasJDLink();
+  actualizarVisibilidadHorario();
   validarPaso1();
 }
 
@@ -1657,6 +1770,7 @@ window.toggleCambioEquipo = function() {
     cargarUltimoRegistro(equipoAsignado);
     actualizarBotonesJDLink(equipoAsignado);
     if (EQUIPOS_JDLINK.includes(equipoAsignado) && jdAccessToken) obtenerHorasJDLink();
+    actualizarVisibilidadHorario();
     limpiarPreview();
   }
 }
@@ -1672,6 +1786,7 @@ window.registrar = async function() {
   const { fecha, hora } = getNow();
   const eq = document.getElementById('equipo').value;
   const esOtroEquipo = eq === 'Otro (especificar)';
+  const req = requisitosDe(eq);
   const eqDetalle = esOtroEquipo ? (document.getElementById('equipo-varios-input')?.value.trim() || '') : null;
   const lt = parseFloat(document.getElementById('litros').value);
   const mvRaw = document.getElementById('medidor-valor').value;
@@ -1684,8 +1799,8 @@ window.registrar = async function() {
     operadorRegistro = otroInput && otroInput.value.trim() ? otroInput.value.trim() : operadorRegistro;
   }
 
-  if (!eq || centrosSeleccionados.length===0 || isNaN(lt)||lt<=0 || (!esOtroEquipo && (mv === null || isNaN(mv) || mv < 0)) || isNaN(tot)||tot<=0) {
-    toast('Completá todos los campos y seleccioná al menos un cultivo', false); return;
+  if (!eq || (req.cultivo && centrosSeleccionados.length===0) || isNaN(lt)||lt<=0 || (!esOtroEquipo && (mv === null || isNaN(mv) || mv < 0)) || isNaN(tot)||tot<=0) {
+    toast(req.cultivo ? 'Completá todos los campos y seleccioná al menos un cultivo' : 'Completá todos los campos', false); return;
   }
   if (!esOtroEquipo && ultimoRegistroEquipo?.medidor_valor != null && mv < ultimoRegistroEquipo.medidor_valor) {
     toast(`⛔ El horómetro/odómetro (${mv}) no puede ser menor al último registrado (${ultimoRegistroEquipo.medidor_valor.toFixed(1)})`, false);
@@ -1726,15 +1841,15 @@ window.registrar = async function() {
     } catch(e) { console.warn('Error calculando desviación eficiencia:', e); }
   }
 
-  // Distribución por cultivo
+  // Distribución por cultivo (si el equipo no exige cultivo y no se seleccionó ninguno, no hay distribución)
   const n = centrosSeleccionados.length;
-  const ltPorCultivo = lt / n;
-  const medPorCultivo = diffMedidor > 0 ? diffMedidor / n : 0;
-  const distribucion = centrosSeleccionados.map(c => ({
+  const ltPorCultivo = n > 0 ? lt / n : 0;
+  const medPorCultivo = (n > 0 && diffMedidor > 0) ? diffMedidor / n : 0;
+  const distribucion = n > 0 ? centrosSeleccionados.map(c => ({
     centro: c, litros: ltPorCultivo,
     horas: medidor==='hr' ? medPorCultivo : null,
     km: medidor==='km' ? medPorCultivo : null
-  }));
+  })) : [];
 
   const btn = document.getElementById('btn-registrar');
   btn.disabled = true; btn.textContent = 'Apagando bomba y guardando...';
@@ -1745,7 +1860,8 @@ window.registrar = async function() {
     await addDoc(collection(db, 'registros'), {
       fecha, hora, equipo: eq, equipo_detalle: eqDetalle, operador: operadorRegistro,
       centros: centrosSeleccionados,
-      centro: centrosSeleccionados[0], // compatibilidad
+      centro: centrosSeleccionados[0] || null, // compatibilidad
+      centro_detalle: centrosSeleccionados.includes('Otros (especificar)') ? centroObsTexto : null,
       distribucion,
       trabajo: trabajoSeleccionado,
       trabajo_detalle: (trabajoSeleccionado === OTRO) ? aperoObsTexto : null,
@@ -1779,7 +1895,7 @@ window.registrar = async function() {
     const opOtroWrap = document.getElementById('operador-otro-wrap');
     if (opOtroWrap) opOtroWrap.innerHTML = '';
     centrosSeleccionados=[];
-    trabajoSeleccionado = null; aperoSeleccionado = null; aperoObsTexto = '';
+    trabajoSeleccionado = null; aperoSeleccionado = null; aperoObsTexto = ''; centroObsTexto = '';
     const variosWrap = document.getElementById('equipo-varios-wrap');
     if (variosWrap) variosWrap.innerHTML = '';
     limpiarPreview(); renderCentrosSelector(); renderTrabajoSelector();
@@ -1987,7 +2103,7 @@ window.renderTabla = function() {
           efHtml = `<span style="color:${color};font-weight:${color!=='inherit'?'600':'400'}">${r.alerta_eficiencia?'⚠️ ':''}${efStr}${icono}</span>`;
         }
 
-        const cultivos=(r.centros||[r.centro]).join(', ');
+        const cultivos=(r.centros||[r.centro]).join(', ') + (r.centro_detalle ? ` (${r.centro_detalle})` : '');
         const trabajoStr = r.trabajo === 'Otro (especificar)' ? (r.trabajo_detalle||'Otro') : (r.trabajo||'—');
         const aperoStr = r.apero ? (r.apero === 'Otro (especificar)' ? (r.apero_detalle||'Otro') : (r.apero === 'LIBRE' ? (r.apero_detalle||'') : r.apero)) : '';
 
@@ -2109,7 +2225,7 @@ window.exportarExcel = function() {
   let data=[...registros];
   if(!isAdmin && !isSupervisor) data=data.filter(r=>r.operador===currentUser);
   if(!data.length){toast('No hay registros',false);return;}
-  const rows=data.map(r=>({'Fecha':r.fecha,'Hora':r.hora,'Equipo':r.equipo_detalle?`${r.equipo}: ${r.equipo_detalle}`:r.equipo,'Operador':r.operador,'Cultivos':(r.centros||[r.centro]).join(' / '),'Trabajo':r.trabajo==='Otro (especificar)'?(r.trabajo_detalle||'Otro'):(r.trabajo||''),'Apero':r.apero?(r.apero==='Otro (especificar)'?(r.apero_detalle||'Otro'):(r.apero==='LIBRE'?(r.apero_detalle||''):r.apero)):'','Litros':r.litros,'Tipo Medidor':r.medidor_tipo==='km'?'Kilómetros':'Horas','Medidor Actual':r.medidor_valor,'Trabajado':r.diff_medidor||'','Eficiencia':r.eficiencia?(r.medidor_tipo==='km'?r.eficiencia.toFixed(2)+' km/L':r.eficiencia.toFixed(2)+' L/hr'):'','Totalizador':r.totalizador||'','Alerta':r.alerta_totalizador?'SÍ':'','Dif.Totalizador':r.dif_totalizador||'','Observación':r.obs||''}));
+  const rows=data.map(r=>({'Fecha':r.fecha,'Hora':r.hora,'Equipo':r.equipo_detalle?`${r.equipo}: ${r.equipo_detalle}`:r.equipo,'Operador':r.operador,'Cultivos':(r.centros||[r.centro]).join(' / ')+(r.centro_detalle?` (${r.centro_detalle})`:''),'Trabajo':r.trabajo==='Otro (especificar)'?(r.trabajo_detalle||'Otro'):(r.trabajo||''),'Apero':r.apero?(r.apero==='Otro (especificar)'?(r.apero_detalle||'Otro'):(r.apero==='LIBRE'?(r.apero_detalle||''):r.apero)):'','Litros':r.litros,'Tipo Medidor':r.medidor_tipo==='km'?'Kilómetros':'Horas','Medidor Actual':r.medidor_valor,'Trabajado':r.diff_medidor||'','Eficiencia':r.eficiencia?(r.medidor_tipo==='km'?r.eficiencia.toFixed(2)+' km/L':r.eficiencia.toFixed(2)+' L/hr'):'','Totalizador':r.totalizador||'','Alerta':r.alerta_totalizador?'SÍ':'','Dif.Totalizador':r.dif_totalizador||'','Observación':r.obs||''}));
   const ws=XLSX.utils.json_to_sheet(rows);
   const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,'Combustible');
   XLSX.writeFile(wb,`maitenes-combustible-${new Date().toISOString().slice(0,10)}.xlsx`);
@@ -2327,6 +2443,9 @@ window.agregar = async function(tipo) {
     if (!config.tiposEquipo) config.tiposEquipo = {};
     config.tiposEquipo[val] = tipoSel ? tipoSel.value : 'hr';
     tiposEquipo = config.tiposEquipo;
+    if (!config.requisitosEquipo) config.requisitosEquipo = {};
+    config.requisitosEquipo[val] = { cultivo: true, trabajo: true, apero: true };
+    requisitosEquipo = config.requisitosEquipo;
   }
   await saveConfig(); inp.value='';
   renderConfigListas(); initRegistro(); toast('✓ Agregado',true);
@@ -2336,6 +2455,7 @@ window.eliminarItem = async function(tipo,idx) {
   const val = config[tipo][idx];
   config[tipo].splice(idx,1);
   if (tipo === 'equipos' && config.tiposEquipo) delete config.tiposEquipo[val];
+  if (tipo === 'equipos' && config.requisitosEquipo) { delete config.requisitosEquipo[val]; requisitosEquipo = config.requisitosEquipo; }
   // Si se elimina un equipo, sacarlo también de las restricciones de aperos
   if (tipo === 'equipos' && Array.isArray(config.aperos)) {
     config.aperos.forEach(a => {
@@ -2362,10 +2482,37 @@ window.cambiarTipoEquipo = async function(equipo) {
   renderConfigListas();
   toast(`✓ ${equipo} ahora se registra en ${nuevo==='km'?'km/L':'L/hr'}`, true);
 }
+// Alterna si un equipo exige cultivo / tipo de trabajo / apero al cargar combustible
+window.toggleRequisitoEquipo = async function(equipo, campo) {
+  if (!config.requisitosEquipo) config.requisitosEquipo = {};
+  if (!config.requisitosEquipo[equipo]) config.requisitosEquipo[equipo] = { cultivo: true, trabajo: true, apero: true };
+  const actual = config.requisitosEquipo[equipo][campo] !== false;
+  config.requisitosEquipo[equipo][campo] = !actual;
+  requisitosEquipo = config.requisitosEquipo;
+  try {
+    await saveConfig();
+    renderConfigListas();
+    toast(`✓ ${equipo}: ${campo} ahora ${!actual ? 'es requerido' : 'no es requerido'}`, true);
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
 function renderConfigListas() {
   ['equipos','operadores','centros'].forEach(tipo=>{
     document.getElementById('lista-'+tipo).innerHTML=
-      config[tipo].map((v,i)=>`<div class="config-item"><span>${v}${tipo==='equipos'?` <span class="badge badge-${tipoEquipo(v)}" style='font-size:10px;margin-left:6px;cursor:pointer' title="Click para cambiar entre km/hr" onclick='cambiarTipoEquipo(${JSON.stringify(v)})'>${tipoEquipo(v)==='km'?'km/L ⇄':'L/hr ⇄'}</span>`:''}</span><button class="btn btn-danger" onclick="eliminarItem('${tipo}',${i})">✕</button></div>`).join('')
+      config[tipo].map((v,i)=>{
+        if (tipo === 'equipos') {
+          const req = requisitosDe(v);
+          const badgeReq = (label, campo, activo) => `<span class="badge" style='font-size:9px;margin-left:3px;cursor:pointer;background:${activo?'var(--verde-suave)':'#F3F4F6'};color:${activo?'var(--verde)':'#9CA3AF'}' title="Click para cambiar si ${label.toLowerCase()} es requerido" onclick='toggleRequisitoEquipo(${JSON.stringify(v)},${JSON.stringify(campo)})'>${label}${activo?' ✓':' ✕'}</span>`;
+          return `<div class="config-item" style="flex-wrap:wrap;gap:6px">
+            <span style="flex:1;min-width:120px">${v}</span>
+            <span class="badge badge-${tipoEquipo(v)}" style='font-size:10px;cursor:pointer' title="Click para cambiar entre km/hr" onclick='cambiarTipoEquipo(${JSON.stringify(v)})'>${tipoEquipo(v)==='km'?'km/L ⇄':'L/hr ⇄'}</span>
+            ${badgeReq('Cultivo','cultivo',req.cultivo)}
+            ${badgeReq('Trabajo','trabajo',req.trabajo)}
+            ${badgeReq('Apero','apero',req.apero)}
+            <button class="btn btn-danger" onclick="eliminarItem('${tipo}',${i})">✕</button>
+          </div>`;
+        }
+        return `<div class="config-item"><span>${v}</span><button class="btn btn-danger" onclick="eliminarItem('${tipo}',${i})">✕</button></div>`;
+      }).join('')
       ||'<div style="color:#9CA3AF;font-size:13px;padding:8px">Sin registros.</div>';
   });
 }
@@ -2503,6 +2650,105 @@ window.guardarEdicionApero = async function(idx) {
   } catch(e) { toast('Error: ' + e.message, false); }
 }
 
+// ─── HORARIO PERMITIDO Y EXCEPCIONES POR EQUIPO (Configurar) ────
+const DIAS_SEMANA = [
+  { label: 'Lun', value: 1 }, { label: 'Mar', value: 2 }, { label: 'Mié', value: 3 },
+  { label: 'Jue', value: 4 }, { label: 'Vie', value: 5 }, { label: 'Sáb', value: 6 }, { label: 'Dom', value: 0 }
+];
+let diasHorarioSeleccionados = [1,2,3,4,5];
+
+function renderPanelHorario() {
+  diasHorarioSeleccionados = [...(horarioConfig.dias || [1,2,3,4,5])];
+  const wrapDias = document.getElementById('horario-dias-selector');
+  if (wrapDias) {
+    wrapDias.innerHTML = DIAS_SEMANA.map(d => `<div class="cultivo-chip ${diasHorarioSeleccionados.includes(d.value)?'sel':''}" onclick='toggleDiaHorario(${d.value})'>${d.label}</div>`).join('');
+  }
+  const inpInicio = document.getElementById('horario-hora-inicio');
+  const inpFin = document.getElementById('horario-hora-fin');
+  if (inpInicio) inpInicio.value = horarioConfig.horaInicio;
+  if (inpFin) inpFin.value = horarioConfig.horaFin;
+  renderListaExcepcionesEquipo();
+}
+
+window.toggleDiaHorario = function(dia) {
+  const i = diasHorarioSeleccionados.indexOf(dia);
+  if (i >= 0) diasHorarioSeleccionados.splice(i, 1); else diasHorarioSeleccionados.push(dia);
+  const wrapDias = document.getElementById('horario-dias-selector');
+  if (wrapDias) {
+    wrapDias.innerHTML = DIAS_SEMANA.map(d => `<div class="cultivo-chip ${diasHorarioSeleccionados.includes(d.value)?'sel':''}" onclick='toggleDiaHorario(${d.value})'>${d.label}</div>`).join('');
+  }
+}
+
+window.guardarHorarioPermitido = async function() {
+  const horaInicio = parseFloat(document.getElementById('horario-hora-inicio').value);
+  const horaFin = parseFloat(document.getElementById('horario-hora-fin').value);
+  if (isNaN(horaInicio) || isNaN(horaFin) || horaInicio < 0 || horaFin > 24 || horaInicio >= horaFin) {
+    toast('Horario inválido — la hora de inicio debe ser menor a la de fin', false); return;
+  }
+  if (!diasHorarioSeleccionados.length) { toast('Selecciona al menos un día', false); return; }
+  horarioConfig = { dias: [...diasHorarioSeleccionados], horaInicio, horaFin };
+  try {
+    await setDoc(doc(db, 'config', 'sistema'), { horarioPermitido: horarioConfig }, { merge: true });
+    toast('✓ Horario permitido actualizado', true);
+    actualizarVisibilidadHorario();
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
+window.habilitarEquipoIndefinido = async function() {
+  const eq = document.getElementById('excepcion-equipo-sel').value;
+  if (!eq) { toast('Selecciona un equipo', false); return; }
+  if (!confirm(`¿Habilitar "${eq}" para cargar combustible sin restricción de horario, de forma indefinida?`)) return;
+  excepcionesEquipoHorario[eq] = { indefinido: true };
+  try {
+    await setDoc(doc(db, 'config', 'sistema'), { excepcionesEquipo: excepcionesEquipoHorario }, { merge: true });
+    renderListaExcepcionesEquipo();
+    toast(`✓ ${eq} habilitado sin restricción de horario (indefinido)`, true);
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
+window.habilitarEquipoPorHoras = async function() {
+  const eq = document.getElementById('excepcion-equipo-sel').value;
+  const horas = parseFloat(document.getElementById('excepcion-horas-input').value);
+  if (!eq) { toast('Selecciona un equipo', false); return; }
+  if (isNaN(horas) || horas <= 0) { toast('Ingresá por cuántas horas habilitarlo', false); return; }
+  const hasta = Date.now() + horas * 3600000;
+  excepcionesEquipoHorario[eq] = { hasta };
+  try {
+    await setDoc(doc(db, 'config', 'sistema'), { excepcionesEquipo: excepcionesEquipoHorario }, { merge: true });
+    renderListaExcepcionesEquipo();
+    toast(`✓ ${eq} habilitado por ${horas} hora${horas!=1?'s':''}`, true);
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
+window.quitarExcepcionEquipo = async function(eq) {
+  delete excepcionesEquipoHorario[eq];
+  try {
+    await setDoc(doc(db, 'config', 'sistema'), { excepcionesEquipo: excepcionesEquipoHorario }, { merge: true });
+    renderListaExcepcionesEquipo();
+    toast(`Excepción de ${eq} eliminada — vuelve a respetar el horario normal`, false);
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
+function renderListaExcepcionesEquipo() {
+  const cont = document.getElementById('lista-excepciones-equipo');
+  if (cont) {
+    const activos = Object.entries(excepcionesEquipoHorario).filter(([, exc]) => exc && (exc.indefinido || (exc.hasta && exc.hasta > Date.now())));
+    cont.innerHTML = activos.length ? activos.map(([eq, exc]) => {
+      const estado = exc.indefinido ? '♾️ Sin restricción de horario (indefinido)' : `⏳ Habilitado hasta ${new Date(exc.hasta).toLocaleString('es-CL')}`;
+      return `<div class="config-item">
+        <span style="flex:1"><strong>${eq}</strong><br><span style="font-size:12px;color:var(--acero)">${estado}</span></span>
+        <button class="btn btn-danger" onclick='quitarExcepcionEquipo(${JSON.stringify(eq)})'>Quitar</button>
+      </div>`;
+    }).join('') : '<div style="color:#9CA3AF;font-size:13px;padding:8px">Sin excepciones activas.</div>';
+  }
+  const sel = document.getElementById('excepcion-equipo-sel');
+  if (sel) {
+    const cur = sel.value;
+    sel.innerHTML = '<option value="" disabled selected>Seleccionar equipo</option>' +
+      config.equipos.filter(e => e !== 'Otro (especificar)').map(e => `<option value="${e}" ${e===cur?'selected':''}>${e}</option>`).join('');
+  }
+}
+
 // ─── TABS ─────────────────────────────────────────────────
 window.setTab = function(id,el) {
   if (id === 'config') actualizarPanelJDConfig();
@@ -2511,7 +2757,7 @@ window.setTab = function(id,el) {
   document.getElementById('tc-'+id).classList.add('active');
   if(el)el.classList.add('active');
   if(['historial','admin','analytics','informes'].includes(id)) loadHistorial();
-  if(id==='config') { renderConfigListas(); renderPanelAperos(); if(isAdmin) cargarPines(); actualizarToggleESP32(); }
+  if(id==='config') { renderConfigListas(); renderPanelAperos(); renderPanelHorario(); if(isAdmin) cargarPines(); actualizarToggleESP32(); }
   if(id==='mantencion') { initMantencion(); }
   if(id==='registro' && isAdmin) escucharSolicitudesAdmin();
 }
@@ -3053,6 +3299,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         <div style="margin-bottom:14px">
           <div class="cultivos-label">Cultivos trabajados (seleccioná uno o más)</div>
           <div class="centros-selector" id="centros-selector"></div>
+          <div id="centro-otro-wrap"></div>
           <div id="cultivos-resumen"></div>
         </div>
 
@@ -3085,6 +3332,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
           <button onclick="solicitarAutorizacion()" id="btn-solicitar" style="display:none;background:white;color:var(--rojo);border:none;padding:5px 10px;border-radius:4px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap">📲 Solicitar autorización</button>
         </div>
 
+        <div id="paso1-faltantes" style="display:none;background:var(--amarillo-suave);color:#92400E;padding:9px 14px;border-radius:6px;margin-bottom:8px;font-size:13px;font-weight:500"></div>
         <button id="btn-bomba-on" class="btn btn-verde btn-full" onclick="confirmarPaso1YEncender()" disabled>🔌 Confirmar datos y encender bomba</button>
       </div>
 
@@ -3229,7 +3477,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
           </div>
           <button class="btn-add" onclick="agregar('equipos')">+ Agregar</button>
         </div>
-        <div class="hint">Click en la etiqueta km/L ó L/hr de cada equipo para cambiar su tipo de medidor.</div>
+        <div class="hint">Click en km/L ó L/hr para cambiar el tipo de medidor. Click en Cultivo/Trabajo/Apero para cambiar si ese campo es requerido al cargar combustible con ese equipo.</div>
       </div>
       <div class="panel">
         <div class="panel-title">🔩 Aperos / Implementos</div>
@@ -3269,6 +3517,41 @@ tbody td{padding:10px 12px;vertical-align:middle;}
           <div class="anterior-row"><span>Margen tolerancia totalizador:</span><strong>± 5 L</strong></div>
           <div class="anterior-row"><span>Alerta saldo bajo:</span><strong>2.500 L</strong></div>
           <div class="anterior-row"><span>Capacidad estanque:</span><strong>15.000 L</strong></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-title">⏰ Horario permitido para cargar combustible</div>
+        <p class="hint" style="margin-bottom:12px">Los operadores solo pueden cargar combustible dentro de estos días y horas (el administrador siempre puede, sin restricción).</p>
+        <div class="field">
+          <label>Días habilitados</label>
+          <div class="centros-selector" id="horario-dias-selector"></div>
+        </div>
+        <div class="grid-2">
+          <div class="field">
+            <label>Hora inicio</label>
+            <input type="number" id="horario-hora-inicio" min="0" max="24" step="1" placeholder="Ej: 8">
+          </div>
+          <div class="field">
+            <label>Hora fin</label>
+            <input type="number" id="horario-hora-fin" min="0" max="24" step="1" placeholder="Ej: 18">
+          </div>
+        </div>
+        <button class="btn btn-verde" style="width:100%;justify-content:center" onclick="guardarHorarioPermitido()">✓ Guardar horario</button>
+      </div>
+      <div class="panel">
+        <div class="panel-title">🔓 Excepciones de horario por equipo</div>
+        <p class="hint" style="margin-bottom:12px">Habilita una máquina en particular para cargar combustible sin restricción de horario — de forma indefinida, o solo por un tiempo determinado.</p>
+        <div class="config-lista" id="lista-excepciones-equipo"></div>
+        <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--borde)">
+          <div class="field">
+            <label>Equipo</label>
+            <div class="select-wrapper"><select id="excepcion-equipo-sel"></select></div>
+          </div>
+          <button class="btn btn-secondary" style="width:100%;justify-content:center;margin-bottom:10px" onclick="habilitarEquipoIndefinido()">♾️ Habilitar indefinido (sin restricción)</button>
+          <div style="display:flex;gap:8px">
+            <input type="number" id="excepcion-horas-input" min="1" step="1" placeholder="Horas" style="flex:1">
+            <button class="btn btn-verde" style="white-space:nowrap" onclick="habilitarEquipoPorHoras()">⏳ Habilitar por X horas</button>
+          </div>
         </div>
       </div>
       <div class="panel">
