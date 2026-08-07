@@ -93,8 +93,15 @@ const JD_TOKEN_URL = 'https://signin.johndeere.com/oauth2/aus78tnlaysMraFhC1t7/v
 const JD_API_BASE = 'https://partnerapi.deere.com/platform';
 const JD_SCOPES = 'ag1 ag2 ag3 eq1 eq2 org1 org2 offline_access openid email profile';
 
-// Solo estos 3 tractores tienen JDLink activo
-const EQUIPOS_JDLINK = ['JD 6170J', 'JD 6910', 'JD 5090'];
+// EQUIPOS_JDLINK_DEFAULT es solo la SEMILLA usada una única vez para migrar a
+// Firestore (config.datos.equiposJDLink). Desde ahí en adelante, la lista real
+// y editable vive en `equiposJDLinkConfig`, con un interruptor por equipo en
+// Configurar (igual que km/hr, Cultivo/Trabajo/Apero).
+const EQUIPOS_JDLINK_DEFAULT = ['JD 6170J', 'JD 6910', 'JD 5090'];
+let equiposJDLinkConfig = []; // se carga desde Firestore (config.datos.equiposJDLink)
+// Wrapper con la misma interfaz que el array viejo (.includes(eq)), para no
+// tener que tocar cada punto del código que ya lo usaba así
+const EQUIPOS_JDLINK = { includes: (eq) => equiposJDLinkConfig.includes(eq) };
 
 let jdAccessToken = null;
 let jdRefreshToken = null;
@@ -928,6 +935,12 @@ async function loadConfig() {
         config.parametros = { capacidad: CAPACIDAD_DEFAULT, alertaLitros: ALERTA_LITROS_DEFAULT, margenTotalizador: MARGEN_TOTALIZADOR_DEFAULT };
         await setDoc(doc(db, 'config', 'datos'), config);
       }
+      // Migración automática: qué equipos tienen JDLink habilitado, ahora
+      // editable desde Configurar (antes vivía hardcodeado en EQUIPOS_JDLINK)
+      if (!config.equiposJDLink) {
+        config.equiposJDLink = [...EQUIPOS_JDLINK_DEFAULT];
+        await setDoc(doc(db, 'config', 'datos'), config);
+      }
     } else {
       config = { ...DEFAULT_CONFIG, tiposEquipo: { ...EQUIPO_TIPO_DEFAULT }, aperos: construirAperosDesdeHardcode() };
       config.requisitosEquipo = construirRequisitosDesdeDefault();
@@ -936,6 +949,7 @@ async function loadConfig() {
       config.mantenciones = construirMantencionesDesdeHardcode();
       config.alertaHrsAntes = ALERTA_HRS_ANTES_DEFAULT;
       config.parametros = { capacidad: CAPACIDAD_DEFAULT, alertaLitros: ALERTA_LITROS_DEFAULT, margenTotalizador: MARGEN_TOTALIZADOR_DEFAULT };
+      config.equiposJDLink = [...EQUIPOS_JDLINK_DEFAULT];
       await setDoc(doc(db, 'config', 'datos'), config);
     }
     tiposEquipo = config.tiposEquipo || {};
@@ -946,6 +960,7 @@ async function loadConfig() {
     mantencionesConfig = config.mantenciones || [];
     alertaHrsAntes = config.alertaHrsAntes != null ? config.alertaHrsAntes : ALERTA_HRS_ANTES_DEFAULT;
     parametrosSistema = config.parametros || { capacidad: CAPACIDAD_DEFAULT, alertaLitros: ALERTA_LITROS_DEFAULT, margenTotalizador: MARGEN_TOTALIZADOR_DEFAULT };
+    equiposJDLinkConfig = config.equiposJDLink || [];
   } catch(e) { console.error(e); }
 }
 async function saveConfig() { await setDoc(doc(db, 'config', 'datos'), config); }
@@ -2583,6 +2598,12 @@ window.eliminarItem = async function(tipo,idx) {
     });
     equipoOperadorConfig = config.equipoOperador;
   }
+  // Si se elimina un equipo, sacarlo también de la lista de equipos con JDLink
+  if (tipo === 'equipos' && Array.isArray(config.equiposJDLink)) {
+    const i = config.equiposJDLink.indexOf(val);
+    if (i >= 0) config.equiposJDLink.splice(i, 1);
+    equiposJDLinkConfig = config.equiposJDLink;
+  }
   // Si se elimina un operador, sacar también su asignación de equipos
   if (tipo === 'operadores' && config.equipoOperador) {
     delete config.equipoOperador[val];
@@ -2630,12 +2651,29 @@ window.toggleRequisitoEquipo = async function(equipo, campo) {
     toast(`✓ ${equipo}: ${campo} ahora ${!actual ? 'es requerido' : 'no es requerido'}`, true);
   } catch(e) { toast('Error: ' + e.message, false); }
 }
+// Alterna si un equipo tiene JDLink habilitado (le muestra el botón "Obtener
+// horas desde JDLink" en el formulario) — úsalo cuando emparejes un tractor
+// nuevo en John Deere Operations Center
+window.toggleJDLinkEquipo = async function(equipo) {
+  if (!config.equiposJDLink) config.equiposJDLink = [];
+  const i = config.equiposJDLink.indexOf(equipo);
+  const activo = i >= 0;
+  if (activo) config.equiposJDLink.splice(i, 1);
+  else config.equiposJDLink.push(equipo);
+  equiposJDLinkConfig = config.equiposJDLink;
+  try {
+    await saveConfig();
+    renderConfigListas();
+    toast(`✓ ${equipo}: JDLink ${activo ? 'desactivado' : 'activado'}`, true);
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
 function renderConfigListas() {
   ['equipos','operadores','centros','trabajos'].forEach(tipo=>{
     document.getElementById('lista-'+tipo).innerHTML=
       config[tipo].map((v,i)=>{
         if (tipo === 'equipos') {
           const req = requisitosDe(v);
+          const jdLinkActivo = equiposJDLinkConfig.includes(v);
           const badgeReq = (label, campo, activo) => `<span class="badge" style='font-size:9px;margin-left:3px;cursor:pointer;background:${activo?'var(--verde-suave)':'#F3F4F6'};color:${activo?'var(--verde)':'#9CA3AF'}' title="Click para cambiar si ${label.toLowerCase()} es requerido" onclick='toggleRequisitoEquipo(${JSON.stringify(v)},${JSON.stringify(campo)})'>${label}${activo?' ✓':' ✕'}</span>`;
           return `<div class="config-item" style="flex-wrap:wrap;gap:6px">
             <span style="flex:1;min-width:120px">${v}</span>
@@ -2643,6 +2681,7 @@ function renderConfigListas() {
             ${badgeReq('Cultivo','cultivo',req.cultivo)}
             ${badgeReq('Trabajo','trabajo',req.trabajo)}
             ${badgeReq('Apero','apero',req.apero)}
+            <span class="badge" style='font-size:9px;margin-left:3px;cursor:pointer;background:${jdLinkActivo?'var(--verde-suave)':'#F3F4F6'};color:${jdLinkActivo?'var(--verde)':'#9CA3AF'}' title="Click para activar/desactivar JDLink en este equipo" onclick='toggleJDLinkEquipo(${JSON.stringify(v)})'>JDLink${jdLinkActivo?' ✓':' ✕'}</span>
             <button class="btn btn-danger" onclick="eliminarItem('${tipo}',${i})">✕</button>
           </div>`;
         }
@@ -3809,7 +3848,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
           </div>
           <button class="btn-add" onclick="agregar('equipos')">+ Agregar</button>
         </div>
-        <div class="hint">Click en km/L ó L/hr para cambiar el tipo de medidor. Click en Cultivo/Trabajo/Apero para cambiar si ese campo es requerido al cargar combustible con ese equipo.</div>
+        <div class="hint">Click en km/L ó L/hr para cambiar el tipo de medidor. Click en Cultivo/Trabajo/Apero para cambiar si ese campo es requerido. Click en JDLink para activar/desactivar la integración con John Deere Operations Center en ese equipo (primero debe estar emparejado en connections.deere.com).</div>
       </div>
       <div class="panel">
         <div class="panel-title">🔩 Aperos / Implementos</div>
