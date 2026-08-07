@@ -23,6 +23,9 @@ const db = getFirestore(app);
 
 const ADMIN_PIN = '1234';
 const ADMIN_NOMBRE = 'JC Allende';
+// EQUIPO_OPERADOR es solo la SEMILLA usada una única vez para migrar a Firestore
+// (config.datos.equipoOperador). Desde ahí en adelante, la asignación real y
+// editable vive en `equipoOperadorConfig`, administrable desde Configurar.
 const EQUIPO_OPERADOR = {
   'José Jarpa': 'JD 8330',
   'Víctor Rodríguez': 'JD 7205J',
@@ -37,10 +40,25 @@ const EQUIPO_OPERADOR = {
   'JC Allende': 'Ford Ranger',
   'JCAZ': 'Toyota JCAZ'
 };
+const MAX_EQUIPOS_POR_OPERADOR = 3;
+let equipoOperadorConfig = {}; // se carga desde Firestore (config.datos.equipoOperador)
+
+// Devuelve siempre un array (1, 2 o hasta MAX_EQUIPOS_POR_OPERADOR equipos) con
+// los equipos principales de un operador. El mismo equipo puede ser "principal"
+// para varios operadores distintos a la vez — no hay exclusividad.
+function equiposDe(operador) {
+  const v = equipoOperadorConfig[operador];
+  if (!v) return [];
+  return Array.isArray(v) ? v : [v];
+}
 const CULTIVO_OPERADOR_DEFAULT = { 'JCAZ': 'Mantención' };
-const CAPACIDAD = 15000;
-const ALERTA_LITROS = 2500;
-const MARGEN_TOTALIZADOR = 5;
+// Estos 3 parámetros ahora son editables desde Configurar → Parámetros del
+// sistema. Las constantes _DEFAULT solo sirven de semilla para la primera
+// migración a Firestore (config.datos.parametros).
+const CAPACIDAD_DEFAULT = 15000;
+const ALERTA_LITROS_DEFAULT = 2500;
+const MARGEN_TOTALIZADOR_DEFAULT = 5;
+let parametrosSistema = { capacidad: CAPACIDAD_DEFAULT, alertaLitros: ALERTA_LITROS_DEFAULT, margenTotalizador: MARGEN_TOTALIZADOR_DEFAULT };
 const WA_PHONE = '56983419231';
 const WA_KEY = '8974364';
 const PIN_INICIAL = '0000';
@@ -480,7 +498,7 @@ function suscribirHorarioConfig() {
     if (!snap.exists()) return;
     const d = snap.data();
     if (d.horarioPermitido) horarioConfig = d.horarioPermitido;
-    excepcionesEquipoHorario = d.excepcionesEquipo || {};
+    excepcionesOperadorHorario = d.excepcionesOperador || {};
     actualizarVisibilidadHorario();
     if (document.getElementById('tc-config')?.classList.contains('active')) renderPanelHorario();
   });
@@ -590,7 +608,7 @@ function actualizarBotonesJDLink(eq) {
 // Configurar y se guardan en Firestore (config/sistema), con listener en tiempo
 // real para que un cambio del admin se refleje de inmediato en todos los dispositivos.
 let horarioConfig = { dias: [1,2,3,4,5], horaInicio: 8, horaFin: 18 }; // default: Lun-Vie 8:00-18:00
-let excepcionesEquipoHorario = {}; // { equipo: { indefinido:true } } o { equipo: { hasta: msEpoch } }
+let excepcionesOperadorHorario = {}; // { operador: { indefinido:true } } o { operador: { hasta: msEpoch } }
 let excepcionHorarioActiva = false;
 let solicitudPendienteId = null;   // ID Firestore de la solicitud del operador
 let unsubSolicitud = null;          // listener en tiempo real de esa solicitud
@@ -627,8 +645,12 @@ function requisitosDe(eq) {
   };
 }
 
+// TRABAJOS_GENERAL/TRABAJOS_AVELLANOS son solo la SEMILLA usada una única vez
+// para migrar a Firestore (config.datos.trabajos). Desde ahí en adelante, la
+// lista real y editable vive en `trabajosConfig`, administrable desde Configurar.
 const TRABAJOS_GENERAL = ['Incorporación','Preparación suelo siembra','Siembra','Fertilización','Fumigación','Riego','Cosecha','Otro (especificar)'];
 const TRABAJOS_AVELLANOS = ['Preparación suelo pre plantación','Plantación','Postcosecha','Nebulizador','Fumigación','Sierpes','Fertilización','Cosecha','Otro (especificar)'];
+let trabajosConfig = []; // se carga desde Firestore (config.datos.trabajos)
 
 const OTRO = 'Otro (especificar)';
 
@@ -878,14 +900,52 @@ async function loadConfig() {
         config.requisitosEquipo = construirRequisitosDesdeDefault();
         await setDoc(doc(db, 'config', 'datos'), config);
       }
+      // Migración automática: equipo(s) principal(es) por operador, ahora
+      // editable desde Configurar (antes vivía hardcodeado en EQUIPO_OPERADOR)
+      if (!config.equipoOperador) {
+        config.equipoOperador = { ...EQUIPO_OPERADOR };
+        await setDoc(doc(db, 'config', 'datos'), config);
+      }
+      // Migración automática: tipos de trabajo, ahora editables desde Configurar
+      // (antes vivían hardcodeados en TRABAJOS_GENERAL / TRABAJOS_AVELLANOS)
+      if (!config.trabajos) {
+        config.trabajos = [...new Set([...TRABAJOS_GENERAL, ...TRABAJOS_AVELLANOS])];
+        await setDoc(doc(db, 'config', 'datos'), config);
+      }
+      // Migración automática: catálogo de mantenciones, ahora editable desde
+      // Configurar (antes vivía hardcodeado en MANT_POR_HORAS / MANT_ANUAL / MANT_SIN_FRECUENCIA)
+      if (!config.mantenciones) {
+        config.mantenciones = construirMantencionesDesdeHardcode();
+        await setDoc(doc(db, 'config', 'datos'), config);
+      }
+      if (config.alertaHrsAntes == null) {
+        config.alertaHrsAntes = ALERTA_HRS_ANTES_DEFAULT;
+        await setDoc(doc(db, 'config', 'datos'), config);
+      }
+      // Migración automática: parámetros del sistema (capacidad estanque, alerta
+      // stock bajo, margen totalizador), ahora editables desde Configurar
+      if (!config.parametros) {
+        config.parametros = { capacidad: CAPACIDAD_DEFAULT, alertaLitros: ALERTA_LITROS_DEFAULT, margenTotalizador: MARGEN_TOTALIZADOR_DEFAULT };
+        await setDoc(doc(db, 'config', 'datos'), config);
+      }
     } else {
       config = { ...DEFAULT_CONFIG, tiposEquipo: { ...EQUIPO_TIPO_DEFAULT }, aperos: construirAperosDesdeHardcode() };
       config.requisitosEquipo = construirRequisitosDesdeDefault();
+      config.equipoOperador = { ...EQUIPO_OPERADOR };
+      config.trabajos = [...new Set([...TRABAJOS_GENERAL, ...TRABAJOS_AVELLANOS])];
+      config.mantenciones = construirMantencionesDesdeHardcode();
+      config.alertaHrsAntes = ALERTA_HRS_ANTES_DEFAULT;
+      config.parametros = { capacidad: CAPACIDAD_DEFAULT, alertaLitros: ALERTA_LITROS_DEFAULT, margenTotalizador: MARGEN_TOTALIZADOR_DEFAULT };
       await setDoc(doc(db, 'config', 'datos'), config);
     }
     tiposEquipo = config.tiposEquipo || {};
     aperosConfig = config.aperos || [];
     requisitosEquipo = config.requisitosEquipo || {};
+    equipoOperadorConfig = config.equipoOperador || {};
+    trabajosConfig = config.trabajos || [];
+    mantencionesConfig = config.mantenciones || [];
+    alertaHrsAntes = config.alertaHrsAntes != null ? config.alertaHrsAntes : ALERTA_HRS_ANTES_DEFAULT;
+    parametrosSistema = config.parametros || { capacidad: CAPACIDAD_DEFAULT, alertaLitros: ALERTA_LITROS_DEFAULT, margenTotalizador: MARGEN_TOTALIZADOR_DEFAULT };
   } catch(e) { console.error(e); }
 }
 async function saveConfig() { await setDoc(doc(db, 'config', 'datos'), config); }
@@ -917,8 +977,8 @@ function suscribirSaldo() {
   });
 }
 function renderSaldo() {
-  const pct = Math.min(100, Math.max(0, (saldo / CAPACIDAD) * 100));
-  const alerta = saldo <= ALERTA_LITROS;
+  const pct = Math.min(100, Math.max(0, (saldo / parametrosSistema.capacidad) * 100));
+  const alerta = saldo <= parametrosSistema.alertaLitros;
   const color = alerta ? '#C0392B' : saldo < 5000 ? '#F5A623' : '#2D7D46';
   const html = `
     <div class="estanque-card ${alerta?'alerta':''}">
@@ -927,8 +987,8 @@ function renderSaldo() {
         <div class="estanque-pct" style="color:${color}">${pct.toFixed(0)}%</div>
       </div>
       <div class="barra-fondo"><div class="barra-relleno" style="width:${pct}%;background:${color}"></div></div>
-      ${alerta?`<div class="alerta-msg">⚠️ Stock bajo — menos de ${ALERTA_LITROS.toLocaleString('es-CL')} L</div>`:''}
-      <div class="estanque-cap">Capacidad: ${CAPACIDAD.toLocaleString('es-CL')} L</div>
+      ${alerta?`<div class="alerta-msg">⚠️ Stock bajo — menos de ${parametrosSistema.alertaLitros.toLocaleString('es-CL')} L</div>`:''}
+      <div class="estanque-cap">Capacidad: ${parametrosSistema.capacidad.toLocaleString('es-CL')} L</div>
     </div>`;
   document.querySelectorAll('.saldo-widget').forEach(el => el.innerHTML = html);
 }
@@ -1010,10 +1070,12 @@ function dentroDeHorarioPermitido() {
   return diaOk && horaOk;
 }
 
-// Un equipo puede quedar habilitado sin restricción de horario, ya sea de forma
-// indefinida o hasta una fecha/hora límite (configurable desde Configurar).
-function equipoExcepcionActiva(eq) {
-  const exc = excepcionesEquipoHorario[eq];
+// Un operador puede quedar habilitado sin restricción de horario, ya sea de
+// forma indefinida o hasta una fecha/hora límite (configurable desde Configurar).
+// La excepción sigue al operador, no al equipo — si el operador cambia de
+// máquina, la excepción se mantiene igual.
+function operadorExcepcionActiva(operador) {
+  const exc = excepcionesOperadorHorario[operador];
   if (!exc) return false;
   if (exc.indefinido) return true;
   if (exc.hasta && Date.now() < exc.hasta) return true;
@@ -1033,8 +1095,7 @@ function actualizarVisibilidadHorario() {
   if (!aviso) return;
   // Admin nunca ve el aviso — puede cargar siempre
   if (isAdmin) { aviso.style.display = 'none'; validarPaso1(); return; }
-  const eq = document.getElementById('equipo')?.value || '';
-  const fueraHorario = !dentroDeHorarioPermitido() && !excepcionHorarioActiva && !equipoExcepcionActiva(eq);
+  const fueraHorario = !dentroDeHorarioPermitido() && !excepcionHorarioActiva && !operadorExcepcionActiva(currentUser);
   aviso.style.display = fueraHorario ? 'flex' : 'none';
   aviso.style.background = 'var(--rojo)';
   const btnSolicitar = document.getElementById('btn-solicitar');
@@ -1162,7 +1223,7 @@ window.responderSolicitud = async function(id, estado) {
 
 window.confirmarPaso1YEncender = async function() {
   const eq = document.getElementById('equipo').value;
-  const horarioOk = dentroDeHorarioPermitido() || excepcionHorarioActiva || isAdmin || equipoExcepcionActiva(eq);
+  const horarioOk = dentroDeHorarioPermitido() || excepcionHorarioActiva || isAdmin || operadorExcepcionActiva(currentUser);
   if (!horarioOk) { toast(`⛔ Fuera de horario autorizado (${textoHorarioPermitido()})`, false); return; }
 
   const esOtroEquipo = eq === 'Otro (especificar)';
@@ -1250,24 +1311,43 @@ function initRegistro() {
     document.getElementById('operador-select').value = ADMIN_NOMBRE;
   } else { opField.style.display = 'none'; }
   populateSelect('equipo', config.equipos, 'Seleccionar equipo');
-  // Pre-seleccionar equipo asignado
-  const equipoAsignado = EQUIPO_OPERADOR[currentUser];
-  if (equipoAsignado && !isAdmin) {
-    document.getElementById('equipo-fijo').style.display = 'block';
-    document.getElementById('equipo-fijo').textContent = equipoAsignado;
-    document.getElementById('equipo-selector').style.display = 'none';
-    document.getElementById('btn-cambiar-equipo').style.display = 'block';
-    document.getElementById('equipo').value = equipoAsignado;
-    setMedidor(tipoEquipo(equipoAsignado));
-    cargarUltimoRegistro(equipoAsignado);
-    actualizarBotonesJDLink(equipoAsignado);
-    if (EQUIPOS_JDLINK.includes(equipoAsignado) && jdAccessToken) obtenerHorasJDLink();
+  // Pre-seleccionar equipo(s) asignado(s) — un operador puede tener 1 o 2+ equipos
+  // principales; si tiene más de uno, se muestran como chips para elegir rápido
+  const equiposAsignados = equiposDe(currentUser);
+  if (equiposAsignados.length > 0 && !isAdmin) {
+    if (equiposAsignados.length === 1) {
+      const equipoAsignado = equiposAsignados[0];
+      document.getElementById('equipo-fijo').style.display = 'block';
+      document.getElementById('equipo-fijo').textContent = equipoAsignado;
+      document.getElementById('equipo-multi-wrap').style.display = 'none';
+      document.getElementById('equipo-selector').style.display = 'none';
+      document.getElementById('btn-cambiar-equipo').style.display = 'block';
+      document.getElementById('equipo').value = equipoAsignado;
+      setMedidor(tipoEquipo(equipoAsignado));
+      cargarUltimoRegistro(equipoAsignado);
+      actualizarBotonesJDLink(equipoAsignado);
+      if (EQUIPOS_JDLINK.includes(equipoAsignado) && jdAccessToken) obtenerHorasJDLink();
+    } else {
+      document.getElementById('equipo-fijo').style.display = 'none';
+      document.getElementById('equipo-multi-wrap').style.display = 'block';
+      document.getElementById('equipo-selector').style.display = 'none';
+      document.getElementById('btn-cambiar-equipo').style.display = 'block';
+      const equipoDefault = equiposAsignados[0];
+      document.getElementById('equipo').value = equipoDefault;
+      renderEquipoMultiSelector(equiposAsignados);
+      setMedidor(tipoEquipo(equipoDefault));
+      cargarUltimoRegistro(equipoDefault);
+      actualizarBotonesJDLink(equipoDefault);
+      if (EQUIPOS_JDLINK.includes(equipoDefault) && jdAccessToken) obtenerHorasJDLink();
+    }
   } else {
     document.getElementById('equipo-fijo').style.display = 'none';
+    document.getElementById('equipo-multi-wrap').style.display = 'none';
     document.getElementById('equipo-selector').style.display = 'block';
     document.getElementById('btn-cambiar-equipo').style.display = 'none';
     // El admin ve el selector normal (puede cambiarlo), pero viene preseleccionado con su equipo por defecto
-    if (isAdmin && equipoAsignado) {
+    if (isAdmin && equiposAsignados.length > 0) {
+      const equipoAsignado = equiposAsignados[0];
       document.getElementById('equipo').value = equipoAsignado;
       setMedidor(tipoEquipo(equipoAsignado));
       cargarUltimoRegistro(equipoAsignado);
@@ -1342,8 +1422,8 @@ function renderTrabajoSelector() {
 
   if (centrosSeleccionados.length === 0) { container.innerHTML = ''; return; }
 
-  // Todos los usuarios ven la lista combinada de ambos tipos de trabajo
-  const lista = [...new Set([...TRABAJOS_GENERAL, ...TRABAJOS_AVELLANOS])];
+  // Lista editable desde Configurar (antes era una combinación fija de dos listas)
+  const lista = trabajosConfig;
 
   container.innerHTML = `
     <div class="cultivos-label">Tipo de trabajo</div>
@@ -1570,7 +1650,7 @@ window.validarPaso1 = function() {
     ok = false;
     faltantes.push(`El ${medidor==='km'?'odómetro':'horómetro'} no puede ser menor al último registrado (${ultimoRegistroEquipo.medidor_valor.toFixed(1)})`);
   }
-  const horarioOk = dentroDeHorarioPermitido() || excepcionHorarioActiva || isAdmin || equipoExcepcionActiva(eq);
+  const horarioOk = dentroDeHorarioPermitido() || excepcionHorarioActiva || isAdmin || operadorExcepcionActiva(currentUser);
   btn.disabled = !ok || !horarioOk;
 
   // Mostrar junto al botón qué falta completar, para que el operador sepa por
@@ -1617,6 +1697,21 @@ window.onOperadorSelectChange = function() {
   } else {
     wrap.innerHTML = '';
   }
+}
+
+// Muestra chips con los equipos principales del operador (cuando tiene 2 o más),
+// para elegir rápido cuál usar en esta carga sin tener que abrir el selector completo
+function renderEquipoMultiSelector(lista) {
+  const wrap = document.getElementById('equipo-multi-selector');
+  if (!wrap) return;
+  const eqActual = document.getElementById('equipo').value;
+  wrap.innerHTML = lista.map(e => `<div class="cultivo-chip ${eqActual===e?'sel':''}" onclick='seleccionarEquipoAsignado(${JSON.stringify(e)})'>${e}</div>`).join('');
+}
+
+window.seleccionarEquipoAsignado = function(eq) {
+  document.getElementById('equipo').value = eq;
+  renderEquipoMultiSelector(equiposDe(currentUser));
+  onEquipoChange();
 }
 
 window.onEquipoChange = async function() {
@@ -1741,9 +1836,9 @@ window.calcularEficiencia = function() {
   // Validación totalizador
   if (!isNaN(tot) && tot > 0 && ultimoRegistroEquipo?.totalizador) {
     const dif = Math.abs((tot - ultimoRegistroEquipo.totalizador) - lt);
-    html += dif <= MARGEN_TOTALIZADOR
+    html += dif <= parametrosSistema.margenTotalizador
       ? `<div class="preview-row verde">✅ Totalizador OK — diferencia: ${dif.toFixed(1)} L</div>`
-      : `<div class="preview-row rojo">⚠️ Diferencia totalizador: ${dif.toFixed(1)} L (máx ${MARGEN_TOTALIZADOR} L)</div>`;
+      : `<div class="preview-row rojo">⚠️ Diferencia totalizador: ${dif.toFixed(1)} L (máx ${parametrosSistema.margenTotalizador} L)</div>`;
   }
 
   preview.innerHTML = html;
@@ -1751,21 +1846,34 @@ window.calcularEficiencia = function() {
 
 window.toggleCambioEquipo = function() {
   const fijo = document.getElementById('equipo-fijo');
+  const multiWrap = document.getElementById('equipo-multi-wrap');
   const selector = document.getElementById('equipo-selector');
   const btn = document.getElementById('btn-cambiar-equipo');
+  const equiposAsignados = equiposDe(currentUser);
   if (selector.style.display === 'none') {
     fijo.style.display = 'none';
+    multiWrap.style.display = 'none';
     selector.style.display = 'block';
     btn.textContent = '↩ Volver a mi equipo';
     btn.style.color = 'var(--rojo)';
   } else {
-    const equipoAsignado = EQUIPO_OPERADOR[currentUser];
-    fijo.style.display = 'block';
-    fijo.textContent = equipoAsignado;
     selector.style.display = 'none';
     btn.textContent = '⚠️ Cambiar equipo';
     btn.style.color = 'var(--acero)';
-    document.getElementById('equipo').value = equipoAsignado;
+    let equipoAsignado;
+    if (equiposAsignados.length > 1) {
+      fijo.style.display = 'none';
+      multiWrap.style.display = 'block';
+      equipoAsignado = equiposAsignados[0];
+      document.getElementById('equipo').value = equipoAsignado;
+      renderEquipoMultiSelector(equiposAsignados);
+    } else {
+      multiWrap.style.display = 'none';
+      fijo.style.display = 'block';
+      equipoAsignado = equiposAsignados[0];
+      fijo.textContent = equipoAsignado;
+      document.getElementById('equipo').value = equipoAsignado;
+    }
     setMedidor(tipoEquipo(equipoAsignado));
     cargarUltimoRegistro(equipoAsignado);
     actualizarBotonesJDLink(equipoAsignado);
@@ -1815,7 +1923,7 @@ window.registrar = async function() {
   let alertaTotalizador = false; let difTot = 0;
   if (totalizadorGlobal != null) {
     difTot = Math.abs((tot - totalizadorGlobal) - lt);
-    if (difTot > MARGEN_TOTALIZADOR) alertaTotalizador = true;
+    if (difTot > parametrosSistema.margenTotalizador) alertaTotalizador = true;
   }
 
   let eficiencia = null; let diffMedidor = null; let alertaTrabajado = false;
@@ -2435,9 +2543,10 @@ window.resetearPin = async function(operador) {
 
 // ─── CONFIG ────────────────────────────────────────────────
 window.agregar = async function(tipo) {
-  const ids={equipos:'nuevo-equipo',operadores:'nuevo-operador',centros:'nuevo-centro'};
+  const ids={equipos:'nuevo-equipo',operadores:'nuevo-operador',centros:'nuevo-centro',trabajos:'nuevo-trabajo'};
   const inp=document.getElementById(ids[tipo]); const val=inp.value.trim(); if(!val)return;
   config[tipo].push(val);
+  if (tipo === 'trabajos') trabajosConfig = config.trabajos;
   if (tipo === 'equipos') {
     const tipoSel = document.getElementById('nuevo-equipo-tipo');
     if (!config.tiposEquipo) config.tiposEquipo = {};
@@ -2465,6 +2574,32 @@ window.eliminarItem = async function(tipo,idx) {
       }
     });
     aperosConfig = config.aperos;
+  }
+  // Si se elimina un equipo, sacarlo de la lista de equipos principales de cada operador
+  if (tipo === 'equipos' && config.equipoOperador) {
+    Object.keys(config.equipoOperador).forEach(op => {
+      const lista = equiposDe(op).filter(e => e !== val);
+      config.equipoOperador[op] = lista;
+    });
+    equipoOperadorConfig = config.equipoOperador;
+  }
+  // Si se elimina un operador, sacar también su asignación de equipos
+  if (tipo === 'operadores' && config.equipoOperador) {
+    delete config.equipoOperador[val];
+    equipoOperadorConfig = config.equipoOperador;
+  }
+  // Si se elimina un tipo de trabajo, sacarlo también de las asignaciones de aperos
+  if (tipo === 'trabajos') {
+    trabajosConfig = config.trabajos;
+    if (Array.isArray(config.aperos)) {
+      config.aperos.forEach(a => {
+        if (Array.isArray(a.trabajos)) {
+          const i = a.trabajos.indexOf(val);
+          if (i >= 0) a.trabajos.splice(i, 1);
+        }
+      });
+      aperosConfig = config.aperos;
+    }
   }
   await saveConfig();
   renderConfigListas(); initRegistro();
@@ -2496,7 +2631,7 @@ window.toggleRequisitoEquipo = async function(equipo, campo) {
   } catch(e) { toast('Error: ' + e.message, false); }
 }
 function renderConfigListas() {
-  ['equipos','operadores','centros'].forEach(tipo=>{
+  ['equipos','operadores','centros','trabajos'].forEach(tipo=>{
     document.getElementById('lista-'+tipo).innerHTML=
       config[tipo].map((v,i)=>{
         if (tipo === 'equipos') {
@@ -2527,7 +2662,7 @@ let edicionAperoTrabajos = [];
 let edicionAperoEquipos = [];
 
 function listaTrabajosDisponibles() {
-  return [...new Set([...TRABAJOS_GENERAL, ...TRABAJOS_AVELLANOS])].filter(t => t !== OTRO);
+  return trabajosConfig.filter(t => t !== OTRO);
 }
 function listaEquiposDisponibles() {
   return config.equipos.filter(e => e !== 'Otro (especificar)');
@@ -2667,7 +2802,7 @@ function renderPanelHorario() {
   const inpFin = document.getElementById('horario-hora-fin');
   if (inpInicio) inpInicio.value = horarioConfig.horaInicio;
   if (inpFin) inpFin.value = horarioConfig.horaFin;
-  renderListaExcepcionesEquipo();
+  renderListaExcepcionesOperador();
 }
 
 window.toggleDiaHorario = function(dia) {
@@ -2694,59 +2829,135 @@ window.guardarHorarioPermitido = async function() {
   } catch(e) { toast('Error: ' + e.message, false); }
 }
 
-window.habilitarEquipoIndefinido = async function() {
-  const eq = document.getElementById('excepcion-equipo-sel').value;
-  if (!eq) { toast('Selecciona un equipo', false); return; }
-  if (!confirm(`¿Habilitar "${eq}" para cargar combustible sin restricción de horario, de forma indefinida?`)) return;
-  excepcionesEquipoHorario[eq] = { indefinido: true };
+window.habilitarOperadorIndefinido = async function() {
+  const op = document.getElementById('excepcion-operador-sel').value;
+  if (!op) { toast('Selecciona un operador', false); return; }
+  if (!confirm(`¿Habilitar a "${op}" para cargar combustible sin restricción de horario, de forma indefinida, sin importar qué equipo use?`)) return;
+  excepcionesOperadorHorario[op] = { indefinido: true };
   try {
-    await setDoc(doc(db, 'config', 'sistema'), { excepcionesEquipo: excepcionesEquipoHorario }, { merge: true });
-    renderListaExcepcionesEquipo();
-    toast(`✓ ${eq} habilitado sin restricción de horario (indefinido)`, true);
+    await setDoc(doc(db, 'config', 'sistema'), { excepcionesOperador: excepcionesOperadorHorario }, { merge: true });
+    renderListaExcepcionesOperador();
+    toast(`✓ ${op} habilitado sin restricción de horario (indefinido)`, true);
   } catch(e) { toast('Error: ' + e.message, false); }
 }
 
-window.habilitarEquipoPorHoras = async function() {
-  const eq = document.getElementById('excepcion-equipo-sel').value;
+window.habilitarOperadorPorHoras = async function() {
+  const op = document.getElementById('excepcion-operador-sel').value;
   const horas = parseFloat(document.getElementById('excepcion-horas-input').value);
-  if (!eq) { toast('Selecciona un equipo', false); return; }
+  if (!op) { toast('Selecciona un operador', false); return; }
   if (isNaN(horas) || horas <= 0) { toast('Ingresá por cuántas horas habilitarlo', false); return; }
   const hasta = Date.now() + horas * 3600000;
-  excepcionesEquipoHorario[eq] = { hasta };
+  excepcionesOperadorHorario[op] = { hasta };
   try {
-    await setDoc(doc(db, 'config', 'sistema'), { excepcionesEquipo: excepcionesEquipoHorario }, { merge: true });
-    renderListaExcepcionesEquipo();
-    toast(`✓ ${eq} habilitado por ${horas} hora${horas!=1?'s':''}`, true);
+    await setDoc(doc(db, 'config', 'sistema'), { excepcionesOperador: excepcionesOperadorHorario }, { merge: true });
+    renderListaExcepcionesOperador();
+    toast(`✓ ${op} habilitado por ${horas} hora${horas!=1?'s':''}`, true);
   } catch(e) { toast('Error: ' + e.message, false); }
 }
 
-window.quitarExcepcionEquipo = async function(eq) {
-  delete excepcionesEquipoHorario[eq];
+window.quitarExcepcionOperador = async function(op) {
+  delete excepcionesOperadorHorario[op];
   try {
-    await setDoc(doc(db, 'config', 'sistema'), { excepcionesEquipo: excepcionesEquipoHorario }, { merge: true });
-    renderListaExcepcionesEquipo();
-    toast(`Excepción de ${eq} eliminada — vuelve a respetar el horario normal`, false);
+    await setDoc(doc(db, 'config', 'sistema'), { excepcionesOperador: excepcionesOperadorHorario }, { merge: true });
+    renderListaExcepcionesOperador();
+    toast(`Excepción de ${op} eliminada — vuelve a respetar el horario normal`, false);
   } catch(e) { toast('Error: ' + e.message, false); }
 }
 
-function renderListaExcepcionesEquipo() {
+function renderListaExcepcionesOperador() {
   const cont = document.getElementById('lista-excepciones-equipo');
   if (cont) {
-    const activos = Object.entries(excepcionesEquipoHorario).filter(([, exc]) => exc && (exc.indefinido || (exc.hasta && exc.hasta > Date.now())));
-    cont.innerHTML = activos.length ? activos.map(([eq, exc]) => {
+    const activos = Object.entries(excepcionesOperadorHorario).filter(([, exc]) => exc && (exc.indefinido || (exc.hasta && exc.hasta > Date.now())));
+    cont.innerHTML = activos.length ? activos.map(([op, exc]) => {
       const estado = exc.indefinido ? '♾️ Sin restricción de horario (indefinido)' : `⏳ Habilitado hasta ${new Date(exc.hasta).toLocaleString('es-CL')}`;
       return `<div class="config-item">
-        <span style="flex:1"><strong>${eq}</strong><br><span style="font-size:12px;color:var(--acero)">${estado}</span></span>
-        <button class="btn btn-danger" onclick='quitarExcepcionEquipo(${JSON.stringify(eq)})'>Quitar</button>
+        <span style="flex:1"><strong>${op}</strong><br><span style="font-size:12px;color:var(--acero)">${estado}</span></span>
+        <button class="btn btn-danger" onclick='quitarExcepcionOperador(${JSON.stringify(op)})'>Quitar</button>
       </div>`;
     }).join('') : '<div style="color:#9CA3AF;font-size:13px;padding:8px">Sin excepciones activas.</div>';
   }
-  const sel = document.getElementById('excepcion-equipo-sel');
+  const sel = document.getElementById('excepcion-operador-sel');
   if (sel) {
     const cur = sel.value;
-    sel.innerHTML = '<option value="" disabled selected>Seleccionar equipo</option>' +
-      config.equipos.filter(e => e !== 'Otro (especificar)').map(e => `<option value="${e}" ${e===cur?'selected':''}>${e}</option>`).join('');
+    sel.innerHTML = '<option value="" disabled selected>Seleccionar operador</option>' +
+      config.operadores.filter(o => o !== 'Otros (especificar)').map(o => `<option value="${o}" ${o===cur?'selected':''}>${o}</option>`).join('');
   }
+}
+
+// ─── EQUIPO(S) PRINCIPAL(ES) POR OPERADOR (Configurar) ──────
+// Estado en memoria del editor de asignación (qué operador se está editando)
+let edicionEquipoOperadorNombre = null;
+let edicionEquiposSeleccionados = [];
+
+function renderPanelEquipoOperador() {
+  const cont = document.getElementById('lista-equipo-operador');
+  if (!cont) return;
+  const operadoresValidos = config.operadores.filter(o => o !== 'Otros (especificar)');
+  cont.innerHTML = operadoresValidos.length ? operadoresValidos.map((op, i) => {
+    const asignados = equiposDe(op);
+    return `<div class="config-item" style="flex-direction:column;align-items:stretch;gap:6px">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+        <strong style="font-size:14px">${op}</strong>
+        <button class="btn btn-secondary" style="font-size:11px;padding:6px 10px" onclick='abrirEdicionEquipoOperador(${JSON.stringify(op)},${i})'>✏️ Asignar equipos</button>
+      </div>
+      <div style="font-size:12px;color:var(--acero)">${asignados.length ? asignados.join(', ') : 'Sin equipo asignado'}</div>
+      <div id="equipo-operador-editor-${i}"></div>
+    </div>`;
+  }).join('') : '<div style="color:#9CA3AF;font-size:13px;padding:8px">Sin operadores.</div>';
+}
+
+window.abrirEdicionEquipoOperador = function(operador, idx) {
+  edicionEquipoOperadorNombre = operador;
+  edicionEquiposSeleccionados = [...equiposDe(operador)];
+  renderEditorEquipoOperador(idx);
+}
+
+function renderEditorEquipoOperador(idx) {
+  const cont = document.getElementById(`equipo-operador-editor-${idx}`);
+  if (!cont) return;
+  const equiposDisponibles = config.equipos.filter(e => e !== 'Otro (especificar)');
+  cont.innerHTML = `
+    <div style="background:var(--fondo);border:1px solid var(--borde);border-radius:6px;padding:10px;margin-top:4px">
+      <div class="cultivos-label">Equipos principales (máximo ${MAX_EQUIPOS_POR_OPERADOR})</div>
+      <div class="centros-selector">${equiposDisponibles.map(e => `<div class="cultivo-chip ${edicionEquiposSeleccionados.includes(e)?'sel':''}" onclick='toggleEquipoOperadorEdicion(${JSON.stringify(e)},${idx})'>${e}</div>`).join('')}</div>
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="cerrarEdicionEquipoOperador(${idx})">Cancelar</button>
+        <button class="btn btn-verde" style="flex:1" onclick="guardarEdicionEquipoOperador(${idx})">✓ Guardar</button>
+      </div>
+    </div>`;
+}
+
+window.toggleEquipoOperadorEdicion = function(equipo, idx) {
+  const i = edicionEquiposSeleccionados.indexOf(equipo);
+  if (i >= 0) {
+    edicionEquiposSeleccionados.splice(i, 1);
+  } else {
+    if (edicionEquiposSeleccionados.length >= MAX_EQUIPOS_POR_OPERADOR) {
+      toast(`Máximo ${MAX_EQUIPOS_POR_OPERADOR} equipos por operador`, false);
+      return;
+    }
+    edicionEquiposSeleccionados.push(equipo);
+  }
+  renderEditorEquipoOperador(idx);
+}
+
+window.cerrarEdicionEquipoOperador = function(idx) {
+  edicionEquipoOperadorNombre = null;
+  const cont = document.getElementById(`equipo-operador-editor-${idx}`);
+  if (cont) cont.innerHTML = '';
+}
+
+window.guardarEdicionEquipoOperador = async function(idx) {
+  if (!edicionEquipoOperadorNombre) return;
+  if (!config.equipoOperador) config.equipoOperador = {};
+  config.equipoOperador[edicionEquipoOperadorNombre] = [...edicionEquiposSeleccionados];
+  equipoOperadorConfig = config.equipoOperador;
+  try {
+    await saveConfig();
+    edicionEquipoOperadorNombre = null;
+    renderPanelEquipoOperador();
+    toast('✓ Equipos asignados actualizados', true);
+  } catch(e) { toast('Error: ' + e.message, false); }
 }
 
 // ─── TABS ─────────────────────────────────────────────────
@@ -2757,7 +2968,7 @@ window.setTab = function(id,el) {
   document.getElementById('tc-'+id).classList.add('active');
   if(el)el.classList.add('active');
   if(['historial','admin','analytics','informes'].includes(id)) loadHistorial();
-  if(id==='config') { renderConfigListas(); renderPanelAperos(); renderPanelHorario(); if(isAdmin) cargarPines(); actualizarToggleESP32(); }
+  if(id==='config') { renderConfigListas(); renderPanelAperos(); renderPanelEquipoOperador(); renderPanelHorario(); renderPanelMantencionesConfig(); renderPanelParametros(); if(isAdmin) cargarPines(); actualizarToggleESP32(); }
   if(id==='mantencion') { initMantencion(); }
   if(id==='registro' && isAdmin) escucharSolicitudesAdmin();
 }
@@ -2769,6 +2980,10 @@ function populateSelect(id,arr,placeholder) {
   arr.forEach(v=>{const o=document.createElement('option');o.value=v;o.textContent=v;if(v===cur)o.selected=true;sel.appendChild(o);});
 }
 // ─── MANTENCIONES ─────────────────────────────────────────
+// MANT_POR_HORAS/MANT_ANUAL/MANT_SIN_FRECUENCIA son solo la SEMILLA usada una
+// única vez para migrar a Firestore (config.datos.mantenciones). Desde ahí en
+// adelante, el catálogo real y editable vive en `mantencionesConfig`, con cada
+// ítem como { id, nombre, categoria: 'horas'|'anual'|'sin_frecuencia', intervalo }.
 const MANT_POR_HORAS = [
   { id: 'aceite_motor',      nombre: 'Cambio aceite motor',             intervalo: 250  },
   { id: 'filtro_hidraulico', nombre: 'Cambio filtro aceite hidráulico', intervalo: 500  },
@@ -2787,7 +3002,16 @@ const MANT_SIN_FRECUENCIA = [
   { id: 'arranque',          nombre: 'Mantención arranque'  },
   { id: 'otro',              nombre: 'Otro'                 },
 ];
-const ALERTA_HRS_ANTES = 20; // avisar cuando falten estas horas
+function construirMantencionesDesdeHardcode() {
+  return [
+    ...MANT_POR_HORAS.map(m => ({ ...m, categoria: 'horas' })),
+    ...MANT_ANUAL.map(m => ({ ...m, categoria: 'anual', intervalo: null })),
+    ...MANT_SIN_FRECUENCIA.map(m => ({ ...m, categoria: 'sin_frecuencia', intervalo: null }))
+  ];
+}
+let mantencionesConfig = []; // se carga desde Firestore (config.datos.mantenciones)
+const ALERTA_HRS_ANTES_DEFAULT = 20; // avisar cuando falten estas horas
+let alertaHrsAntes = ALERTA_HRS_ANTES_DEFAULT; // editable desde Configurar
 
 let mantEquipoActual = null;
 let mantTipoActual = null;  // { id, nombre, intervalo, categoria }
@@ -2797,16 +3021,123 @@ function equiposHr() {
   return config.equipos.filter(e => tipoEquipo(e) === 'hr' && e !== 'Otro (especificar)');
 }
 
+// ─── CATÁLOGO DE MANTENCIONES (Configurar) ──────────────────
+function renderPanelMantencionesConfig() {
+  const cont = document.getElementById('lista-mantenciones-config');
+  if (cont) {
+    const catLabel = { horas: 'Por horas', anual: 'Anual', sin_frecuencia: 'Sin frecuencia fija' };
+    cont.innerHTML = mantencionesConfig.length ? mantencionesConfig.map((m, i) => `
+      <div class="config-item">
+        <span style="flex:1">${m.nombre} <span style="font-size:11px;color:var(--acero)">(${catLabel[m.categoria] || m.categoria}${m.categoria==='horas'?' · cada '+(m.intervalo||'—')+' hr':''})</span></span>
+        ${m.categoria === 'horas' ? `<button class="btn btn-secondary" style="font-size:11px;padding:5px 10px" onclick="editarIntervaloMantencion(${i})">✏️ Intervalo</button>` : ''}
+        <button class="btn btn-danger" onclick="eliminarMantencionConfig(${i})">✕</button>
+      </div>`).join('') : '<div style="color:#9CA3AF;font-size:13px;padding:8px">Sin mantenciones configuradas.</div>';
+  }
+  const inp = document.getElementById('alerta-hrs-antes-input');
+  if (inp) inp.value = alertaHrsAntes;
+}
+
+window.editarIntervaloMantencion = async function(idx) {
+  const m = mantencionesConfig[idx];
+  if (!m) return;
+  const nuevo = prompt(`Nuevo intervalo en horas para "${m.nombre}":`, m.intervalo || '');
+  if (nuevo === null) return;
+  const val = parseFloat(nuevo);
+  if (isNaN(val) || val <= 0) { toast('Intervalo inválido', false); return; }
+  mantencionesConfig[idx].intervalo = val;
+  config.mantenciones = mantencionesConfig;
+  try {
+    await saveConfig();
+    renderPanelMantencionesConfig();
+    toast('✓ Intervalo actualizado', true);
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
+window.eliminarMantencionConfig = async function(idx) {
+  const m = mantencionesConfig[idx];
+  if (!m) return;
+  if (!confirm(`¿Eliminar "${m.nombre}" del catálogo de mantenciones?\n\nLos registros históricos de este tipo no se borran, solo deja de aparecer para registrar mantenciones nuevas.`)) return;
+  mantencionesConfig.splice(idx, 1);
+  config.mantenciones = mantencionesConfig;
+  try {
+    await saveConfig();
+    renderPanelMantencionesConfig();
+    toast('Eliminado del catálogo', false);
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
+window.agregarMantencionConfig = async function() {
+  const inp = document.getElementById('nueva-mant-nombre');
+  const nombre = inp.value.trim();
+  const categoria = document.getElementById('nueva-mant-categoria').value;
+  const intervaloInput = document.getElementById('nueva-mant-intervalo');
+  const intervalo = categoria === 'horas' ? parseFloat(intervaloInput.value) : null;
+  if (!nombre) { toast('Ingresá el nombre de la mantención', false); return; }
+  if (categoria === 'horas' && (isNaN(intervalo) || intervalo <= 0)) { toast('Ingresá cada cuántas horas se hace', false); return; }
+  const id = 'mant_' + Date.now();
+  mantencionesConfig.push({ id, nombre, categoria, intervalo });
+  config.mantenciones = mantencionesConfig;
+  try {
+    await saveConfig();
+    inp.value = ''; intervaloInput.value = '';
+    renderPanelMantencionesConfig();
+    toast('✓ Mantención agregada al catálogo', true);
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
+window.onNuevaMantCategoriaChange = function() {
+  const categoria = document.getElementById('nueva-mant-categoria').value;
+  document.getElementById('nueva-mant-intervalo-wrap').style.display = categoria === 'horas' ? 'block' : 'none';
+}
+
+window.guardarAlertaHrsAntes = async function() {
+  const val = parseFloat(document.getElementById('alerta-hrs-antes-input').value);
+  if (isNaN(val) || val < 0) { toast('Valor inválido', false); return; }
+  alertaHrsAntes = val;
+  config.alertaHrsAntes = val;
+  try {
+    await saveConfig();
+    toast(`✓ Umbral de alerta actualizado a ${val} hr`, true);
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
+// ─── PARÁMETROS DEL SISTEMA (Configurar) ────────────────────
+function renderPanelParametros() {
+  const c = document.getElementById('param-capacidad');
+  const a = document.getElementById('param-alerta');
+  const m = document.getElementById('param-margen');
+  if (c) c.value = parametrosSistema.capacidad;
+  if (a) a.value = parametrosSistema.alertaLitros;
+  if (m) m.value = parametrosSistema.margenTotalizador;
+}
+
+window.guardarParametrosSistema = async function() {
+  const capacidad = parseFloat(document.getElementById('param-capacidad').value);
+  const alertaLitros = parseFloat(document.getElementById('param-alerta').value);
+  const margenTotalizador = parseFloat(document.getElementById('param-margen').value);
+  if (isNaN(capacidad) || capacidad <= 0) { toast('Ingresá una capacidad de estanque válida', false); return; }
+  if (isNaN(alertaLitros) || alertaLitros < 0) { toast('Ingresá un valor de alerta de stock bajo válido', false); return; }
+  if (isNaN(margenTotalizador) || margenTotalizador < 0) { toast('Ingresá un margen de tolerancia válido', false); return; }
+  parametrosSistema = { capacidad, alertaLitros, margenTotalizador };
+  config.parametros = parametrosSistema;
+  try {
+    await saveConfig();
+    renderSaldo();
+    toast('✓ Parámetros del sistema actualizados', true);
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
 function initMantencion() {
   const sel = document.getElementById('mant-equipo-sel');
   const equipos = equiposHr();
-  // Filtrar: operador solo ve su equipo asignado
-  const lista = isAdmin || isSupervisor ? equipos : equipos.filter(e => e === EQUIPO_OPERADOR[currentUser]);
+  const equiposAsignados = equiposDe(currentUser);
+  // Filtrar: operador solo ve su(s) equipo(s) asignado(s)
+  const lista = isAdmin || isSupervisor ? equipos : equipos.filter(e => equiposAsignados.includes(e));
   sel.innerHTML = '<option value="" disabled selected>Seleccionar equipo</option>' +
     lista.map(e => `<option value="${e}">${e}</option>`).join('');
-  // Si operador tiene equipo asignado, pre-seleccionar y cargar estado
-  if (!isAdmin && !isSupervisor && EQUIPO_OPERADOR[currentUser]) {
-    sel.value = EQUIPO_OPERADOR[currentUser];
+  // Si operador tiene equipo(s) asignado(s), pre-seleccionar y cargar estado
+  if (!isAdmin && !isSupervisor && equiposAsignados.length > 0) {
+    sel.value = equiposAsignados[0];
     cargarEstadoMantencion();
   } else if (isAdmin || isSupervisor) {
     // Admin/supervisor: cargar primer equipo de la lista
@@ -2869,7 +3200,7 @@ function renderEstadoMantencion(eq, hrActual, ultimasPorTipo) {
       prox = `Próxima: ${hrProx.toFixed(0)} hr`;
       if (faltan === null) { estado = `Último: ${ult.fecha} · ${hrUlt?.toFixed(0)||'—'} hr`; icono = '✅'; }
       else if (faltan < 0) { estado = `⛔ Vencida hace ${Math.abs(faltan).toFixed(0)} hr`; icono = '🔴'; color = 'var(--rojo)'; }
-      else if (faltan <= ALERTA_HRS_ANTES) { estado = `⚠️ Faltan ${faltan.toFixed(0)} hr`; icono = '🟡'; color = '#92400E'; }
+      else if (faltan <= alertaHrsAntes) { estado = `⚠️ Faltan ${faltan.toFixed(0)} hr`; icono = '🟡'; color = '#92400E'; }
       else { estado = `Último: ${ult.fecha} · ${hrUlt?.toFixed(0)||'—'} hr · Faltan ${faltan.toFixed(0)} hr`; icono = '🟢'; color = 'var(--verde)'; }
     }
     return `<div class="config-item" style="flex-wrap:wrap;gap:6px">
@@ -2877,7 +3208,7 @@ function renderEstadoMantencion(eq, hrActual, ultimasPorTipo) {
         <div style="font-weight:600;font-size:13px">${icono} ${tipo.nombre}${intervalo?` <span style="font-size:11px;color:#9CA3AF">· cada ${intervalo} hr</span>`:''}</div>
         <div style="font-size:12px;color:${color};margin-top:2px">${estado}${prox?` · ${prox}`:''}</div>
       </div>
-      <button onclick="abrirFormMant('${tipo.id}','${tipo.nombre}','horas',${intervalo||'null'})" style="background:var(--negro);color:var(--amarillo);border:none;padding:6px 12px;border-radius:4px;font-size:12px;font-weight:600;cursor:pointer">+ Registrar</button>
+      <button onclick='abrirFormMant(${JSON.stringify(tipo.id)},${JSON.stringify(tipo.nombre)},"horas",${intervalo||'null'})' style="background:var(--negro);color:var(--amarillo);border:none;padding:6px 12px;border-radius:4px;font-size:12px;font-weight:600;cursor:pointer">+ Registrar</button>
     </div>`;
   };
 
@@ -2898,7 +3229,7 @@ function renderEstadoMantencion(eq, hrActual, ultimasPorTipo) {
         <div style="font-weight:600;font-size:13px">${icono} ${tipo.nombre}${anual?' <span style="font-size:11px;color:#9CA3AF">· anual</span>':''}</div>
         <div style="font-size:12px;color:${color};margin-top:2px">${estado}</div>
       </div>
-      <button onclick="abrirFormMant('${tipo.id}','${tipo.nombre}','fecha',null)" style="background:var(--negro);color:var(--amarillo);border:none;padding:6px 12px;border-radius:4px;font-size:12px;font-weight:600;cursor:pointer">+ Registrar</button>
+      <button onclick='abrirFormMant(${JSON.stringify(tipo.id)},${JSON.stringify(tipo.nombre)},"fecha",null)' style="background:var(--negro);color:var(--amarillo);border:none;padding:6px 12px;border-radius:4px;font-size:12px;font-weight:600;cursor:pointer">+ Registrar</button>
     </div>`;
   };
 
@@ -2907,11 +3238,11 @@ function renderEstadoMantencion(eq, hrActual, ultimasPorTipo) {
   document.getElementById('mant-estado-container').innerHTML = `
     <div style="font-size:12px;color:var(--acero);margin-bottom:12px;padding:8px 12px;background:var(--fondo);border-radius:6px">${hrActualStr}</div>
     <div style="font-family:var(--mono);font-size:10px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--acero);margin:12px 0 6px">Por horas</div>
-    <div class="config-lista">${MANT_POR_HORAS.map(t => filaHr(t)).join('')}</div>
+    <div class="config-lista">${mantencionesConfig.filter(t=>t.categoria==='horas').map(t => filaHr(t)).join('')}</div>
     <div style="font-family:var(--mono);font-size:10px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--acero);margin:16px 0 6px">Anuales</div>
-    <div class="config-lista">${MANT_ANUAL.map(t => filaFecha(t, true)).join('')}</div>
+    <div class="config-lista">${mantencionesConfig.filter(t=>t.categoria==='anual').map(t => filaFecha(t, true)).join('')}</div>
     <div style="font-family:var(--mono);font-size:10px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--acero);margin:16px 0 6px">Sin frecuencia definida</div>
-    <div class="config-lista">${MANT_SIN_FRECUENCIA.map(t => filaFecha(t, false)).join('')}</div>`;
+    <div class="config-lista">${mantencionesConfig.filter(t=>t.categoria==='sin_frecuencia').map(t => filaFecha(t, false)).join('')}</div>`;
 }
 
 function renderHistorialMantencion(eq, registros) {
@@ -2919,7 +3250,7 @@ function renderHistorialMantencion(eq, registros) {
   const container = document.getElementById('mant-historial-container');
   if (!registros.length) { panel.style.display = 'none'; return; }
   panel.style.display = 'block';
-  const todos = [...MANT_POR_HORAS, ...MANT_ANUAL, ...MANT_SIN_FRECUENCIA];
+  const todos = mantencionesConfig;
   container.innerHTML = `<div class="table-wrap"><table>
     <thead><tr><th>Fecha</th><th>Mantención</th><th>Horómetro</th><th>Observación</th><th>Registró</th>${isAdmin?'<th></th>':''}</tr></thead>
     <tbody>${registros.map(r => {
@@ -3043,7 +3374,7 @@ async function renderAlertasMantencion() {
   const panel = document.getElementById('panel-alertas-mantencion');
   if (!panel) return;
   const equipos = equiposHr();
-  const lista = isAdmin || isSupervisor ? equipos : equipos.filter(e => e === EQUIPO_OPERADOR[currentUser]);
+  const lista = isAdmin || isSupervisor ? equipos : equipos.filter(e => equiposDe(currentUser).includes(e));
   const alertas = [];
 
   for (const eq of lista) {
@@ -3056,17 +3387,17 @@ async function renderAlertasMantencion() {
       if (!ultimasPorTipo[data.tipo_id]) ultimasPorTipo[data.tipo_id] = data;
     });
 
-    MANT_POR_HORAS.filter(t => t.intervalo).forEach(tipo => {
+    mantencionesConfig.filter(t => t.categoria === 'horas' && t.intervalo).forEach(tipo => {
       const ult = ultimasPorTipo[tipo.id];
       if (!ult || hrActual === null) return;
       const faltan = (ult.horometro + tipo.intervalo) - hrActual;
-      if (faltan <= ALERTA_HRS_ANTES) {
+      if (faltan <= alertaHrsAntes) {
         const txt = faltan < 0 ? `⛔ VENCIDA hace ${Math.abs(faltan).toFixed(0)} hr` : `⚠️ Faltan ${faltan.toFixed(0)} hr`;
         alertas.push(`<div style="font-size:13px;padding:4px 0"><strong>${eq}</strong> · ${tipo.nombre} · ${txt}</div>`);
       }
     });
 
-    MANT_ANUAL.forEach(tipo => {
+    mantencionesConfig.filter(t => t.categoria === 'anual').forEach(tipo => {
       const ult = ultimasPorTipo[tipo.id];
       if (!ult) return;
       const diasDesde = Math.floor((Date.now() - new Date(ult.fecha).getTime()) / 86400000);
@@ -3287,6 +3618,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
             <button id="btn-cambiar-equipo" onclick="toggleCambioEquipo()" style="display:none;background:none;border:1px solid var(--borde);color:var(--acero);font-size:11px;padding:3px 10px;border-radius:4px;cursor:pointer;font-family:var(--sans)">⚠️ Cambiar equipo</button>
           </div>
           <div id="equipo-fijo" style="display:none;background:var(--negro);color:var(--amarillo);font-family:var(--mono);font-size:16px;font-weight:600;padding:12px 16px;border-radius:6px;"></div>
+          <div id="equipo-multi-wrap" style="display:none"><div class="centros-selector" id="equipo-multi-selector"></div></div>
           <div id="equipo-selector" class="select-wrapper"><select id="equipo" onchange="onEquipoChange()"></select></div>
           <div id="equipo-varios-wrap"></div>
         </div>
@@ -3502,22 +3834,25 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         <div class="config-add"><input type="text" id="nuevo-operador" placeholder="Ej: Pedro Soto"><button class="btn-add" onclick="agregar('operadores')">+ Agregar</button></div>
       </div>
       <div class="panel">
+        <div class="panel-title">🚜 Equipo(s) asignado(s) por operador</div>
+        <p class="hint" style="margin-bottom:12px">Cada operador puede tener hasta 3 equipos principales — al ingresar a la app, se le muestran para elegir rápido. Un mismo equipo puede ser principal para más de un operador a la vez.</p>
+        <div class="config-lista" id="lista-equipo-operador"></div>
+      </div>
+      <div class="panel">
         <div class="panel-title">Cultivos / Centros de Costo</div>
         <div class="config-lista" id="lista-centros"></div>
         <div class="config-add"><input type="text" id="nuevo-centro" placeholder="Ej: Praderas"><button class="btn-add" onclick="agregar('centros')">+ Agregar</button></div>
       </div>
       <div class="panel">
+        <div class="panel-title">🚧 Tipos de trabajo</div>
+        <p class="hint" style="margin-bottom:12px">Las categorías de labor que aparecen al cargar combustible (Siembra, Fumigación, etc.). Los aperos se asignan a estos tipos de trabajo desde el panel de Aperos / Implementos.</p>
+        <div class="config-lista" id="lista-trabajos"></div>
+        <div class="config-add"><input type="text" id="nuevo-trabajo" placeholder="Ej: Poda"><button class="btn-add" onclick="agregar('trabajos')">+ Agregar</button></div>
+      </div>
+      <div class="panel">
         <div class="panel-title">🔑 Gestión de PINs</div>
         <div id="lista-pines"><div style="color:#9CA3AF;font-size:13px;padding:8px">Cargando...</div></div>
         <button class="btn btn-secondary" style="margin-top:12px;width:100%;justify-content:center" onclick="cargarPines()">↺ Actualizar</button>
-      </div>
-      <div class="panel">
-        <div class="panel-title">Parámetros del sistema</div>
-        <div class="anterior-box">
-          <div class="anterior-row"><span>Margen tolerancia totalizador:</span><strong>± 5 L</strong></div>
-          <div class="anterior-row"><span>Alerta saldo bajo:</span><strong>2.500 L</strong></div>
-          <div class="anterior-row"><span>Capacidad estanque:</span><strong>15.000 L</strong></div>
-        </div>
       </div>
       <div class="panel">
         <div class="panel-title">⏰ Horario permitido para cargar combustible</div>
@@ -3539,18 +3874,18 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         <button class="btn btn-verde" style="width:100%;justify-content:center" onclick="guardarHorarioPermitido()">✓ Guardar horario</button>
       </div>
       <div class="panel">
-        <div class="panel-title">🔓 Excepciones de horario por equipo</div>
-        <p class="hint" style="margin-bottom:12px">Habilita una máquina en particular para cargar combustible sin restricción de horario — de forma indefinida, o solo por un tiempo determinado.</p>
+        <div class="panel-title">🔓 Excepciones de horario por operador</div>
+        <p class="hint" style="margin-bottom:12px">Habilita a un operador en particular para cargar combustible sin restricción de horario, sin importar qué equipo use ese día — de forma indefinida, o solo por un tiempo determinado.</p>
         <div class="config-lista" id="lista-excepciones-equipo"></div>
         <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--borde)">
           <div class="field">
-            <label>Equipo</label>
-            <div class="select-wrapper"><select id="excepcion-equipo-sel"></select></div>
+            <label>Operador</label>
+            <div class="select-wrapper"><select id="excepcion-operador-sel"></select></div>
           </div>
-          <button class="btn btn-secondary" style="width:100%;justify-content:center;margin-bottom:10px" onclick="habilitarEquipoIndefinido()">♾️ Habilitar indefinido (sin restricción)</button>
+          <button class="btn btn-secondary" style="width:100%;justify-content:center;margin-bottom:10px" onclick="habilitarOperadorIndefinido()">♾️ Habilitar indefinido (sin restricción)</button>
           <div style="display:flex;gap:8px">
             <input type="number" id="excepcion-horas-input" min="1" step="1" placeholder="Horas" style="flex:1">
-            <button class="btn btn-verde" style="white-space:nowrap" onclick="habilitarEquipoPorHoras()">⏳ Habilitar por X horas</button>
+            <button class="btn btn-verde" style="white-space:nowrap" onclick="habilitarOperadorPorHoras()">⏳ Habilitar por X horas</button>
           </div>
         </div>
       </div>
@@ -3588,6 +3923,40 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         <p style="font-size:13px;color:var(--acero);margin-bottom:14px">Recalcula la eficiencia (L/hr o km/L) de todos los registros históricos en base al horómetro/odómetro entre cargas consecutivas de cada equipo.</p>
         <button class="btn btn-secondary" id="btn-recalcular" onclick="recalcularEficiencia()" style="width:100%;justify-content:center">⚡ Recalcular eficiencia histórica</button>
         <div id="recalculo-log" style="display:none;margin-top:12px;background:var(--fondo);border:1px solid var(--borde);border-radius:6px;padding:12px;font-size:13px;line-height:1.8"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-title">🛠 Catálogo de mantenciones</div>
+        <p class="hint" style="margin-bottom:12px">Qué mantenciones existen y cada cuántas horas toca cada una (para las "por horas"). Aplican igual a todos los equipos con horómetro.</p>
+        <div class="config-lista" id="lista-mantenciones-config"></div>
+        <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--borde)">
+          <div class="field"><label>Nombre</label><input type="text" id="nueva-mant-nombre" placeholder="Ej: Cambio correas"></div>
+          <div class="field">
+            <label>Frecuencia</label>
+            <div class="select-wrapper">
+              <select id="nueva-mant-categoria" onchange="onNuevaMantCategoriaChange()">
+                <option value="horas">Por horas (cada X horas de uso)</option>
+                <option value="anual">Anual (cada 365 días)</option>
+                <option value="sin_frecuencia">Sin frecuencia fija</option>
+              </select>
+            </div>
+          </div>
+          <div class="field" id="nueva-mant-intervalo-wrap"><label>Cada cuántas horas</label><input type="number" id="nueva-mant-intervalo" min="1" step="1" placeholder="Ej: 250"></div>
+          <button class="btn-add" style="width:100%;justify-content:center" onclick="agregarMantencionConfig()">+ Agregar mantención</button>
+        </div>
+        <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--borde)">
+          <label>Avisar con cuántas horas de anticipación</label>
+          <div style="display:flex;gap:8px;margin-top:6px">
+            <input type="number" id="alerta-hrs-antes-input" min="0" step="1" placeholder="Ej: 20" style="flex:1">
+            <button class="btn btn-secondary" onclick="guardarAlertaHrsAntes()" style="white-space:nowrap">Guardar</button>
+          </div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-title">Parámetros del sistema</div>
+        <div class="field"><label>Capacidad del estanque (L)</label><input type="number" id="param-capacidad" min="1" step="1"></div>
+        <div class="field"><label>Alerta de stock bajo (L)</label><input type="number" id="param-alerta" min="0" step="1"></div>
+        <div class="field"><label>Margen tolerancia totalizador (L)</label><input type="number" id="param-margen" min="0" step="0.1"></div>
+        <button class="btn btn-verde" style="width:100%;justify-content:center" onclick="guardarParametrosSistema()">✓ Guardar parámetros</button>
       </div>
     </div>
   </main>
