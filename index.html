@@ -894,7 +894,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   await cargarTotalizadorGlobal();
   suscribirSaldo();
   suscribirHorarioConfig();
-  suscribirEstadoESP32();
+  iniciarEstadoESP32();
   iniciarMonitorBombaShelly();
   setInterval(renderEstadoShelly, 5000);
   // Cargar la conexión de John Deere desde Firestore (compartida entre todos los dispositivos)
@@ -1059,15 +1059,23 @@ function renderSaldo() {
 // de si el reloj del dispositivo está bien puesto.
 let esp32UltimaRecepcionMs = null;
 let unsubEstadoESP32 = null;
+let esp32UltimoIntentoReconexionMs = 0;
 const ESP32_UMBRAL_CONECTADO_SEG = 20; // escribe cada 2 seg, pero además hace otra llamada HTTP por vuelta de loop que a veces demora — 20 seg da margen para eso sin parpadear en falso
+const ESP32_UMBRAL_RECONECTAR_SEG = 30; // si lleva más de esto sin recibir nada, probablemente el canal en tiempo real de ESTA pestaña se quedó pegado (no el ESP32) — forzamos reconectarlo solo
+const ESP32_COOLDOWN_RECONEXION_MS = 25000; // no reintentar más seguido que esto, para no generar reconexiones en cadena
 
 function suscribirEstadoESP32() {
-  if (unsubEstadoESP32) return;
+  if (unsubEstadoESP32) { unsubEstadoESP32(); unsubEstadoESP32 = null; }
   unsubEstadoESP32 = onSnapshot(doc(db, 'esp32_test', 'lectura_actual'), snap => {
     if (snap.exists()) esp32UltimaRecepcionMs = Date.now();
     renderEstadoESP32();
   }, err => console.warn('Error escuchando estado ESP32:', err));
-  // Refresca el texto "hace cuánto" cada 5 seg aunque no lleguen datos nuevos
+}
+
+function iniciarEstadoESP32() {
+  suscribirEstadoESP32();
+  // Refresca el texto "hace cuánto" cada 5 seg aunque no lleguen datos nuevos,
+  // y de paso revisa si conviene reconectar el listener
   setInterval(renderEstadoESP32, 5000);
 }
 
@@ -1079,6 +1087,14 @@ function renderEstadoESP32() {
     html = '<span style="color:#9CA3AF;font-size:12px">⚪ Sin datos del caudalímetro todavía</span>';
   } else {
     const segTranscurridos = Math.floor((Date.now() - esp32UltimaRecepcionMs) / 1000);
+    // Si lleva mucho rato "desconectado" según esta pestaña, probablemente el
+    // canal en tiempo real se quedó pegado — reconectamos solo, sin que el
+    // usuario tenga que refrescar la página a mano (con un margen entre
+    // reintentos para no generar reconexiones en cadena)
+    if (segTranscurridos > ESP32_UMBRAL_RECONECTAR_SEG && (Date.now() - esp32UltimoIntentoReconexionMs) > ESP32_COOLDOWN_RECONEXION_MS) {
+      esp32UltimoIntentoReconexionMs = Date.now();
+      suscribirEstadoESP32();
+    }
     html = segTranscurridos <= ESP32_UMBRAL_CONECTADO_SEG
       ? '<span style="color:var(--verde);font-size:12px">🟢 Caudalímetro ESP32 conectado</span>'
       : `<span style="color:var(--rojo);font-size:12px">🔴 Caudalímetro ESP32 desconectado — ${textoDesconectadoDesde(segTranscurridos)}</span>`;
@@ -1890,8 +1906,11 @@ function textoDesconectadoDesde(seg) {
 let unsubEstadoShelly = null;
 let shellyUltimaRecepcionMs = null;
 let equipoSensorActual = null;
+let shellyUltimoIntentoReconexionMs = 0;
 const SHELLY_UMBRAL_VERDE_SEG = 20;     // el script sincroniza cada 15 seg, margen generoso
 const SHELLY_UMBRAL_AMARILLO_SEG = 120; // 2 min
+const SHELLY_UMBRAL_RECONECTAR_SEG = 150; // un poco más que el umbral amarillo
+const SHELLY_COOLDOWN_RECONEXION_MS = 25000;
 
 function suscribirEstadoShelly(equipo) {
   if (unsubEstadoShelly) { unsubEstadoShelly(); unsubEstadoShelly = null; }
@@ -1929,9 +1948,16 @@ function renderEstadoShelly() {
     return;
   }
 
-  // Caso 3: tiene Shelly — semáforo según hace cuánto sincronizó
-  const nombreShelly = 'Shelly ' + equipoADocIdHorometro(equipo);
+  // Caso 3: tiene Shelly — semáforo según hace cuánto sincronizó. Si lleva
+  // mucho rato sin recibir nada, probablemente el canal en tiempo real de esta
+  // pestaña se quedó pegado (no necesariamente el Shelly) — reconectamos solo
   const seg = Math.floor((Date.now() - shellyUltimaRecepcionMs) / 1000);
+  if (seg > SHELLY_UMBRAL_RECONECTAR_SEG && (Date.now() - shellyUltimoIntentoReconexionMs) > SHELLY_COOLDOWN_RECONEXION_MS) {
+    shellyUltimoIntentoReconexionMs = Date.now();
+    suscribirEstadoShelly(equipo);
+    return; // suscribirEstadoShelly ya vuelve a llamar renderEstadoShelly()
+  }
+  const nombreShelly = 'Shelly ' + equipoADocIdHorometro(equipo);
   let html;
   if (seg <= SHELLY_UMBRAL_VERDE_SEG) html = `<span style="color:var(--verde);font-size:12px">🟢 ${nombreShelly} conectado</span>`;
   else if (seg <= SHELLY_UMBRAL_AMARILLO_SEG) html = `<span style="color:#92400E;font-size:12px">🟡 ${nombreShelly} — ${textoDesconectadoDesde(seg)}</span>`;
