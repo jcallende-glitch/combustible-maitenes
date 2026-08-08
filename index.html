@@ -856,6 +856,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   suscribirSaldo();
   suscribirHorarioConfig();
   suscribirEstadoESP32();
+  setInterval(renderEstadoShelly, 5000);
   // Cargar la conexión de John Deere desde Firestore (compartida entre todos los dispositivos)
   await cargarConfigJD();
   // Manejar callback OAuth de John Deere
@@ -1825,6 +1826,49 @@ function textoTiempoTranscurrido(seg) {
   return `última actualización hace ${dias} día${dias !== 1 ? 's' : ''}`;
 }
 
+// ─── ESTADO DE CONEXIÓN DEL SHELLY DEL EQUIPO SELECCIONADO ──
+// Mismo principio que el semáforo del ESP32 (reloj del navegador, no el del
+// dispositivo), pero por equipo: cada vez que cambia el equipo elegido, se
+// vuelve a suscribir al documento horometros/{equipo} que le corresponde.
+// No tiene relación con las horas del horómetro en sí (esas van en su propio
+// cuadro) — esto solo indica si el sensor de ESE equipo sigue actualizando.
+let unsubEstadoShelly = null;
+let shellyUltimaRecepcionMs = null;
+let shellyEquipoActual = null;
+const SHELLY_UMBRAL_VERDE_SEG = 20;     // el script sincroniza cada 15 seg, margen generoso
+const SHELLY_UMBRAL_AMARILLO_SEG = 120; // 2 min
+
+function suscribirEstadoShelly(equipo) {
+  if (unsubEstadoShelly) { unsubEstadoShelly(); unsubEstadoShelly = null; }
+  shellyUltimaRecepcionMs = null;
+  shellyEquipoActual = (equipo && tipoEquipo(equipo) === 'hr' && !EQUIPOS_JDLINK.includes(equipo)) ? equipo : null;
+  if (shellyEquipoActual) {
+    const docId = equipoADocIdHorometro(shellyEquipoActual);
+    unsubEstadoShelly = onSnapshot(doc(db, 'horometros', docId), snap => {
+      if (snap.exists()) shellyUltimaRecepcionMs = Date.now();
+      renderEstadoShelly();
+    }, err => console.warn('Error escuchando estado del sensor:', err));
+  }
+  renderEstadoShelly();
+}
+
+function renderEstadoShelly() {
+  const el = document.getElementById('shelly-estado-conexion');
+  if (!el) return;
+  if (!shellyEquipoActual) { el.innerHTML = ''; return; }
+  const nombreShelly = 'Shelly ' + equipoADocIdHorometro(shellyEquipoActual);
+  if (!shellyUltimaRecepcionMs) {
+    el.innerHTML = `<span style="color:#9CA3AF;font-size:12px">⚪ Sin datos de ${nombreShelly} todavía</span>`;
+    return;
+  }
+  const seg = Math.floor((Date.now() - shellyUltimaRecepcionMs) / 1000);
+  let html;
+  if (seg <= SHELLY_UMBRAL_VERDE_SEG) html = `<span style="color:var(--verde);font-size:12px">🟢 ${nombreShelly} conectado</span>`;
+  else if (seg <= SHELLY_UMBRAL_AMARILLO_SEG) html = `<span style="color:#92400E;font-size:12px">🟡 ${nombreShelly} — ${textoTiempoTranscurrido(seg)}</span>`;
+  else html = `<span style="color:var(--rojo);font-size:12px">🔴 ${nombreShelly} desconectado — ${textoTiempoTranscurrido(seg)}</span>`;
+  el.innerHTML = html;
+}
+
 // Si el equipo seleccionado tiene un sensor propio (Shelly o Heltec) escribiendo
 // su horómetro en Firestore, lo lee y precarga el campo automáticamente — sin
 // botón, a diferencia de JDLink que el operador debe presionar para consultar.
@@ -1832,6 +1876,7 @@ function textoTiempoTranscurrido(seg) {
 async function cargarHorometroShelly(equipo) {
   const info = document.getElementById('shelly-horas-info');
   if (info) info.innerHTML = '';
+  suscribirEstadoShelly(equipo);
   if (!equipo || tipoEquipo(equipo) !== 'hr' || EQUIPOS_JDLINK.includes(equipo)) return;
   try {
     const docId = equipoADocIdHorometro(equipo);
@@ -3726,7 +3771,8 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     <!-- REGISTRAR -->
     <div id="tc-registro" class="tab-content active">
       <div class="saldo-widget"></div>
-      <div class="esp32-estado-widget" style="margin-bottom:12px"></div>
+      <div class="esp32-estado-widget" style="margin-bottom:6px"></div>
+      <div id="shelly-estado-conexion" style="margin-bottom:12px"></div>
 
       <!-- PANEL SOLICITUDES ADMIN (solo visible para admin cuando hay pendientes) -->
       <div id="panel-solicitudes-admin" style="display:none;background:var(--blanco);border:2px solid var(--amarillo);border-radius:8px;padding:16px 20px;margin-bottom:16px;"></div>
