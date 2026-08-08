@@ -85,6 +85,45 @@ async function controlarBombaShelly(encender) {
   }
 }
 
+// ─── ESTADO DE CONEXIÓN DEL SHELLY DE LA BOMBA ──────────────
+// A diferencia de los Shelly de horómetro (que avisan solos vía Firestore),
+// el Shelly de la bomba no tiene script propio — se controla directo desde
+// Shelly Cloud. Por eso, para saber si está online, hay que CONSULTARLE a
+// Shelly Cloud (vía la Netlify Function shelly-status.js), en vez de esperar
+// un aviso. Se revisa cada 20 seg mientras la app esté abierta.
+let bombaShellyOnline = null; // null = todavía no se sabe / no se pudo consultar
+
+async function consultarEstadoBombaShelly() {
+  try {
+    const resp = await fetch('/.netlify/functions/shelly-status');
+    const data = await resp.json();
+    bombaShellyOnline = !!data.online;
+  } catch (e) {
+    console.warn('Error consultando estado del Shelly de la bomba:', e);
+    bombaShellyOnline = null;
+  }
+  renderEstadoBombaShelly();
+}
+
+function renderEstadoBombaShelly() {
+  const widgets = document.querySelectorAll('.bomba-shelly-estado-widget');
+  if (!widgets.length) return;
+  let html;
+  if (bombaShellyOnline === null) {
+    html = '<span style="color:#9CA3AF;font-size:12px">⚪ No se pudo consultar el Shelly de la bomba</span>';
+  } else if (bombaShellyOnline) {
+    html = '<span style="color:var(--verde);font-size:12px">🟢 Shelly de la bomba conectado (WiFi OK)</span>';
+  } else {
+    html = '<span style="color:var(--rojo);font-size:12px">🔴 Shelly de la bomba sin WiFi — la bomba no va a encender</span>';
+  }
+  widgets.forEach(el => el.innerHTML = html);
+}
+
+function iniciarMonitorBombaShelly() {
+  consultarEstadoBombaShelly();
+  setInterval(consultarEstadoBombaShelly, 20000);
+}
+
 // ─── JOHN DEERE JDLINK ─────────────────────────────────────
 const JD_CLIENT_ID = '0oavbnyqn09EHHLnh5d7';
 const JD_REDIRECT_URI = 'https://combustiblelosmaitenes.netlify.app/callback';
@@ -856,6 +895,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   suscribirSaldo();
   suscribirHorarioConfig();
   suscribirEstadoESP32();
+  iniciarMonitorBombaShelly();
   setInterval(renderEstadoShelly, 5000);
   // Cargar la conexión de John Deere desde Firestore (compartida entre todos los dispositivos)
   await cargarConfigJD();
@@ -3802,6 +3842,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     <div id="tc-registro" class="tab-content active">
       <div class="saldo-widget"></div>
       <div class="esp32-estado-widget" style="margin-bottom:6px"></div>
+      <div class="bomba-shelly-estado-widget" style="margin-bottom:6px"></div>
       <div id="shelly-estado-conexion" style="margin-bottom:12px"></div>
 
       <!-- PANEL SOLICITUDES ADMIN (solo visible para admin cuando hay pendientes) -->
