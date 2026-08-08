@@ -1774,6 +1774,20 @@ function equipoADocIdHorometro(equipo) {
   return equipo.replace(/\s+/g, '_');
 }
 
+// Convierte segundos transcurridos en un texto legible tipo "hace 3 min" —
+// se usa para mostrar cuándo fue la última vez que el sensor (Shelly/Heltec)
+// logró sincronizar, sin sonar alarmante: un rato largo sin actualizar
+// normalmente solo significa que el equipo está apagado, no una falla.
+function textoTiempoTranscurrido(seg) {
+  if (seg < 60) return 'actualizado hace instantes';
+  const min = Math.floor(seg / 60);
+  if (min < 60) return `última actualización hace ${min} min`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `última actualización hace ${hr} hr`;
+  const dias = Math.floor(hr / 24);
+  return `última actualización hace ${dias} día${dias !== 1 ? 's' : ''}`;
+}
+
 // Si el equipo seleccionado tiene un sensor propio (Shelly o Heltec) escribiendo
 // su horómetro en Firestore, lo lee y precarga el campo automáticamente — sin
 // botón, a diferencia de JDLink que el operador debe presionar para consultar.
@@ -1786,10 +1800,16 @@ async function cargarHorometroShelly(equipo) {
     const docId = equipoADocIdHorometro(equipo);
     const snap = await getDoc(doc(db, 'horometros', docId));
     if (snap.exists() && snap.data().horasTotal != null) {
-      const horas = snap.data().horasTotal;
+      const data = snap.data();
+      const horas = data.horasTotal;
       const mvInput = document.getElementById('medidor-valor');
       if (mvInput) mvInput.value = horas.toFixed(1);
-      if (info) info.innerHTML = `<span style="color:#2D7D46;font-size:12px">🔌 Horas desde sensor conectado: <strong>${horas.toFixed(1)} hr</strong></span>`;
+      let estadoTxt = '';
+      if (data.ts) {
+        const segTranscurridos = Math.floor(Date.now() / 1000) - data.ts;
+        estadoTxt = ` · <span style="color:var(--acero)">${textoTiempoTranscurrido(segTranscurridos)}</span>`;
+      }
+      if (info) info.innerHTML = `<span style="color:#2D7D46;font-size:12px">🔌 Horas desde sensor conectado: <strong>${horas.toFixed(1)} hr</strong>${estadoTxt}</span>`;
       validarPaso1();
     }
   } catch(e) { console.warn('Error leyendo horómetro del sensor:', e); }
