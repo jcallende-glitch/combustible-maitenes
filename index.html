@@ -1340,6 +1340,7 @@ function initRegistro() {
       document.getElementById('equipo').value = equipoAsignado;
       setMedidor(tipoEquipo(equipoAsignado));
       cargarUltimoRegistro(equipoAsignado);
+      cargarHorometroShelly(equipoAsignado);
       actualizarBotonesJDLink(equipoAsignado);
       if (EQUIPOS_JDLINK.includes(equipoAsignado) && jdAccessToken) obtenerHorasJDLink();
     } else {
@@ -1352,6 +1353,7 @@ function initRegistro() {
       renderEquipoMultiSelector(equiposAsignados);
       setMedidor(tipoEquipo(equipoDefault));
       cargarUltimoRegistro(equipoDefault);
+      cargarHorometroShelly(equipoDefault);
       actualizarBotonesJDLink(equipoDefault);
       if (EQUIPOS_JDLINK.includes(equipoDefault) && jdAccessToken) obtenerHorasJDLink();
     }
@@ -1366,6 +1368,7 @@ function initRegistro() {
       document.getElementById('equipo').value = equipoAsignado;
       setMedidor(tipoEquipo(equipoAsignado));
       cargarUltimoRegistro(equipoAsignado);
+      cargarHorometroShelly(equipoAsignado);
       actualizarBotonesJDLink(equipoAsignado);
       if (EQUIPOS_JDLINK.includes(equipoAsignado) && jdAccessToken) obtenerHorasJDLink();
     }
@@ -1745,6 +1748,7 @@ window.onEquipoChange = async function() {
   }
 
   await cargarUltimoRegistro(eq);
+  cargarHorometroShelly(eq);
 
   // Mostrar campo texto si eligió "Otro (especificar)"
   const variosWrap = document.getElementById('equipo-varios-wrap');
@@ -1761,6 +1765,34 @@ window.onEquipoChange = async function() {
   if (EQUIPOS_JDLINK.includes(eq) && jdAccessToken) obtenerHorasJDLink();
   actualizarVisibilidadHorario();
   validarPaso1();
+}
+
+// Convierte el nombre del equipo tal como aparece en la app (ej. "Kubota 2320")
+// al ID del documento en Firestore (ej. "Kubota_2320") que usan los scripts
+// de los Shelly/Heltec para guardar el horómetro (colección "horometros").
+function equipoADocIdHorometro(equipo) {
+  return equipo.replace(/\s+/g, '_');
+}
+
+// Si el equipo seleccionado tiene un sensor propio (Shelly o Heltec) escribiendo
+// su horómetro en Firestore, lo lee y precarga el campo automáticamente — sin
+// botón, a diferencia de JDLink que el operador debe presionar para consultar.
+// Si el equipo tiene JDLink activo, no interfiere (JDLink tiene su propio flujo).
+async function cargarHorometroShelly(equipo) {
+  const info = document.getElementById('shelly-horas-info');
+  if (info) info.innerHTML = '';
+  if (!equipo || tipoEquipo(equipo) !== 'hr' || EQUIPOS_JDLINK.includes(equipo)) return;
+  try {
+    const docId = equipoADocIdHorometro(equipo);
+    const snap = await getDoc(doc(db, 'horometros', docId));
+    if (snap.exists() && snap.data().horasTotal != null) {
+      const horas = snap.data().horasTotal;
+      const mvInput = document.getElementById('medidor-valor');
+      if (mvInput) mvInput.value = horas.toFixed(1);
+      if (info) info.innerHTML = `<span style="color:#2D7D46;font-size:12px">🔌 Horas desde sensor conectado: <strong>${horas.toFixed(1)} hr</strong></span>`;
+      validarPaso1();
+    }
+  } catch(e) { console.warn('Error leyendo horómetro del sensor:', e); }
 }
 
 async function cargarUltimoRegistro(equipo) {
@@ -1891,6 +1923,7 @@ window.toggleCambioEquipo = function() {
     }
     setMedidor(tipoEquipo(equipoAsignado));
     cargarUltimoRegistro(equipoAsignado);
+    cargarHorometroShelly(equipoAsignado);
     actualizarBotonesJDLink(equipoAsignado);
     if (EQUIPOS_JDLINK.includes(equipoAsignado) && jdAccessToken) obtenerHorasJDLink();
     actualizarVisibilidadHorario();
@@ -3695,6 +3728,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
             📡 Obtener horas desde JDLink
           </button>
           <div id="jd-horas-info" style="margin-top:6px"></div>
+          <div id="shelly-horas-info" style="margin-top:6px"></div>
         </div>
 
         <div id="aviso-fuera-horario" style="display:none;background:var(--rojo);color:white;padding:10px 14px;border-radius:6px;margin:12px 0;font-size:13px;align-items:center;justify-content:space-between;gap:10px">
