@@ -1010,18 +1010,20 @@ function renderSaldo() {
 }
 
 // ─── ESTADO DE CONEXIÓN DEL ESP32 (caudalímetro) ────────────
-// El ESP32 escribe a Firestore cada 2 seg de forma constante (litros, pulsos y
-// ts), sin importar si hay flujo de combustible o no — por eso, a diferencia
-// del horómetro Shelly (que solo actualiza con el motor encendido), acá "hace
-// rato que no actualiza" sí significa realmente desconectado del WiFi.
-let esp32UltimoTs = null; // último "ts" (ms, hora real vía NTP) recibido del ESP32
+// El ESP32 escribe a Firestore cada 2 seg de forma constante, sin importar si
+// hay flujo o no. En vez de confiar en la hora que el propio ESP32 reporta
+// (poco confiable si su NTP no sincronizó), usamos el reloj del NAVEGADOR:
+// cada vez que llega un cambio nuevo del documento, anotamos "ahora" (Date.now()
+// del navegador, siempre correcto) — así "conectado o no" no depende para nada
+// de si el reloj del dispositivo está bien puesto.
+let esp32UltimaRecepcionMs = null;
 let unsubEstadoESP32 = null;
 const ESP32_UMBRAL_CONECTADO_SEG = 10; // escribe cada 2 seg, así que 10 seg de margen es generoso
 
 function suscribirEstadoESP32() {
   if (unsubEstadoESP32) return;
   unsubEstadoESP32 = onSnapshot(doc(db, 'esp32_test', 'lectura_actual'), snap => {
-    if (snap.exists() && snap.data().ts != null) esp32UltimoTs = Number(snap.data().ts);
+    if (snap.exists()) esp32UltimaRecepcionMs = Date.now();
     renderEstadoESP32();
   }, err => console.warn('Error escuchando estado ESP32:', err));
   // Refresca el texto "hace cuánto" cada 5 seg aunque no lleguen datos nuevos
@@ -1032,10 +1034,10 @@ function renderEstadoESP32() {
   const widgets = document.querySelectorAll('.esp32-estado-widget');
   if (!widgets.length) return;
   let html;
-  if (!esp32UltimoTs) {
+  if (!esp32UltimaRecepcionMs) {
     html = '<span style="color:#9CA3AF;font-size:12px">⚪ Sin datos del caudalímetro todavía</span>';
   } else {
-    const segTranscurridos = Math.floor((Date.now() - esp32UltimoTs) / 1000);
+    const segTranscurridos = Math.floor((Date.now() - esp32UltimaRecepcionMs) / 1000);
     html = segTranscurridos <= ESP32_UMBRAL_CONECTADO_SEG
       ? '<span style="color:var(--verde);font-size:12px">🟢 Caudalímetro ESP32 conectado</span>'
       : `<span style="color:var(--rojo);font-size:12px">🔴 Caudalímetro ESP32 desconectado — ${textoTiempoTranscurrido(segTranscurridos)}</span>`;
