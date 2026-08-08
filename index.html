@@ -1019,7 +1019,7 @@ function renderSaldo() {
 // de si el reloj del dispositivo está bien puesto.
 let esp32UltimaRecepcionMs = null;
 let unsubEstadoESP32 = null;
-const ESP32_UMBRAL_CONECTADO_SEG = 10; // escribe cada 2 seg, así que 10 seg de margen es generoso
+const ESP32_UMBRAL_CONECTADO_SEG = 20; // escribe cada 2 seg, pero además hace otra llamada HTTP por vuelta de loop que a veces demora — 20 seg da margen para eso sin parpadear en falso
 
 function suscribirEstadoESP32() {
   if (unsubEstadoESP32) return;
@@ -1041,7 +1041,7 @@ function renderEstadoESP32() {
     const segTranscurridos = Math.floor((Date.now() - esp32UltimaRecepcionMs) / 1000);
     html = segTranscurridos <= ESP32_UMBRAL_CONECTADO_SEG
       ? '<span style="color:var(--verde);font-size:12px">🟢 Caudalímetro ESP32 conectado</span>'
-      : `<span style="color:var(--rojo);font-size:12px">🔴 Caudalímetro ESP32 desconectado — ${textoTiempoTranscurrido(segTranscurridos)}</span>`;
+      : `<span style="color:var(--rojo);font-size:12px">🔴 Caudalímetro ESP32 desconectado — ${textoDesconectadoDesde(segTranscurridos)}</span>`;
   }
   widgets.forEach(el => el.innerHTML = html);
 }
@@ -1807,13 +1807,13 @@ window.onEquipoChange = async function() {
 
 // Convierte el nombre del equipo tal como aparece en la app (ej. "Kubota 2320")
 // al ID del documento en Firestore (ej. "Kubota_2320") que usan los scripts
-// de los Shelly/Heltec para guardar el horómetro (colección "horometros").
+// de los Shelly para guardar el horómetro (colección "horometros").
 function equipoADocIdHorometro(equipo) {
   return equipo.replace(/\s+/g, '_');
 }
 
 // Convierte segundos transcurridos en un texto legible tipo "hace 3 min" —
-// se usa para mostrar cuándo fue la última vez que el sensor (Shelly/Heltec)
+// se usa para mostrar cuándo fue la última vez que el sensor (Shelly)
 // logró sincronizar, sin sonar alarmante: un rato largo sin actualizar
 // normalmente solo significa que el equipo está apagado, no una falla.
 function textoTiempoTranscurrido(seg) {
@@ -1826,24 +1826,40 @@ function textoTiempoTranscurrido(seg) {
   return `última actualización hace ${dias} día${dias !== 1 ? 's' : ''}`;
 }
 
-// ─── ESTADO DE CONEXIÓN DEL SHELLY DEL EQUIPO SELECCIONADO ──
-// Mismo principio que el semáforo del ESP32 (reloj del navegador, no el del
-// dispositivo), pero por equipo: cada vez que cambia el equipo elegido, se
-// vuelve a suscribir al documento horometros/{equipo} que le corresponde.
+// Igual que textoTiempoTranscurrido, pero SIN la frase "hace instantes" — se usa
+// en los semáforos verde/amarillo/rojo (ESP32 y Shelly), donde por definición
+// solo se llega a este texto cuando el umbral de "conectado" ya se superó, así
+// que decir "instantes" ahí sería contradictorio con el estado "desconectado".
+function textoDesconectadoDesde(seg) {
+  if (seg < 60) return `hace ${seg} seg`;
+  const min = Math.floor(seg / 60);
+  if (min < 60) return `hace ${min} min`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `hace ${hr} hr`;
+  const dias = Math.floor(hr / 24);
+  return `hace ${dias} día${dias !== 1 ? 's' : ''}`;
+}
+
+// ─── ESTADO DEL SISTEMA DE HORÓMETRO WIFI DEL EQUIPO SELECCIONADO ──
+// Un mismo semáforo para los 3 casos posibles de un equipo tipo horas:
+// 1) Tiene Shelly propio -> verde/amarillo/rojo según cuándo sincronizó
+// 2) Tiene JDLink -> verde/rojo según si hay sesión activa de John Deere
+// 3) Ninguno de los dos -> gris, informativo ("sin sistema asociado")
 // No tiene relación con las horas del horómetro en sí (esas van en su propio
-// cuadro) — esto solo indica si el sensor de ESE equipo sigue actualizando.
+// cuadro) — esto solo indica el estado de conexión del sistema que las provee.
 let unsubEstadoShelly = null;
 let shellyUltimaRecepcionMs = null;
-let shellyEquipoActual = null;
+let equipoSensorActual = null;
 const SHELLY_UMBRAL_VERDE_SEG = 20;     // el script sincroniza cada 15 seg, margen generoso
 const SHELLY_UMBRAL_AMARILLO_SEG = 120; // 2 min
 
 function suscribirEstadoShelly(equipo) {
   if (unsubEstadoShelly) { unsubEstadoShelly(); unsubEstadoShelly = null; }
   shellyUltimaRecepcionMs = null;
-  shellyEquipoActual = (equipo && tipoEquipo(equipo) === 'hr' && !EQUIPOS_JDLINK.includes(equipo)) ? equipo : null;
-  if (shellyEquipoActual) {
-    const docId = equipoADocIdHorometro(shellyEquipoActual);
+  equipoSensorActual = equipo || null;
+  const tieneShelly = equipo && tipoEquipo(equipo) === 'hr' && !EQUIPOS_JDLINK.includes(equipo);
+  if (tieneShelly) {
+    const docId = equipoADocIdHorometro(equipo);
     unsubEstadoShelly = onSnapshot(doc(db, 'horometros', docId), snap => {
       if (snap.exists()) shellyUltimaRecepcionMs = Date.now();
       renderEstadoShelly();
@@ -1855,21 +1871,35 @@ function suscribirEstadoShelly(equipo) {
 function renderEstadoShelly() {
   const el = document.getElementById('shelly-estado-conexion');
   if (!el) return;
-  if (!shellyEquipoActual) { el.innerHTML = ''; return; }
-  const nombreShelly = 'Shelly ' + equipoADocIdHorometro(shellyEquipoActual);
-  if (!shellyUltimaRecepcionMs) {
-    el.innerHTML = `<span style="color:#9CA3AF;font-size:12px">⚪ Sin datos de ${nombreShelly} todavía</span>`;
+  const equipo = equipoSensorActual;
+  if (!equipo || tipoEquipo(equipo) !== 'hr') { el.innerHTML = ''; return; }
+
+  // Caso 1: equipo con JDLink — el "sensor" es la sesión de Operations Center
+  if (EQUIPOS_JDLINK.includes(equipo)) {
+    el.innerHTML = jdAccessToken
+      ? '<span style="color:var(--verde);font-size:12px">🟢 JDLink conectado (sesión activa)</span>'
+      : '<span style="color:var(--rojo);font-size:12px">🔴 JDLink sin conectar — inicia sesión en Configurar</span>';
     return;
   }
+
+  // Caso 2: nunca ha llegado un dato de Shelly para este equipo — no
+  // tiene ningún sistema de horómetro WiFi asociado (o no configurado aún)
+  if (!shellyUltimaRecepcionMs) {
+    el.innerHTML = '<span style="color:#9CA3AF;font-size:12px">⚪ Sin sistema de horómetro WiFi asociado a este equipo</span>';
+    return;
+  }
+
+  // Caso 3: tiene Shelly — semáforo según hace cuánto sincronizó
+  const nombreShelly = 'Shelly ' + equipoADocIdHorometro(equipo);
   const seg = Math.floor((Date.now() - shellyUltimaRecepcionMs) / 1000);
   let html;
   if (seg <= SHELLY_UMBRAL_VERDE_SEG) html = `<span style="color:var(--verde);font-size:12px">🟢 ${nombreShelly} conectado</span>`;
-  else if (seg <= SHELLY_UMBRAL_AMARILLO_SEG) html = `<span style="color:#92400E;font-size:12px">🟡 ${nombreShelly} — ${textoTiempoTranscurrido(seg)}</span>`;
-  else html = `<span style="color:var(--rojo);font-size:12px">🔴 ${nombreShelly} desconectado — ${textoTiempoTranscurrido(seg)}</span>`;
+  else if (seg <= SHELLY_UMBRAL_AMARILLO_SEG) html = `<span style="color:#92400E;font-size:12px">🟡 ${nombreShelly} — ${textoDesconectadoDesde(seg)}</span>`;
+  else html = `<span style="color:var(--rojo);font-size:12px">🔴 ${nombreShelly} desconectado — ${textoDesconectadoDesde(seg)}</span>`;
   el.innerHTML = html;
 }
 
-// Si el equipo seleccionado tiene un sensor propio (Shelly o Heltec) escribiendo
+// Si el equipo seleccionado tiene un sensor propio (Shelly) escribiendo
 // su horómetro en Firestore, lo lee y precarga el campo automáticamente — sin
 // botón, a diferencia de JDLink que el operador debe presionar para consultar.
 // Si el equipo tiene JDLink activo, no interfiere (JDLink tiene su propio flujo).
