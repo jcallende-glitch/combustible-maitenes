@@ -132,15 +132,26 @@ const JD_TOKEN_URL = 'https://signin.johndeere.com/oauth2/aus78tnlaysMraFhC1t7/v
 const JD_API_BASE = 'https://partnerapi.deere.com/platform';
 const JD_SCOPES = 'ag1 ag2 ag3 eq1 eq2 org1 org2 offline_access openid email profile';
 
-// EQUIPOS_JDLINK_DEFAULT es solo la SEMILLA usada una única vez para migrar a
-// Firestore (config.datos.equiposJDLink). Desde ahí en adelante, la lista real
-// y editable vive en `equiposJDLinkConfig`, con un interruptor por equipo en
-// Configurar (igual que km/hr, Cultivo/Trabajo/Apero).
-const EQUIPOS_JDLINK_DEFAULT = ['JD 6170J', 'JD 6910', 'JD 5090'];
-let equiposJDLinkConfig = []; // se carga desde Firestore (config.datos.equiposJDLink)
-// Wrapper con la misma interfaz que el array viejo (.includes(eq)), para no
-// tener que tocar cada punto del código que ya lo usaba así
-const EQUIPOS_JDLINK = { includes: (eq) => equiposJDLinkConfig.includes(eq) };
+// FUENTE DEL HORÓMETRO por equipo: 'manual' | 'shelly' | 'jdlink' — editable
+// desde Configurar con un solo selector de 3 estados por equipo (reemplaza al
+// viejo interruptor binario de JDLink + detección implícita del Shelly).
+const EQUIPOS_JDLINK_DEFAULT = ['JD 6170J', 'JD 6910', 'JD 5090']; // semilla, solo para la migración
+const EQUIPOS_SHELLY_DEFAULT = ['Clinton', 'Kubota 2320']; // semilla, solo para la migración
+let fuenteHorometroConfig = {}; // se carga desde Firestore (config.datos.fuenteHorometro)
+
+function construirFuenteHorometroDesdeDefault() {
+  const f = {};
+  (config.equipos || []).forEach(eq => {
+    if (EQUIPOS_JDLINK_DEFAULT.includes(eq)) f[eq] = 'jdlink';
+    else if (EQUIPOS_SHELLY_DEFAULT.includes(eq)) f[eq] = 'shelly';
+    else f[eq] = 'manual';
+  });
+  return f;
+}
+
+function fuenteHorometroDe(equipo) {
+  return fuenteHorometroConfig[equipo] || 'manual';
+}
 
 let jdAccessToken = null;
 let jdRefreshToken = null;
@@ -640,7 +651,7 @@ function actualizarBotonesJDLink(eq) {
   const jdInfo = document.getElementById('jd-horas-info');
   if (!btnLogin || !btnHoras) return;
   if (jdInfo) jdInfo.innerHTML = '';
-  const esJD = EQUIPOS_JDLINK.includes(eq);
+  const esJD = (fuenteHorometroDe(eq) === 'jdlink');
   if (!esJD || tipoEquipo(eq) === 'km') {
     btnLogin.style.display = 'none'; btnHoras.style.display = 'none'; return;
   }
@@ -977,10 +988,11 @@ async function loadConfig() {
         config.parametros = { capacidad: CAPACIDAD_DEFAULT, alertaLitros: ALERTA_LITROS_DEFAULT, margenTotalizador: MARGEN_TOTALIZADOR_DEFAULT };
         await setDoc(doc(db, 'config', 'datos'), config);
       }
-      // Migración automática: qué equipos tienen JDLink habilitado, ahora
-      // editable desde Configurar (antes vivía hardcodeado en EQUIPOS_JDLINK)
-      if (!config.equiposJDLink) {
-        config.equiposJDLink = [...EQUIPOS_JDLINK_DEFAULT];
+      // Migración automática: fuente del horómetro por equipo (manual/shelly/
+      // jdlink), ahora un solo selector editable desde Configurar (antes era
+      // un interruptor de JDLink + detección implícita del Shelly)
+      if (!config.fuenteHorometro) {
+        config.fuenteHorometro = construirFuenteHorometroDesdeDefault();
         await setDoc(doc(db, 'config', 'datos'), config);
       }
     } else {
@@ -991,7 +1003,7 @@ async function loadConfig() {
       config.mantenciones = construirMantencionesDesdeHardcode();
       config.alertaHrsAntes = ALERTA_HRS_ANTES_DEFAULT;
       config.parametros = { capacidad: CAPACIDAD_DEFAULT, alertaLitros: ALERTA_LITROS_DEFAULT, margenTotalizador: MARGEN_TOTALIZADOR_DEFAULT };
-      config.equiposJDLink = [...EQUIPOS_JDLINK_DEFAULT];
+      config.fuenteHorometro = construirFuenteHorometroDesdeDefault();
       await setDoc(doc(db, 'config', 'datos'), config);
     }
     tiposEquipo = config.tiposEquipo || {};
@@ -1002,7 +1014,7 @@ async function loadConfig() {
     mantencionesConfig = config.mantenciones || [];
     alertaHrsAntes = config.alertaHrsAntes != null ? config.alertaHrsAntes : ALERTA_HRS_ANTES_DEFAULT;
     parametrosSistema = config.parametros || { capacidad: CAPACIDAD_DEFAULT, alertaLitros: ALERTA_LITROS_DEFAULT, margenTotalizador: MARGEN_TOTALIZADOR_DEFAULT };
-    equiposJDLinkConfig = config.equiposJDLink || [];
+    fuenteHorometroConfig = config.fuenteHorometro || {};
   } catch(e) { console.error(e); }
 }
 async function saveConfig() { await setDoc(doc(db, 'config', 'datos'), config); }
@@ -1436,7 +1448,7 @@ function initRegistro() {
       cargarUltimoRegistro(equipoAsignado);
       cargarHorometroShelly(equipoAsignado);
       actualizarBotonesJDLink(equipoAsignado);
-      if (EQUIPOS_JDLINK.includes(equipoAsignado) && jdAccessToken) obtenerHorasJDLink();
+      if ((fuenteHorometroDe(equipoAsignado) === 'jdlink') && jdAccessToken) obtenerHorasJDLink();
     } else {
       document.getElementById('equipo-fijo').style.display = 'none';
       document.getElementById('equipo-multi-wrap').style.display = 'block';
@@ -1449,7 +1461,7 @@ function initRegistro() {
       cargarUltimoRegistro(equipoDefault);
       cargarHorometroShelly(equipoDefault);
       actualizarBotonesJDLink(equipoDefault);
-      if (EQUIPOS_JDLINK.includes(equipoDefault) && jdAccessToken) obtenerHorasJDLink();
+      if ((fuenteHorometroDe(equipoDefault) === 'jdlink') && jdAccessToken) obtenerHorasJDLink();
     }
   } else {
     document.getElementById('equipo-fijo').style.display = 'none';
@@ -1464,7 +1476,7 @@ function initRegistro() {
       cargarUltimoRegistro(equipoAsignado);
       cargarHorometroShelly(equipoAsignado);
       actualizarBotonesJDLink(equipoAsignado);
-      if (EQUIPOS_JDLINK.includes(equipoAsignado) && jdAccessToken) obtenerHorasJDLink();
+      if ((fuenteHorometroDe(equipoAsignado) === 'jdlink') && jdAccessToken) obtenerHorasJDLink();
     }
   }
   centrosSeleccionados = CULTIVO_OPERADOR_DEFAULT[currentUser] ? [CULTIVO_OPERADOR_DEFAULT[currentUser]] : [];
@@ -1856,7 +1868,7 @@ window.onEquipoChange = async function() {
 
   if (trabajoSeleccionado) renderTrabajoSelector();
   actualizarBotonesJDLink(eq);
-  if (EQUIPOS_JDLINK.includes(eq) && jdAccessToken) obtenerHorasJDLink();
+  if ((fuenteHorometroDe(eq) === 'jdlink') && jdAccessToken) obtenerHorasJDLink();
   actualizarVisibilidadHorario();
   validarPaso1();
 }
@@ -1916,7 +1928,7 @@ function suscribirEstadoShelly(equipo) {
   if (unsubEstadoShelly) { unsubEstadoShelly(); unsubEstadoShelly = null; }
   shellyUltimaRecepcionMs = null;
   equipoSensorActual = equipo || null;
-  const tieneShelly = equipo && tipoEquipo(equipo) === 'hr' && !EQUIPOS_JDLINK.includes(equipo);
+  const tieneShelly = equipo && fuenteHorometroDe(equipo) === 'shelly';
   if (tieneShelly) {
     const docId = equipoADocIdHorometro(equipo);
     unsubEstadoShelly = onSnapshot(doc(db, 'horometros', docId), snap => {
@@ -1932,23 +1944,29 @@ function renderEstadoShelly() {
   if (!el) return;
   const equipo = equipoSensorActual;
   if (!equipo || tipoEquipo(equipo) !== 'hr') { el.innerHTML = ''; return; }
+  const fuente = fuenteHorometroDe(equipo);
 
-  // Caso 1: equipo con JDLink — el "sensor" es la sesión de Operations Center
-  if (EQUIPOS_JDLINK.includes(equipo)) {
+  // Caso 1: equipo configurado en Manual — no hay ningún sistema que revisar
+  if (fuente === 'manual') {
+    el.innerHTML = '<span style="color:#9CA3AF;font-size:12px">⚪ Este equipo usa horómetro manual</span>';
+    return;
+  }
+
+  // Caso 2: equipo con JDLink — el "sensor" es la sesión de Operations Center
+  if (fuente === 'jdlink') {
     el.innerHTML = jdAccessToken
       ? '<span style="color:var(--verde);font-size:12px">🟢 JDLink conectado (sesión activa)</span>'
       : '<span style="color:var(--rojo);font-size:12px">🔴 JDLink sin conectar — inicia sesión en Configurar</span>';
     return;
   }
 
-  // Caso 2: nunca ha llegado un dato de Shelly para este equipo — no
-  // tiene ningún sistema de horómetro WiFi asociado (o no configurado aún)
+  // Caso 3: equipo con Shelly, pero todavía sin ningún dato recibido
   if (!shellyUltimaRecepcionMs) {
-    el.innerHTML = '<span style="color:#9CA3AF;font-size:12px">⚪ Sin sistema de horómetro WiFi asociado a este equipo</span>';
+    el.innerHTML = '<span style="color:#9CA3AF;font-size:12px">⚪ Shelly configurado, sin datos todavía</span>';
     return;
   }
 
-  // Caso 3: tiene Shelly — semáforo según hace cuánto sincronizó. Si lleva
+  // Caso 4: Shelly con datos — semáforo según hace cuánto sincronizó. Si lleva
   // mucho rato sin recibir nada, probablemente el canal en tiempo real de esta
   // pestaña se quedó pegado (no necesariamente el Shelly) — reconectamos solo
   const seg = Math.floor((Date.now() - shellyUltimaRecepcionMs) / 1000);
@@ -1965,15 +1983,15 @@ function renderEstadoShelly() {
   el.innerHTML = html;
 }
 
-// Si el equipo seleccionado tiene un sensor propio (Shelly) escribiendo
-// su horómetro en Firestore, lo lee y precarga el campo automáticamente — sin
-// botón, a diferencia de JDLink que el operador debe presionar para consultar.
-// Si el equipo tiene JDLink activo, no interfiere (JDLink tiene su propio flujo).
+// Si el equipo seleccionado tiene fuente "shelly", lee su horómetro desde
+// Firestore y lo precarga automáticamente — sin botón, a diferencia de JDLink
+// que el operador debe presionar para consultar. Si la fuente es "jdlink" o
+// "manual", esta función no interfiere para nada.
 async function cargarHorometroShelly(equipo) {
   const info = document.getElementById('shelly-horas-info');
   if (info) info.innerHTML = '';
   suscribirEstadoShelly(equipo);
-  if (!equipo || tipoEquipo(equipo) !== 'hr' || EQUIPOS_JDLINK.includes(equipo)) return;
+  if (!equipo || fuenteHorometroDe(equipo) !== 'shelly') return;
   try {
     const docId = equipoADocIdHorometro(equipo);
     const snap = await getDoc(doc(db, 'horometros', docId));
@@ -2002,7 +2020,7 @@ function renderPanelCorreccionHorometro() {
   const sel = document.getElementById('correccion-horometro-equipo-sel');
   if (!sel) return;
   const cur = sel.value;
-  const lista = equiposHr().filter(e => !EQUIPOS_JDLINK.includes(e));
+  const lista = equiposHr().filter(e => fuenteHorometroDe(e) === 'shelly');
   sel.innerHTML = '<option value="" disabled selected>Seleccionar equipo</option>' +
     lista.map(e => `<option value="${e}" ${e===cur?'selected':''}>${e}</option>`).join('');
 }
@@ -2150,7 +2168,7 @@ window.toggleCambioEquipo = function() {
     cargarUltimoRegistro(equipoAsignado);
     cargarHorometroShelly(equipoAsignado);
     actualizarBotonesJDLink(equipoAsignado);
-    if (EQUIPOS_JDLINK.includes(equipoAsignado) && jdAccessToken) obtenerHorasJDLink();
+    if ((fuenteHorometroDe(equipoAsignado) === 'jdlink') && jdAccessToken) obtenerHorasJDLink();
     actualizarVisibilidadHorario();
     limpiarPreview();
   }
@@ -2828,6 +2846,9 @@ window.agregar = async function(tipo) {
     if (!config.requisitosEquipo) config.requisitosEquipo = {};
     config.requisitosEquipo[val] = { cultivo: true, trabajo: true, apero: true };
     requisitosEquipo = config.requisitosEquipo;
+    if (!config.fuenteHorometro) config.fuenteHorometro = {};
+    config.fuenteHorometro[val] = 'manual';
+    fuenteHorometroConfig = config.fuenteHorometro;
   }
   await saveConfig(); inp.value='';
   renderConfigListas(); initRegistro(); toast('✓ Agregado',true);
@@ -2856,11 +2877,10 @@ window.eliminarItem = async function(tipo,idx) {
     });
     equipoOperadorConfig = config.equipoOperador;
   }
-  // Si se elimina un equipo, sacarlo también de la lista de equipos con JDLink
-  if (tipo === 'equipos' && Array.isArray(config.equiposJDLink)) {
-    const i = config.equiposJDLink.indexOf(val);
-    if (i >= 0) config.equiposJDLink.splice(i, 1);
-    equiposJDLinkConfig = config.equiposJDLink;
+  // Si se elimina un equipo, sacarlo también de la configuración de fuente del horómetro
+  if (tipo === 'equipos' && config.fuenteHorometro) {
+    delete config.fuenteHorometro[val];
+    fuenteHorometroConfig = config.fuenteHorometro;
   }
   // Si se elimina un operador, sacar también su asignación de equipos
   if (tipo === 'operadores' && config.equipoOperador) {
@@ -2909,20 +2929,20 @@ window.toggleRequisitoEquipo = async function(equipo, campo) {
     toast(`✓ ${equipo}: ${campo} ahora ${!actual ? 'es requerido' : 'no es requerido'}`, true);
   } catch(e) { toast('Error: ' + e.message, false); }
 }
-// Alterna si un equipo tiene JDLink habilitado (le muestra el botón "Obtener
-// horas desde JDLink" en el formulario) — úsalo cuando emparejes un tractor
-// nuevo en John Deere Operations Center
-window.toggleJDLinkEquipo = async function(equipo) {
-  if (!config.equiposJDLink) config.equiposJDLink = [];
-  const i = config.equiposJDLink.indexOf(equipo);
-  const activo = i >= 0;
-  if (activo) config.equiposJDLink.splice(i, 1);
-  else config.equiposJDLink.push(equipo);
-  equiposJDLinkConfig = config.equiposJDLink;
+// Cicla la fuente del horómetro de un equipo: Manual → Shelly → JDLink → Manual.
+// Reemplaza al viejo interruptor binario de JDLink — ahora es un solo lugar
+// donde queda claro de dónde saca sus horas cada equipo.
+window.cambiarFuenteHorometro = async function(equipo) {
+  const actual = fuenteHorometroDe(equipo);
+  const siguiente = actual === 'manual' ? 'shelly' : actual === 'shelly' ? 'jdlink' : 'manual';
+  if (!config.fuenteHorometro) config.fuenteHorometro = {};
+  config.fuenteHorometro[equipo] = siguiente;
+  fuenteHorometroConfig = config.fuenteHorometro;
   try {
     await saveConfig();
     renderConfigListas();
-    toast(`✓ ${equipo}: JDLink ${activo ? 'desactivado' : 'activado'}`, true);
+    const etiquetas = { manual: 'Manual', shelly: 'Shelly', jdlink: 'JDLink' };
+    toast(`✓ ${equipo}: horómetro ahora es ${etiquetas[siguiente]}`, true);
   } catch(e) { toast('Error: ' + e.message, false); }
 }
 function renderConfigListas() {
@@ -2931,7 +2951,12 @@ function renderConfigListas() {
       config[tipo].map((v,i)=>{
         if (tipo === 'equipos') {
           const req = requisitosDe(v);
-          const jdLinkActivo = equiposJDLinkConfig.includes(v);
+          const fuente = fuenteHorometroDe(v);
+          const fuenteInfo = {
+            manual: { label: 'Manual', bg: '#F3F4F6', color: '#9CA3AF' },
+            shelly: { label: 'Shelly', bg: 'var(--verde-suave)', color: 'var(--verde)' },
+            jdlink: { label: 'JDLink', bg: '#EFF6FF', color: '#1D4ED8' }
+          }[fuente];
           const badgeReq = (label, campo, activo) => `<span class="badge" style='font-size:9px;margin-left:3px;cursor:pointer;background:${activo?'var(--verde-suave)':'#F3F4F6'};color:${activo?'var(--verde)':'#9CA3AF'}' title="Click para cambiar si ${label.toLowerCase()} es requerido" onclick='toggleRequisitoEquipo(${JSON.stringify(v)},${JSON.stringify(campo)})'>${label}${activo?' ✓':' ✕'}</span>`;
           return `<div class="config-item" style="flex-wrap:wrap;gap:6px">
             <span style="flex:1;min-width:120px">${v}</span>
@@ -2939,7 +2964,7 @@ function renderConfigListas() {
             ${badgeReq('Cultivo','cultivo',req.cultivo)}
             ${badgeReq('Trabajo','trabajo',req.trabajo)}
             ${badgeReq('Apero','apero',req.apero)}
-            <span class="badge" style='font-size:9px;margin-left:3px;cursor:pointer;background:${jdLinkActivo?'var(--verde-suave)':'#F3F4F6'};color:${jdLinkActivo?'var(--verde)':'#9CA3AF'}' title="Click para activar/desactivar JDLink en este equipo" onclick='toggleJDLinkEquipo(${JSON.stringify(v)})'>JDLink${jdLinkActivo?' ✓':' ✕'}</span>
+            <span class="badge" style='font-size:9px;margin-left:3px;cursor:pointer;background:${fuenteInfo.bg};color:${fuenteInfo.color}' title="Click para cambiar la fuente del horómetro: Manual → Shelly → JDLink" onclick='cambiarFuenteHorometro(${JSON.stringify(v)})'>⏱ ${fuenteInfo.label}</span>
             <button class="btn btn-danger" onclick="eliminarItem('${tipo}',${i})">✕</button>
           </div>`;
         }
@@ -4110,7 +4135,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
           </div>
           <button class="btn-add" onclick="agregar('equipos')">+ Agregar</button>
         </div>
-        <div class="hint">Click en km/L ó L/hr para cambiar el tipo de medidor. Click en Cultivo/Trabajo/Apero para cambiar si ese campo es requerido. Click en JDLink para activar/desactivar la integración con John Deere Operations Center en ese equipo (primero debe estar emparejado en connections.deere.com).</div>
+        <div class="hint">Click en km/L ó L/hr para cambiar el tipo de medidor. Click en Cultivo/Trabajo/Apero para cambiar si ese campo es requerido. Click en el badge "⏱" para elegir de dónde saca sus horas ese equipo: Manual → Shelly → JDLink (para JDLink, primero debe estar emparejado en connections.deere.com).</div>
       </div>
       <div class="panel">
         <div class="panel-title">🔩 Aperos / Implementos</div>
