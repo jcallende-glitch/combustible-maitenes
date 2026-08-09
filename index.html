@@ -1993,6 +1993,33 @@ async function cargarHorometroShelly(equipo) {
   } catch(e) { console.warn('Error leyendo horómetro del sensor:', e); }
 }
 
+// ─── CORRECCIÓN REMOTA DEL HORÓMETRO SHELLY (Configurar) ────
+// Si el horómetro de un equipo se descontroló mucho (por una instalación
+// nueva, un reset, etc.), el admin puede escribir el valor REAL desde acá.
+// El propio script del Shelly revisa esto cada ~40 seg y ajusta su acumulado
+// interno solo — no hace falta tocar la consola del Shelly para nada.
+function renderPanelCorreccionHorometro() {
+  const sel = document.getElementById('correccion-horometro-equipo-sel');
+  if (!sel) return;
+  const cur = sel.value;
+  const lista = equiposHr().filter(e => !EQUIPOS_JDLINK.includes(e));
+  sel.innerHTML = '<option value="" disabled selected>Seleccionar equipo</option>' +
+    lista.map(e => `<option value="${e}" ${e===cur?'selected':''}>${e}</option>`).join('');
+}
+
+window.aplicarCorreccionHorometro = async function() {
+  const eq = document.getElementById('correccion-horometro-equipo-sel').value;
+  const valor = parseFloat(document.getElementById('correccion-horometro-valor').value);
+  if (!eq) { toast('Selecciona un equipo', false); return; }
+  if (isNaN(valor) || valor < 0) { toast('Ingresá un horómetro real válido', false); return; }
+  const docId = equipoADocIdHorometro(eq);
+  try {
+    await setDoc(doc(db, 'horometros', docId), { correccion: { valor, ts: Date.now() } }, { merge: true });
+    document.getElementById('correccion-horometro-valor').value = '';
+    toast(`✓ Corrección enviada para ${eq} — el Shelly la aplica en menos de 1 minuto`, true);
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
 async function cargarUltimoRegistro(equipo) {
   ultimoRegistroEquipo = null;
   document.getElementById('info-anterior').innerHTML = '<span style="color:#9CA3AF;font-size:12px">Buscando...</span>';
@@ -3238,7 +3265,7 @@ window.setTab = function(id,el) {
   document.getElementById('tc-'+id).classList.add('active');
   if(el)el.classList.add('active');
   if(['historial','admin','analytics','informes'].includes(id)) loadHistorial();
-  if(id==='config') { renderConfigListas(); renderPanelAperos(); renderPanelEquipoOperador(); renderPanelHorario(); renderPanelMantencionesConfig(); renderPanelParametros(); if(isAdmin) cargarPines(); actualizarToggleESP32(); }
+  if(id==='config') { renderConfigListas(); renderPanelAperos(); renderPanelEquipoOperador(); renderPanelHorario(); renderPanelMantencionesConfig(); renderPanelParametros(); renderPanelCorreccionHorometro(); if(isAdmin) cargarPines(); actualizarToggleESP32(); }
   if(id==='mantencion') { initMantencion(); }
   if(id==='registro' && isAdmin) escucharSolicitudesAdmin();
 }
@@ -4179,6 +4206,18 @@ tbody td{padding:10px 12px;vertical-align:middle;}
             <button class="btn btn-secondary" onclick="guardarCalibracionPulsos()" style="white-space:nowrap">Guardar</button>
           </div>
           <div class="hint">Litros = pulsos ÷ este número. Ajustalo aquí si calibrás el Piusi con un volumen conocido — no hace falta tocar el ESP32.</div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-title">🔧 Corregir horómetro Shelly</div>
+        <p class="hint" style="margin-bottom:12px">Si el horómetro de un equipo se descontroló (instalación nueva, reset del Shelly, etc.), escribe acá el valor real — el Shelly lo revisa solo en menos de un minuto y ajusta su acumulado, sin tener que tocar su consola.</p>
+        <div class="field">
+          <label>Equipo</label>
+          <div class="select-wrapper"><select id="correccion-horometro-equipo-sel"></select></div>
+        </div>
+        <div style="display:flex;gap:8px">
+          <input type="number" id="correccion-horometro-valor" min="0" step="0.1" placeholder="Horómetro real, ej: 7615.8" style="flex:1">
+          <button class="btn btn-verde" onclick="aplicarCorreccionHorometro()" style="white-space:nowrap">Aplicar</button>
         </div>
       </div>
       <div class="panel" id="panel-jdlink-config">
