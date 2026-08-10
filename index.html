@@ -407,71 +407,6 @@ const LITROS_POR_MINUTO_EST = 34.0;
 
 let esp32BaselineLitros = null;
 
-// ─── AUTO-APAGADO POR FLUJO ─────────────────────────────────
-// Si la bomba está encendida pero no llegan pulsos nuevos en 20 seg desde que
-// partió, algo falló (no salió petróleo) y se cancela por seguridad. Si ya
-// venía tirando combustible y los pulsos se detienen por 10 seg, se asume que
-// la carga terminó y se apaga sola (el operador solo confirma y registra).
-let ultimosPulsosESP32 = null;
-let monitorBombaInterval = null;
-let monitorInicioTs = null;
-let monitorFlujoIniciado = false;
-let monitorUltimoPulsosValor = null;
-let monitorUltimoCambioTs = null;
-const ESPERA_INICIO_FLUJO_MS = 20000;
-const ESPERA_FIN_FLUJO_MS = 10000;
-
-function iniciarMonitorAutoApagado() {
-  detenerMonitorAutoApagado();
-  if (!modoESP32) return; // solo tiene sentido con lectura real de pulsos del ESP32
-  monitorInicioTs = Date.now();
-  monitorFlujoIniciado = false;
-  monitorUltimoPulsosValor = ultimosPulsosESP32;
-  monitorUltimoCambioTs = Date.now();
-  monitorBombaInterval = setInterval(() => {
-    const ahora = Date.now();
-    if (ultimosPulsosESP32 != null) {
-      if (monitorUltimoPulsosValor === null) monitorUltimoPulsosValor = ultimosPulsosESP32;
-      if (ultimosPulsosESP32 !== monitorUltimoPulsosValor) {
-        monitorFlujoIniciado = true;
-        monitorUltimoPulsosValor = ultimosPulsosESP32;
-        monitorUltimoCambioTs = ahora;
-      }
-    }
-    if (!monitorFlujoIniciado && (ahora - monitorInicioTs) > ESPERA_INICIO_FLUJO_MS) {
-      detenerMonitorAutoApagado();
-      cancelarPorFaltaDeFlujo();
-      return;
-    }
-    if (monitorFlujoIniciado && (ahora - monitorUltimoCambioTs) > ESPERA_FIN_FLUJO_MS) {
-      detenerMonitorAutoApagado();
-      apagarPorFinDeFlujo();
-      return;
-    }
-  }, 1000);
-}
-
-function detenerMonitorAutoApagado() {
-  if (monitorBombaInterval) { clearInterval(monitorBombaInterval); monitorBombaInterval = null; }
-}
-
-async function cancelarPorFaltaDeFlujo() {
-  await apagarBomba();
-  try { await setDoc(doc(db, 'config', 'sistema'), { bombaActiva: false }, { merge: true }); } catch(e) {}
-  detenerLecturaESP32();
-  detenerEstimacionESP32();
-  document.getElementById('panel-paso2').style.display = 'none';
-  document.getElementById('panel-cargando').style.display = 'none';
-  document.getElementById('panel-paso1').style.display = 'block';
-  validarPaso1();
-  toast('⛔ No se detectó flujo de combustible en 20 seg — bomba apagada por seguridad', false);
-}
-
-async function apagarPorFinDeFlujo() {
-  toast('✓ Fin de carga detectado (10 seg sin flujo) — registrando despacho automáticamente...', true);
-  await window.registrar();
-}
-
 function iniciarLecturaESP32() {
   if (!modoESP32) return;
   if (unsubESP32) { unsubESP32(); unsubESP32 = null; }
@@ -489,9 +424,6 @@ function iniciarLecturaESP32() {
     // Si por algún motivo no llegan pulsos, usamos como respaldo lo que el propio
     // dispositivo haya calculado con su constante interna fija.
     const litrosAcumulado = data.pulsos != null ? (data.pulsos / pulsosPorLitro) : (data.litrosActual ?? data.litros ?? 0);
-    // Guardamos el último valor de pulsos conocido para que el monitor de auto-apagado
-    // (por falta de flujo) pueda detectar si el conteo avanza o queda quieto.
-    if (data.pulsos != null) ultimosPulsosESP32 = data.pulsos;
     // Tomamos como referencia el primer valor que llega al encender la bomba, y mostramos
     // solo la diferencia — así esta carga siempre arranca en 0 L, sin arrastrar el
     // acumulado histórico del ESP32.
@@ -1377,7 +1309,6 @@ window.confirmarPaso1YEncender = async function() {
     document.getElementById('equipo-cargando').textContent = eq;
     iniciarLecturaESP32();
     iniciarEstimacionESP32();
-    iniciarMonitorAutoApagado();
   } catch(e) {
     toast('Error al encender la bomba: ' + e.message, false);
   }
@@ -2300,7 +2231,6 @@ window.registrar = async function() {
     limpiarPreview(); renderCentrosSelector(); renderTrabajoSelector();
     detenerLecturaESP32();
     detenerEstimacionESP32();
-    detenerMonitorAutoApagado();
     try { await setDoc(doc(db, 'config', 'sistema'), { bombaActiva: false }, { merge: true }); } catch(e) {}
     document.getElementById('panel-paso2').style.display = 'none';
     document.getElementById('panel-cargando').style.display = 'none';
