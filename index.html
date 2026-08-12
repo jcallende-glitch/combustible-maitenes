@@ -540,6 +540,31 @@ async function guardarTotalizadorGlobal() {
   catch(e) { console.warn('Error guardando totalizador global:', e); }
 }
 
+// ─── AJUSTE MANUAL DEL TOTALIZADOR (Configurar) ─────────────
+// Permite al admin resincronizar el contador interno del totalizador cuando se
+// decide dejar de comparar contra el medidor físico Samoa (por desfase de
+// calibración acumulado, reemplazo del medidor, etc.). No mueve saldo del
+// estanque ni combustible real — solo el valor de referencia que se usa para
+// comparar cada carga siguiente.
+function renderPanelTotalizadorManual() {
+  const info = document.getElementById('totalizador-actual-info');
+  if (info) info.textContent = totalizadorGlobal != null ? `Valor actual: ${Math.round(totalizadorGlobal).toLocaleString('es-CL')} L` : 'Cargando...';
+}
+
+window.guardarTotalizadorManual = async function() {
+  const input = document.getElementById('totalizador-manual-input');
+  const valor = parseFloat(input.value);
+  if (isNaN(valor) || valor < 0) { toast('Ingresá un valor válido', false); return; }
+  if (!confirm(`¿Actualizar el totalizador interno a ${Math.round(valor).toLocaleString('es-CL')} L?\n\nEsto no mueve combustible real ni afecta el saldo del estanque — solo resincroniza el contador de referencia que se compara en cada carga.`)) return;
+  totalizadorGlobal = valor;
+  try {
+    await guardarTotalizadorGlobal();
+    input.value = '';
+    renderPanelTotalizadorManual();
+    toast(`✓ Totalizador actualizado a ${Math.round(valor).toLocaleString('es-CL')} L`, true);
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
 window.guardarModoESP32 = async function(valor) {
   modoESP32 = valor;
   try {
@@ -3422,7 +3447,7 @@ window.setTab = function(id,el) {
   document.getElementById('tc-'+id).classList.add('active');
   if(el)el.classList.add('active');
   if(['historial','admin','analytics','informes'].includes(id)) loadHistorial();
-  if(id==='config') { renderConfigListas(); renderPanelAperos(); renderPanelEquipoOperador(); renderPanelPresetsOperador(); renderPanelHorario(); renderPanelMantencionesConfig(); renderPanelParametros(); renderPanelCorreccionHorometro(); if(isAdmin) cargarPines(); actualizarToggleESP32(); }
+  if(id==='config') { renderConfigListas(); renderPanelAperos(); renderPanelEquipoOperador(); renderPanelPresetsOperador(); renderPanelHorario(); renderPanelMantencionesConfig(); renderPanelParametros(); renderPanelCorreccionHorometro(); renderPanelTotalizadorManual(); if(isAdmin) cargarPines(); actualizarToggleESP32(); }
   if(id==='mantencion') { initMantencion(); }
   if(id==='registro' && isAdmin) escucharSolicitudesAdmin();
 }
@@ -4389,6 +4414,15 @@ tbody td{padding:10px 12px;vertical-align:middle;}
           <button class="btn btn-verde" onclick="aplicarCorreccionHorometro()" style="white-space:nowrap;width:auto;flex-shrink:0">Aplicar</button>
         </div>
       </div>
+      <div class="panel">
+        <div class="panel-title">🧮 Actualizar totalizador interno</div>
+        <p class="hint" style="margin-bottom:12px">Resincroniza el contador interno del totalizador (el que se compara contra los litros de cada carga). Úsalo si decidiste dejar de comparar contra el medidor físico Samoa por un desfase de calibración acumulado. No mueve saldo del estanque ni combustible real.</p>
+        <div id="totalizador-actual-info" style="font-size:13px;color:var(--acero);margin-bottom:10px">Cargando...</div>
+        <div style="display:flex;gap:8px">
+          <input type="number" id="totalizador-manual-input" min="0" step="1" placeholder="Nuevo valor, ej: 623930" style="flex:1;min-width:0">
+          <button class="btn btn-verde" onclick="guardarTotalizadorManual()" style="white-space:nowrap;width:auto;flex-shrink:0">Aplicar</button>
+        </div>
+      </div>
       <div class="panel" id="panel-jdlink-config">
         <div class="panel-title">🟢 John Deere Operations Center</div>
         <div id="jd-config-estado" style="font-size:13px;color:var(--acero);margin-bottom:12px">Cargando estado...</div>
@@ -4506,3 +4540,4 @@ tbody td{padding:10px 12px;vertical-align:middle;}
 <div class="toast" id="toast"></div>
 </body>
 </html>
+i
