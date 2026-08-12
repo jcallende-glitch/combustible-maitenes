@@ -51,7 +51,17 @@ function equiposDe(operador) {
   if (!v) return [];
   return Array.isArray(v) ? v : [v];
 }
-const CULTIVO_OPERADOR_DEFAULT = { 'JCAZ': 'Mantención' };
+// PRESET POR OPERADOR (cultivo + trabajo + apero) — editable desde Configurar.
+// Si un operador tiene un preset guardado, la app le precarga esos 3 campos y
+// oculta por completo los selectores correspondientes — no ve esas opciones,
+// solo enciende y apaga la bomba. Pensado para operadores a los que se quiere
+// simplificar al máximo la pantalla (ej. no saben leer bien). El admin lo
+// cambia cuando quiera desde Configurar; el operador nunca se entera del cambio.
+let presetsOperadorConfig = {}; // se carga desde Firestore (config.datos.presetsOperador)
+function presetDe(operador) {
+  const p = presetsOperadorConfig[operador];
+  return (p && p.activo !== false) ? p : null;
+}
 // Estos 3 parámetros ahora son editables desde Configurar → Parámetros del
 // sistema. Las constantes _DEFAULT solo sirven de semilla para la primera
 // migración a Firestore (config.datos.parametros).
@@ -927,6 +937,12 @@ async function loadConfig() {
         config.fuenteHorometro = construirFuenteHorometroDesdeDefault();
         await setDoc(doc(db, 'config', 'datos'), config);
       }
+      // Migración automática: preset de cultivo/trabajo/apero por operador,
+      // ahora editable desde Configurar (antes solo existía para JCAZ, hardcodeado)
+      if (!config.presetsOperador) {
+        config.presetsOperador = { 'JCAZ': { cultivos: ['Mantención'], trabajo: null, apero: null, aperoObsTexto: '', activo: true } };
+        await setDoc(doc(db, 'config', 'datos'), config);
+      }
     } else {
       config = { ...DEFAULT_CONFIG, tiposEquipo: { ...EQUIPO_TIPO_DEFAULT }, aperos: construirAperosDesdeHardcode() };
       config.requisitosEquipo = construirRequisitosDesdeDefault();
@@ -936,6 +952,7 @@ async function loadConfig() {
       config.alertaHrsAntes = ALERTA_HRS_ANTES_DEFAULT;
       config.parametros = { capacidad: CAPACIDAD_DEFAULT, alertaLitros: ALERTA_LITROS_DEFAULT, margenTotalizador: MARGEN_TOTALIZADOR_DEFAULT };
       config.fuenteHorometro = construirFuenteHorometroDesdeDefault();
+      config.presetsOperador = { 'JCAZ': { cultivos: ['Mantención'], trabajo: null, apero: null, aperoObsTexto: '', activo: true } };
       await setDoc(doc(db, 'config', 'datos'), config);
     }
     tiposEquipo = config.tiposEquipo || {};
@@ -947,6 +964,7 @@ async function loadConfig() {
     alertaHrsAntes = config.alertaHrsAntes != null ? config.alertaHrsAntes : ALERTA_HRS_ANTES_DEFAULT;
     parametrosSistema = config.parametros || { capacidad: CAPACIDAD_DEFAULT, alertaLitros: ALERTA_LITROS_DEFAULT, margenTotalizador: MARGEN_TOTALIZADOR_DEFAULT };
     fuenteHorometroConfig = config.fuenteHorometro || {};
+    presetsOperadorConfig = config.presetsOperador || {};
   } catch(e) { console.error(e); }
 }
 async function saveConfig() { await setDoc(doc(db, 'config', 'datos'), config); }
@@ -1410,8 +1428,17 @@ function initRegistro() {
       if ((fuenteHorometroDe(equipoAsignado) === 'jdlink') && jdAccessToken) obtenerHorasJDLink();
     }
   }
-  centrosSeleccionados = CULTIVO_OPERADOR_DEFAULT[currentUser] ? [CULTIVO_OPERADOR_DEFAULT[currentUser]] : [];
-  trabajoSeleccionado = null; aperoSeleccionado = null; aperoObsTexto = ''; centroObsTexto = '';
+  const preset = !isAdmin ? presetDe(currentUser) : null;
+  if (preset) {
+    centrosSeleccionados = [...(preset.cultivos || [])];
+    trabajoSeleccionado = preset.trabajo || null;
+    aperoSeleccionado = preset.apero || null;
+    aperoObsTexto = preset.aperoObsTexto || '';
+    centroObsTexto = '';
+  } else {
+    centrosSeleccionados = [];
+    trabajoSeleccionado = null; aperoSeleccionado = null; aperoObsTexto = ''; centroObsTexto = '';
+  }
   renderCentrosSelector();
   renderTrabajoSelector();
   limpiarPreview();
@@ -1428,7 +1455,17 @@ function initRegistro() {
 
 // ─── SELECTOR MÚLTIPLE DE CULTIVOS ────────────────────────
 function renderCentrosSelector() {
+  const bloque = document.getElementById('bloque-cultivos');
   const container = document.getElementById('centros-selector');
+  if (bloque) bloque.style.display = 'block';
+  // Si el operador tiene un preset fijado por el admin, ve el/los cultivo(s)
+  // ya elegidos como chips fijos (puede leerlos) pero no puede tocarlos
+  if (!isAdmin && presetDe(currentUser)) {
+    container.innerHTML = centrosSeleccionados.map(c => `<div class="cultivo-chip sel" style="cursor:default">${c}</div>`).join('');
+    renderCentroOtroInput();
+    actualizarResumenCultivos();
+    return;
+  }
   container.innerHTML = config.centros.map(c => {
     const sel = centrosSeleccionados.includes(c);
     return `<div class="cultivo-chip ${sel?'sel':''}" onclick="toggleCultivo('${c}')">${c}</div>`;
@@ -1468,6 +1505,20 @@ window.toggleCultivo = function(c) {
 function renderTrabajoSelector() {
   const container = document.getElementById('trabajo-selector-wrap');
   if (!container) return;
+
+  // Si el operador tiene un preset fijado por el admin, ve el trabajo/apero ya
+  // elegidos como chips fijos (puede leerlos) pero no puede tocarlos
+  if (!isAdmin && presetDe(currentUser)) {
+    let html = '';
+    if (trabajoSeleccionado) {
+      html += `<div class="cultivos-label">Tipo de trabajo</div><div class="centros-selector"><div class="cultivo-chip sel" style="cursor:default">${trabajoSeleccionado}</div></div>`;
+    }
+    if (aperoSeleccionado) {
+      html += `<div class="cultivos-label" style="margin-top:10px">Apero utilizado</div><div class="centros-selector"><div class="cultivo-chip sel" style="cursor:default">${aperoSeleccionado === 'LIBRE' ? (aperoObsTexto || 'Riego') : aperoSeleccionado}</div></div>`;
+    }
+    container.innerHTML = html;
+    return;
+  }
 
   // Vehículos km, equipo "Otro (especificar)", cultivo "Mantención" u "Otros
   // (especificar)", o equipos configurados sin requerir trabajo (ej. Excavadora,
@@ -1774,8 +1825,15 @@ window.onEquipoChange = async function() {
   if (!eq) return;
   setMedidor(tipoEquipo(eq));
 
-  // Vehículos km y equipo "Otro (especificar)" no usan trabajo ni apero — limpiar
-  if (tipoEquipo(eq) === 'km' || eq === 'Otro (especificar)') {
+  const preset = !isAdmin ? presetDe(currentUser) : null;
+  if (preset) {
+    // El operador tiene un preset fijo — se vuelve a aplicar tal cual, no se
+    // limpia nada (así "Cambiar equipo" no le rompe su trabajo/apero fijado)
+    trabajoSeleccionado = preset.trabajo || null;
+    aperoSeleccionado = preset.apero || null;
+    aperoObsTexto = preset.aperoObsTexto || '';
+  } else if (tipoEquipo(eq) === 'km' || eq === 'Otro (especificar)') {
+    // Vehículos km y equipo "Otro (especificar)" no usan trabajo ni apero — limpiar
     trabajoSeleccionado = null; aperoSeleccionado = null; aperoObsTexto = '';
   } else {
     // El apero disponible puede depender del equipo (si algún apero fue restringido
@@ -2817,6 +2875,11 @@ window.eliminarItem = async function(tipo,idx) {
     delete config.equipoOperador[val];
     equipoOperadorConfig = config.equipoOperador;
   }
+  // Si se elimina un operador, sacar también su preset de cultivo/trabajo/apero
+  if (tipo === 'operadores' && config.presetsOperador) {
+    delete config.presetsOperador[val];
+    presetsOperadorConfig = config.presetsOperador;
+  }
   // Si se elimina un tipo de trabajo, sacarlo también de las asignaciones de aperos
   if (tipo === 'trabajos') {
     trabajosConfig = config.trabajos;
@@ -3212,6 +3275,145 @@ window.guardarEdicionEquipoOperador = async function(idx) {
   } catch(e) { toast('Error: ' + e.message, false); }
 }
 
+// ─── PRESET DE CULTIVO/TRABAJO/APERO POR OPERADOR (Configurar) ────
+// Estado en memoria del editor (qué operador se está editando)
+let presetEdicionOperador = null;
+let presetEdicionCultivos = [];
+let presetEdicionTrabajo = null;
+let presetEdicionApero = null;
+let presetEdicionAperoObs = '';
+let presetEdicionActivo = true;
+
+function renderPanelPresetsOperador() {
+  const cont = document.getElementById('lista-presets-operador');
+  if (cont) {
+    const entradas = Object.entries(presetsOperadorConfig);
+    cont.innerHTML = entradas.length ? entradas.map(([op, p]) => {
+      const activo = p.activo !== false;
+      return `<div class="config-item" style="flex-wrap:wrap;gap:8px">
+        <span style="flex:1;min-width:160px">
+          <strong>${op}</strong><br>
+          <span style="font-size:12px;color:var(--acero)">${(p.cultivos||[]).join(', ') || 'sin cultivo'} · ${p.trabajo || 'sin trabajo'} · ${p.apero || 'sin apero'}</span>
+        </span>
+        <span class="badge" style='font-size:11px;cursor:pointer;background:${activo?'var(--verde-suave)':'#F3F4F6'};color:${activo?'var(--verde)':'#9CA3AF'}' title="Click para activar o desactivar, sin borrar los datos guardados" onclick='togglePresetActivo(${JSON.stringify(op)})'>${activo?'✓ Activo':'✕ Inactivo'}</span>
+        <button class="btn btn-danger" onclick='eliminarPresetOperador(${JSON.stringify(op)})'>Eliminar</button>
+      </div>`;
+    }).join('') : '<div style="color:#9CA3AF;font-size:13px;padding:8px">Sin operadores con preset guardado.</div>';
+  }
+  const sel = document.getElementById('preset-operador-sel');
+  if (sel) {
+    const cur = sel.value;
+    sel.innerHTML = '<option value="" disabled selected>Seleccionar operador</option>' +
+      config.operadores.filter(o => o !== 'Otros (especificar)').map(o => `<option value="${o}" ${o===cur?'selected':''}>${o}</option>`).join('');
+  }
+}
+
+// Activa o desactiva el preset sin borrar los valores guardados — útil si
+// algún día quieres que ese operador elija normalmente por un tiempo, sin
+// tener que volver a armar todo el preset después
+window.togglePresetActivo = async function(op) {
+  if (!presetsOperadorConfig[op]) return;
+  const actual = presetsOperadorConfig[op].activo !== false;
+  presetsOperadorConfig[op].activo = !actual;
+  config.presetsOperador = presetsOperadorConfig;
+  try {
+    await saveConfig();
+    renderPanelPresetsOperador();
+    toast(`✓ Preset de ${op} ahora está ${!actual ? 'activo' : 'inactivo'}`, true);
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
+window.onPresetOperadorSelChange = function() {
+  const op = document.getElementById('preset-operador-sel').value;
+  const cont = document.getElementById('preset-operador-editor');
+  if (!op) { if (cont) cont.innerHTML = ''; return; }
+  presetEdicionOperador = op;
+  const existente = presetsOperadorConfig[op] || {};
+  presetEdicionCultivos = [...(existente.cultivos || [])];
+  presetEdicionTrabajo = existente.trabajo || null;
+  presetEdicionApero = existente.apero || null;
+  presetEdicionAperoObs = existente.aperoObsTexto || '';
+  presetEdicionActivo = existente.activo !== false;
+  renderEditorPresetOperador();
+}
+
+function renderEditorPresetOperador() {
+  const cont = document.getElementById('preset-operador-editor');
+  if (!cont) return;
+  const aperosDisponibles = presetEdicionTrabajo
+    ? aperosConfig.filter(a => !a.trabajos || a.trabajos.length === 0 || a.trabajos.includes(presetEdicionTrabajo)).map(a => a.nombre).concat([OTRO])
+    : [];
+  const necesitaObs = presetEdicionTrabajo === OTRO || presetEdicionApero === OTRO;
+  cont.innerHTML = `
+    <div style="background:var(--fondo);border:1px solid var(--borde);border-radius:6px;padding:12px;margin-top:10px">
+      <div class="cultivos-label">Cultivo(s)</div>
+      <div class="centros-selector">${config.centros.map(c => `<div class="cultivo-chip ${presetEdicionCultivos.includes(c)?'sel':''}" onclick='togglePresetCultivo(${JSON.stringify(c)})'>${c}</div>`).join('')}</div>
+
+      <div class="cultivos-label" style="margin-top:12px">Tipo de trabajo</div>
+      <div class="centros-selector">
+        <div class="cultivo-chip ${presetEdicionTrabajo===null?'sel':''}" onclick='setPresetTrabajo(null)'>Sin trabajo</div>
+        ${trabajosConfig.map(t => `<div class="cultivo-chip ${presetEdicionTrabajo===t?'sel':''}" onclick='setPresetTrabajo(${JSON.stringify(t)})'>${t}</div>`).join('')}
+      </div>
+
+      ${presetEdicionTrabajo ? `
+      <div class="cultivos-label" style="margin-top:12px">Apero</div>
+      <div class="centros-selector">
+        <div class="cultivo-chip ${presetEdicionApero===null?'sel':''}" onclick='setPresetApero(null)'>Sin apero</div>
+        ${aperosDisponibles.map(a => `<div class="cultivo-chip ${presetEdicionApero===a?'sel':''}" onclick='setPresetApero(${JSON.stringify(a)})'>${a}</div>`).join('')}
+      </div>` : ''}
+
+      ${necesitaObs ? `
+      <div class="field" style="margin-top:10px"><label>Detalle (para "Otro")</label><input type="text" id="preset-apero-obs-input" value="${presetEdicionAperoObs}" oninput="presetEdicionAperoObs=this.value"></div>` : ''}
+
+      <button class="btn btn-verde" style="width:100%;justify-content:center;margin-top:12px" onclick="guardarPresetOperador()">✓ Guardar preset</button>
+    </div>`;
+}
+
+window.togglePresetCultivo = function(c) {
+  const i = presetEdicionCultivos.indexOf(c);
+  if (i >= 0) presetEdicionCultivos.splice(i, 1); else presetEdicionCultivos.push(c);
+  renderEditorPresetOperador();
+}
+window.setPresetTrabajo = function(t) {
+  presetEdicionTrabajo = t;
+  presetEdicionApero = null;
+  renderEditorPresetOperador();
+}
+window.setPresetApero = function(a) {
+  presetEdicionApero = a;
+  renderEditorPresetOperador();
+}
+
+window.guardarPresetOperador = async function() {
+  if (!presetEdicionOperador) return;
+  if (!presetEdicionCultivos.length) { toast('Selecciona al menos un cultivo', false); return; }
+  if (!config.presetsOperador) config.presetsOperador = {};
+  config.presetsOperador[presetEdicionOperador] = {
+    cultivos: [...presetEdicionCultivos],
+    trabajo: presetEdicionTrabajo,
+    apero: presetEdicionApero,
+    aperoObsTexto: presetEdicionAperoObs,
+    activo: presetEdicionActivo
+  };
+  presetsOperadorConfig = config.presetsOperador;
+  try {
+    await saveConfig();
+    renderPanelPresetsOperador();
+    toast(`✓ Preset guardado para ${presetEdicionOperador}${presetEdicionActivo ? ' — ya no verá esas opciones' : ' (queda inactivo por ahora)'}`, true);
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
+window.eliminarPresetOperador = async function(op) {
+  if (!confirm(`¿Eliminar por completo el preset de ${op}? Se pierden los valores guardados.\n\nSi solo quieres pausarlo por un tiempo sin perder la configuración, usa el interruptor "Activo/Inactivo" en vez de esto.`)) return;
+  delete presetsOperadorConfig[op];
+  config.presetsOperador = presetsOperadorConfig;
+  try {
+    await saveConfig();
+    renderPanelPresetsOperador();
+    toast(`Preset de ${op} eliminado`, false);
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
 // ─── TABS ─────────────────────────────────────────────────
 window.setTab = function(id,el) {
   if (id === 'config') actualizarPanelJDConfig();
@@ -3220,7 +3422,7 @@ window.setTab = function(id,el) {
   document.getElementById('tc-'+id).classList.add('active');
   if(el)el.classList.add('active');
   if(['historial','admin','analytics','informes'].includes(id)) loadHistorial();
-  if(id==='config') { renderConfigListas(); renderPanelAperos(); renderPanelEquipoOperador(); renderPanelHorario(); renderPanelMantencionesConfig(); renderPanelParametros(); renderPanelCorreccionHorometro(); if(isAdmin) cargarPines(); actualizarToggleESP32(); }
+  if(id==='config') { renderConfigListas(); renderPanelAperos(); renderPanelEquipoOperador(); renderPanelPresetsOperador(); renderPanelHorario(); renderPanelMantencionesConfig(); renderPanelParametros(); renderPanelCorreccionHorometro(); if(isAdmin) cargarPines(); actualizarToggleESP32(); }
   if(id==='mantencion') { initMantencion(); }
   if(id==='registro' && isAdmin) escucharSolicitudesAdmin();
 }
@@ -3883,7 +4085,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         </div>
 
         <!-- CULTIVOS MÚLTIPLES -->
-        <div style="margin-bottom:14px">
+        <div style="margin-bottom:14px" id="bloque-cultivos">
           <div class="cultivos-label">Cultivos trabajados (seleccioná uno o más)</div>
           <div class="centros-selector" id="centros-selector"></div>
           <div id="centro-otro-wrap"></div>
@@ -4093,6 +4295,18 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         <div class="panel-title">🚜 Equipo(s) asignado(s) por operador</div>
         <p class="hint" style="margin-bottom:12px">Cada operador puede tener hasta 3 equipos principales — al ingresar a la app, se le muestran para elegir rápido. Un mismo equipo puede ser principal para más de un operador a la vez.</p>
         <div class="config-lista" id="lista-equipo-operador"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-title">🔒 Preestablecer cultivo/trabajo/apero por operador</div>
+        <p class="hint" style="margin-bottom:12px">Fija de antemano el cultivo, trabajo y apero de un operador. Mientras esté "Activo", él ve esos valores ya seleccionados (puede leerlos) pero no puede cambiarlos — solo enciende y apaga la bomba. Puedes activarlo/desactivarlo cuando quieras sin perder los datos guardados; él nunca se entera del cambio.</p>
+        <div class="config-lista" id="lista-presets-operador"></div>
+        <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--borde)">
+          <div class="field">
+            <label>Operador</label>
+            <div class="select-wrapper"><select id="preset-operador-sel" onchange="onPresetOperadorSelChange()"></select></div>
+          </div>
+          <div id="preset-operador-editor"></div>
+        </div>
       </div>
       <div class="panel">
         <div class="panel-title">Cultivos / Centros de Costo</div>
