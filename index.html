@@ -647,7 +647,17 @@ function tipoEquipo(eq) { return tiposEquipo[eq] || 'hr'; }
 // tipo de trabajo y/o apero. Editable desde Configurar. Por defecto (equipos
 // no migrados aún) los 3 quedan en true, salvo que el propio equipo sea tipo
 // "km" (vehículos), que nunca exige trabajo/apero sin importar la config.
-const EQUIPOS_SIN_TRABAJO_DEFAULT = ['Excavadora', 'Miniexcavadora LongYan'];
+const EQUIPOS_SIN_TRABAJO_DEFAULT = ['Excavadora', 'Miniexcavadora LongYan', 'Generador Mitsubishi'];
+
+// ─── CULTIVO AUTOMÁTICO POR EQUIPO ──────────────────────────
+// Algunos equipos siempre trabajan para el mismo "cultivo" (centro de costo),
+// sin importar quién los use — por ejemplo un generador eléctrico. Para esos
+// casos, al elegir el equipo se fija automáticamente el cultivo (sin que el
+// usuario pueda tocarlo) y se omiten trabajo/apero, igual que "Mantención".
+const CULTIVO_AUTOMATICO_POR_EQUIPO = { 'Generador Mitsubishi': 'Energía eléctrica' };
+function cultivoAutomaticoDe(eq) {
+  return CULTIVO_AUTOMATICO_POR_EQUIPO[eq] || null;
+}
 let requisitosEquipo = {}; // se carga desde Firestore (config.datos.requisitosEquipo)
 
 function construirRequisitosDesdeDefault() {
@@ -901,6 +911,24 @@ async function loadConfig() {
         const idxOtros = config.operadores.indexOf('Otros (especificar)');
         if (idxOtros >= 0) config.operadores.splice(idxOtros, 0, 'JCAZ');
         else config.operadores.push('JCAZ');
+        await setDoc(doc(db, 'config', 'datos'), config);
+      }
+      // Migración automática: equipo "Generador Mitsubishi" con cultivo automático
+      // "Energía eléctrica" (sin trabajo ni apero) y el cultivo correspondiente
+      if (!config.equipos.includes('Generador Mitsubishi')) {
+        config.equipos.push('Generador Mitsubishi');
+        if (!config.tiposEquipo) config.tiposEquipo = {};
+        config.tiposEquipo['Generador Mitsubishi'] = 'hr';
+        if (!config.requisitosEquipo) config.requisitosEquipo = {};
+        config.requisitosEquipo['Generador Mitsubishi'] = { cultivo: true, trabajo: false, apero: false };
+        if (!config.fuenteHorometro) config.fuenteHorometro = {};
+        config.fuenteHorometro['Generador Mitsubishi'] = 'manual';
+        await setDoc(doc(db, 'config', 'datos'), config);
+      }
+      if (!config.centros.includes('Energía eléctrica')) {
+        const idxOtrosCentro = config.centros.indexOf('Otros (especificar)');
+        if (idxOtrosCentro >= 0) config.centros.splice(idxOtrosCentro, 0, 'Energía eléctrica');
+        else config.centros.push('Energía eléctrica');
         await setDoc(doc(db, 'config', 'datos'), config);
       }
       // Migración automática: renombrar el antiguo "VARIOS (especificar)" a "Otro (especificar)"
@@ -1464,6 +1492,14 @@ function initRegistro() {
     centrosSeleccionados = [];
     trabajoSeleccionado = null; aperoSeleccionado = null; aperoObsTexto = ''; centroObsTexto = '';
   }
+  // Si el equipo preseleccionado tiene cultivo automático (ej. Generador
+  // Mitsubishi → Energía eléctrica), fijarlo ahora — tiene prioridad incluso
+  // sobre un preset de operador, ya que es una propiedad del equipo, no del operador
+  const cultivoAutoInit = cultivoAutomaticoDe(document.getElementById('equipo').value);
+  if (cultivoAutoInit) {
+    centrosSeleccionados = [cultivoAutoInit];
+    trabajoSeleccionado = null; aperoSeleccionado = null; aperoObsTexto = ''; centroObsTexto = '';
+  }
   renderCentrosSelector();
   renderTrabajoSelector();
   limpiarPreview();
@@ -1483,6 +1519,16 @@ function renderCentrosSelector() {
   const bloque = document.getElementById('bloque-cultivos');
   const container = document.getElementById('centros-selector');
   if (bloque) bloque.style.display = 'block';
+  // Si el equipo tiene cultivo automático (ej. Generador Mitsubishi), se
+  // muestra fijo y bloqueado — nadie, ni el admin, puede tocarlo desde acá
+  const eqParaCultivoAuto = document.getElementById('equipo') ? document.getElementById('equipo').value : '';
+  const cultivoAuto = cultivoAutomaticoDe(eqParaCultivoAuto);
+  if (cultivoAuto) {
+    container.innerHTML = `<div class="cultivo-chip sel" style="cursor:default">${cultivoAuto}</div>`;
+    renderCentroOtroInput();
+    actualizarResumenCultivos();
+    return;
+  }
   // Si el operador tiene un preset fijado por el admin, ve el/los cultivo(s)
   // ya elegidos como chips fijos (puede leerlos) pero no puede tocarlos
   if (!isAdmin && presetDe(currentUser)) {
@@ -1866,6 +1912,16 @@ window.onEquipoChange = async function() {
     // operador vuelva a elegir uno válido para el equipo recién seleccionado.
     aperoSeleccionado = null; aperoObsTexto = '';
   }
+
+  // Si el equipo recién elegido tiene cultivo automático (ej. Generador
+  // Mitsubishi → Energía eléctrica), fijarlo y limpiar trabajo/apero — tiene
+  // prioridad incluso sobre un preset de operador
+  const cultivoAuto = cultivoAutomaticoDe(eq);
+  if (cultivoAuto) {
+    centrosSeleccionados = [cultivoAuto];
+    trabajoSeleccionado = null; aperoSeleccionado = null; aperoObsTexto = ''; centroObsTexto = '';
+  }
+  renderCentrosSelector();
 
   await cargarUltimoRegistro(eq);
   cargarHorometroShelly(eq);
