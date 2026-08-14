@@ -2195,6 +2195,141 @@ function limpiarPreview() {
   ultimoRegistroEquipo = null;
 }
 
+// ─── REGISTRO MANUAL DE CARGA (sin control de bomba) ────────
+// Para cuando la carga física ya ocurrió pero la app se cerró/falló a mitad de
+// camino (ej. se apagó el celular, se perdió la conexión) y quedó sin registrar.
+// El admin puede reconstruir el registro completo con los datos reales de esa
+// carga, SIN llamar a controlarBombaShelly en ningún momento — solo escribe el
+// registro en Firestore y ajusta saldo/totalizador, exactamente como si la
+// carga se hubiera hecho normal, pero sin tocar el relé físico.
+let manualCentrosSeleccionados = [];
+let manualUltimoRegistroEquipo = null;
+
+window.abrirRegistroManual = function() {
+  const { fecha, hora } = getNow();
+  document.getElementById('manual-fecha').value = fecha;
+  document.getElementById('manual-hora').value = hora;
+  document.getElementById('manual-litros').value = '';
+  document.getElementById('manual-medidor-valor').value = '';
+  document.getElementById('manual-totalizador').value = '';
+  document.getElementById('manual-obs').value = '';
+  manualCentrosSeleccionados = [];
+  manualUltimoRegistroEquipo = null;
+  populateSelect('manual-equipo', config.equipos, 'Seleccionar equipo');
+  populateSelect('manual-operador', config.operadores, 'Seleccionar operador');
+  renderManualCultivos();
+  document.getElementById('manual-info-anterior').innerHTML = '<span style="color:#9CA3AF;font-size:12px">Seleccioná un equipo para ver el último registro.</span>';
+  document.getElementById('panel-registro-manual-form').style.display = 'block';
+  document.getElementById('panel-registro-manual-form').scrollIntoView({ behavior: 'smooth' });
+}
+
+window.cerrarRegistroManual = function() {
+  document.getElementById('panel-registro-manual-form').style.display = 'none';
+}
+
+function renderManualCultivos() {
+  const container = document.getElementById('manual-cultivos-selector');
+  if (!container) return;
+  container.innerHTML = config.centros.map(c => {
+    const sel = manualCentrosSeleccionados.includes(c);
+    return `<div class="cultivo-chip ${sel?'sel':''}" onclick="toggleManualCultivo('${c}')">${c}</div>`;
+  }).join('');
+}
+window.toggleManualCultivo = function(c) {
+  const idx = manualCentrosSeleccionados.indexOf(c);
+  if (idx >= 0) manualCentrosSeleccionados.splice(idx, 1); else manualCentrosSeleccionados.push(c);
+  renderManualCultivos();
+}
+
+window.onManualEquipoChange = async function() {
+  const eq = document.getElementById('manual-equipo').value;
+  const unidad = document.getElementById('manual-medidor-unidad');
+  if (unidad) unidad.textContent = tipoEquipo(eq);
+  manualUltimoRegistroEquipo = null;
+  document.getElementById('manual-info-anterior').innerHTML = '<span style="color:#9CA3AF;font-size:12px">Buscando...</span>';
+  if (!eq) return;
+  try {
+    const q = query(collection(db,'registros'), where('equipo','==',eq), orderBy('ts','desc'), limit(1));
+    const snap = await getDocs(q);
+    if (!snap.empty) {
+      manualUltimoRegistroEquipo = snap.docs[0].data();
+      const r = manualUltimoRegistroEquipo;
+      document.getElementById('manual-info-anterior').innerHTML = `<div class="anterior-box">
+        <div class="anterior-row"><span>Fecha:</span><strong>${r.fecha} ${r.hora}</strong></div>
+        <div class="anterior-row"><span>${r.medidor_tipo==='km'?'Odómetro':'Horómetro'} anterior:</span><strong>${(r.medidor_valor||0).toFixed(r.medidor_tipo==='km'?0:1)} ${r.medidor_tipo}</strong></div>
+        <div class="anterior-row"><span>Totalizador anterior:</span><strong>${(r.totalizador||0).toLocaleString('es-CL')} L</strong></div>
+      </div>`;
+    } else {
+      document.getElementById('manual-info-anterior').innerHTML = '<span style="color:#9CA3AF;font-size:12px">Sin registros anteriores.</span>';
+    }
+  } catch(e) { document.getElementById('manual-info-anterior').innerHTML = '<span style="color:#9CA3AF;font-size:12px">Error al buscar.</span>'; }
+}
+
+window.registrarCargaManual = async function() {
+  const eq = document.getElementById('manual-equipo').value;
+  const operador = document.getElementById('manual-operador').value;
+  const fecha = document.getElementById('manual-fecha').value;
+  const hora = document.getElementById('manual-hora').value.trim();
+  const lt = parseFloat(document.getElementById('manual-litros').value);
+  const mvRaw = document.getElementById('manual-medidor-valor').value;
+  const mv = mvRaw === '' ? null : parseFloat(mvRaw);
+  const totRaw = document.getElementById('manual-totalizador').value;
+  const obs = document.getElementById('manual-obs').value.trim();
+
+  if (!eq || !operador || !fecha || !hora || isNaN(lt) || lt <= 0) {
+    toast('Completá equipo, operador, fecha, hora y litros', false); return;
+  }
+  if (!confirm(`¿Registrar esta carga como YA REALIZADA, sin controlar la bomba?\n\nEquipo: ${eq}\nLitros: ${lt} L\n\nUsa esto SOLO si la carga física ya ocurrió y quedó sin registrar por un problema con la app.`)) return;
+
+  const tipoMedidor = tipoEquipo(eq);
+  const totBase = totRaw !== '' ? parseFloat(totRaw) : (totalizadorGlobal != null ? totalizadorGlobal + lt : null);
+  if (totBase === null || isNaN(totBase)) { toast('No se pudo calcular el totalizador — ingrésalo manualmente', false); return; }
+
+  let eficiencia = null, diffMedidor = null, alertaTrabajado = false;
+  if (mv != null && manualUltimoRegistroEquipo?.medidor_valor != null) {
+    diffMedidor = mv - manualUltimoRegistroEquipo.medidor_valor;
+    if (diffMedidor <= 0) alertaTrabajado = true;
+    if (diffMedidor > 0 && lt > 0) eficiencia = tipoMedidor === 'km' ? diffMedidor / lt : lt / diffMedidor;
+  }
+
+  let alertaTotalizador = false, difTot = 0;
+  if (totalizadorGlobal != null) {
+    difTot = Math.abs((totBase - totalizadorGlobal) - lt);
+    if (difTot > parametrosSistema.margenTotalizador) alertaTotalizador = true;
+  }
+
+  const n = manualCentrosSeleccionados.length;
+  const distribucion = n > 0 ? manualCentrosSeleccionados.map(c => ({
+    centro: c, litros: lt / n,
+    horas: tipoMedidor==='hr' && diffMedidor>0 ? diffMedidor/n : null,
+    km: tipoMedidor==='km' && diffMedidor>0 ? diffMedidor/n : null
+  })) : [];
+
+  const btn = document.getElementById('btn-registrar-manual');
+  btn.disabled = true; btn.textContent = 'Guardando...';
+  try {
+    await addDoc(collection(db, 'registros'), {
+      fecha, hora, equipo: eq, equipo_detalle: null, operador,
+      centros: manualCentrosSeleccionados,
+      centro: manualCentrosSeleccionados[0] || null,
+      centro_detalle: null, distribucion,
+      trabajo: null, trabajo_detalle: null, apero: null, apero_detalle: null,
+      litros: lt, medidor_tipo: tipoMedidor, medidor_valor: mv,
+      totalizador: totBase, diff_medidor: diffMedidor, eficiencia,
+      alerta_totalizador: alertaTotalizador, dif_totalizador: difTot,
+      alerta_trabajado: alertaTrabajado, alerta_eficiencia: false,
+      obs, ts: Date.now(),
+      registro_manual: true, registrado_por: currentUser
+    });
+    await updateDoc(doc(db,'estanque','saldo'), { litros: increment(-lt) });
+    totalizadorGlobal = totBase;
+    await guardarTotalizadorGlobal();
+    cerrarRegistroManual();
+    toast('✓ Carga manual registrada (sin control de bomba)', true);
+  } catch(e) { toast('Error: ' + e.message, false); }
+  btn.disabled = false; btn.textContent = '✓ Registrar carga (sin bomba)';
+}
+
 window.registrar = async function() {
   const { fecha, hora } = getNow();
   const eq = document.getElementById('equipo').value;
@@ -4421,6 +4556,37 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         <div style="display:flex;gap:8px">
           <input type="number" id="totalizador-manual-input" min="0" step="1" placeholder="Nuevo valor, ej: 623930" style="flex:1;min-width:0">
           <button class="btn btn-verde" onclick="guardarTotalizadorManual()" style="white-space:nowrap;width:auto;flex-shrink:0">Aplicar</button>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-title">📝 Registrar carga manual (sin bomba)</div>
+        <p class="hint" style="margin-bottom:12px">Úsalo SOLO cuando una carga ya ocurrió físicamente pero quedó sin registrar por un problema con la app (se cerró, perdió conexión, etc. a mitad de la carga). Esto NO enciende ni apaga la bomba — solo guarda el registro con los datos reales de lo que ya pasó.</p>
+        <button class="btn btn-secondary" style="width:100%;justify-content:center" onclick="abrirRegistroManual()">+ Registrar carga que ya ocurrió</button>
+        <div id="panel-registro-manual-form" style="display:none;margin-top:16px;padding-top:16px;border-top:1px solid var(--borde)">
+          <div class="grid-2">
+            <div class="field"><label>Fecha</label><input type="date" id="manual-fecha"></div>
+            <div class="field"><label>Hora</label><input type="text" id="manual-hora" placeholder="HH:MM" maxlength="5"></div>
+          </div>
+          <div class="field"><label>Equipo</label><div class="select-wrapper"><select id="manual-equipo" onchange="onManualEquipoChange()"></select></div></div>
+          <div class="field"><label>Operador (quien cargó realmente)</label><div class="select-wrapper"><select id="manual-operador"></select></div></div>
+          <div style="margin-bottom:14px">
+            <div style="font-size:11px;font-weight:600;color:var(--acero);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Último registro de este equipo</div>
+            <div id="manual-info-anterior"><span style="color:#9CA3AF;font-size:12px">Seleccioná un equipo para ver el último registro.</span></div>
+          </div>
+          <div class="field">
+            <label>Cultivos (opcional)</label>
+            <div class="centros-selector" id="manual-cultivos-selector"></div>
+          </div>
+          <div class="grid-2">
+            <div class="field"><label>Litros despachados</label><input type="number" id="manual-litros" min="0" step="0.1" placeholder="0.0"></div>
+            <div class="field"><label>Horómetro/Odómetro actual (<span id="manual-medidor-unidad">hr</span>)</label><input type="number" id="manual-medidor-valor" min="0" step="0.1" placeholder="0"></div>
+          </div>
+          <div class="field"><label>Totalizador SAMOA (opcional — se calcula solo si se deja vacío)</label><input type="number" id="manual-totalizador" min="0" step="1" placeholder="Se calcula automáticamente"></div>
+          <div class="field"><label>Observación</label><input type="text" id="manual-obs" placeholder="Ej: registrado a mano, app se cerró durante la carga"></div>
+          <div class="modal-actions">
+            <button class="btn btn-secondary" onclick="cerrarRegistroManual()" style="flex:1;justify-content:center">Cancelar</button>
+            <button class="btn btn-verde" id="btn-registrar-manual" onclick="registrarCargaManual()" style="flex:2">✓ Registrar carga (sin bomba)</button>
+          </div>
         </div>
       </div>
       <div class="panel" id="panel-jdlink-config">
