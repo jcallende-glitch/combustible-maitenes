@@ -658,6 +658,14 @@ const CULTIVO_AUTOMATICO_POR_EQUIPO = { 'Generador Mitsubishi': 'Energía eléct
 function cultivoAutomaticoDe(eq) {
   return CULTIVO_AUTOMATICO_POR_EQUIPO[eq] || null;
 }
+
+// A diferencia del cultivo AUTOMÁTICO (bloqueado, no se puede tocar), este es
+// solo una SUGERENCIA: al elegir uno de estos equipos se preselecciona el
+// cultivo, pero el usuario puede cambiarlo o deseleccionarlo normalmente.
+const CULTIVO_DEFAULT_POR_EQUIPO = { 'Ford Ranger': 'Desplazamiento', 'Toyota Hilux': 'Desplazamiento', 'Toyota JCAZ': 'Desplazamiento' };
+function cultivoDefaultDe(eq) {
+  return CULTIVO_DEFAULT_POR_EQUIPO[eq] || null;
+}
 let requisitosEquipo = {}; // se carga desde Firestore (config.datos.requisitosEquipo)
 
 function construirRequisitosDesdeDefault() {
@@ -929,6 +937,14 @@ async function loadConfig() {
         const idxOtrosCentro = config.centros.indexOf('Otros (especificar)');
         if (idxOtrosCentro >= 0) config.centros.splice(idxOtrosCentro, 0, 'Energía eléctrica');
         else config.centros.push('Energía eléctrica');
+        await setDoc(doc(db, 'config', 'datos'), config);
+      }
+      // Migración automática: cultivo "Desplazamiento" — se sugiere por defecto
+      // (editable) al elegir Ford Ranger, Toyota Hilux o Toyota JCAZ
+      if (!config.centros.includes('Desplazamiento')) {
+        const idxOtrosDespl = config.centros.indexOf('Otros (especificar)');
+        if (idxOtrosDespl >= 0) config.centros.splice(idxOtrosDespl, 0, 'Desplazamiento');
+        else config.centros.push('Desplazamiento');
         await setDoc(doc(db, 'config', 'datos'), config);
       }
       // Migración automática: renombrar el antiguo "VARIOS (especificar)" a "Otro (especificar)"
@@ -1499,6 +1515,11 @@ function initRegistro() {
   if (cultivoAutoInit) {
     centrosSeleccionados = [cultivoAutoInit];
     trabajoSeleccionado = null; aperoSeleccionado = null; aperoObsTexto = ''; centroObsTexto = '';
+  } else if (!preset) {
+    // Cultivo SUGERIDO (no bloqueado) para vehículos km — se preselecciona
+    // pero el usuario puede cambiarlo o quitarlo normalmente con los chips
+    const cultivoDefaultInit = cultivoDefaultDe(document.getElementById('equipo').value);
+    if (cultivoDefaultInit) centrosSeleccionados = [cultivoDefaultInit];
   }
   renderCentrosSelector();
   renderTrabajoSelector();
@@ -1920,6 +1941,15 @@ window.onEquipoChange = async function() {
   if (cultivoAuto) {
     centrosSeleccionados = [cultivoAuto];
     trabajoSeleccionado = null; aperoSeleccionado = null; aperoObsTexto = ''; centroObsTexto = '';
+  } else if (!preset) {
+    // Cultivo SUGERIDO (no bloqueado) al cambiar a un vehículo km — se
+    // preselecciona, pero queda como chip normal: el usuario puede
+    // deseleccionarlo o cambiarlo con un clic
+    const cultivoDefault = cultivoDefaultDe(eq);
+    if (cultivoDefault) {
+      centrosSeleccionados = [cultivoDefault];
+      centroObsTexto = '';
+    }
   }
   renderCentrosSelector();
 
