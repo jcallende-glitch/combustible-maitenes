@@ -2692,8 +2692,35 @@ function loadHistorial() {
   unsubReg = onSnapshot(q, snap => {
     registros = snap.docs.map(d=>({id:d.id,...d.data()}));
     populateFiltros(); renderTabla();
-    if (isAdmin || isSupervisor) { renderAnalytics(); renderInformes(); }
+    if (isAdmin || isSupervisor) { populateFiltrosAnalytics(); renderAnalytics(); renderInformes(); }
   });
+}
+
+// Filtros de Equipo/Apero en la pestaña Análisis — permiten acotar la
+// eficiencia (L/hr o km/L) a un equipo específico, o incluso a un equipo con
+// un apero específico (ej. "JD 5090 con Cimina 380"), ya que el consumo real
+// varía bastante según qué implemento esté arrastrando el tractor.
+function populateFiltrosAnalytics() {
+  const selEq = document.getElementById('analytics-filtro-equipo');
+  const selAp = document.getElementById('analytics-filtro-apero');
+  if (!selEq || !selAp) return;
+  const curEq = selEq.value;
+  const equipos = [...new Set(registros.map(r=>r.equipo))].sort();
+  selEq.innerHTML = '<option value="">Todos los equipos</option>' +
+    equipos.map(v => `<option value="${v}" ${v===curEq?'selected':''}>${v}</option>`).join('');
+  // La lista de aperos se acota al equipo elegido (si hay uno) — así el
+  // desplegable solo muestra aperos que ese equipo realmente ha usado
+  const eqFiltro = selEq.value;
+  const base = eqFiltro ? registros.filter(r => r.equipo === eqFiltro) : registros;
+  const curAp = selAp.value;
+  const aperos = [...new Set(base.map(r => r.apero).filter(a => a && a !== 'LIBRE'))].sort();
+  selAp.innerHTML = '<option value="">Todos los aperos</option>' +
+    aperos.map(v => `<option value="${v}" ${v===curAp?'selected':''}>${v}</option>`).join('');
+}
+
+window.onAnalyticsEquipoChange = function() {
+  populateFiltrosAnalytics();
+  renderAnalytics();
 }
 
 function populateFiltros() {
@@ -2914,7 +2941,11 @@ function getPeriodoCorte() {
 
 function renderAnalytics() {
   const corte=getPeriodoCorte();
-  const data=registros.filter(r=>r.ts>=corte);
+  const eqFiltro = document.getElementById('analytics-filtro-equipo')?.value || '';
+  const apFiltro = document.getElementById('analytics-filtro-apero')?.value || '';
+  let data=registros.filter(r=>r.ts>=corte);
+  if (eqFiltro) data = data.filter(r => r.equipo === eqFiltro);
+  if (apFiltro) data = data.filter(r => r.apero === apFiltro);
   const equipoMap={};
   data.forEach(r=>{
     if(!equipoMap[r.equipo])equipoMap[r.equipo]={litros:0,trabajado:0,cargas:0,tipo:r.medidor_tipo,eficiencias:[],ultimaFecha:'',ultimoLt:0,alertas:0};
@@ -2941,6 +2972,33 @@ function renderAnalytics() {
     return `<tr><td><strong>${eq}</strong></td><td class="td-mono" style="color:var(--amarillo);font-weight:600">${e.litros.toFixed(1)} L</td><td>${e.cargas}</td><td class="td-mono">${e.trabajado>0?e.trabajado.toFixed(e.tipo==='km'?0:1)+' '+e.tipo:'—'}</td><td><span class="badge badge-${tipo}" style="font-size:12px">${efStr}</span></td><td>${desviacionStr}</td><td>${alertaStr}</td><td class="td-mono" style="font-size:11px">${e.ultimaFecha}<br><span style="color:#9CA3AF">${e.ultimaHora} · ${e.ultimoLt.toFixed(1)}L</span></td></tr>`;
   }).join('');
 
+  // Comparativa de eficiencia por APERO — solo tiene sentido cuando hay un
+  // equipo específico elegido (y no se filtró ya a un solo apero), para
+  // comparar entre sí los distintos implementos que ese tractor usa, ya que
+  // el consumo real varía harto según qué esté arrastrando
+  let aperoPanel = '';
+  if (eqFiltro && !apFiltro) {
+    const aperoMap = {};
+    data.forEach(r => {
+      if (!r.apero || r.apero === 'LIBRE') return;
+      if (!aperoMap[r.apero]) aperoMap[r.apero] = { litros:0, trabajado:0, cargas:0, tipo:r.medidor_tipo, eficiencias:[] };
+      const a = aperoMap[r.apero];
+      a.litros += r.litros||0; a.trabajado += r.diff_medidor||0; a.cargas++;
+      if (r.eficiencia) a.eficiencias.push(r.eficiencia);
+    });
+    const aperoRows = Object.entries(aperoMap).sort((a,b)=>b[1].litros-a[1].litros).map(([ap,a])=>{
+      const efProm = a.eficiencias.length ? (a.eficiencias.reduce((x,y)=>x+y,0)/a.eficiencias.length) : null;
+      const efStr = efProm ? (a.tipo==='km'?`${efProm.toFixed(2)} km/L`:`${efProm.toFixed(2)} L/hr`) : '—';
+      return `<tr><td><strong>${ap}</strong></td><td class="td-mono" style="color:var(--amarillo);font-weight:600">${a.litros.toFixed(1)} L</td><td>${a.cargas}</td><td class="td-mono">${a.trabajado>0?a.trabajado.toFixed(a.tipo==='km'?0:1)+' '+a.tipo:'—'}</td><td><span class="badge badge-${a.tipo}" style="font-size:12px">${efStr}</span></td></tr>`;
+    }).join('');
+    if (aperoRows) {
+      aperoPanel = `<div class="panel">
+        <div class="panel-title">Eficiencia por apero — ${eqFiltro}</div>
+        <div class="table-wrap"><table><thead><tr><th>Apero</th><th>Litros</th><th>Cargas</th><th>Trabajado</th><th>Efic. promedio</th></tr></thead><tbody>${aperoRows}</tbody></table></div>
+      </div>`;
+    }
+  }
+
   const alertasData=data.filter(r=>r.alerta_totalizador);
   const totalLt=data.reduce((s,r)=>s+(r.litros||0),0);
 
@@ -2951,9 +3009,10 @@ function renderAnalytics() {
       <div class="stat-card"><div class="stat-label">Alertas</div><div class="stat-value" style="color:${alertasData.length>0?'var(--rojo)':'var(--verde)'}">${alertasData.length}</div></div>
     </div>
     <div class="panel">
-      <div class="panel-title">Eficiencia por equipo</div>
+      <div class="panel-title">Eficiencia por equipo${eqFiltro?' — filtrado':''}</div>
       ${equipoRows?`<div class="table-wrap"><table><thead><tr><th>Equipo</th><th>Litros</th><th>Cargas</th><th>Trabajado</th><th>Efic. promedio</th><th>Desv. última</th><th>Alertas</th><th>Última carga</th></tr></thead><tbody>${equipoRows}</tbody></table></div>`:'<div class="empty"><div class="empty-icon">📊</div>Sin datos.</div>'}
     </div>
+    ${aperoPanel}
     ${alertasData.length>0?`<div class="panel" style="border:2px solid var(--rojo)"><div class="panel-title" style="color:var(--rojo)">⚠️ Alertas de totalizador</div><div class="table-wrap"><table><thead><tr><th>Fecha/Hora</th><th>Equipo</th><th>Operador</th><th>Diferencia</th></tr></thead><tbody>${alertasData.map(r=>`<tr style="background:#FFF5F5"><td class="td-mono">${r.fecha} ${r.hora}</td><td>${r.equipo}</td><td>${r.operador}</td><td class="td-mono" style="color:var(--rojo);font-weight:600">${(r.dif_totalizador||0).toFixed(1)} L</td></tr>`).join('')}</tbody></table></div></div>`:''} `;
 }
 window.cambiarPeriodo = function() { renderAnalytics(); renderInformes(); }
@@ -4472,7 +4531,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     <!-- ANÁLISIS -->
     <div id="tc-analytics" class="tab-content">
       <div class="saldo-widget"></div>
-      <div class="periodo-bar">
+      <div class="periodo-bar" style="flex-wrap:wrap">
         <div class="select-wrapper">
           <select id="periodo-select" onchange="cambiarPeriodo()">
             <option value="7d">Últimos 7 días</option>
@@ -4480,6 +4539,12 @@ tbody td{padding:10px 12px;vertical-align:middle;}
             <option value="90d">Últimos 90 días</option>
             <option value="todo">Todo el historial</option>
           </select>
+        </div>
+        <div class="select-wrapper">
+          <select id="analytics-filtro-equipo" onchange="onAnalyticsEquipoChange()"></select>
+        </div>
+        <div class="select-wrapper">
+          <select id="analytics-filtro-apero" onchange="renderAnalytics()"></select>
         </div>
       </div>
       <div id="analytics-container"></div>
