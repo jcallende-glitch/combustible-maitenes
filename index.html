@@ -2554,17 +2554,63 @@ function enviarAlertaWsp(msg) {
   try { fetch(`https://api.callmebot.com/whatsapp.php?phone=${WA_PHONE}&text=${encodeURIComponent(msg)}&apikey=${WA_KEY}`); } catch(e) {}
 }
 
-// ─── RECÁLCULO RETROACTIVO DE EFICIENCIA ──────────────────
-// ─── LIMPIEZA DE EFICIENCIA HISTÓRICA ─────────────────────
-// Deja el campo eficiencia en blanco (null) en TODOS los registros existentes,
-// sin tocar litros, fechas, totalizador ni horómetro — solo resetea el dato
-// derivado de eficiencia. Útil cuando el historial de horómetros tuvo
-// problemas (ej. Shelly recién instalados o con desfases) y las medias que
-// se comparan de ahí en adelante quedaron distorsionadas por esos datos
-// viejos. Las próximas cargas vuelven a calcular su propia eficiencia normal.
+// ─── LIMPIEZA Y RECÁLCULO DE EFICIENCIA HISTÓRICA ─────────
+// Ambas herramientas permiten acotar el ALCANCE (todos los equipos, o solo
+// algunos elegidos) y el PERÍODO (todo el historial, o solo los últimos X
+// días) antes de aplicar el cambio. Además, cada registro que se limpia
+// queda marcado con `eficiencia_limpiada: true` — así "Recalcular" puede
+// saber exactamente cuáles fueron limpiados a propósito y respetarlos (no
+// volver a llenarlos), sin importar qué alcance/período se haya usado en la
+// limpieza original. Esto es más robusto que comparar solo por fecha, ya
+// que el alcance de una limpieza puede ser parcial (solo ciertos equipos o
+// un rango de tiempo específico).
+
+let limpiezaAlcanceTodos = true;
+let limpiezaEquiposSel = [];
+let limpiezaPeriodoTodo = true;
+
+window.setLimpiezaAlcance = function(todos) {
+  limpiezaAlcanceTodos = todos;
+  document.getElementById('limpieza-alcance-todos')?.classList.toggle('sel', todos);
+  document.getElementById('limpieza-alcance-especificos')?.classList.toggle('sel', !todos);
+  const wrap = document.getElementById('limpieza-equipos-selector');
+  if (wrap) wrap.style.display = todos ? 'none' : 'flex';
+  if (!todos) renderLimpiezaEquiposSelector();
+}
+function renderLimpiezaEquiposSelector() {
+  const wrap = document.getElementById('limpieza-equipos-selector');
+  if (!wrap) return;
+  const equipos = (config.equipos || []).filter(e => e !== 'Otro (especificar)');
+  wrap.innerHTML = equipos.map(e => `<div class="cultivo-chip ${limpiezaEquiposSel.includes(e)?'sel':''}" onclick='toggleLimpiezaEquipo(${JSON.stringify(e)})'>${e}</div>`).join('');
+}
+window.toggleLimpiezaEquipo = function(e) {
+  const i = limpiezaEquiposSel.indexOf(e);
+  if (i >= 0) limpiezaEquiposSel.splice(i, 1); else limpiezaEquiposSel.push(e);
+  renderLimpiezaEquiposSelector();
+}
+window.setLimpiezaPeriodo = function(todo) {
+  limpiezaPeriodoTodo = todo;
+  document.getElementById('limpieza-periodo-todo')?.classList.toggle('sel', todo);
+  document.getElementById('limpieza-periodo-dias')?.classList.toggle('sel', !todo);
+  const wrap = document.getElementById('limpieza-dias-input-wrap');
+  if (wrap) wrap.style.display = todo ? 'none' : 'block';
+}
+
 window.limpiarEficienciaHistorica = async function() {
   if (!isAdmin) return;
-  if (!confirm('¿Limpiar la eficiencia histórica de TODOS los registros?\n\nEsto deja el campo eficiencia en blanco en todos los registros existentes (NO borra litros, fechas, ni horómetros) — las medias de eficiencia van a empezar a calcularse de nuevo a partir de las próximas cargas.\n\nEsta acción no se puede deshacer.')) return;
+  if (!limpiezaAlcanceTodos && limpiezaEquiposSel.length === 0) {
+    toast('Selecciona al menos un equipo, o elige "Todos los equipos"', false); return;
+  }
+  let dias = null, cutoffTs = null;
+  if (!limpiezaPeriodoTodo) {
+    dias = parseFloat(document.getElementById('limpieza-dias-valor').value);
+    if (isNaN(dias) || dias <= 0) { toast('Ingresá cuántos días hacia atrás', false); return; }
+    cutoffTs = Date.now() - dias * 86400000;
+  }
+  const equiposTxt = limpiezaAlcanceTodos ? 'TODOS los equipos' : limpiezaEquiposSel.join(', ');
+  const periodoTxt = limpiezaPeriodoTodo ? 'todo el historial' : `los últimos ${dias} días`;
+  if (!confirm(`¿Limpiar la eficiencia de ${equiposTxt}, en ${periodoTxt}?\n\nEsto deja el campo eficiencia en blanco en los registros que coincidan (NO borra litros, fechas, ni horómetros).\n\nEsta acción no se puede deshacer.`)) return;
+
   const btn = document.getElementById('btn-limpiar-eficiencia');
   const log = document.getElementById('limpieza-eficiencia-log');
   btn.disabled = true; btn.textContent = 'Limpiando...';
@@ -2572,28 +2618,30 @@ window.limpiarEficienciaHistorica = async function() {
   log.innerHTML = '<div style="color:#9CA3AF">Cargando registros...</div>';
   try {
     const snap = await getDocs(collection(db, 'registros'));
-    const docsConEficiencia = snap.docs.filter(d => d.data().eficiencia != null || d.data().alerta_eficiencia);
-    log.innerHTML = `<div style="color:#9CA3AF">Actualizando ${docsConEficiencia.length} registros...</div>`;
+    const candidatos = snap.docs.filter(d => {
+      const data = d.data();
+      if (!limpiezaAlcanceTodos && !limpiezaEquiposSel.includes(data.equipo)) return false;
+      if (cutoffTs != null && (data.ts || 0) < cutoffTs) return false;
+      return true;
+    });
+    log.innerHTML = `<div style="color:#9CA3AF">Actualizando ${candidatos.length} registros...</div>`;
     let actualizados = 0;
     // Firestore permite máximo 500 escrituras por batch — se procesa en lotes de 400
-    for (let i = 0; i < docsConEficiencia.length; i += 400) {
-      const lote = docsConEficiencia.slice(i, i + 400);
+    for (let i = 0; i < candidatos.length; i += 400) {
+      const lote = candidatos.slice(i, i + 400);
       const batch = writeBatch(db);
       lote.forEach(d => {
-        batch.update(doc(db, 'registros', d.id), { eficiencia: null, alerta_eficiencia: false });
+        batch.update(doc(db, 'registros', d.id), { eficiencia: null, alerta_eficiencia: false, eficiencia_limpiada: true });
       });
       await batch.commit();
       actualizados += lote.length;
-      log.innerHTML = `<div style="color:#9CA3AF">Actualizando... ${actualizados}/${docsConEficiencia.length}</div>`;
+      log.innerHTML = `<div style="color:#9CA3AF">Actualizando... ${actualizados}/${candidatos.length}</div>`;
     }
-    // Guardamos la fecha exacta de esta limpieza — así "Recalcular eficiencia
-    // histórica" puede saber, si el admin lo elige, que no debe tocar los
-    // registros de antes de esta marca (evita que los dos botones se anulen)
     const marcaLimpieza = Date.now();
     await setDoc(doc(db, 'config', 'sistema'), { ultimaLimpiezaEficienciaTs: marcaLimpieza }, { merge: true });
     ultimaLimpiezaEficienciaTs = marcaLimpieza;
     renderPanelRecalculoOpcion();
-    log.innerHTML = `<div style="color:var(--verde);font-weight:600">✅ Eficiencia histórica limpiada</div><div style="color:var(--acero);font-size:13px;margin-top:4px">${actualizados} registros actualizados — las próximas cargas calculan su eficiencia normalmente</div>`;
+    log.innerHTML = `<div style="color:var(--verde);font-weight:600">✅ Eficiencia limpiada</div><div style="color:var(--acero);font-size:13px;margin-top:4px">${actualizados} registros actualizados — ${equiposTxt}, ${periodoTxt}</div>`;
     toast('✅ Eficiencia histórica limpiada', true);
   } catch(e) {
     log.innerHTML = `<div style="color:var(--rojo)">❌ Error: ${e.message}</div>`;
@@ -2602,40 +2650,73 @@ window.limpiarEficienciaHistorica = async function() {
   btn.disabled = false; btn.textContent = '🧹 Limpiar eficiencia histórica';
 }
 
-// Muestra/oculta la opción "respetar la última limpieza" junto al botón de
-// recálculo, y le pone la fecha exacta para que quede claro qué se está
-// respetando (si nunca se usó "Limpiar", no hay nada que mostrar acá).
+// Muestra la fecha de la última limpieza (informativo) junto al recálculo
 function renderPanelRecalculoOpcion() {
-  const wrap = document.getElementById('recalc-solo-nuevos-wrap');
+  const info = document.getElementById('recalc-limpieza-info');
+  if (!info) return;
+  info.textContent = ultimaLimpiezaEficienciaTs
+    ? `Última limpieza: ${new Date(ultimaLimpiezaEficienciaTs).toLocaleString('es-CL')}`
+    : 'Todavía no se ha usado "Limpiar eficiencia histórica".';
+}
+
+let recalcAlcanceTodos = true;
+let recalcEquiposSel = [];
+let recalcPeriodoTodo = true;
+
+window.setRecalcAlcance = function(todos) {
+  recalcAlcanceTodos = todos;
+  document.getElementById('recalc-alcance-todos')?.classList.toggle('sel', todos);
+  document.getElementById('recalc-alcance-especificos')?.classList.toggle('sel', !todos);
+  const wrap = document.getElementById('recalc-equipos-selector');
+  if (wrap) wrap.style.display = todos ? 'none' : 'flex';
+  if (!todos) renderRecalcEquiposSelector();
+}
+function renderRecalcEquiposSelector() {
+  const wrap = document.getElementById('recalc-equipos-selector');
   if (!wrap) return;
-  if (!ultimaLimpiezaEficienciaTs) { wrap.style.display = 'none'; return; }
-  wrap.style.display = 'block';
-  const fechaTxt = new Date(ultimaLimpiezaEficienciaTs).toLocaleString('es-CL');
-  const label = document.getElementById('recalc-solo-nuevos-label');
-  if (label) label.textContent = `Respetar la limpieza del ${fechaTxt} (no tocar registros de antes)`;
+  const equipos = (config.equipos || []).filter(e => e !== 'Otro (especificar)');
+  wrap.innerHTML = equipos.map(e => `<div class="cultivo-chip ${recalcEquiposSel.includes(e)?'sel':''}" onclick='toggleRecalcEquipo(${JSON.stringify(e)})'>${e}</div>`).join('');
+}
+window.toggleRecalcEquipo = function(e) {
+  const i = recalcEquiposSel.indexOf(e);
+  if (i >= 0) recalcEquiposSel.splice(i, 1); else recalcEquiposSel.push(e);
+  renderRecalcEquiposSelector();
+}
+window.setRecalcPeriodo = function(todo) {
+  recalcPeriodoTodo = todo;
+  document.getElementById('recalc-periodo-todo')?.classList.toggle('sel', todo);
+  document.getElementById('recalc-periodo-dias')?.classList.toggle('sel', !todo);
+  const wrap = document.getElementById('recalc-dias-input-wrap');
+  if (wrap) wrap.style.display = todo ? 'none' : 'block';
 }
 
 window.recalcularEficiencia = async function() {
   if (!isAdmin) return;
+  if (!recalcAlcanceTodos && recalcEquiposSel.length === 0) {
+    toast('Selecciona al menos un equipo, o elige "Todos los equipos"', false); return;
+  }
+  let dias = null, cutoffTs = null;
+  if (!recalcPeriodoTodo) {
+    dias = parseFloat(document.getElementById('recalc-dias-valor').value);
+    if (isNaN(dias) || dias <= 0) { toast('Ingresá cuántos días hacia atrás', false); return; }
+    cutoffTs = Date.now() - dias * 86400000;
+  }
   const btn = document.getElementById('btn-recalcular');
   const log = document.getElementById('recalculo-log');
-  const checkboxSoloNuevos = document.getElementById('recalc-solo-nuevos');
-  // Si el admin dejó marcada la opción y existe una fecha de limpieza previa,
-  // los registros de ANTES de esa fecha se dejan intactos (no se escriben ni
-  // entran a la ventana de comparación) — así "Limpiar" y "Recalcular" no se
-  // anulan entre sí cuando se usan en conjunto.
-  const soloNuevos = !!(checkboxSoloNuevos && checkboxSoloNuevos.checked && ultimaLimpiezaEficienciaTs);
+  const checkboxRespetar = document.getElementById('recalc-solo-nuevos');
+  const respetarLimpieza = !!(checkboxRespetar && checkboxRespetar.checked);
   btn.disabled = true;
   btn.textContent = 'Calculando...';
   log.style.display = 'block';
   log.innerHTML = '<div style="color:#9CA3AF">Cargando registros...</div>';
 
   try {
-    // Traer todos los registros ordenados por equipo y tiempo
+    // Traer todos los registros ordenados por equipo y tiempo — se necesita el
+    // historial COMPLETO de cada equipo (aunque el alcance elegido sea menor)
+    // para calcular bien la diferencia con el registro anterior en los bordes
     const snap = await getDocs(query(collection(db, 'registros'), orderBy('ts', 'asc')));
     const todos = snap.docs.map(d => ({ id: d.id, ...d.data() }));
 
-    // Agrupar por equipo
     const porEquipo = {};
     todos.forEach(r => {
       const eq = r.equipo || 'SIN EQUIPO';
@@ -2643,13 +2724,11 @@ window.recalcularEficiencia = async function() {
       porEquipo[eq].push(r);
     });
 
-    let actualizados = 0;
-    let sinDatos = 0;
-    let omitidosPorLimpieza = 0;
-    const equipos = Object.keys(porEquipo);
-    log.innerHTML = `<div style="color:#9CA3AF">Procesando ${todos.length} registros de ${equipos.length} equipos${soloNuevos ? ' (respetando la última limpieza)' : ''}...</div>`;
+    let actualizados = 0, sinDatos = 0, respetados = 0, fueraDePeriodo = 0;
+    const equiposAProcesar = recalcAlcanceTodos ? Object.keys(porEquipo) : Object.keys(porEquipo).filter(e => recalcEquiposSel.includes(e));
+    log.innerHTML = `<div style="color:#9CA3AF">Procesando ${equiposAProcesar.length} equipo(s)...</div>`;
 
-    for (const eq of equipos) {
+    for (const eq of equiposAProcesar) {
       const registrosEq = porEquipo[eq]; // ya ordenados por ts asc
       let ventanaEficiencias = []; // últimas hasta 20 eficiencias válidas, en orden cronológico
 
@@ -2657,11 +2736,11 @@ window.recalcularEficiencia = async function() {
         const actual = registrosEq[i];
         const anterior = i > 0 ? registrosEq[i - 1] : null;
 
-        // Este registro es de antes de la última limpieza y se pidió
-        // respetarla — se salta por completo: no se toca su eficiencia y
-        // tampoco entra a la ventana de comparación de los siguientes
-        if (soloNuevos && actual.ts <= ultimaLimpiezaEficienciaTs) {
-          omitidosPorLimpieza++;
+        // Registro marcado como "limpiado a propósito" — si se pide
+        // respetarlo, se salta por completo: ni se escribe ni entra a la
+        // ventana de comparación de los siguientes registros
+        if (respetarLimpieza && actual.eficiencia_limpiada === true) {
+          respetados++;
           continue;
         }
 
@@ -2686,21 +2765,30 @@ window.recalcularEficiencia = async function() {
           if (desviacion > 20) alertaEficiencia = true;
         }
 
-        // Solo actualizar si algún valor cambió o faltaba
-        const mismaEf = actual.eficiencia === eficiencia;
-        const mismoMed = actual.diff_medidor === diffMedidor;
-        const mismaAlertaEf = (actual.alerta_eficiencia || false) === alertaEficiencia;
-        const mismaAlertaTrab = (actual.alerta_trabajado || false) === alertaTrabajado;
-        if (!mismaEf || !mismoMed || !mismaAlertaEf || !mismaAlertaTrab) {
-          await updateDoc(doc(db, 'registros', actual.id), {
-            eficiencia: eficiencia,
-            diff_medidor: diffMedidor,
-            alerta_trabajado: alertaTrabajado,
-            alerta_eficiencia: alertaEficiencia
-          });
-          actualizados++;
+        // Si se restringió el período, los registros fuera de ese rango se
+        // usan igual para la cadena de cálculo (arriba) pero no se escriben
+        const dentroDePeriodo = cutoffTs == null || (actual.ts || 0) >= cutoffTs;
+
+        if (dentroDePeriodo) {
+          const mismaEf = actual.eficiencia === eficiencia;
+          const mismoMed = actual.diff_medidor === diffMedidor;
+          const mismaAlertaEf = (actual.alerta_eficiencia || false) === alertaEficiencia;
+          const mismaAlertaTrab = (actual.alerta_trabajado || false) === alertaTrabajado;
+          const mismaLimpieza = !actual.eficiencia_limpiada;
+          if (!mismaEf || !mismoMed || !mismaAlertaEf || !mismaAlertaTrab || !mismaLimpieza) {
+            await updateDoc(doc(db, 'registros', actual.id), {
+              eficiencia: eficiencia,
+              diff_medidor: diffMedidor,
+              alerta_trabajado: alertaTrabajado,
+              alerta_eficiencia: alertaEficiencia,
+              eficiencia_limpiada: false
+            });
+            actualizados++;
+          } else {
+            sinDatos++;
+          }
         } else {
-          sinDatos++;
+          fueraDePeriodo++;
         }
 
         // Mantener ventana de las últimas 20 eficiencias válidas (orden cronológico)
@@ -2715,8 +2803,8 @@ window.recalcularEficiencia = async function() {
       <div style="color:var(--verde);font-weight:600">✅ Recálculo completado</div>
       <div style="color:var(--acero);font-size:13px;margin-top:4px">• ${actualizados} registros actualizados</div>
       <div style="color:var(--acero);font-size:13px">• ${sinDatos} sin cambios</div>
-      ${soloNuevos ? `<div style="color:var(--acero);font-size:13px">• ${omitidosPorLimpieza} registros anteriores a la limpieza, respetados sin tocar</div>` : ''}
-      <div style="color:var(--acero);font-size:13px">• ${todos.length} registros totales procesados</div>`;
+      ${respetarLimpieza ? `<div style="color:var(--acero);font-size:13px">• ${respetados} registros limpiados a propósito, respetados sin tocar</div>` : ''}
+      ${cutoffTs != null ? `<div style="color:var(--acero);font-size:13px">• ${fueraDePeriodo} registros fuera del período elegido, sin tocar</div>` : ''}`;
     toast('✅ Eficiencia recalculada', true);
   } catch(e) {
     log.innerHTML = `<div style="color:var(--rojo)">❌ Error: ${e.message}</div>`;
@@ -3808,7 +3896,7 @@ window.setTab = function(id,el) {
   document.getElementById('tc-'+id).classList.add('active');
   if(el)el.classList.add('active');
   if(['historial','admin','analytics','informes'].includes(id)) loadHistorial();
-  if(id==='config') { renderConfigListas(); renderPanelAperos(); renderPanelEquipoOperador(); renderPanelPresetsOperador(); renderPanelHorario(); renderPanelMantencionesConfig(); renderPanelParametros(); renderPanelCorreccionHorometro(); renderPanelTotalizadorManual(); renderPanelRecalculoOpcion(); if(isAdmin) cargarPines(); actualizarToggleESP32(); }
+  if(id==='config') { renderConfigListas(); renderPanelAperos(); renderPanelEquipoOperador(); renderPanelPresetsOperador(); renderPanelHorario(); renderPanelMantencionesConfig(); renderPanelParametros(); renderPanelCorreccionHorometro(); renderPanelTotalizadorManual(); renderPanelRecalculoOpcion(); renderLimpiezaEquiposSelector(); renderRecalcEquiposSelector(); if(isAdmin) cargarPines(); actualizarToggleESP32(); }
   if(id==='mantencion') { initMantencion(); }
   if(id==='registro' && isAdmin) escucharSolicitudesAdmin();
 }
@@ -4835,17 +4923,60 @@ tbody td{padding:10px 12px;vertical-align:middle;}
 
       <div class="panel">
         <div class="panel-title">🔧 Herramientas de mantenimiento</div>
-        <p style="font-size:13px;color:var(--acero);margin-bottom:14px">Recalcula la eficiencia (L/hr o km/L) de todos los registros históricos en base al horómetro/odómetro entre cargas consecutivas de cada equipo.</p>
-        <div id="recalc-solo-nuevos-wrap" style="display:none;margin-bottom:10px;padding:10px 12px;background:var(--fondo);border-radius:6px;border:1px solid var(--borde)">
+        <p style="font-size:13px;color:var(--acero);margin-bottom:14px">Recalcula la eficiencia (L/hr o km/L) en base al horómetro/odómetro entre cargas consecutivas de cada equipo.</p>
+
+        <div class="field">
+          <label>Alcance</label>
+          <div class="centros-selector">
+            <div class="cultivo-chip sel" id="recalc-alcance-todos" onclick="setRecalcAlcance(true)">Todos los equipos</div>
+            <div class="cultivo-chip" id="recalc-alcance-especificos" onclick="setRecalcAlcance(false)">Equipos específicos</div>
+          </div>
+          <div id="recalc-equipos-selector" class="centros-selector" style="display:none"></div>
+        </div>
+        <div class="field">
+          <label>Período</label>
+          <div class="centros-selector">
+            <div class="cultivo-chip sel" id="recalc-periodo-todo" onclick="setRecalcPeriodo(true)">Todo el historial</div>
+            <div class="cultivo-chip" id="recalc-periodo-dias" onclick="setRecalcPeriodo(false)">Últimos X días</div>
+          </div>
+          <div id="recalc-dias-input-wrap" style="display:none;margin-top:8px">
+            <input type="number" id="recalc-dias-valor" min="1" step="1" placeholder="Ej: 90">
+          </div>
+        </div>
+
+        <div style="margin-bottom:10px;padding:10px 12px;background:var(--fondo);border-radius:6px;border:1px solid var(--borde)">
           <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;text-transform:none;letter-spacing:normal;font-weight:400">
             <input type="checkbox" id="recalc-solo-nuevos" checked style="margin-top:2px">
-            <span id="recalc-solo-nuevos-label" style="font-size:12px;color:var(--acero)"></span>
+            <span style="font-size:12px;color:var(--acero)">Respetar registros que fueron limpiados a propósito con "Limpiar eficiencia histórica" (no volver a calcularles eficiencia)</span>
           </label>
+          <div id="recalc-limpieza-info" style="font-size:11px;color:#9CA3AF;margin-top:6px"></div>
         </div>
-        <button class="btn btn-secondary" id="btn-recalcular" onclick="recalcularEficiencia()" style="width:100%;justify-content:center">⚡ Recalcular eficiencia histórica</button>
+
+        <button class="btn btn-secondary" id="btn-recalcular" onclick="recalcularEficiencia()" style="width:100%;justify-content:center">⚡ Recalcular eficiencia</button>
         <div id="recalculo-log" style="display:none;margin-top:12px;background:var(--fondo);border:1px solid var(--borde);border-radius:6px;padding:12px;font-size:13px;line-height:1.8"></div>
+
         <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--borde)">
-          <p style="font-size:13px;color:var(--acero);margin-bottom:14px">Si el historial de horómetros tuvo problemas (Shelly recién instalado, valores incorrectos, etc.) y las medias de eficiencia quedaron distorsionadas, deja el campo de eficiencia en blanco en todos los registros existentes — sin borrar litros, fechas ni horómetros. Las próximas cargas vuelven a calcular su eficiencia normalmente.</p>
+          <p style="font-size:13px;color:var(--acero);margin-bottom:14px">Si el historial de horómetros tuvo problemas (Shelly recién instalado, valores incorrectos, etc.), deja el campo de eficiencia en blanco en los registros elegidos — sin borrar litros, fechas ni horómetros. Las próximas cargas vuelven a calcular su eficiencia normalmente.</p>
+
+          <div class="field">
+            <label>Alcance</label>
+            <div class="centros-selector">
+              <div class="cultivo-chip sel" id="limpieza-alcance-todos" onclick="setLimpiezaAlcance(true)">Todos los equipos</div>
+              <div class="cultivo-chip" id="limpieza-alcance-especificos" onclick="setLimpiezaAlcance(false)">Equipos específicos</div>
+            </div>
+            <div id="limpieza-equipos-selector" class="centros-selector" style="display:none"></div>
+          </div>
+          <div class="field">
+            <label>Período</label>
+            <div class="centros-selector">
+              <div class="cultivo-chip sel" id="limpieza-periodo-todo" onclick="setLimpiezaPeriodo(true)">Todo el historial</div>
+              <div class="cultivo-chip" id="limpieza-periodo-dias" onclick="setLimpiezaPeriodo(false)">Últimos X días</div>
+            </div>
+            <div id="limpieza-dias-input-wrap" style="display:none;margin-top:8px">
+              <input type="number" id="limpieza-dias-valor" min="1" step="1" placeholder="Ej: 90">
+            </div>
+          </div>
+
           <button class="btn" style="width:100%;justify-content:center;background:var(--rojo);color:white" id="btn-limpiar-eficiencia" onclick="limpiarEficienciaHistorica()">🧹 Limpiar eficiencia histórica</button>
           <div id="limpieza-eficiencia-log" style="display:none;margin-top:12px;background:var(--fondo);border:1px solid var(--borde);border-radius:6px;padding:12px;font-size:13px;line-height:1.8"></div>
         </div>
