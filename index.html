@@ -477,6 +477,10 @@ function detenerEstimacionESP32() {
 
 const PULSOS_POR_LITRO_DEFAULT = 33.5;
 let pulsosPorLitro = PULSOS_POR_LITRO_DEFAULT;
+// Fecha (ms) de la última vez que se usó "Limpiar eficiencia histórica" — le
+// permite a "Recalcular eficiencia histórica" saber a partir de dónde puede
+// tocar registros sin pisar esa limpieza intencional (ver más abajo).
+let ultimaLimpiezaEficienciaTs = null;
 
 async function cargarModoESP32() {
   try {
@@ -485,6 +489,7 @@ async function cargarModoESP32() {
       const d = snap.data();
       modoESP32 = d.modoESP32 || false;
       pulsosPorLitro = d.pulsosPorLitro || PULSOS_POR_LITRO_DEFAULT;
+      ultimaLimpiezaEficienciaTs = d.ultimaLimpiezaEficienciaTs || null;
     }
   } catch(e) {}
 }
@@ -2581,6 +2586,13 @@ window.limpiarEficienciaHistorica = async function() {
       actualizados += lote.length;
       log.innerHTML = `<div style="color:#9CA3AF">Actualizando... ${actualizados}/${docsConEficiencia.length}</div>`;
     }
+    // Guardamos la fecha exacta de esta limpieza — así "Recalcular eficiencia
+    // histórica" puede saber, si el admin lo elige, que no debe tocar los
+    // registros de antes de esta marca (evita que los dos botones se anulen)
+    const marcaLimpieza = Date.now();
+    await setDoc(doc(db, 'config', 'sistema'), { ultimaLimpiezaEficienciaTs: marcaLimpieza }, { merge: true });
+    ultimaLimpiezaEficienciaTs = marcaLimpieza;
+    renderPanelRecalculoOpcion();
     log.innerHTML = `<div style="color:var(--verde);font-weight:600">✅ Eficiencia histórica limpiada</div><div style="color:var(--acero);font-size:13px;margin-top:4px">${actualizados} registros actualizados — las próximas cargas calculan su eficiencia normalmente</div>`;
     toast('✅ Eficiencia histórica limpiada', true);
   } catch(e) {
@@ -2590,10 +2602,29 @@ window.limpiarEficienciaHistorica = async function() {
   btn.disabled = false; btn.textContent = '🧹 Limpiar eficiencia histórica';
 }
 
+// Muestra/oculta la opción "respetar la última limpieza" junto al botón de
+// recálculo, y le pone la fecha exacta para que quede claro qué se está
+// respetando (si nunca se usó "Limpiar", no hay nada que mostrar acá).
+function renderPanelRecalculoOpcion() {
+  const wrap = document.getElementById('recalc-solo-nuevos-wrap');
+  if (!wrap) return;
+  if (!ultimaLimpiezaEficienciaTs) { wrap.style.display = 'none'; return; }
+  wrap.style.display = 'block';
+  const fechaTxt = new Date(ultimaLimpiezaEficienciaTs).toLocaleString('es-CL');
+  const label = document.getElementById('recalc-solo-nuevos-label');
+  if (label) label.textContent = `Respetar la limpieza del ${fechaTxt} (no tocar registros de antes)`;
+}
+
 window.recalcularEficiencia = async function() {
   if (!isAdmin) return;
   const btn = document.getElementById('btn-recalcular');
   const log = document.getElementById('recalculo-log');
+  const checkboxSoloNuevos = document.getElementById('recalc-solo-nuevos');
+  // Si el admin dejó marcada la opción y existe una fecha de limpieza previa,
+  // los registros de ANTES de esa fecha se dejan intactos (no se escriben ni
+  // entran a la ventana de comparación) — así "Limpiar" y "Recalcular" no se
+  // anulan entre sí cuando se usan en conjunto.
+  const soloNuevos = !!(checkboxSoloNuevos && checkboxSoloNuevos.checked && ultimaLimpiezaEficienciaTs);
   btn.disabled = true;
   btn.textContent = 'Calculando...';
   log.style.display = 'block';
@@ -2614,8 +2645,9 @@ window.recalcularEficiencia = async function() {
 
     let actualizados = 0;
     let sinDatos = 0;
+    let omitidosPorLimpieza = 0;
     const equipos = Object.keys(porEquipo);
-    log.innerHTML = `<div style="color:#9CA3AF">Procesando ${todos.length} registros de ${equipos.length} equipos...</div>`;
+    log.innerHTML = `<div style="color:#9CA3AF">Procesando ${todos.length} registros de ${equipos.length} equipos${soloNuevos ? ' (respetando la última limpieza)' : ''}...</div>`;
 
     for (const eq of equipos) {
       const registrosEq = porEquipo[eq]; // ya ordenados por ts asc
@@ -2624,6 +2656,14 @@ window.recalcularEficiencia = async function() {
       for (let i = 0; i < registrosEq.length; i++) {
         const actual = registrosEq[i];
         const anterior = i > 0 ? registrosEq[i - 1] : null;
+
+        // Este registro es de antes de la última limpieza y se pidió
+        // respetarla — se salta por completo: no se toca su eficiencia y
+        // tampoco entra a la ventana de comparación de los siguientes
+        if (soloNuevos && actual.ts <= ultimaLimpiezaEficienciaTs) {
+          omitidosPorLimpieza++;
+          continue;
+        }
 
         let eficiencia = null;
         let diffMedidor = null;
@@ -2675,6 +2715,7 @@ window.recalcularEficiencia = async function() {
       <div style="color:var(--verde);font-weight:600">✅ Recálculo completado</div>
       <div style="color:var(--acero);font-size:13px;margin-top:4px">• ${actualizados} registros actualizados</div>
       <div style="color:var(--acero);font-size:13px">• ${sinDatos} sin cambios</div>
+      ${soloNuevos ? `<div style="color:var(--acero);font-size:13px">• ${omitidosPorLimpieza} registros anteriores a la limpieza, respetados sin tocar</div>` : ''}
       <div style="color:var(--acero);font-size:13px">• ${todos.length} registros totales procesados</div>`;
     toast('✅ Eficiencia recalculada', true);
   } catch(e) {
@@ -3767,7 +3808,7 @@ window.setTab = function(id,el) {
   document.getElementById('tc-'+id).classList.add('active');
   if(el)el.classList.add('active');
   if(['historial','admin','analytics','informes'].includes(id)) loadHistorial();
-  if(id==='config') { renderConfigListas(); renderPanelAperos(); renderPanelEquipoOperador(); renderPanelPresetsOperador(); renderPanelHorario(); renderPanelMantencionesConfig(); renderPanelParametros(); renderPanelCorreccionHorometro(); renderPanelTotalizadorManual(); if(isAdmin) cargarPines(); actualizarToggleESP32(); }
+  if(id==='config') { renderConfigListas(); renderPanelAperos(); renderPanelEquipoOperador(); renderPanelPresetsOperador(); renderPanelHorario(); renderPanelMantencionesConfig(); renderPanelParametros(); renderPanelCorreccionHorometro(); renderPanelTotalizadorManual(); renderPanelRecalculoOpcion(); if(isAdmin) cargarPines(); actualizarToggleESP32(); }
   if(id==='mantencion') { initMantencion(); }
   if(id==='registro' && isAdmin) escucharSolicitudesAdmin();
 }
@@ -4795,6 +4836,12 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       <div class="panel">
         <div class="panel-title">🔧 Herramientas de mantenimiento</div>
         <p style="font-size:13px;color:var(--acero);margin-bottom:14px">Recalcula la eficiencia (L/hr o km/L) de todos los registros históricos en base al horómetro/odómetro entre cargas consecutivas de cada equipo.</p>
+        <div id="recalc-solo-nuevos-wrap" style="display:none;margin-bottom:10px;padding:10px 12px;background:var(--fondo);border-radius:6px;border:1px solid var(--borde)">
+          <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;text-transform:none;letter-spacing:normal;font-weight:400">
+            <input type="checkbox" id="recalc-solo-nuevos" checked style="margin-top:2px">
+            <span id="recalc-solo-nuevos-label" style="font-size:12px;color:var(--acero)"></span>
+          </label>
+        </div>
         <button class="btn btn-secondary" id="btn-recalcular" onclick="recalcularEficiencia()" style="width:100%;justify-content:center">⚡ Recalcular eficiencia histórica</button>
         <div id="recalculo-log" style="display:none;margin-top:12px;background:var(--fondo);border:1px solid var(--borde);border-radius:6px;padding:12px;font-size:13px;line-height:1.8"></div>
         <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--borde)">
