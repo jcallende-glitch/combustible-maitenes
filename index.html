@@ -7,7 +7,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import { getFirestore, collection, addDoc, deleteDoc, doc, onSnapshot, query, orderBy, where, setDoc, getDoc, updateDoc, increment, limit, getDocs, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import { getFirestore, collection, addDoc, deleteDoc, doc, onSnapshot, query, orderBy, where, setDoc, getDoc, updateDoc, increment, limit, getDocs, serverTimestamp, writeBatch } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyAVsios3N97MQVPJLC94qEOXGJNmKzK9RI",
@@ -2550,6 +2550,46 @@ function enviarAlertaWsp(msg) {
 }
 
 // ─── RECÁLCULO RETROACTIVO DE EFICIENCIA ──────────────────
+// ─── LIMPIEZA DE EFICIENCIA HISTÓRICA ─────────────────────
+// Deja el campo eficiencia en blanco (null) en TODOS los registros existentes,
+// sin tocar litros, fechas, totalizador ni horómetro — solo resetea el dato
+// derivado de eficiencia. Útil cuando el historial de horómetros tuvo
+// problemas (ej. Shelly recién instalados o con desfases) y las medias que
+// se comparan de ahí en adelante quedaron distorsionadas por esos datos
+// viejos. Las próximas cargas vuelven a calcular su propia eficiencia normal.
+window.limpiarEficienciaHistorica = async function() {
+  if (!isAdmin) return;
+  if (!confirm('¿Limpiar la eficiencia histórica de TODOS los registros?\n\nEsto deja el campo eficiencia en blanco en todos los registros existentes (NO borra litros, fechas, ni horómetros) — las medias de eficiencia van a empezar a calcularse de nuevo a partir de las próximas cargas.\n\nEsta acción no se puede deshacer.')) return;
+  const btn = document.getElementById('btn-limpiar-eficiencia');
+  const log = document.getElementById('limpieza-eficiencia-log');
+  btn.disabled = true; btn.textContent = 'Limpiando...';
+  log.style.display = 'block';
+  log.innerHTML = '<div style="color:#9CA3AF">Cargando registros...</div>';
+  try {
+    const snap = await getDocs(collection(db, 'registros'));
+    const docsConEficiencia = snap.docs.filter(d => d.data().eficiencia != null || d.data().alerta_eficiencia);
+    log.innerHTML = `<div style="color:#9CA3AF">Actualizando ${docsConEficiencia.length} registros...</div>`;
+    let actualizados = 0;
+    // Firestore permite máximo 500 escrituras por batch — se procesa en lotes de 400
+    for (let i = 0; i < docsConEficiencia.length; i += 400) {
+      const lote = docsConEficiencia.slice(i, i + 400);
+      const batch = writeBatch(db);
+      lote.forEach(d => {
+        batch.update(doc(db, 'registros', d.id), { eficiencia: null, alerta_eficiencia: false });
+      });
+      await batch.commit();
+      actualizados += lote.length;
+      log.innerHTML = `<div style="color:#9CA3AF">Actualizando... ${actualizados}/${docsConEficiencia.length}</div>`;
+    }
+    log.innerHTML = `<div style="color:var(--verde);font-weight:600">✅ Eficiencia histórica limpiada</div><div style="color:var(--acero);font-size:13px;margin-top:4px">${actualizados} registros actualizados — las próximas cargas calculan su eficiencia normalmente</div>`;
+    toast('✅ Eficiencia histórica limpiada', true);
+  } catch(e) {
+    log.innerHTML = `<div style="color:var(--rojo)">❌ Error: ${e.message}</div>`;
+    toast('Error: ' + e.message, false);
+  }
+  btn.disabled = false; btn.textContent = '🧹 Limpiar eficiencia histórica';
+}
+
 window.recalcularEficiencia = async function() {
   if (!isAdmin) return;
   const btn = document.getElementById('btn-recalcular');
@@ -4692,6 +4732,11 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         <p style="font-size:13px;color:var(--acero);margin-bottom:14px">Recalcula la eficiencia (L/hr o km/L) de todos los registros históricos en base al horómetro/odómetro entre cargas consecutivas de cada equipo.</p>
         <button class="btn btn-secondary" id="btn-recalcular" onclick="recalcularEficiencia()" style="width:100%;justify-content:center">⚡ Recalcular eficiencia histórica</button>
         <div id="recalculo-log" style="display:none;margin-top:12px;background:var(--fondo);border:1px solid var(--borde);border-radius:6px;padding:12px;font-size:13px;line-height:1.8"></div>
+        <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--borde)">
+          <p style="font-size:13px;color:var(--acero);margin-bottom:14px">Si el historial de horómetros tuvo problemas (Shelly recién instalado, valores incorrectos, etc.) y las medias de eficiencia quedaron distorsionadas, deja el campo de eficiencia en blanco en todos los registros existentes — sin borrar litros, fechas ni horómetros. Las próximas cargas vuelven a calcular su eficiencia normalmente.</p>
+          <button class="btn" style="width:100%;justify-content:center;background:var(--rojo);color:white" id="btn-limpiar-eficiencia" onclick="limpiarEficienciaHistorica()">🧹 Limpiar eficiencia histórica</button>
+          <div id="limpieza-eficiencia-log" style="display:none;margin-top:12px;background:var(--fondo);border:1px solid var(--borde);border-radius:6px;padding:12px;font-size:13px;line-height:1.8"></div>
+        </div>
       </div>
       <div class="panel">
         <div class="panel-title">🛠 Catálogo de mantenciones</div>
