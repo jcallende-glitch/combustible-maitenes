@@ -2567,7 +2567,7 @@ function enviarAlertaWsp(msg) {
 
 let limpiezaAlcanceTodos = true;
 let limpiezaEquiposSel = [];
-let limpiezaPeriodoTodo = true;
+let limpiezaPeriodoModo = 'todo'; // 'todo' | 'dias' | 'fecha'
 
 window.setLimpiezaAlcance = function(todos) {
   limpiezaAlcanceTodos = todos;
@@ -2588,12 +2588,15 @@ window.toggleLimpiezaEquipo = function(e) {
   if (i >= 0) limpiezaEquiposSel.splice(i, 1); else limpiezaEquiposSel.push(e);
   renderLimpiezaEquiposSelector();
 }
-window.setLimpiezaPeriodo = function(todo) {
-  limpiezaPeriodoTodo = todo;
-  document.getElementById('limpieza-periodo-todo')?.classList.toggle('sel', todo);
-  document.getElementById('limpieza-periodo-dias')?.classList.toggle('sel', !todo);
-  const wrap = document.getElementById('limpieza-dias-input-wrap');
-  if (wrap) wrap.style.display = todo ? 'none' : 'block';
+window.setLimpiezaPeriodo = function(modo) {
+  limpiezaPeriodoModo = modo;
+  document.getElementById('limpieza-periodo-todo')?.classList.toggle('sel', modo==='todo');
+  document.getElementById('limpieza-periodo-dias')?.classList.toggle('sel', modo==='dias');
+  document.getElementById('limpieza-periodo-fecha')?.classList.toggle('sel', modo==='fecha');
+  const wrapDias = document.getElementById('limpieza-dias-input-wrap');
+  if (wrapDias) wrapDias.style.display = modo==='dias' ? 'block' : 'none';
+  const wrapFecha = document.getElementById('limpieza-fecha-input-wrap');
+  if (wrapFecha) wrapFecha.style.display = modo==='fecha' ? 'block' : 'none';
 }
 
 window.limpiarEficienciaHistorica = async function() {
@@ -2601,14 +2604,19 @@ window.limpiarEficienciaHistorica = async function() {
   if (!limpiezaAlcanceTodos && limpiezaEquiposSel.length === 0) {
     toast('Selecciona al menos un equipo, o elige "Todos los equipos"', false); return;
   }
-  let dias = null, cutoffTs = null;
-  if (!limpiezaPeriodoTodo) {
-    dias = parseFloat(document.getElementById('limpieza-dias-valor').value);
+  let cutoffTs = null, periodoTxt = 'todo el historial';
+  if (limpiezaPeriodoModo === 'dias') {
+    const dias = parseFloat(document.getElementById('limpieza-dias-valor').value);
     if (isNaN(dias) || dias <= 0) { toast('Ingresá cuántos días hacia atrás', false); return; }
     cutoffTs = Date.now() - dias * 86400000;
+    periodoTxt = `los últimos ${dias} días`;
+  } else if (limpiezaPeriodoModo === 'fecha') {
+    const fecha = document.getElementById('limpieza-fecha-valor').value;
+    if (!fecha) { toast('Elegí una fecha desde la cual limpiar', false); return; }
+    cutoffTs = new Date(fecha + 'T00:00:00').getTime();
+    periodoTxt = `desde el ${fecha}`;
   }
   const equiposTxt = limpiezaAlcanceTodos ? 'TODOS los equipos' : limpiezaEquiposSel.join(', ');
-  const periodoTxt = limpiezaPeriodoTodo ? 'todo el historial' : `los últimos ${dias} días`;
   if (!confirm(`¿Limpiar la eficiencia de ${equiposTxt}, en ${periodoTxt}?\n\nEsto deja el campo eficiencia en blanco en los registros que coincidan (NO borra litros, fechas, ni horómetros).\n\nEsta acción no se puede deshacer.`)) return;
 
   const btn = document.getElementById('btn-limpiar-eficiencia');
@@ -2661,7 +2669,7 @@ function renderPanelRecalculoOpcion() {
 
 let recalcAlcanceTodos = true;
 let recalcEquiposSel = [];
-let recalcPeriodoTodo = true;
+let recalcPeriodoModo = 'todo'; // 'todo' | 'dias' | 'fecha'
 
 window.setRecalcAlcance = function(todos) {
   recalcAlcanceTodos = todos;
@@ -2682,12 +2690,15 @@ window.toggleRecalcEquipo = function(e) {
   if (i >= 0) recalcEquiposSel.splice(i, 1); else recalcEquiposSel.push(e);
   renderRecalcEquiposSelector();
 }
-window.setRecalcPeriodo = function(todo) {
-  recalcPeriodoTodo = todo;
-  document.getElementById('recalc-periodo-todo')?.classList.toggle('sel', todo);
-  document.getElementById('recalc-periodo-dias')?.classList.toggle('sel', !todo);
-  const wrap = document.getElementById('recalc-dias-input-wrap');
-  if (wrap) wrap.style.display = todo ? 'none' : 'block';
+window.setRecalcPeriodo = function(modo) {
+  recalcPeriodoModo = modo;
+  document.getElementById('recalc-periodo-todo')?.classList.toggle('sel', modo==='todo');
+  document.getElementById('recalc-periodo-dias')?.classList.toggle('sel', modo==='dias');
+  document.getElementById('recalc-periodo-fecha')?.classList.toggle('sel', modo==='fecha');
+  const wrapDias = document.getElementById('recalc-dias-input-wrap');
+  if (wrapDias) wrapDias.style.display = modo==='dias' ? 'block' : 'none';
+  const wrapFecha = document.getElementById('recalc-fecha-input-wrap');
+  if (wrapFecha) wrapFecha.style.display = modo==='fecha' ? 'block' : 'none';
 }
 
 window.recalcularEficiencia = async function() {
@@ -2695,11 +2706,15 @@ window.recalcularEficiencia = async function() {
   if (!recalcAlcanceTodos && recalcEquiposSel.length === 0) {
     toast('Selecciona al menos un equipo, o elige "Todos los equipos"', false); return;
   }
-  let dias = null, cutoffTs = null;
-  if (!recalcPeriodoTodo) {
-    dias = parseFloat(document.getElementById('recalc-dias-valor').value);
+  let cutoffTs = null;
+  if (recalcPeriodoModo === 'dias') {
+    const dias = parseFloat(document.getElementById('recalc-dias-valor').value);
     if (isNaN(dias) || dias <= 0) { toast('Ingresá cuántos días hacia atrás', false); return; }
     cutoffTs = Date.now() - dias * 86400000;
+  } else if (recalcPeriodoModo === 'fecha') {
+    const fecha = document.getElementById('recalc-fecha-valor').value;
+    if (!fecha) { toast('Elegí una fecha desde la cual recalcular', false); return; }
+    cutoffTs = new Date(fecha + 'T00:00:00').getTime();
   }
   const btn = document.getElementById('btn-recalcular');
   const log = document.getElementById('recalculo-log');
@@ -4936,11 +4951,15 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         <div class="field">
           <label>Período</label>
           <div class="centros-selector">
-            <div class="cultivo-chip sel" id="recalc-periodo-todo" onclick="setRecalcPeriodo(true)">Todo el historial</div>
-            <div class="cultivo-chip" id="recalc-periodo-dias" onclick="setRecalcPeriodo(false)">Últimos X días</div>
+            <div class="cultivo-chip sel" id="recalc-periodo-todo" onclick="setRecalcPeriodo('todo')">Todo el historial</div>
+            <div class="cultivo-chip" id="recalc-periodo-dias" onclick="setRecalcPeriodo('dias')">Últimos X días</div>
+            <div class="cultivo-chip" id="recalc-periodo-fecha" onclick="setRecalcPeriodo('fecha')">Desde una fecha</div>
           </div>
           <div id="recalc-dias-input-wrap" style="display:none;margin-top:8px">
             <input type="number" id="recalc-dias-valor" min="1" step="1" placeholder="Ej: 90">
+          </div>
+          <div id="recalc-fecha-input-wrap" style="display:none;margin-top:8px">
+            <input type="date" id="recalc-fecha-valor">
           </div>
         </div>
 
@@ -4969,11 +4988,15 @@ tbody td{padding:10px 12px;vertical-align:middle;}
           <div class="field">
             <label>Período</label>
             <div class="centros-selector">
-              <div class="cultivo-chip sel" id="limpieza-periodo-todo" onclick="setLimpiezaPeriodo(true)">Todo el historial</div>
-              <div class="cultivo-chip" id="limpieza-periodo-dias" onclick="setLimpiezaPeriodo(false)">Últimos X días</div>
+              <div class="cultivo-chip sel" id="limpieza-periodo-todo" onclick="setLimpiezaPeriodo('todo')">Todo el historial</div>
+              <div class="cultivo-chip" id="limpieza-periodo-dias" onclick="setLimpiezaPeriodo('dias')">Últimos X días</div>
+              <div class="cultivo-chip" id="limpieza-periodo-fecha" onclick="setLimpiezaPeriodo('fecha')">Desde una fecha</div>
             </div>
             <div id="limpieza-dias-input-wrap" style="display:none;margin-top:8px">
               <input type="number" id="limpieza-dias-valor" min="1" step="1" placeholder="Ej: 90">
+            </div>
+            <div id="limpieza-fecha-input-wrap" style="display:none;margin-top:8px">
+              <input type="date" id="limpieza-fecha-valor">
             </div>
           </div>
 
