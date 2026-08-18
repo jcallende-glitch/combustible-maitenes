@@ -994,6 +994,12 @@ async function loadConfig() {
         config.mantenciones = construirMantencionesDesdeHardcode();
         await setDoc(doc(db, 'config', 'datos'), config);
       }
+      // Migración automática: intervalosPorEquipo en cada tipo de mantención
+      // (permite fijar un intervalo distinto al general para un equipo puntual)
+      if (config.mantenciones.some(m => !m.intervalosPorEquipo)) {
+        config.mantenciones = config.mantenciones.map(m => ({ ...m, intervalosPorEquipo: m.intervalosPorEquipo || {} }));
+        await setDoc(doc(db, 'config', 'datos'), config);
+      }
       if (config.alertaHrsAntes == null) {
         config.alertaHrsAntes = ALERTA_HRS_ANTES_DEFAULT;
         await setDoc(doc(db, 'config', 'datos'), config);
@@ -2421,7 +2427,25 @@ window.registrarCargaManual = async function() {
   btn.disabled = false; btn.textContent = '✓ Registrar carga (sin bomba)';
 }
 
+// Candado independiente del botón en pantalla — evita que toques múltiples y
+// casi simultáneos (común cuando la conexión está lenta y el operador vuelve
+// a tocar pensando que no funcionó) disparen varios registros idénticos. A
+// diferencia de solo deshabilitar el botón del DOM, esta bandera es inmune a
+// cualquier re-render que pudiera recrear el elemento del botón sin el
+// atributo disabled.
+let registrandoDespacho = false;
+
 window.registrar = async function() {
+  if (registrandoDespacho) return; // ya hay un registro en curso — ignorar el toque repetido
+  registrandoDespacho = true;
+  try {
+    await registrarInterno();
+  } finally {
+    registrandoDespacho = false;
+  }
+}
+
+async function registrarInterno() {
   const { fecha, hora } = getNow();
   const eq = document.getElementById('equipo').value;
   const esOtroEquipo = eq === 'Otro (especificar)';
@@ -3926,7 +3950,10 @@ function populateSelect(id,arr,placeholder) {
 // MANT_POR_HORAS/MANT_ANUAL/MANT_SIN_FRECUENCIA son solo la SEMILLA usada una
 // única vez para migrar a Firestore (config.datos.mantenciones). Desde ahí en
 // adelante, el catálogo real y editable vive en `mantencionesConfig`, con cada
-// ítem como { id, nombre, categoria: 'horas'|'anual'|'sin_frecuencia', intervalo }.
+// ítem como { id, nombre, categoria: 'horas'|'km'|'anual'|'sin_frecuencia',
+// intervalo, intervalosPorEquipo: { equipo: valor, ... } }. `intervalo` es el
+// valor general; `intervalosPorEquipo` permite sobreescribirlo para un equipo
+// puntual (ej. un tractor que necesita cambio de aceite más seguido que el resto).
 const MANT_POR_HORAS = [
   { id: 'aceite_motor',      nombre: 'Cambio aceite motor',             intervalo: 250  },
   { id: 'filtro_hidraulico', nombre: 'Cambio filtro aceite hidráulico', intervalo: 500  },
@@ -3947,9 +3974,9 @@ const MANT_SIN_FRECUENCIA = [
 ];
 function construirMantencionesDesdeHardcode() {
   return [
-    ...MANT_POR_HORAS.map(m => ({ ...m, categoria: 'horas' })),
-    ...MANT_ANUAL.map(m => ({ ...m, categoria: 'anual', intervalo: null })),
-    ...MANT_SIN_FRECUENCIA.map(m => ({ ...m, categoria: 'sin_frecuencia', intervalo: null }))
+    ...MANT_POR_HORAS.map(m => ({ ...m, categoria: 'horas', intervalosPorEquipo: {} })),
+    ...MANT_ANUAL.map(m => ({ ...m, categoria: 'anual', intervalo: null, intervalosPorEquipo: {} })),
+    ...MANT_SIN_FRECUENCIA.map(m => ({ ...m, categoria: 'sin_frecuencia', intervalo: null, intervalosPorEquipo: {} }))
   ];
 }
 let mantencionesConfig = []; // se carga desde Firestore (config.datos.mantenciones)
@@ -3963,27 +3990,107 @@ let mantRegistros = {};     // cache: equipo → { tipoId → último registro }
 function equiposHr() {
   return config.equipos.filter(e => tipoEquipo(e) === 'hr' && e !== 'Otro (especificar)');
 }
+function equiposKm() {
+  return config.equipos.filter(e => tipoEquipo(e) === 'km' && e !== 'Otro (especificar)');
+}
+// Todos los equipos con medidor (horas o km), usados en la pestaña Mantención
+function equiposConMedidor() {
+  return config.equipos.filter(e => e !== 'Otro (especificar)');
+}
+// El intervalo real para un equipo puntual: usa la sobreescritura si existe,
+// si no cae al valor general del tipo de mantención
+function intervaloParaEquipo(tipo, equipo) {
+  const ov = tipo.intervalosPorEquipo && tipo.intervalosPorEquipo[equipo];
+  return (ov != null && ov !== '') ? ov : tipo.intervalo;
+}
 
 // ─── CATÁLOGO DE MANTENCIONES (Configurar) ──────────────────
+let edicionIntervaloEquipoIdx = null;
+let edicionIntervalosPorEquipo = {};
+
 function renderPanelMantencionesConfig() {
   const cont = document.getElementById('lista-mantenciones-config');
   if (cont) {
-    const catLabel = { horas: 'Por horas', anual: 'Anual', sin_frecuencia: 'Sin frecuencia fija' };
-    cont.innerHTML = mantencionesConfig.length ? mantencionesConfig.map((m, i) => `
-      <div class="config-item">
-        <span style="flex:1">${m.nombre} <span style="font-size:11px;color:var(--acero)">(${catLabel[m.categoria] || m.categoria}${m.categoria==='horas'?' · cada '+(m.intervalo||'—')+' hr':''})</span></span>
-        ${m.categoria === 'horas' ? `<button class="btn btn-secondary" style="font-size:11px;padding:5px 10px" onclick="editarIntervaloMantencion(${i})">✏️ Intervalo</button>` : ''}
-        <button class="btn btn-danger" onclick="eliminarMantencionConfig(${i})">✕</button>
-      </div>`).join('') : '<div style="color:#9CA3AF;font-size:13px;padding:8px">Sin mantenciones configuradas.</div>';
+    const catLabel = { horas: 'Por horas', km: 'Por kilómetros', anual: 'Anual', sin_frecuencia: 'Sin frecuencia fija' };
+    const catUnidad = { horas: 'hr', km: 'km' };
+    cont.innerHTML = mantencionesConfig.length ? mantencionesConfig.map((m, i) => {
+      const tienePorEquipo = m.categoria === 'horas' || m.categoria === 'km';
+      const nOverrides = Object.keys(m.intervalosPorEquipo || {}).length;
+      return `
+      <div class="config-item" style="flex-direction:column;align-items:stretch;gap:6px">
+        <div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px">
+          <span style="flex:1">${m.nombre} <span style="font-size:11px;color:var(--acero)">(${catLabel[m.categoria] || m.categoria}${tienePorEquipo?' · cada '+(m.intervalo||'—')+' '+catUnidad[m.categoria]:''}${nOverrides?` · ${nOverrides} equipo(s) con intervalo propio`:''})</span></span>
+          ${tienePorEquipo ? `<button class="btn btn-secondary" style="font-size:11px;padding:5px 10px" onclick="editarIntervaloMantencion(${i})">✏️ General</button>` : ''}
+          ${tienePorEquipo ? `<button class="btn btn-secondary" style="font-size:11px;padding:5px 10px" onclick="abrirEdicionIntervaloPorEquipo(${i})">⚙️ Por equipo</button>` : ''}
+          <button class="btn btn-danger" onclick="eliminarMantencionConfig(${i})">✕</button>
+        </div>
+        <div id="mant-intervalo-equipo-editor-${i}"></div>
+      </div>`;
+    }).join('') : '<div style="color:#9CA3AF;font-size:13px;padding:8px">Sin mantenciones configuradas.</div>';
   }
   const inp = document.getElementById('alerta-hrs-antes-input');
   if (inp) inp.value = alertaHrsAntes;
 }
 
+window.abrirEdicionIntervaloPorEquipo = function(idx) {
+  const m = mantencionesConfig[idx];
+  if (!m) return;
+  edicionIntervaloEquipoIdx = idx;
+  edicionIntervalosPorEquipo = { ...(m.intervalosPorEquipo || {}) };
+  renderEditorIntervaloPorEquipo(idx);
+}
+
+function renderEditorIntervaloPorEquipo(idx) {
+  const cont = document.getElementById(`mant-intervalo-equipo-editor-${idx}`);
+  if (!cont) return;
+  const m = mantencionesConfig[idx];
+  const equipos = m.categoria === 'km' ? equiposKm() : equiposHr();
+  const unidad = m.categoria === 'km' ? 'km' : 'hr';
+  if (!equipos.length) {
+    cont.innerHTML = `<div style="font-size:12px;color:#9CA3AF;padding:6px">No hay equipos de tipo "${unidad}" configurados todavía.</div>`;
+    return;
+  }
+  cont.innerHTML = `
+    <div style="background:var(--fondo);border:1px solid var(--borde);border-radius:6px;padding:10px;margin-top:4px">
+      <div class="cultivos-label">Intervalo por equipo (vacío = usar el general: ${m.intervalo || '—'} ${unidad})</div>
+      ${equipos.map(e => `
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+          <span style="flex:1;font-size:13px">${e}</span>
+          <input type="number" min="1" step="1" style="width:100px" placeholder="${m.intervalo||''}" value="${edicionIntervalosPorEquipo[e] ?? ''}" oninput='onEdicionIntervaloEquipoInput(${JSON.stringify(e)},this.value)'>
+          <span style="font-size:12px;color:var(--acero);width:24px">${unidad}</span>
+        </div>`).join('')}
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="cerrarEdicionIntervaloPorEquipo(${idx})">Cancelar</button>
+        <button class="btn btn-verde" style="flex:1" onclick="guardarEdicionIntervaloPorEquipo(${idx})">✓ Guardar</button>
+      </div>
+    </div>`;
+}
+window.onEdicionIntervaloEquipoInput = function(equipo, valor) {
+  if (valor === '') delete edicionIntervalosPorEquipo[equipo];
+  else edicionIntervalosPorEquipo[equipo] = parseFloat(valor);
+}
+window.cerrarEdicionIntervaloPorEquipo = function(idx) {
+  edicionIntervaloEquipoIdx = null;
+  const cont = document.getElementById(`mant-intervalo-equipo-editor-${idx}`);
+  if (cont) cont.innerHTML = '';
+}
+window.guardarEdicionIntervaloPorEquipo = async function(idx) {
+  if (!mantencionesConfig[idx]) return;
+  mantencionesConfig[idx].intervalosPorEquipo = { ...edicionIntervalosPorEquipo };
+  config.mantenciones = mantencionesConfig;
+  try {
+    await saveConfig();
+    edicionIntervaloEquipoIdx = null;
+    renderPanelMantencionesConfig();
+    toast('✓ Intervalos por equipo actualizados', true);
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
 window.editarIntervaloMantencion = async function(idx) {
   const m = mantencionesConfig[idx];
   if (!m) return;
-  const nuevo = prompt(`Nuevo intervalo en horas para "${m.nombre}":`, m.intervalo || '');
+  const unidad = m.categoria === 'km' ? 'kilómetros' : 'horas';
+  const nuevo = prompt(`Nuevo intervalo general en ${unidad} para "${m.nombre}" (los equipos con intervalo propio no se ven afectados):`, m.intervalo || '');
   if (nuevo === null) return;
   const val = parseFloat(nuevo);
   if (isNaN(val) || val <= 0) { toast('Intervalo inválido', false); return; }
@@ -4014,11 +4121,14 @@ window.agregarMantencionConfig = async function() {
   const nombre = inp.value.trim();
   const categoria = document.getElementById('nueva-mant-categoria').value;
   const intervaloInput = document.getElementById('nueva-mant-intervalo');
-  const intervalo = categoria === 'horas' ? parseFloat(intervaloInput.value) : null;
+  const requiereIntervalo = categoria === 'horas' || categoria === 'km';
+  const intervalo = requiereIntervalo ? parseFloat(intervaloInput.value) : null;
   if (!nombre) { toast('Ingresá el nombre de la mantención', false); return; }
-  if (categoria === 'horas' && (isNaN(intervalo) || intervalo <= 0)) { toast('Ingresá cada cuántas horas se hace', false); return; }
+  if (requiereIntervalo && (isNaN(intervalo) || intervalo <= 0)) {
+    toast(categoria === 'km' ? 'Ingresá cada cuántos kilómetros se hace' : 'Ingresá cada cuántas horas se hace', false); return;
+  }
   const id = 'mant_' + Date.now();
-  mantencionesConfig.push({ id, nombre, categoria, intervalo });
+  mantencionesConfig.push({ id, nombre, categoria, intervalo, intervalosPorEquipo: {} });
   config.mantenciones = mantencionesConfig;
   try {
     await saveConfig();
@@ -4030,10 +4140,16 @@ window.agregarMantencionConfig = async function() {
 
 window.onNuevaMantCategoriaChange = function() {
   const categoria = document.getElementById('nueva-mant-categoria').value;
-  document.getElementById('nueva-mant-intervalo-wrap').style.display = categoria === 'horas' ? 'block' : 'none';
+  const requiereIntervalo = categoria === 'horas' || categoria === 'km';
+  document.getElementById('nueva-mant-intervalo-wrap').style.display = requiereIntervalo ? 'block' : 'none';
+  const label = document.getElementById('nueva-mant-intervalo-label');
+  if (label) label.textContent = categoria === 'km' ? 'Cada cuántos kilómetros' : 'Cada cuántas horas';
+  const input = document.getElementById('nueva-mant-intervalo');
+  if (input) input.placeholder = categoria === 'km' ? 'Ej: 10000' : 'Ej: 250';
 }
 
 window.guardarAlertaHrsAntes = async function() {
+
   const val = parseFloat(document.getElementById('alerta-hrs-antes-input').value);
   if (isNaN(val) || val < 0) { toast('Valor inválido', false); return; }
   alertaHrsAntes = val;
@@ -4072,7 +4188,7 @@ window.guardarParametrosSistema = async function() {
 
 function initMantencion() {
   const sel = document.getElementById('mant-equipo-sel');
-  const equipos = equiposHr();
+  const equipos = equiposConMedidor();
   const equiposAsignados = equiposDe(currentUser);
   // Filtrar: operador solo ve su(s) equipo(s) asignado(s)
   const lista = isAdmin || isSupervisor ? equipos : equipos.filter(e => equiposAsignados.includes(e));
@@ -4123,35 +4239,39 @@ window.cargarEstadoMantencion = async function() {
   renderHistorialMantencion(eq, snapMant.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => b.ts - a.ts));
 }
 
-function renderEstadoMantencion(eq, hrActual, ultimasPorTipo) {
-  const filaHr = (tipo) => {
+function renderEstadoMantencion(eq, medidorActual, ultimasPorTipo) {
+  const unidadEq = tipoEquipo(eq); // 'hr' o 'km'
+  const categoriaMedidor = unidadEq === 'km' ? 'km' : 'horas';
+  const etiquetaUnidad = unidadEq === 'km' ? 'km' : 'hr';
+
+  const filaMedidor = (tipo) => {
     const ult = ultimasPorTipo[tipo.id];
-    const hrUlt = ult?.horometro || null;
-    const intervalo = tipo.intervalo;
+    const medidorUlt = ult?.horometro || null;
+    const intervalo = intervaloParaEquipo(tipo, eq);
     let estado = '', prox = '', color = 'var(--acero)', icono = '⚪';
 
     if (!intervalo) {
       // Sin intervalo definido
-      estado = ult ? `Último: ${ult.fecha} (${hrUlt ? hrUlt.toFixed(0)+' hr' : '—'})` : 'Sin registro';
+      estado = ult ? `Último: ${ult.fecha} (${medidorUlt ? medidorUlt.toFixed(0)+' '+etiquetaUnidad : '—'})` : 'Sin registro';
       icono = ult ? '✅' : '⚪';
       color = 'var(--acero)';
     } else if (!ult) {
       estado = 'Sin registro'; icono = '⚪'; color = 'var(--acero)';
     } else {
-      const hrProx = (hrUlt || 0) + intervalo;
-      const faltan = hrActual != null ? hrProx - hrActual : null;
-      prox = `Próxima: ${hrProx.toFixed(0)} hr`;
-      if (faltan === null) { estado = `Último: ${ult.fecha} · ${hrUlt?.toFixed(0)||'—'} hr`; icono = '✅'; }
-      else if (faltan < 0) { estado = `⛔ Vencida hace ${Math.abs(faltan).toFixed(0)} hr`; icono = '🔴'; color = 'var(--rojo)'; }
-      else if (faltan <= alertaHrsAntes) { estado = `⚠️ Faltan ${faltan.toFixed(0)} hr`; icono = '🟡'; color = '#92400E'; }
-      else { estado = `Último: ${ult.fecha} · ${hrUlt?.toFixed(0)||'—'} hr · Faltan ${faltan.toFixed(0)} hr`; icono = '🟢'; color = 'var(--verde)'; }
+      const medidorProx = (medidorUlt || 0) + intervalo;
+      const faltan = medidorActual != null ? medidorProx - medidorActual : null;
+      prox = `Próxima: ${medidorProx.toFixed(0)} ${etiquetaUnidad}`;
+      if (faltan === null) { estado = `Último: ${ult.fecha} · ${medidorUlt?.toFixed(0)||'—'} ${etiquetaUnidad}`; icono = '✅'; }
+      else if (faltan < 0) { estado = `⛔ Vencida hace ${Math.abs(faltan).toFixed(0)} ${etiquetaUnidad}`; icono = '🔴'; color = 'var(--rojo)'; }
+      else if (faltan <= alertaHrsAntes) { estado = `⚠️ Faltan ${faltan.toFixed(0)} ${etiquetaUnidad}`; icono = '🟡'; color = '#92400E'; }
+      else { estado = `Último: ${ult.fecha} · ${medidorUlt?.toFixed(0)||'—'} ${etiquetaUnidad} · Faltan ${faltan.toFixed(0)} ${etiquetaUnidad}`; icono = '🟢'; color = 'var(--verde)'; }
     }
     return `<div class="config-item" style="flex-wrap:wrap;gap:6px">
       <div style="flex:1;min-width:180px">
-        <div style="font-weight:600;font-size:13px">${icono} ${tipo.nombre}${intervalo?` <span style="font-size:11px;color:#9CA3AF">· cada ${intervalo} hr</span>`:''}</div>
+        <div style="font-weight:600;font-size:13px">${icono} ${tipo.nombre}${intervalo?` <span style="font-size:11px;color:#9CA3AF">· cada ${intervalo} ${etiquetaUnidad}</span>`:''}</div>
         <div style="font-size:12px;color:${color};margin-top:2px">${estado}${prox?` · ${prox}`:''}</div>
       </div>
-      <button onclick='abrirFormMant(${JSON.stringify(tipo.id)},${JSON.stringify(tipo.nombre)},"horas",${intervalo||'null'})' style="background:var(--negro);color:var(--amarillo);border:none;padding:6px 12px;border-radius:4px;font-size:12px;font-weight:600;cursor:pointer">+ Registrar</button>
+      <button onclick='abrirFormMant(${JSON.stringify(tipo.id)},${JSON.stringify(tipo.nombre)},${JSON.stringify(categoriaMedidor)},${intervalo||'null'})' style="background:var(--negro);color:var(--amarillo);border:none;padding:6px 12px;border-radius:4px;font-size:12px;font-weight:600;cursor:pointer">+ Registrar</button>
     </div>`;
   };
 
@@ -4176,12 +4296,14 @@ function renderEstadoMantencion(eq, hrActual, ultimasPorTipo) {
     </div>`;
   };
 
-  const hrActualStr = hrActual != null ? `Horómetro actual: <strong>${hrActual.toFixed(0)} hr</strong>` : 'Horómetro no disponible';
+  const medidorActualStr = medidorActual != null
+    ? `${unidadEq === 'km' ? 'Odómetro' : 'Horómetro'} actual: <strong>${medidorActual.toFixed(0)} ${etiquetaUnidad}</strong>`
+    : `${unidadEq === 'km' ? 'Odómetro' : 'Horómetro'} no disponible`;
 
   document.getElementById('mant-estado-container').innerHTML = `
-    <div style="font-size:12px;color:var(--acero);margin-bottom:12px;padding:8px 12px;background:var(--fondo);border-radius:6px">${hrActualStr}</div>
-    <div style="font-family:var(--mono);font-size:10px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--acero);margin:12px 0 6px">Por horas</div>
-    <div class="config-lista">${mantencionesConfig.filter(t=>t.categoria==='horas').map(t => filaHr(t)).join('')}</div>
+    <div style="font-size:12px;color:var(--acero);margin-bottom:12px;padding:8px 12px;background:var(--fondo);border-radius:6px">${medidorActualStr}</div>
+    <div style="font-family:var(--mono);font-size:10px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--acero);margin:12px 0 6px">${unidadEq === 'km' ? 'Por kilómetros' : 'Por horas'}</div>
+    <div class="config-lista">${mantencionesConfig.filter(t=>t.categoria===categoriaMedidor).map(t => filaMedidor(t)).join('') || '<div style="color:#9CA3AF;font-size:13px;padding:8px">Sin mantenciones de este tipo configuradas.</div>'}</div>
     <div style="font-family:var(--mono);font-size:10px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--acero);margin:16px 0 6px">Anuales</div>
     <div class="config-lista">${mantencionesConfig.filter(t=>t.categoria==='anual').map(t => filaFecha(t, true)).join('')}</div>
     <div style="font-family:var(--mono);font-size:10px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--acero);margin:16px 0 6px">Sin frecuencia definida</div>
@@ -4217,19 +4339,24 @@ window.abrirFormMant = async function(tipoId, nombre, categoria, intervalo) {
   document.getElementById('mant-fecha').value = fecha;
   document.getElementById('mant-obs').value = '';
   document.getElementById('mant-form-title').textContent = `Registrar: ${nombre}`;
-  // Horómetro solo para mantenciones por horas
+  // Horómetro/odómetro solo para mantenciones por horas o por kilómetros
   const hrField = document.getElementById('mant-horometro-field');
-  hrField.style.display = categoria === 'horas' ? 'flex' : 'none';
-  if (categoria === 'horas') {
-    // Pre-llenar con último horómetro conocido del combustible
+  const esPorMedidor = categoria === 'horas' || categoria === 'km';
+  hrField.style.display = esPorMedidor ? 'flex' : 'none';
+  if (esPorMedidor) {
+    const unidad = categoria === 'km' ? 'km' : 'hr';
+    const labelEl = document.getElementById('mant-horometro-label');
+    if (labelEl) labelEl.textContent = categoria === 'km' ? 'Odómetro actual (km)' : 'Horómetro actual (hr)';
+    // Pre-llenar con el último valor conocido del combustible
     const snapComb = await getDocs(query(collection(db,'registros'), where('equipo','==',mantEquipoActual), orderBy('ts','desc'), limit(1)));
-    const hrUltimo = snapComb.empty ? null : (snapComb.docs[0].data().medidor_valor || 0);
-    document.getElementById('mant-horometro').value = hrUltimo !== null ? hrUltimo.toFixed(0) : '';
+    const medidorUltimo = snapComb.empty ? null : (snapComb.docs[0].data().medidor_valor || 0);
+    document.getElementById('mant-horometro').value = medidorUltimo !== null ? medidorUltimo.toFixed(0) : '';
     // Mostrar rango permitido para operadores
     const hintEl = document.getElementById('mant-hr-hint');
     if (hintEl) {
-      if (!isAdmin && !isSupervisor && hrUltimo !== null) {
-        hintEl.textContent = `Rango permitido: ${(hrUltimo-10).toFixed(0)} – ${(hrUltimo+10).toFixed(0)} hr`;
+      if (!isAdmin && !isSupervisor && medidorUltimo !== null) {
+        const margen = categoria === 'km' ? 50 : 10;
+        hintEl.textContent = `Rango permitido: ${(medidorUltimo-margen).toFixed(0)} – ${(medidorUltimo+margen).toFixed(0)} ${unidad}`;
         hintEl.style.display = 'block';
       } else {
         hintEl.style.display = 'none';
@@ -4266,20 +4393,22 @@ window.guardarMantencion = async function() {
   if (mantTipoActual.id === 'otro' && !obsTipo) { toast('Describe el trabajo realizado', false); return; }
 
   let horometro = null;
-  if (mantTipoActual.categoria === 'horas') {
+  if (mantTipoActual.categoria === 'horas' || mantTipoActual.categoria === 'km') {
+    const unidad = mantTipoActual.categoria === 'km' ? 'km' : 'hr';
     horometro = parseFloat(document.getElementById('mant-horometro').value);
-    if (isNaN(horometro) || horometro < 0) { toast('Ingresa el horómetro', false); return; }
+    if (isNaN(horometro) || horometro < 0) { toast(`Ingresa el ${mantTipoActual.categoria === 'km' ? 'odómetro' : 'horómetro'}`, false); return; }
 
-    // Operador: validar que el horómetro esté dentro de ±10 hr del último registro de combustible
+    // Operador: validar que el medidor esté dentro de un margen razonable del último registro de combustible
     if (!isAdmin && !isSupervisor) {
       const snapComb = await getDocs(query(collection(db,'registros'), where('equipo','==',mantEquipoActual), orderBy('ts','desc'), limit(1)));
       if (snapComb.empty) {
-        toast('⚠️ No hay registros de combustible para validar el horómetro', false); return;
+        toast(`⚠️ No hay registros de combustible para validar el ${unidad === 'km' ? 'odómetro' : 'horómetro'}`, false); return;
       }
-      const hrUltimo = snapComb.docs[0].data().medidor_valor || 0;
-      const diff = Math.abs(horometro - hrUltimo);
-      if (diff > 10) {
-        toast(`⚠️ El horómetro debe estar dentro de ±10 hr del último registro (${hrUltimo.toFixed(0)} hr)`, false);
+      const medidorUltimo = snapComb.docs[0].data().medidor_valor || 0;
+      const margen = mantTipoActual.categoria === 'km' ? 50 : 10;
+      const diff = Math.abs(horometro - medidorUltimo);
+      if (diff > margen) {
+        toast(`⚠️ El ${unidad === 'km' ? 'odómetro' : 'horómetro'} debe estar dentro de ±${margen} ${unidad} del último registro (${medidorUltimo.toFixed(0)} ${unidad})`, false);
         return;
       }
     }
@@ -4316,13 +4445,15 @@ window.eliminarMantencion = async function(id) {
 async function renderAlertasMantencion() {
   const panel = document.getElementById('panel-alertas-mantencion');
   if (!panel) return;
-  const equipos = equiposHr();
+  const equipos = equiposConMedidor();
   const lista = isAdmin || isSupervisor ? equipos : equipos.filter(e => equiposDe(currentUser).includes(e));
   const alertas = [];
 
   for (const eq of lista) {
+    const categoriaMedidor = tipoEquipo(eq) === 'km' ? 'km' : 'horas';
+    const etiquetaUnidad = tipoEquipo(eq) === 'km' ? 'km' : 'hr';
     const snapComb = await getDocs(query(collection(db,'registros'), where('equipo','==',eq), orderBy('ts','desc'), limit(1)));
-    const hrActual = snapComb.empty ? null : (snapComb.docs[0].data().medidor_valor || 0);
+    const medidorActual = snapComb.empty ? null : (snapComb.docs[0].data().medidor_valor || 0);
     const snapMant = await getDocs(query(collection(db,'mantenciones'), where('equipo','==',eq), orderBy('ts','desc')));
     const ultimasPorTipo = {};
     snapMant.docs.forEach(d => {
@@ -4330,12 +4461,14 @@ async function renderAlertasMantencion() {
       if (!ultimasPorTipo[data.tipo_id]) ultimasPorTipo[data.tipo_id] = data;
     });
 
-    mantencionesConfig.filter(t => t.categoria === 'horas' && t.intervalo).forEach(tipo => {
+    mantencionesConfig.filter(t => t.categoria === categoriaMedidor).forEach(tipo => {
+      const intervalo = intervaloParaEquipo(tipo, eq);
+      if (!intervalo) return;
       const ult = ultimasPorTipo[tipo.id];
-      if (!ult || hrActual === null) return;
-      const faltan = (ult.horometro + tipo.intervalo) - hrActual;
+      if (!ult || medidorActual === null) return;
+      const faltan = (ult.horometro + intervalo) - medidorActual;
       if (faltan <= alertaHrsAntes) {
-        const txt = faltan < 0 ? `⛔ VENCIDA hace ${Math.abs(faltan).toFixed(0)} hr` : `⚠️ Faltan ${faltan.toFixed(0)} hr`;
+        const txt = faltan < 0 ? `⛔ VENCIDA hace ${Math.abs(faltan).toFixed(0)} ${etiquetaUnidad}` : `⚠️ Faltan ${faltan.toFixed(0)} ${etiquetaUnidad}`;
         alertas.push(`<div style="font-size:13px;padding:4px 0"><strong>${eq}</strong> · ${tipo.nombre} · ${txt}</div>`);
       }
     });
@@ -4728,7 +4861,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
           <input type="date" id="mant-fecha">
         </div>
         <div class="field" id="mant-horometro-field">
-          <label>Horómetro actual (hr)</label>
+          <label id="mant-horometro-label">Horómetro actual (hr)</label>
           <input type="number" id="mant-horometro" min="0" step="0.1" placeholder="Ej: 4520">
           <div id="mant-hr-hint" style="display:none;font-size:12px;color:#92400E;background:#FEF3DC;padding:6px 10px;border-radius:4px;margin-top:4px"></div>
         </div>
@@ -5015,12 +5148,13 @@ tbody td{padding:10px 12px;vertical-align:middle;}
             <div class="select-wrapper">
               <select id="nueva-mant-categoria" onchange="onNuevaMantCategoriaChange()">
                 <option value="horas">Por horas (cada X horas de uso)</option>
+                <option value="km">Por kilómetros (cada X km recorridos)</option>
                 <option value="anual">Anual (cada 365 días)</option>
                 <option value="sin_frecuencia">Sin frecuencia fija</option>
               </select>
             </div>
           </div>
-          <div class="field" id="nueva-mant-intervalo-wrap"><label>Cada cuántas horas</label><input type="number" id="nueva-mant-intervalo" min="1" step="1" placeholder="Ej: 250"></div>
+          <div class="field" id="nueva-mant-intervalo-wrap"><label id="nueva-mant-intervalo-label">Cada cuántas horas</label><input type="number" id="nueva-mant-intervalo" min="1" step="1" placeholder="Ej: 250"></div>
           <button class="btn-add" style="width:100%;justify-content:center" onclick="agregarMantencionConfig()">+ Agregar mantención</button>
         </div>
         <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--borde)">
