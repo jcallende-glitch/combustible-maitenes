@@ -1168,13 +1168,13 @@ window.intentarLogin = async function() {
   if (!result.ok) { toast('PIN incorrecto', false); document.getElementById('pin-input').value=''; return; }
   currentUser = result.nombre; isAdmin = result.admin; isSupervisor = result.supervisor || false;
   document.getElementById('user-label').textContent = isAdmin ? `⚙ ${result.nombre}` : (isSupervisor ? `👁 ${result.nombre}` : result.nombre);
-  ['tab-admin','tab-config','tab-analytics','tab-informes','btn-cisterna-header'].forEach(id => document.getElementById(id).style.display = 'none');
+  ['tab-admin','tab-config','tab-analytics','tab-informes','tab-eficiencia','btn-cisterna-header'].forEach(id => document.getElementById(id).style.display = 'none');
   if (isAdmin) {
-    ['tab-admin','tab-config','tab-analytics','tab-informes'].forEach(id => document.getElementById(id).style.display = 'block');
+    ['tab-admin','tab-config','tab-analytics','tab-informes','tab-eficiencia'].forEach(id => document.getElementById(id).style.display = 'block');
     document.getElementById('btn-cisterna-header').style.display = 'flex';
   }
   if (isSupervisor) {
-    ['tab-analytics','tab-informes','tab-admin'].forEach(id => document.getElementById(id).style.display = 'block');
+    ['tab-analytics','tab-informes','tab-eficiencia','tab-admin'].forEach(id => document.getElementById(id).style.display = 'block');
   }
   document.getElementById('pin-input').value = '';
   excepcionHorarioActiva = false;
@@ -2873,7 +2873,7 @@ function loadHistorial() {
   unsubReg = onSnapshot(q, snap => {
     registros = snap.docs.map(d=>({id:d.id,...d.data()}));
     populateFiltros(); renderTabla();
-    if (isAdmin || isSupervisor) { populateFiltrosAnalytics(); renderAnalytics(); renderInformes(); }
+    if (isAdmin || isSupervisor) { populateFiltrosAnalytics(); renderAnalytics(); renderInformes(); populateFiltrosEficiencia(); renderEficienciaAnalisis(); }
   });
 }
 
@@ -3215,6 +3215,180 @@ function renderAnalytics() {
     ${alertasData.length>0?`<div class="panel" style="border:2px solid var(--rojo)"><div class="panel-title" style="color:var(--rojo)">⚠️ Alertas de totalizador</div><div class="table-wrap"><table><thead><tr><th>Fecha/Hora</th><th>Equipo</th><th>Operador</th><th>Diferencia</th></tr></thead><tbody>${alertasData.map(r=>`<tr style="background:#FFF5F5"><td class="td-mono">${r.fecha} ${r.hora}</td><td>${r.equipo}</td><td>${r.operador}</td><td class="td-mono" style="color:var(--rojo);font-weight:600">${(r.dif_totalizador||0).toFixed(1)} L</td></tr>`).join('')}</tbody></table></div></div>`:''} `;
 }
 window.cambiarPeriodo = function() { renderAnalytics(); renderInformes(); }
+
+// ─── PESTAÑA EFICIENCIA (comparar equipos, detalle + medias, por período) ──
+let efPeriodoModo = 'todo'; // 'todo' | 'dias' | 'fecha'
+let efAlcanceTodos = true;
+let efEquiposSel = [];
+
+window.setEfPeriodo = function(modo) {
+  efPeriodoModo = modo;
+  document.getElementById('ef-periodo-todo')?.classList.toggle('sel', modo==='todo');
+  document.getElementById('ef-periodo-dias')?.classList.toggle('sel', modo==='dias');
+  document.getElementById('ef-periodo-fecha')?.classList.toggle('sel', modo==='fecha');
+  const wrapDias = document.getElementById('ef-dias-input-wrap');
+  if (wrapDias) wrapDias.style.display = modo==='dias' ? 'block' : 'none';
+  const wrapFecha = document.getElementById('ef-fecha-input-wrap');
+  if (wrapFecha) wrapFecha.style.display = modo==='fecha' ? 'block' : 'none';
+  renderEficienciaAnalisis();
+}
+
+window.setEfAlcance = function(todos) {
+  efAlcanceTodos = todos;
+  document.getElementById('ef-alcance-todos')?.classList.toggle('sel', todos);
+  document.getElementById('ef-alcance-especificos')?.classList.toggle('sel', !todos);
+  const wrap = document.getElementById('ef-equipos-selector');
+  if (wrap) wrap.style.display = todos ? 'none' : 'flex';
+  if (!todos) renderEfEquiposSelector();
+  populateAperosEficiencia();
+  renderEficienciaAnalisis();
+}
+
+function renderEfEquiposSelector() {
+  const wrap = document.getElementById('ef-equipos-selector');
+  if (!wrap) return;
+  const equipos = [...new Set(registros.map(r=>r.equipo))].sort();
+  wrap.innerHTML = equipos.map(e => `<div class="cultivo-chip ${efEquiposSel.includes(e)?'sel':''}" onclick='toggleEfEquipo(${JSON.stringify(e)})'>${e}</div>`).join('');
+}
+window.toggleEfEquipo = function(e) {
+  const i = efEquiposSel.indexOf(e);
+  if (i >= 0) efEquiposSel.splice(i, 1); else efEquiposSel.push(e);
+  renderEfEquiposSelector();
+  populateAperosEficiencia();
+  renderEficienciaAnalisis();
+}
+
+function equiposSeleccionadosEf() {
+  const todos = [...new Set(registros.map(r=>r.equipo))];
+  return efAlcanceTodos ? todos : efEquiposSel;
+}
+
+function populateFiltrosEficiencia() {
+  if (efAlcanceTodos) {
+    document.getElementById('ef-alcance-todos')?.classList.add('sel');
+    document.getElementById('ef-alcance-especificos')?.classList.remove('sel');
+  }
+  renderEfEquiposSelector();
+  populateAperosEficiencia();
+}
+
+function populateAperosEficiencia() {
+  const selAp = document.getElementById('ef-apero-sel');
+  if (!selAp) return;
+  const equipos = equiposSeleccionadosEf();
+  const curAp = selAp.value;
+  const aperos = [...new Set(registros.filter(r=>equipos.includes(r.equipo)).map(r=>r.apero).filter(a=>a && a!=='LIBRE'))].sort();
+  selAp.innerHTML = '<option value="">Todos los aperos</option>' +
+    aperos.map(v => `<option value="${v}" ${v===curAp?'selected':''}>${v}</option>`).join('');
+}
+
+function renderEficienciaAnalisis() {
+  const cont = document.getElementById('eficiencia-container');
+  if (!cont) return;
+  const equipos = equiposSeleccionadosEf();
+  const ap = document.getElementById('ef-apero-sel')?.value || '';
+  if (!equipos.length) { cont.innerHTML = '<div class="empty"><div class="empty-icon">🎯</div>Elegí al menos un equipo, o "Todos los equipos".</div>'; return; }
+
+  let cutoffTs = null;
+  if (efPeriodoModo === 'dias') {
+    const dias = parseFloat(document.getElementById('ef-dias-valor')?.value);
+    if (!isNaN(dias) && dias > 0) cutoffTs = Date.now() - dias * 86400000;
+  } else if (efPeriodoModo === 'fecha') {
+    const fecha = document.getElementById('ef-fecha-valor')?.value;
+    if (fecha) cutoffTs = new Date(fecha + 'T00:00:00').getTime();
+  }
+
+  let data = registros.filter(r => equipos.includes(r.equipo));
+  if (ap) data = data.filter(r => r.apero === ap);
+  if (cutoffTs != null) data = data.filter(r => (r.ts||0) >= cutoffTs);
+  data = data.sort((a,b) => a.ts - b.ts); // cronológico para el detalle
+
+  // ── Comparación por equipo ──
+  const porEquipo = {};
+  data.forEach(r => {
+    if (!porEquipo[r.equipo]) porEquipo[r.equipo] = { litros:0, trabajado:0, cargas:0, tipo:r.medidor_tipo, eficiencias:[] };
+    const e = porEquipo[r.equipo];
+    e.litros += r.litros||0;
+    if (r.diff_medidor > 0) e.trabajado += r.diff_medidor;
+    e.cargas++;
+    if (r.eficiencia) e.eficiencias.push(r.eficiencia);
+  });
+
+  const filasComparacion = Object.entries(porEquipo).sort((a,b)=>b[1].litros-a[1].litros).map(([eqNombre,e]) => {
+    const tipo = e.tipo || tipoEquipo(eqNombre);
+    const unidad = tipo === 'km' ? 'km' : 'hr';
+    const unidadEf = tipo === 'km' ? 'km/L' : 'L/hr';
+    const efProm = e.eficiencias.length ? e.eficiencias.reduce((a,b)=>a+b,0)/e.eficiencias.length : null;
+    const efMin = e.eficiencias.length ? Math.min(...e.eficiencias) : null;
+    const efMax = e.eficiencias.length ? Math.max(...e.eficiencias) : null;
+    return `<tr>
+      <td><strong>${eqNombre}</strong></td>
+      <td class="td-mono" style="color:var(--amarillo);font-weight:600">${e.litros.toFixed(1)} L</td>
+      <td>${e.cargas}</td>
+      <td class="td-mono">${e.trabajado>0?e.trabajado.toFixed(tipo==='km'?0:1)+' '+unidad:'—'}</td>
+      <td class="td-mono"><span class="badge badge-${tipo}">${efProm!=null?efProm.toFixed(2)+' '+unidadEf:'—'}</span></td>
+      <td class="td-mono" style="font-size:12px">${efMin!=null?efMin.toFixed(2):'—'}</td>
+      <td class="td-mono" style="font-size:12px">${efMax!=null?efMax.toFixed(2):'—'}</td>
+    </tr>`;
+  }).join('');
+
+  const totalLt = data.reduce((s,r)=>s+(r.litros||0),0);
+  const tituloSel = equipos.length === 1 ? equipos[0] + (ap ? ' · ' + ap : '') : `${equipos.length} equipos${ap ? ' · ' + ap : ''}`;
+
+  const cardsHtml = `
+    <div class="stats-grid" style="margin-bottom:20px">
+      <div class="stat-card"><div class="stat-label">Equipos</div><div class="stat-value">${Object.keys(porEquipo).length}</div></div>
+      <div class="stat-card"><div class="stat-label">Cargas</div><div class="stat-value">${data.length}</div></div>
+      <div class="stat-card"><div class="stat-label">Total litros</div><div class="stat-value">${totalLt.toFixed(1)}<span>L</span></div></div>
+    </div>`;
+
+  // ── Detalle carga por carga (con columna Equipo, útil al comparar varios) ──
+  const filasDetalle = data.slice().reverse().map(r => {
+    const tipo = r.medidor_tipo || tipoEquipo(r.equipo);
+    const unidad = tipo === 'km' ? 'km' : 'hr';
+    const unidadEf = tipo === 'km' ? 'km/L' : 'L/hr';
+    const efPromEq = porEquipo[r.equipo]?.eficiencias.length ? porEquipo[r.equipo].eficiencias.reduce((a,b)=>a+b,0)/porEquipo[r.equipo].eficiencias.length : null;
+    const efStr = r.eficiencia ? `${r.eficiencia.toFixed(2)} ${unidadEf}` : '—';
+    let colorEf = 'inherit';
+    if (r.eficiencia && efPromEq) {
+      const desv = (r.eficiencia - efPromEq) / efPromEq * 100;
+      const bueno = tipo === 'km' ? desv > 15 : desv < -15;
+      const malo = tipo === 'km' ? desv < -15 : desv > 15;
+      if (bueno) colorEf = 'var(--verde)'; else if (malo) colorEf = 'var(--rojo)';
+    }
+    const trabajadoStr = r.diff_medidor != null ? `${r.diff_medidor.toFixed(tipo==='km'?0:1)} ${unidad}` : '—';
+    const cultivos = (r.centros||[r.centro]).filter(Boolean).join(', ');
+    return `<tr>
+      <td class="td-mono">${r.fecha}<br><span style="color:#9CA3AF;font-size:11px">${r.hora}</span></td>
+      <td><strong>${r.equipo}</strong></td>
+      <td class="td-mono" style="color:var(--amarillo);font-weight:600">${(r.litros||0).toFixed(1)} L</td>
+      <td class="td-mono">${trabajadoStr}</td>
+      <td class="td-mono" style="color:${colorEf};font-weight:${colorEf!=='inherit'?'600':'400'}">${efStr}</td>
+      <td style="font-size:12px">${r.apero || '—'}</td>
+      <td style="font-size:12px">${cultivos || '—'}</td>
+      <td>${r.operador}</td>
+    </tr>`;
+  }).join('');
+
+  cont.innerHTML = `
+    ${cardsHtml}
+    <div class="panel">
+      <div class="panel-title">Comparación por equipo — ${tituloSel}</div>
+      ${filasComparacion ? `<div class="table-wrap"><table>
+        <thead><tr><th>Equipo</th><th>Litros</th><th>Cargas</th><th>Trabajado</th><th>Efic. promedio</th><th>Mínima</th><th>Máxima</th></tr></thead>
+        <tbody>${filasComparacion}</tbody>
+      </table></div>` : '<div class="empty"><div class="empty-icon">📊</div>Sin datos.</div>'}
+    </div>
+    <div class="panel">
+      <div class="panel-title">Detalle de cargas</div>
+      ${filasDetalle ? `<div class="table-wrap"><table>
+        <thead><tr><th>Fecha/Hora</th><th>Equipo</th><th>Litros</th><th>Trabajado</th><th>Eficiencia</th><th>Apero</th><th>Cultivos</th><th>Operador</th></tr></thead>
+        <tbody>${filasDetalle}</tbody>
+      </table></div>` : '<div class="empty"><div class="empty-icon">📋</div>Sin cargas en este período.</div>'}
+    </div>`;
+}
+
+
 
 // ─── INFORMES CULTIVO ──────────────────────────────────────
 function renderInformes() {
@@ -3965,7 +4139,7 @@ window.setTab = function(id,el) {
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
   document.getElementById('tc-'+id).classList.add('active');
   if(el)el.classList.add('active');
-  if(['historial','admin','analytics','informes'].includes(id)) loadHistorial();
+  if(['historial','admin','analytics','informes','eficiencia'].includes(id)) loadHistorial();
   if(id==='config') { renderConfigListas(); renderPanelAperos(); renderPanelEquipoOperador(); renderPanelPresetsOperador(); renderPanelHorario(); renderPanelMantencionesConfig(); renderPanelParametros(); renderPanelCorreccionHorometro(); renderPanelTotalizadorManual(); renderPanelRecalculoOpcion(); renderLimpiezaEquiposSelector(); renderRecalcEquiposSelector(); if(isAdmin) cargarPines(); actualizarToggleESP32(); }
   if(id==='mantencion') { initMantencion(); }
   if(id==='registro' && isAdmin) escucharSolicitudesAdmin();
@@ -4697,6 +4871,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     <button class="tab" id="tab-admin" style="display:none" onclick="setTab('admin',this)">Todos</button>
     <button class="tab" id="tab-analytics" style="display:none" onclick="setTab('analytics',this)">Análisis</button>
     <button class="tab" id="tab-informes" style="display:none" onclick="setTab('informes',this)">Informes</button>
+    <button class="tab" id="tab-eficiencia" style="display:none" onclick="setTab('eficiencia',this)">Eficiencia</button>
     <button class="tab" id="tab-config" style="display:none" onclick="setTab('config',this)">Configurar</button>
   </div>
 
@@ -4872,6 +5047,40 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         </div>
       </div>
       <div id="informes-container"></div>
+    </div>
+
+    <!-- EFICIENCIA -->
+    <div id="tc-eficiencia" class="tab-content">
+      <div class="panel">
+        <div class="panel-title">🎯 Comparar equipos</div>
+        <div class="field">
+          <label>Equipos</label>
+          <div class="centros-selector">
+            <div class="cultivo-chip sel" id="ef-alcance-todos" onclick="setEfAlcance(true)">Todos los equipos</div>
+            <div class="cultivo-chip" id="ef-alcance-especificos" onclick="setEfAlcance(false)">Equipos específicos</div>
+          </div>
+          <div id="ef-equipos-selector" class="centros-selector" style="display:none"></div>
+        </div>
+        <div class="field">
+          <label>Apero (opcional — vacío = todos los aperos)</label>
+          <div class="select-wrapper"><select id="ef-apero-sel" onchange="renderEficienciaAnalisis()"></select></div>
+        </div>
+        <div class="field">
+          <label>Período</label>
+          <div class="centros-selector">
+            <div class="cultivo-chip sel" id="ef-periodo-todo" onclick="setEfPeriodo('todo')">Todo el historial</div>
+            <div class="cultivo-chip" id="ef-periodo-dias" onclick="setEfPeriodo('dias')">Últimos X días</div>
+            <div class="cultivo-chip" id="ef-periodo-fecha" onclick="setEfPeriodo('fecha')">Desde una fecha</div>
+          </div>
+          <div id="ef-dias-input-wrap" style="display:none;margin-top:8px">
+            <input type="number" id="ef-dias-valor" min="1" step="1" placeholder="Ej: 90" oninput="renderEficienciaAnalisis()">
+          </div>
+          <div id="ef-fecha-input-wrap" style="display:none;margin-top:8px">
+            <input type="date" id="ef-fecha-valor" onchange="renderEficienciaAnalisis()">
+          </div>
+        </div>
+      </div>
+      <div id="eficiencia-container"></div>
     </div>
 
     <!-- MANTENCIÓN -->
