@@ -572,6 +572,29 @@ window.guardarTotalizadorManual = async function() {
   } catch(e) { toast('Error: ' + e.message, false); }
 }
 
+// ─── AJUSTE MANUAL DEL SALDO DEL ESTANQUE (Configurar) ──────
+// El saldo normalmente solo se mueve solo (resta al registrar una carga, suma
+// al recibir una cisterna). Este panel deja escribir el valor REAL directo,
+// para corregir desfases (ej. el sensor/cálculo quedó en 0 pero en realidad
+// queda combustible, o al revés) sin tener que simular una carga o cisterna
+// falsa para cuadrarlo.
+function renderPanelSaldoManual() {
+  const info = document.getElementById('saldo-actual-info');
+  if (info) info.textContent = `Valor actual: ${Math.round(saldo).toLocaleString('es-CL')} L`;
+}
+
+window.guardarSaldoManual = async function() {
+  const input = document.getElementById('saldo-manual-input');
+  const valor = parseFloat(input.value);
+  if (isNaN(valor) || valor < 0) { toast('Ingresá un valor válido', false); return; }
+  if (!confirm(`¿Ajustar el saldo del estanque a ${Math.round(valor).toLocaleString('es-CL')} L?\n\nEsto reemplaza directamente el saldo mostrado en la app — úsalo solo si el valor real (medido físicamente) no coincide con lo que calcula el sistema.\n\nEsta acción no se puede deshacer.`)) return;
+  try {
+    await setDoc(doc(db, 'estanque', 'saldo'), { litros: valor });
+    input.value = '';
+    toast(`✓ Saldo del estanque ajustado a ${Math.round(valor).toLocaleString('es-CL')} L`, true);
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
 window.guardarModoESP32 = async function(valor) {
   modoESP32 = valor;
   try {
@@ -4140,7 +4163,7 @@ window.setTab = function(id,el) {
   document.getElementById('tc-'+id).classList.add('active');
   if(el)el.classList.add('active');
   if(['historial','admin','analytics','informes','eficiencia'].includes(id)) loadHistorial();
-  if(id==='config') { renderConfigListas(); renderPanelAperos(); renderPanelEquipoOperador(); renderPanelPresetsOperador(); renderPanelHorario(); renderPanelMantencionesConfig(); renderPanelParametros(); renderPanelCorreccionHorometro(); renderPanelTotalizadorManual(); renderPanelRecalculoOpcion(); renderLimpiezaEquiposSelector(); renderRecalcEquiposSelector(); if(isAdmin) cargarPines(); actualizarToggleESP32(); }
+  if(id==='config') { renderConfigListas(); renderPanelAperos(); renderPanelEquipoOperador(); renderPanelPresetsOperador(); renderPanelHorario(); renderPanelMantencionesConfig(); renderPanelParametros(); renderPanelCorreccionHorometro(); renderPanelTotalizadorManual(); renderPanelSaldoManual(); renderPanelRecalculoOpcion(); renderLimpiezaEquiposSelector(); renderRecalcEquiposSelector(); if(isAdmin) cargarPines(); actualizarToggleESP32(); }
   if(id==='mantencion') { initMantencion(); }
   if(id==='registro' && isAdmin) escucharSolicitudesAdmin();
 }
@@ -5264,6 +5287,15 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         <div style="display:flex;gap:8px">
           <input type="number" id="totalizador-manual-input" min="0" step="1" placeholder="Nuevo valor, ej: 623930" style="flex:1;min-width:0">
           <button class="btn btn-verde" onclick="guardarTotalizadorManual()" style="white-space:nowrap;width:auto;flex-shrink:0">Aplicar</button>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-title">⛽ Ajustar saldo del estanque</div>
+        <p class="hint" style="margin-bottom:12px">Escribe el valor REAL (medido físicamente) si el saldo que calcula la app no coincide — por ejemplo si quedó en 0 pero en realidad queda combustible, o al revés. Reemplaza directamente el saldo mostrado, sin necesidad de simular una carga o cisterna falsa para cuadrarlo.</p>
+        <div id="saldo-actual-info" style="font-size:13px;color:var(--acero);margin-bottom:10px">Cargando...</div>
+        <div style="display:flex;gap:8px">
+          <input type="number" id="saldo-manual-input" min="0" step="1" placeholder="Litros reales, ej: 500" style="flex:1;min-width:0">
+          <button class="btn btn-verde" onclick="guardarSaldoManual()" style="white-space:nowrap;width:auto;flex-shrink:0">Aplicar</button>
         </div>
       </div>
       <div class="panel">
