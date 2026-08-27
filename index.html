@@ -96,11 +96,6 @@ async function controlarBombaShelly(encender) {
 }
 
 // ─── ESTADO DE CONEXIÓN DEL SHELLY DE LA BOMBA ──────────────
-// A diferencia de los Shelly de horómetro (que avisan solos vía Firestore),
-// el Shelly de la bomba no tiene script propio — se controla directo desde
-// Shelly Cloud. Por eso, para saber si está online, hay que CONSULTARLE a
-// Shelly Cloud (vía la Netlify Function shelly-status.js), en vez de esperar
-// un aviso. Se revisa cada 20 seg mientras la app esté abierta.
 let bombaShellyOnline = null; // null = todavía no se sabe / no se pudo consultar
 
 async function consultarEstadoBombaShelly() {
@@ -142,9 +137,6 @@ const JD_TOKEN_URL = 'https://signin.johndeere.com/oauth2/aus78tnlaysMraFhC1t7/v
 const JD_API_BASE = 'https://partnerapi.deere.com/platform';
 const JD_SCOPES = 'ag1 ag2 ag3 eq1 eq2 org1 org2 offline_access openid email profile';
 
-// FUENTE DEL HORÓMETRO por equipo: 'manual' | 'shelly' | 'jdlink' — editable
-// desde Configurar con un solo selector de 3 estados por equipo (reemplaza al
-// viejo interruptor binario de JDLink + detección implícita del Shelly).
 const EQUIPOS_JDLINK_DEFAULT = ['JD 6170J', 'JD 6910', 'JD 5090']; // semilla, solo para la migración
 const EQUIPOS_SHELLY_DEFAULT = ['Clinton', 'Kubota 2320']; // semilla, solo para la migración
 let fuenteHorometroConfig = {}; // se carga desde Firestore (config.datos.fuenteHorometro)
@@ -169,9 +161,6 @@ let jdExpireAt = 0;
 let jdOrganizationId = null;
 let jdMachinesLink = null;
 
-// El token de JDLink se guarda en Firestore (no en localStorage) para que
-// cualquier dispositivo (celular, PC, etc.) comparta la misma conexión una vez
-// que el admin se loguea una sola vez desde cualquiera de ellos.
 async function cargarConfigJD() {
   try {
     const snap = await getDoc(doc(db, 'config', 'jdlink'));
@@ -192,9 +181,6 @@ async function guardarConfigJD(campos) {
 }
 
 async function generatePKCE() {
-  // Se generan 64 bytes aleatorios (en vez de 32) para garantizar que, incluso después
-  // de quitar caracteres no alfanuméricos del base64, el resultado siempre supere
-  // los 43 caracteres mínimos que exige el estándar PKCE. Antes a veces quedaba corto.
   const verifier = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(64)))).replace(/[^a-zA-Z0-9]/g,'').slice(0,128);
   const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
   const challenge = btoa(String.fromCharCode(...new Uint8Array(hash))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
@@ -264,7 +250,6 @@ async function renovarTokenJD() {
 
 async function getTokenValido() {
   if (!jdAccessToken) return null;
-  // Si faltan menos de 5 minutos para expirar, renovar
   if (Date.now() > jdExpireAt - 5 * 60 * 1000) {
     const ok = await renovarTokenJD();
     if (!ok) return null;
@@ -272,11 +257,6 @@ async function getTokenValido() {
   return jdAccessToken;
 }
 
-// Llama SIEMPRE a través del proxy jd-api.js (Netlify Function), nunca directo
-// desde el navegador a partnerapi.deere.com — evita problemas de CORS y permite
-// aplicar ahí las correcciones de endpoint (ej. /machines -> /equipment).
-// 'endpointOrUrl' puede ser una ruta relativa ("/organizations") o una URL
-// completa (la que viene en los "links" de una respuesta anterior de JD).
 async function callJDApi(endpointOrUrl) {
   const token = await getTokenValido();
   if (!token) return { status: 401, data: null };
@@ -303,9 +283,6 @@ async function cargarOrganizacionJD() {
   const orgs = data.values || [];
   if (orgs.length > 0) {
     jdOrganizationId = orgs[0].id;
-    // La API real usa un host y ruta distintos a los que asumíamos (api.deere.com/isg/equipment,
-    // no partnerapi.deere.com/platform/.../equipment) — por eso seguimos el link "machines" tal
-    // cual lo entrega la organización, en vez de construir la URL manualmente.
     const machinesLink = (orgs[0].links || []).find(l => l.rel === 'machines');
     if (machinesLink) {
       jdMachinesLink = machinesLink.uri;
@@ -314,8 +291,6 @@ async function cargarOrganizacionJD() {
     }
     await guardarConfigJD({ orgId: jdOrganizationId, machinesLink: jdMachinesLink });
   }
-  // Diagnóstico: si /fleet trae un link "connections" pendiente, la app todavía
-  // no tiene el permiso de esa organización aceptado del todo (causa típica de 403).
   try {
     const fleet = await callJDApi('/fleet');
     const linkConexion = fleet.data?.links?.find(l => (l.rel||'').toLowerCase().includes('connections'));
@@ -353,7 +328,6 @@ window.obtenerHorasJDLink = async function() {
     }
     const equipos = data.values || [];
 
-    // Buscar máquina por nombre aproximado (comparando solo dígitos, ej "6170" en "JD 6170J")
     const eqNum = eq.replace(/[^0-9]/g,'');
     const machine = equipos.find(m => {
       const nombre = (m.name || m.equipmentName || m.displayName || '').replace(/[^0-9]/g,'');
@@ -367,23 +341,14 @@ window.obtenerHorasJDLink = async function() {
       return;
     }
 
-    // IMPORTANTE: mostramos el objeto completo en consola — la API de JD es hipermedia,
-    // así que el link exacto para las horas puede variar. Si esto sigue sin funcionar,
-    // hay que revisar aquí qué "rel" trae el link correcto y ajustar el buscador de abajo.
     console.log('JD equipo encontrado, objeto completo:', machine);
 
-    // Endpoint oficial confirmado en developer.deere.com: GET /machines/{principalId}/engineHours
-    // (usa "machines", no "equipment"; y corre sobre partnerapi.deere.com/platform, que ya
-    // funciona bien para /organizations)
     const linkHoras = (machine.links || []).find(l => /hour/i.test(l.rel || ''));
     let statusHrs, dataHrs;
 
     if (linkHoras) {
       ({ status: statusHrs, data: dataHrs } = await callJDApi(linkHoras.uri));
     } else {
-      // Soporte de John Deere confirmó: el endpoint requiere el "Principal Equipment Id",
-      // que es DISTINTO tanto del "id" (sistema isg/equipment) como del ERID. Este
-      // principalId viene embebido en organizationRole.
       const principalId = machine.organizationRole?.principalId || machine.principalId || machine.id;
       const endpointEngineHours = `/machines/${principalId}/engineHours`;
       console.log('JD intentando endpoint oficial de horas con ID:', principalId, '->', endpointEngineHours);
@@ -422,29 +387,15 @@ let esp32BaselineLitros = null;
 function iniciarLecturaESP32() {
   if (!modoESP32) return;
   if (unsubESP32) { unsubESP32(); unsubESP32 = null; }
-  esp32BaselineLitros = null; // se fija con la primera lectura que llegue tras encender la bomba
+  esp32BaselineLitros = null;
   const esp32Info = document.getElementById('esp32-info');
   if (esp32Info) { esp32Info.style.display = 'block'; esp32Info.innerHTML = '<span style="color:#F5A623;font-size:12px">📡 Conectando caudalímetro...</span>'; }
   unsubESP32 = onSnapshot(doc(db, 'esp32_test', 'lectura_actual'), snap => {
     if (!snap.exists()) return;
     const data = snap.data();
-    // "litrosActual" es el conteo TOTAL ACUMULADO en vivo basado en pulsos del Piusi
-    // (pulsos / 33.5), no algo que empiece en 0 en cada carga. El campo viejo "litros"
-    // queda de una versión anterior del sketch y no se actualiza más.
-    // Preferimos calcular los litros nosotros mismos a partir de "pulsos" usando la
-    // calibración editable (pulsosPorLitro, ajustable en Configurar sin tocar el ESP32).
-    // Si por algún motivo no llegan pulsos, usamos como respaldo lo que el propio
-    // dispositivo haya calculado con su constante interna fija.
     const litrosAcumulado = data.pulsos != null ? (data.pulsos / pulsosPorLitro) : (data.litrosActual ?? data.litros ?? 0);
-    // Tomamos como referencia el primer valor que llega al encender la bomba, y mostramos
-    // solo la diferencia — así esta carga siempre arranca en 0 L, sin arrastrar el
-    // acumulado histórico del ESP32.
     if (esp32BaselineLitros === null) esp32BaselineLitros = litrosAcumulado;
     const litros = Math.max(0, litrosAcumulado - esp32BaselineLitros);
-    // El campo "ts" que envía el ESP32 es su millis() interno (tiempo desde que encendió),
-    // no una fecha real — no sirve para calcular "hace cuánto" contra Date.now(). Como este
-    // callback se dispara en tiempo real apenas cambia el documento, el dato mostrado
-    // siempre corresponde a la lectura más reciente.
     const litrosInput = document.getElementById('litros');
     if (litrosInput) { litrosInput.value = litros.toFixed(1); litrosFuenteActual = 'esp32'; calcularEficiencia(); }
     if (esp32Info) esp32Info.innerHTML = `<span style="color:#2D7D46;font-size:12px">📡 ESP32: <strong>${litros.toFixed(1)} L</strong> · ${data.pulsos != null ? data.pulsos + ' pulsos · ' : ''}en vivo</span>`;
@@ -457,7 +408,7 @@ function detenerLecturaESP32() {
 }
 
 function iniciarEstimacionESP32() {
-  if (modoESP32) return; // en modo automático ya se muestran los datos reales del ESP32, no hace falta estimar
+  if (modoESP32) return;
   tiempoInicioEstimacion = Date.now();
   if (intervaloEstimacion) clearInterval(intervaloEstimacion);
   const esp32Info = document.getElementById('esp32-info');
@@ -479,9 +430,6 @@ function detenerEstimacionESP32() {
 
 const PULSOS_POR_LITRO_DEFAULT = 33.5;
 let pulsosPorLitro = PULSOS_POR_LITRO_DEFAULT;
-// Fecha (ms) de la última vez que se usó "Limpiar eficiencia histórica" — le
-// permite a "Recalcular eficiencia histórica" saber a partir de dónde puede
-// tocar registros sin pisar esa limpieza intencional (ver más abajo).
 let ultimaLimpiezaEficienciaTs = null;
 
 async function cargarModoESP32() {
@@ -496,9 +444,6 @@ async function cargarModoESP32() {
   } catch(e) {}
 }
 
-// El horario permitido y las excepciones por equipo viven en config/sistema y se
-// escuchan en tiempo real: si el admin cambia algo desde Configurar, se refleja
-// de inmediato en todos los dispositivos sin necesidad de recargar la app.
 function suscribirHorarioConfig() {
   onSnapshot(doc(db, 'config', 'sistema'), snap => {
     if (!snap.exists()) return;
@@ -524,9 +469,6 @@ window.guardarCalibracionPulsos = async function() {
 const TOTALIZADOR_INICIAL = 620133;
 let totalizadorGlobal = null;
 
-// El totalizador ya no se lee/escribe a mano — es un contador único que la app
-// mantiene en Firestore (config/sistema), parte de 620.133 y va sumando los litros
-// de cada carga. Si se elimina una carga, se le resta esa misma cantidad de litros.
 async function cargarTotalizadorGlobal() {
   try {
     const snap = await getDoc(doc(db, 'config', 'sistema'));
@@ -547,12 +489,6 @@ async function guardarTotalizadorGlobal() {
   catch(e) { console.warn('Error guardando totalizador global:', e); }
 }
 
-// ─── AJUSTE MANUAL DEL TOTALIZADOR (Configurar) ─────────────
-// Permite al admin resincronizar el contador interno del totalizador cuando se
-// decide dejar de comparar contra el medidor físico Samoa (por desfase de
-// calibración acumulado, reemplazo del medidor, etc.). No mueve saldo del
-// estanque ni combustible real — solo el valor de referencia que se usa para
-// comparar cada carga siguiente.
 function renderPanelTotalizadorManual() {
   const info = document.getElementById('totalizador-actual-info');
   if (info) info.textContent = totalizadorGlobal != null ? `Valor actual: ${Math.round(totalizadorGlobal).toLocaleString('es-CL')} L` : 'Cargando...';
@@ -572,12 +508,6 @@ window.guardarTotalizadorManual = async function() {
   } catch(e) { toast('Error: ' + e.message, false); }
 }
 
-// ─── AJUSTE MANUAL DEL SALDO DEL ESTANQUE (Configurar) ──────
-// El saldo normalmente solo se mueve solo (resta al registrar una carga, suma
-// al recibir una cisterna). Este panel deja escribir el valor REAL directo,
-// para corregir desfases (ej. el sensor/cálculo quedó en 0 pero en realidad
-// queda combustible, o al revés) sin tener que simular una carga o cisterna
-// falsa para cuadrarlo.
 function renderPanelSaldoManual() {
   const info = document.getElementById('saldo-actual-info');
   if (info) info.textContent = `Valor actual: ${Math.round(saldo).toLocaleString('es-CL')} L`;
@@ -658,45 +588,29 @@ function actualizarBotonesJDLink(eq) {
     btnLogin.style.display = 'flex'; btnHoras.style.display = 'none';
   }
 }
-// El horario permitido y las excepciones por equipo ahora son editables desde
-// Configurar y se guardan en Firestore (config/sistema), con listener en tiempo
-// real para que un cambio del admin se refleje de inmediato en todos los dispositivos.
-let horarioConfig = { dias: [1,2,3,4,5], horaInicio: 8, horaFin: 18 }; // default: Lun-Vie 8:00-18:00
-let excepcionesOperadorHorario = {}; // { operador: { indefinido:true } } o { operador: { hasta: msEpoch } }
+let horarioConfig = { dias: [1,2,3,4,5], horaInicio: 8, horaFin: 18 };
+let excepcionesOperadorHorario = {};
 let excepcionHorarioActiva = false;
-let solicitudPendienteId = null;   // ID Firestore de la solicitud del operador
-let unsubSolicitud = null;          // listener en tiempo real de esa solicitud
-let unsubSolicitudesAdmin = null;   // listener de todas las solicitudes (solo admin)
+let solicitudPendienteId = null;
+let unsubSolicitud = null;
+let unsubSolicitudesAdmin = null;
 
 const EQUIPO_TIPO_DEFAULT = { 'Toyota Hilux':'km', 'Ford Ranger':'km', 'Toyota JCAZ':'km' };
-let tiposEquipo = {}; // se carga desde Firestore (config.datos.tiposEquipo) — editable desde Configurar
+let tiposEquipo = {};
 function tipoEquipo(eq) { return tiposEquipo[eq] || 'hr'; }
 
-// ─── REQUISITOS POR EQUIPO (Configurar) ─────────────────────
-// Determina si un equipo, al cargar combustible, exige seleccionar cultivo,
-// tipo de trabajo y/o apero. Editable desde Configurar. Por defecto (equipos
-// no migrados aún) los 3 quedan en true, salvo que el propio equipo sea tipo
-// "km" (vehículos), que nunca exige trabajo/apero sin importar la config.
 const EQUIPOS_SIN_TRABAJO_DEFAULT = ['Excavadora', 'Miniexcavadora LongYan', 'Generador Mitsubishi'];
 
-// ─── CULTIVO AUTOMÁTICO POR EQUIPO ──────────────────────────
-// Algunos equipos siempre trabajan para el mismo "cultivo" (centro de costo),
-// sin importar quién los use — por ejemplo un generador eléctrico. Para esos
-// casos, al elegir el equipo se fija automáticamente el cultivo (sin que el
-// usuario pueda tocarlo) y se omiten trabajo/apero, igual que "Mantención".
 const CULTIVO_AUTOMATICO_POR_EQUIPO = { 'Generador Mitsubishi': 'Energía eléctrica' };
 function cultivoAutomaticoDe(eq) {
   return CULTIVO_AUTOMATICO_POR_EQUIPO[eq] || null;
 }
 
-// A diferencia del cultivo AUTOMÁTICO (bloqueado, no se puede tocar), este es
-// solo una SUGERENCIA: al elegir uno de estos equipos se preselecciona el
-// cultivo, pero el usuario puede cambiarlo o deseleccionarlo normalmente.
 const CULTIVO_DEFAULT_POR_EQUIPO = { 'Ford Ranger': 'Desplazamiento', 'Toyota Hilux': 'Desplazamiento', 'Toyota JCAZ': 'Desplazamiento' };
 function cultivoDefaultDe(eq) {
   return CULTIVO_DEFAULT_POR_EQUIPO[eq] || null;
 }
-let requisitosEquipo = {}; // se carga desde Firestore (config.datos.requisitosEquipo)
+let requisitosEquipo = {};
 
 function construirRequisitosDesdeDefault() {
   const req = {};
@@ -717,16 +631,12 @@ function requisitosDe(eq) {
   };
 }
 
-// TRABAJOS_GENERAL/TRABAJOS_AVELLANOS son solo la SEMILLA usada una única vez
-// para migrar a Firestore (config.datos.trabajos). Desde ahí en adelante, la
-// lista real y editable vive en `trabajosConfig`, administrable desde Configurar.
 const TRABAJOS_GENERAL = ['Incorporación','Preparación suelo siembra','Siembra','Fertilización','Fumigación','Riego','Cosecha','Otro (especificar)'];
 const TRABAJOS_AVELLANOS = ['Preparación suelo pre plantación','Plantación','Postcosecha','Nebulizador','Fumigación','Sierpes','Fertilización','Cosecha','Otro (especificar)'];
-let trabajosConfig = []; // se carga desde Firestore (config.datos.trabajos)
+let trabajosConfig = [];
 
 const OTRO = 'Otro (especificar)';
 
-// Aperos por trabajo de Avellanos. Cada apero puede tener restricción de tractor (array de equipos permitidos) o null (sin restricción)
 const APEROS_AVELLANOS = {
   'Preparación suelo pre plantación': {
     tractores: ['JD 8330','JD 7205J','JD 6170J','JD 6910','JD 3350'],
@@ -746,7 +656,7 @@ const APEROS_AVELLANOS = {
   },
   'Fumigación': {
     tractores: ['JD 5600','Kubota 2320'],
-    aperos: null, // automático según tractor, ver APERO_AUTOMATICO
+    aperos: null,
   },
   'Sierpes': {
     tractores: ['JD 5600','Kubota 2320'],
@@ -754,7 +664,7 @@ const APEROS_AVELLANOS = {
   },
   'Cosecha': {
     tractores: ['JD 5090','JD 5076','JD 5600','JD 3350'],
-    aperos: null, // depende del tractor, ver APEROS_POR_TRACTOR_COSECHA
+    aperos: null,
   },
   'Otro (especificar)': {
     tractores: null,
@@ -762,10 +672,8 @@ const APEROS_AVELLANOS = {
   }
 };
 
-// Apero automático según tractor (Fumigación · Avellanos)
 const APERO_AUTOMATICO_FUMIGACION = { 'JD 5600': 'Carro 1000 lts', 'Kubota 2320': 'Carro 400 lts' };
 
-// Aperos de Cosecha según tractor elegido (Avellanos)
 const APEROS_POR_TRACTOR_COSECHA = {
   'JD 5090': ['Cimina 380',OTRO],
   'JD 5076': ['Cimina 380',OTRO],
@@ -773,12 +681,11 @@ const APEROS_POR_TRACTOR_COSECHA = {
   'JD 3350': ['Acarreo',OTRO]
 };
 
-// ─── APEROS · CULTIVOS GENERALES ────────────────────────────
 const TRACTORES_INCORPORACION = ['JD 8330','JD 7205J','JD 6170J','JD 6910','JD 3350','JD 2850'];
 const APEROS_GENERAL = {
   'Incorporación': {
     tractores: TRACTORES_INCORPORACION,
-    aperos: null // mixto: algunos aperos tienen su propio sub-filtro de tractor
+    aperos: null
   },
   'Preparación suelo siembra': {
     tractores: ['JD 8330','JD 7205J','JD 6170J','JD 6910','JD 3350','JD 2850'],
@@ -798,7 +705,7 @@ const APEROS_GENERAL = {
   },
   'Riego': {
     tractores: null,
-    aperos: 'LIBRE' // texto libre, sin lista predefinida
+    aperos: 'LIBRE'
   },
   'Cosecha': {
     tractores: ['JD 6910','JD 6170J','JD 7205J'],
@@ -810,7 +717,6 @@ const APEROS_GENERAL = {
   }
 };
 
-// Cada apero de cultivos generales con su propio filtro de tractor específico (sub-nivel)
 const APEROS_GENERAL_DETALLE = {
   'Incorporación': [
     { nombre: 'UFO', tractores: ['JD 8330','JD 7205J','JD 6170J'] },
@@ -862,21 +768,12 @@ const APEROS_GENERAL_DETALLE = {
   ]
 };
 
-// ─── APEROS EDITABLES (Configurar) ──────────────────────────
-// Se cargan desde Firestore (config.datos.aperos) y reemplazan, para la selección
-// en pantalla, a las listas hardcodeadas de arriba. Cada apero: { nombre, trabajos, equipos }
-// trabajos/equipos vacíos ([]) significa "sin restricción" (aplica a todos).
 let aperosConfig = [];
 
-// Migración única: la primera vez que corre esta versión, arma la lista editable
-// de aperos a partir de las listas hardcodeadas históricas (APEROS_AVELLANOS,
-// APEROS_GENERAL_DETALLE, etc.), sin restringir por equipo (equipos: []) para no
-// alterar el comportamiento actual — la restricción por equipo queda como algo que
-// el admin agrega desde ahora en adelante, desde Configurar.
 function construirAperosDesdeHardcode() {
-  const trabajosPorApero = {}; // nombre → Set(trabajos)
+  const trabajosPorApero = {};
   function addApero(nombre, trabajo) {
-    if (!nombre || nombre === OTRO) return; // "Otro (especificar)" siempre disponible, no se administra
+    if (!nombre || nombre === OTRO) return;
     if (!trabajosPorApero[nombre]) trabajosPorApero[nombre] = new Set();
     trabajosPorApero[nombre].add(trabajo);
   }
@@ -892,7 +789,7 @@ function construirAperosDesdeHardcode() {
 }
 
 const DEFAULT_CONFIG = {
-  equipos: ['JD 8330','JD 7205J','JD 6170J','JD 6910','JD 3350 T','JD 3350','JD 2850','JD 5600','JD 5090','JD 5076','Kubota 2320','Clinton','Bobcat','Miniexcavadora LongYan','Excavadora','Toyota Hilux','Ford Ranger','Toyota JCAZ','Otro (especificar)'],
+  equipos: ['JD 8330','JD 7205J','JD 6170J','JD 6910','JD 5082E','JD 3350 T','JD 3350','JD 2850','JD 5600','JD 5090','JD 5076','Kubota 2320','Clinton','Bobcat','Miniexcavadora LongYan','Excavadora','Toyota Hilux','Ford Ranger','Toyota JCAZ','Generador Mitsubishi','Generador John Deere','Estanque amarillo','Otro (especificar)'],
   operadores: ['José Jarpa','Víctor Rodríguez','Cristian Cádiz','Rafael Riquelme','Patricio Cádiz','Edgardo Ruíz','Matías Jarpa','Israel','Luis Alberto','Eduardo Faundez','JC Allende','Camila Faundez','Juan Uribe','JCAZ','Otros (especificar)'],
   centros: ['Trigo','Maíz','Semillero Canola','Arveja','Achicoria','Remolacha','Avellanos','Mantención','Otros (especificar)']
 };
@@ -911,13 +808,54 @@ let centrosSeleccionados = [];
 let trabajoSeleccionado = null;
 let aperoSeleccionado = null;
 let aperoObsTexto = '';
-let centroObsTexto = ''; // detalle de texto libre cuando el cultivo es "Otros (especificar)"
-// De dónde vino el valor actual de cada campo — se usa para mostrar el ícono
-// de origen en el historial (Manual / Shelly / JDLink / ESP32). Si el
-// operador escribe directo sobre el campo (aunque venga precargado
-// automático), el oninput de cada input lo marca "manual" de inmediato.
-let medidorFuenteActual = 'manual'; // 'manual' | 'shelly' | 'jdlink'
-let litrosFuenteActual = 'manual';  // 'manual' | 'esp32'
+let centroObsTexto = '';
+let medidorFuenteActual = 'manual';
+let litrosFuenteActual = 'manual';
+
+// ─── RAZÓN SOCIAL (Los Maitenes / JCAR / Ambos) ─────────────
+// JC trabaja con 2 razones sociales: Agrícola Los Maitenes (predeterminada,
+// funciona exactamente igual que siempre) y su razón social personal "JCAR".
+// El selector es puramente informativo/contable: NO filtra equipos, labores
+// ni aperos — todos ven exactamente las mismas opciones sin importar cuál
+// elijan. Lo único que cambia es a quién se le atribuye el gasto.
+// El saldo del estanque y el totalizador se descuentan igual siempre, sin
+// importar la razón social (el combustible físico es el mismo estanque).
+// Para el Análisis y los Informes (que reportan el consumo de Los Maitenes),
+// una carga "jcar" se excluye por completo y una carga "ambos" cuenta al 50%
+// — el otro 50% (o el 100% si fue "jcar") queda pendiente de reintegro físico
+// al estanque, visible solo para el admin en Configurar.
+let razonSocialSeleccionada = 'maitenes'; // 'maitenes' | 'jcar' | 'ambos'
+
+// Devuelve qué proporción de una carga corresponde a Los Maitenes para efectos
+// de Análisis/Informes: maitenes=100%, ambos=50%, jcar=0%. Los registros de
+// antes de este cambio no tienen el campo — se tratan como "maitenes" (100%),
+// ya que antes de esto todo el consumo era de Los Maitenes.
+function factorMaitenes(r) {
+  const rs = r.razon_social || 'maitenes';
+  return rs === 'jcar' ? 0 : rs === 'ambos' ? 0.5 : 1;
+}
+// Complemento: qué proporción de una carga corresponde a JCAR (para el panel
+// de reintegro) — jcar=100%, ambos=50%, maitenes=0%.
+function factorJCAR(r) {
+  const rs = r.razon_social || 'maitenes';
+  return rs === 'jcar' ? 1 : rs === 'ambos' ? 0.5 : 0;
+}
+
+window.seleccionarRazonSocial = function(rs) {
+  razonSocialSeleccionada = rs;
+  renderRazonSocialSelector();
+}
+
+function renderRazonSocialSelector() {
+  const wrap = document.getElementById('razon-social-selector');
+  if (!wrap) return;
+  const opciones = [
+    { val: 'maitenes', label: '🌳 Los Maitenes' },
+    { val: 'jcar', label: '🏢 JCAR' },
+    { val: 'ambos', label: '🤝 Ambos' }
+  ];
+  wrap.innerHTML = opciones.map(o => `<div class="cultivo-chip ${razonSocialSeleccionada===o.val?'sel':''}" onclick="seleccionarRazonSocial('${o.val}')">${o.label}</div>`).join('');
+}
 
 
 window.addEventListener('DOMContentLoaded', async () => {
@@ -989,44 +927,78 @@ async function loadConfig() {
         config.equipos[idxVarios] = 'Otro (especificar)';
         await setDoc(doc(db, 'config', 'datos'), config);
       }
+      // Migración automática (26 ago 2026): renombrar "5082 E" a "JD 5082E" y
+      // reubicarlo justo después de "JD 6910" en el listado — mantiene todas
+      // sus configuraciones asociadas (tipo de medidor, requisitos, fuente de
+      // horómetro, asignación a operadores, restricciones de aperos) bajo el
+      // nombre nuevo, para no perder nada al renombrar.
+      {
+        const idxViejo = config.equipos.indexOf('5082 E');
+        if (idxViejo >= 0) {
+          config.equipos.splice(idxViejo, 1);
+          const idx6910 = config.equipos.indexOf('JD 6910');
+          const posInsercion = idx6910 >= 0 ? idx6910 + 1 : config.equipos.length;
+          config.equipos.splice(posInsercion, 0, 'JD 5082E');
+          if (config.tiposEquipo && config.tiposEquipo['5082 E'] != null) {
+            config.tiposEquipo['JD 5082E'] = config.tiposEquipo['5082 E'];
+            delete config.tiposEquipo['5082 E'];
+          }
+          if (config.requisitosEquipo && config.requisitosEquipo['5082 E']) {
+            config.requisitosEquipo['JD 5082E'] = config.requisitosEquipo['5082 E'];
+            delete config.requisitosEquipo['5082 E'];
+          }
+          if (config.fuenteHorometro && config.fuenteHorometro['5082 E'] != null) {
+            config.fuenteHorometro['JD 5082E'] = config.fuenteHorometro['5082 E'];
+            delete config.fuenteHorometro['5082 E'];
+          }
+          if (config.equipoOperador) {
+            Object.keys(config.equipoOperador).forEach(op => {
+              const lista = (Array.isArray(config.equipoOperador[op]) ? config.equipoOperador[op] : [config.equipoOperador[op]]).map(e => e === '5082 E' ? 'JD 5082E' : e);
+              config.equipoOperador[op] = lista;
+            });
+          }
+          if (Array.isArray(config.aperos)) {
+            config.aperos.forEach(a => {
+              if (Array.isArray(a.equipos)) {
+                const i = a.equipos.indexOf('5082 E');
+                if (i >= 0) a.equipos[i] = 'JD 5082E';
+              }
+            });
+          }
+          await setDoc(doc(db, 'config', 'datos'), config);
+        }
+      }
       // Migración automática: tipo km/hr de cada equipo, ahora editable desde Configurar
-      // (antes vivía hardcodeado en el código, en EQUIPO_TIPO_DEFAULT)
       if (!config.tiposEquipo) {
         config.tiposEquipo = { ...EQUIPO_TIPO_DEFAULT };
         await setDoc(doc(db, 'config', 'datos'), config);
       }
       // Migración automática: aperos, ahora editables y asignables a equipos desde Configurar
-      // (antes vivían hardcodeados en APEROS_AVELLANOS / APEROS_GENERAL_DETALLE)
       if (!config.aperos) {
         config.aperos = construirAperosDesdeHardcode();
         await setDoc(doc(db, 'config', 'datos'), config);
       }
       // Migración automática: requisitos por equipo (cultivo/trabajo/apero),
-      // ahora editables desde Configurar en vez de estar implícitos en el código
       if (!config.requisitosEquipo) {
         config.requisitosEquipo = construirRequisitosDesdeDefault();
         await setDoc(doc(db, 'config', 'datos'), config);
       }
-      // Migración automática: equipo(s) principal(es) por operador, ahora
-      // editable desde Configurar (antes vivía hardcodeado en EQUIPO_OPERADOR)
+      // Migración automática: equipo(s) principal(es) por operador
       if (!config.equipoOperador) {
         config.equipoOperador = { ...EQUIPO_OPERADOR };
         await setDoc(doc(db, 'config', 'datos'), config);
       }
       // Migración automática: tipos de trabajo, ahora editables desde Configurar
-      // (antes vivían hardcodeados en TRABAJOS_GENERAL / TRABAJOS_AVELLANOS)
       if (!config.trabajos) {
         config.trabajos = [...new Set([...TRABAJOS_GENERAL, ...TRABAJOS_AVELLANOS])];
         await setDoc(doc(db, 'config', 'datos'), config);
       }
-      // Migración automática: catálogo de mantenciones, ahora editable desde
-      // Configurar (antes vivía hardcodeado en MANT_POR_HORAS / MANT_ANUAL / MANT_SIN_FRECUENCIA)
+      // Migración automática: catálogo de mantenciones
       if (!config.mantenciones) {
         config.mantenciones = construirMantencionesDesdeHardcode();
         await setDoc(doc(db, 'config', 'datos'), config);
       }
       // Migración automática: intervalosPorEquipo en cada tipo de mantención
-      // (permite fijar un intervalo distinto al general para un equipo puntual)
       if (config.mantenciones.some(m => !m.intervalosPorEquipo)) {
         config.mantenciones = config.mantenciones.map(m => ({ ...m, intervalosPorEquipo: m.intervalosPorEquipo || {} }));
         await setDoc(doc(db, 'config', 'datos'), config);
@@ -1035,21 +1007,17 @@ async function loadConfig() {
         config.alertaHrsAntes = ALERTA_HRS_ANTES_DEFAULT;
         await setDoc(doc(db, 'config', 'datos'), config);
       }
-      // Migración automática: parámetros del sistema (capacidad estanque, alerta
-      // stock bajo, margen totalizador), ahora editables desde Configurar
+      // Migración automática: parámetros del sistema
       if (!config.parametros) {
         config.parametros = { capacidad: CAPACIDAD_DEFAULT, alertaLitros: ALERTA_LITROS_DEFAULT, margenTotalizador: MARGEN_TOTALIZADOR_DEFAULT };
         await setDoc(doc(db, 'config', 'datos'), config);
       }
-      // Migración automática: fuente del horómetro por equipo (manual/shelly/
-      // jdlink), ahora un solo selector editable desde Configurar (antes era
-      // un interruptor de JDLink + detección implícita del Shelly)
+      // Migración automática: fuente del horómetro por equipo
       if (!config.fuenteHorometro) {
         config.fuenteHorometro = construirFuenteHorometroDesdeDefault();
         await setDoc(doc(db, 'config', 'datos'), config);
       }
-      // Migración automática: preset de cultivo/trabajo/apero por operador,
-      // ahora editable desde Configurar (antes solo existía para JCAZ, hardcodeado)
+      // Migración automática: preset de cultivo/trabajo/apero por operador
       if (!config.presetsOperador) {
         config.presetsOperador = { 'JCAZ': { cultivos: ['Mantención'], trabajo: null, apero: null, aperoObsTexto: '', activo: true } };
         await setDoc(doc(db, 'config', 'datos'), config);
@@ -1123,19 +1091,12 @@ function renderSaldo() {
   document.querySelectorAll('.saldo-widget').forEach(el => el.innerHTML = html);
 }
 
-// ─── ESTADO DE CONEXIÓN DEL ESP32 (caudalímetro) ────────────
-// El ESP32 escribe a Firestore cada 2 seg de forma constante, sin importar si
-// hay flujo o no. En vez de confiar en la hora que el propio ESP32 reporta
-// (poco confiable si su NTP no sincronizó), usamos el reloj del NAVEGADOR:
-// cada vez que llega un cambio nuevo del documento, anotamos "ahora" (Date.now()
-// del navegador, siempre correcto) — así "conectado o no" no depende para nada
-// de si el reloj del dispositivo está bien puesto.
 let esp32UltimaRecepcionMs = null;
 let unsubEstadoESP32 = null;
 let esp32UltimoIntentoReconexionMs = 0;
-const ESP32_UMBRAL_CONECTADO_SEG = 20; // escribe cada 2 seg, pero además hace otra llamada HTTP por vuelta de loop que a veces demora — 20 seg da margen para eso sin parpadear en falso
-const ESP32_UMBRAL_RECONECTAR_SEG = 30; // si lleva más de esto sin recibir nada, probablemente el canal en tiempo real de ESTA pestaña se quedó pegado (no el ESP32) — forzamos reconectarlo solo
-const ESP32_COOLDOWN_RECONEXION_MS = 25000; // no reintentar más seguido que esto, para no generar reconexiones en cadena
+const ESP32_UMBRAL_CONECTADO_SEG = 20;
+const ESP32_UMBRAL_RECONECTAR_SEG = 30;
+const ESP32_COOLDOWN_RECONEXION_MS = 25000;
 
 function suscribirEstadoESP32() {
   if (unsubEstadoESP32) { unsubEstadoESP32(); unsubEstadoESP32 = null; }
@@ -1147,8 +1108,6 @@ function suscribirEstadoESP32() {
 
 function iniciarEstadoESP32() {
   suscribirEstadoESP32();
-  // Refresca el texto "hace cuánto" cada 5 seg aunque no lleguen datos nuevos,
-  // y de paso revisa si conviene reconectar el listener
   setInterval(renderEstadoESP32, 5000);
 }
 
@@ -1160,10 +1119,6 @@ function renderEstadoESP32() {
     html = '<span style="color:#9CA3AF;font-size:12px">⚪ Sin datos del caudalímetro todavía</span>';
   } else {
     const segTranscurridos = Math.floor((Date.now() - esp32UltimaRecepcionMs) / 1000);
-    // Si lleva mucho rato "desconectado" según esta pestaña, probablemente el
-    // canal en tiempo real se quedó pegado — reconectamos solo, sin que el
-    // usuario tenga que refrescar la página a mano (con un margen entre
-    // reintentos para no generar reconexiones en cadena)
     if (segTranscurridos > ESP32_UMBRAL_RECONECTAR_SEG && (Date.now() - esp32UltimoIntentoReconexionMs) > ESP32_COOLDOWN_RECONEXION_MS) {
       esp32UltimoIntentoReconexionMs = Date.now();
       suscribirEstadoESP32();
@@ -1203,7 +1158,6 @@ window.intentarLogin = async function() {
   excepcionHorarioActiva = false;
   solicitudPendienteId = null;
   if (unsubSolicitud) { unsubSolicitud(); unsubSolicitud = null; }
-  // Resetear mensaje del aviso horario
   const msgAviso = document.getElementById('estado-solicitud-msg');
   if (msgAviso) msgAviso.textContent = `⛔ Fuera de horario (${textoHorarioPermitido()})`;
   initRegistro(); showScreen('app'); setTab('registro', document.querySelector('.tab'));
@@ -1244,7 +1198,7 @@ window.guardarPin = async function() {
 // ─── CONTROL BOMBA (ESP32 vía Firestore — reemplaza a Tuya/Tongou) ────────
 function dentroDeHorarioPermitido() {
   const ahora = new Date();
-  const dia = ahora.getDay(); // 0=Domingo, 1=Lunes... 6=Sábado
+  const dia = ahora.getDay();
   const hora = ahora.getHours() + ahora.getMinutes() / 60;
   const dias = horarioConfig.dias || [1,2,3,4,5];
   const diaOk = dias.includes(dia);
@@ -1252,10 +1206,6 @@ function dentroDeHorarioPermitido() {
   return diaOk && horaOk;
 }
 
-// Un operador puede quedar habilitado sin restricción de horario, ya sea de
-// forma indefinida o hasta una fecha/hora límite (configurable desde Configurar).
-// La excepción sigue al operador, no al equipo — si el operador cambia de
-// máquina, la excepción se mantiene igual.
 function operadorExcepcionActiva(operador) {
   const exc = excepcionesOperadorHorario[operador];
   if (!exc) return false;
@@ -1275,7 +1225,6 @@ function textoHorarioPermitido() {
 function actualizarVisibilidadHorario() {
   const aviso = document.getElementById('aviso-fuera-horario');
   if (!aviso) return;
-  // Admin nunca ve el aviso — puede cargar siempre
   if (isAdmin) { aviso.style.display = 'none'; validarPaso1(); return; }
   const fueraHorario = !dentroDeHorarioPermitido() && !excepcionHorarioActiva && !operadorExcepcionActiva(currentUser);
   aviso.style.display = fueraHorario ? 'flex' : 'none';
@@ -1285,7 +1234,6 @@ function actualizarVisibilidadHorario() {
   validarPaso1();
 }
 
-// Solo para admin: autorizar directamente desde su propia sesión
 window.autorizarExcepcion = function() {
   if (!isAdmin) return;
   excepcionHorarioActiva = true;
@@ -1293,7 +1241,6 @@ window.autorizarExcepcion = function() {
   actualizarVisibilidadHorario();
 }
 
-// Operador: crear solicitud en Firestore y escuchar respuesta
 window.solicitarAutorizacion = async function() {
   if (solicitudPendienteId) { toast('Ya hay una solicitud enviada, espera la respuesta', false); return; }
   const btn = document.getElementById('btn-solicitar');
@@ -1304,14 +1251,12 @@ window.solicitarAutorizacion = async function() {
       operador: currentUser,
       equipo: document.getElementById('equipo').value || '—',
       fecha, hora,
-      estado: 'pendiente', // 'pendiente' | 'autorizado' | 'rechazado'
+      estado: 'pendiente',
       ts: Date.now()
     });
     solicitudPendienteId = ref.id;
-    // Notificar al admin por WhatsApp
     const eq = document.getElementById('equipo').value || '—';
     enviarAlertaWsp(`🔔 *SOLICITUD COMBUSTIBLE FUERA HORARIO*\n\nOperador: *${currentUser}*\nEquipo: *${eq}*\nFecha/Hora: ${fecha} ${hora}\n\nAbrí la app para autorizar o rechazar.`);
-    // Escuchar en tiempo real la respuesta
     escucharSolicitud(ref.id);
     actualizarAvisoSolicitud('pendiente');
     toast('✓ Solicitud enviada al administrador', true);
@@ -1358,15 +1303,13 @@ function actualizarAvisoSolicitud(estado) {
   }
 }
 
-// Admin: escuchar todas las solicitudes pendientes
 function escucharSolicitudesAdmin() {
   if (!isAdmin) return;
   if (unsubSolicitudesAdmin) unsubSolicitudesAdmin();
-  // Sin orderBy para evitar requerir índice compuesto
   const q = query(collection(db, 'solicitudes_horario'), where('estado', '==', 'pendiente'));
   unsubSolicitudesAdmin = onSnapshot(q, snap => {
     const solicitudes = snap.docs.map(d => ({ id: d.id, ...d.data() }))
-      .sort((a, b) => a.ts - b.ts); // ordenar en cliente
+      .sort((a, b) => a.ts - b.ts);
     renderPanelSolicitudes(solicitudes);
   });
 }
@@ -1423,7 +1366,6 @@ window.confirmarPaso1YEncender = async function() {
   const btn = document.getElementById('btn-bomba-on');
   btn.disabled = true; btn.textContent = 'Encendiendo...';
   try {
-    // Encender el relé Shelly "Petróleo" a través de la Netlify Function (evita CORS)
     const encendioOk = await controlarBombaShelly(true);
     if (!encendioOk) {
       toast('⚠️ No se pudo encender la bomba (Shelly no respondió OK). Verificar conexión.', false);
@@ -1446,7 +1388,6 @@ window.confirmarPaso1YEncender = async function() {
 }
 
 async function apagarBomba() {
-  // Apagar el relé Shelly "Petróleo" directo vía Shelly Cloud (reemplaza a Tuya)
   return await controlarBombaShelly(false);
 }
 
@@ -1486,6 +1427,9 @@ function initRegistro() {
   const { fecha, hora } = getNow();
   document.getElementById('fecha-display').textContent = fecha;
   document.getElementById('hora-display').textContent = hora;
+  // Reset de razón social al valor por defecto en cada ingreso a Registrar
+  razonSocialSeleccionada = 'maitenes';
+  renderRazonSocialSelector();
   const opField = document.getElementById('operador-field');
   if (isAdmin) {
     opField.style.display = 'block';
@@ -1493,8 +1437,6 @@ function initRegistro() {
     document.getElementById('operador-select').value = ADMIN_NOMBRE;
   } else { opField.style.display = 'none'; }
   populateSelect('equipo', config.equipos, 'Seleccionar equipo');
-  // Pre-seleccionar equipo(s) asignado(s) — un operador puede tener 1 o 2+ equipos
-  // principales; si tiene más de uno, se muestran como chips para elegir rápido
   const equiposAsignados = equiposDe(currentUser);
   if (equiposAsignados.length > 0 && !isAdmin) {
     if (equiposAsignados.length === 1) {
@@ -1529,7 +1471,6 @@ function initRegistro() {
     document.getElementById('equipo-multi-wrap').style.display = 'none';
     document.getElementById('equipo-selector').style.display = 'block';
     document.getElementById('btn-cambiar-equipo').style.display = 'none';
-    // El admin ve el selector normal (puede cambiarlo), pero viene preseleccionado con su equipo por defecto
     if (isAdmin && equiposAsignados.length > 0) {
       const equipoAsignado = equiposAsignados[0];
       document.getElementById('equipo').value = equipoAsignado;
@@ -1551,16 +1492,11 @@ function initRegistro() {
     centrosSeleccionados = [];
     trabajoSeleccionado = null; aperoSeleccionado = null; aperoObsTexto = ''; centroObsTexto = '';
   }
-  // Si el equipo preseleccionado tiene cultivo automático (ej. Generador
-  // Mitsubishi → Energía eléctrica), fijarlo ahora — tiene prioridad incluso
-  // sobre un preset de operador, ya que es una propiedad del equipo, no del operador
   const cultivoAutoInit = cultivoAutomaticoDe(document.getElementById('equipo').value);
   if (cultivoAutoInit) {
     centrosSeleccionados = [cultivoAutoInit];
     trabajoSeleccionado = null; aperoSeleccionado = null; aperoObsTexto = ''; centroObsTexto = '';
   } else if (!preset) {
-    // Cultivo SUGERIDO (no bloqueado) para vehículos km — se preselecciona
-    // pero el usuario puede cambiarlo o quitarlo normalmente con los chips
     const cultivoDefaultInit = cultivoDefaultDe(document.getElementById('equipo').value);
     if (cultivoDefaultInit) centrosSeleccionados = [cultivoDefaultInit];
   }
@@ -1571,7 +1507,6 @@ function initRegistro() {
   document.getElementById('panel-cargando').style.display = 'none';
   document.getElementById('panel-paso2').style.display = 'none';
   document.getElementById('medidor-valor').value = '';
-  // Ocultar aviso horario para admin siempre
   const avisoHorario = document.getElementById('aviso-fuera-horario');
   if (avisoHorario && isAdmin) avisoHorario.style.display = 'none';
   actualizarVisibilidadHorario();
@@ -1583,8 +1518,6 @@ function renderCentrosSelector() {
   const bloque = document.getElementById('bloque-cultivos');
   const container = document.getElementById('centros-selector');
   if (bloque) bloque.style.display = 'block';
-  // Si el equipo tiene cultivo automático (ej. Generador Mitsubishi), se
-  // muestra fijo y bloqueado — nadie, ni el admin, puede tocarlo desde acá
   const eqParaCultivoAuto = document.getElementById('equipo') ? document.getElementById('equipo').value : '';
   const cultivoAuto = cultivoAutomaticoDe(eqParaCultivoAuto);
   if (cultivoAuto) {
@@ -1593,8 +1526,6 @@ function renderCentrosSelector() {
     actualizarResumenCultivos();
     return;
   }
-  // Si el operador tiene un preset fijado por el admin, ve el/los cultivo(s)
-  // ya elegidos como chips fijos (puede leerlos) pero no puede tocarlos
   if (!isAdmin && presetDe(currentUser)) {
     container.innerHTML = centrosSeleccionados.map(c => `<div class="cultivo-chip sel" style="cursor:default">${c}</div>`).join('');
     renderCentroOtroInput();
@@ -1609,8 +1540,6 @@ function renderCentrosSelector() {
   actualizarResumenCultivos();
 }
 
-// Si el cultivo "Otros (especificar)" está seleccionado, muestra un campo de
-// texto libre para detallar cuál es (igual patrón que "Otro" en equipo/apero).
 function renderCentroOtroInput() {
   const wrap = document.getElementById('centro-otro-wrap');
   if (!wrap) return;
@@ -1627,7 +1556,6 @@ window.toggleCultivo = function(c) {
   if (idx >= 0) {
     centrosSeleccionados.splice(idx, 1);
   } else {
-    // Cualquier usuario puede combinar cualquier cultivo, incluido Avellanos
     centrosSeleccionados.push(c);
   }
   trabajoSeleccionado = null; aperoSeleccionado = null; aperoObsTexto = '';
@@ -1641,8 +1569,6 @@ function renderTrabajoSelector() {
   const container = document.getElementById('trabajo-selector-wrap');
   if (!container) return;
 
-  // Si el operador tiene un preset fijado por el admin, ve el trabajo/apero ya
-  // elegidos como chips fijos (puede leerlos) pero no puede tocarlos
   if (!isAdmin && presetDe(currentUser)) {
     let html = '';
     if (trabajoSeleccionado) {
@@ -1655,15 +1581,11 @@ function renderTrabajoSelector() {
     return;
   }
 
-  // Vehículos km, equipo "Otro (especificar)", cultivo "Mantención" u "Otros
-  // (especificar)", o equipos configurados sin requerir trabajo (ej. Excavadora,
-  // Miniexcavadora) no usan tipo de trabajo ni apero
   const eq = document.getElementById('equipo').value;
   if (tipoEquipo(eq) === 'km' || eq === 'Otro (especificar)' || centrosSeleccionados.includes('Mantención') || centrosSeleccionados.includes('Otros (especificar)') || !requisitosDe(eq).trabajo) { container.innerHTML = ''; return; }
 
   if (centrosSeleccionados.length === 0) { container.innerHTML = ''; return; }
 
-  // Lista editable desde Configurar (antes era una combinación fija de dos listas)
   const lista = trabajosConfig;
 
   container.innerHTML = `
@@ -1695,7 +1617,6 @@ function renderTrabajoOtro() {
 function renderAperoSelector() {
   const wrap = document.getElementById('apero-selector-wrap');
   if (!wrap) return;
-  // Todos los usuarios ven todos los aperos disponibles, sin filtro por tractor
   renderAperoSinFiltro(wrap);
 }
 
@@ -1710,14 +1631,12 @@ function renderAperoSinFiltro(wrap) {
     return;
   }
 
-  // Aperos disponibles para el trabajo (y, si el apero tiene equipos asignados, para
-  // el equipo actualmente seleccionado). Vienen de la lista editable en Configurar.
   const equipoActual = document.getElementById('equipo').value;
   const aperos = aperosConfig
     .filter(a => !a.trabajos || a.trabajos.length === 0 || a.trabajos.includes(trabajoSeleccionado))
     .filter(a => !a.equipos || a.equipos.length === 0 || a.equipos.includes(equipoActual))
     .map(a => a.nombre);
-  aperos.push(OTRO); // siempre disponible como comodín
+  aperos.push(OTRO);
 
   wrap.innerHTML = `
     <div style="margin-top:10px">
@@ -1769,7 +1688,6 @@ function renderAperoAvellanos(wrap, equipoActual) {
 }
 
 function renderAperoGeneral(wrap, equipoActual) {
-  // Caso especial: Riego = texto libre, sin lista
   if (trabajoSeleccionado === 'Riego') {
     wrap.innerHTML = `
       <div style="margin-top:10px">
@@ -1779,21 +1697,18 @@ function renderAperoGeneral(wrap, equipoActual) {
     return;
   }
 
-  // Caso: Otro (especificar) como trabajo → no necesita apero, ya tiene su propio texto libre arriba
   if (trabajoSeleccionado === OTRO) { wrap.innerHTML = ''; return; }
 
   const cfgTrabajo = APEROS_GENERAL[trabajoSeleccionado];
   const detalle = APEROS_GENERAL_DETALLE[trabajoSeleccionado];
   if (!cfgTrabajo || !detalle) { wrap.innerHTML = ''; return; }
 
-  // Validar que el tractor esté habilitado en general para este trabajo
   if (cfgTrabajo.tractores && !cfgTrabajo.tractores.includes(equipoActual)) {
     wrap.innerHTML = `<div class="preview-row rojo" style="margin-top:10px">⚠️ El equipo <strong>${equipoActual||'seleccionado'}</strong> no está habilitado para "${trabajoSeleccionado}". Tractores válidos: ${cfgTrabajo.tractores.join(', ')}</div>`;
     aperoSeleccionado = null;
     return;
   }
 
-  // Filtrar aperos según el tractor específico (sub-filtro por apero individual)
   const aperosDisponibles = detalle.filter(a => !a.tractores || a.tractores.includes(equipoActual));
 
   if (aperosDisponibles.length === 0) {
@@ -1834,7 +1749,6 @@ window.validarPaso1 = function() {
 
   if (!eq) faltantes.push('Selecciona un equipo');
 
-  // Si el equipo no exige cultivo (configurable en Configurar), no se bloquea por eso
   if (req.cultivo && centrosSeleccionados.length === 0) faltantes.push('Selecciona al menos un cultivo');
 
   if (!esOtroEquipo) {
@@ -1843,19 +1757,14 @@ window.validarPaso1 = function() {
     }
   }
 
-  // Si eligió "Otro (especificar)" como equipo, exigir texto descriptivo
   if (esOtroEquipo) {
     const otroInput = document.getElementById('equipo-varios-input');
     if (!otroInput || !otroInput.value.trim()) faltantes.push('Especifica el equipo');
   }
 
-  // Si eligió "Otros (especificar)" como cultivo, exigir texto descriptivo
   const esCentroOtro = centrosSeleccionados.includes('Otros (especificar)');
   if (esCentroOtro && !centroObsTexto.trim()) faltantes.push('Especifica el cultivo');
 
-  // Vehículos km (camionetas), equipo "Otro (especificar)", cultivo "Mantención"
-  // u "Otros (especificar)", o equipos configurados sin requerir trabajo, no
-  // requieren tipo de trabajo ni apero
   const esKm = tipoEquipo(eq) === 'km';
   const esMantencion = centrosSeleccionados.includes('Mantención');
 
@@ -1866,8 +1775,6 @@ window.validarPaso1 = function() {
       faltantes.push('Especifica el trabajo realizado');
     }
 
-    // Validar apero obligatorio (aplica a Avellanos y General, excepto Riego y
-    // Otro, y solo si el equipo requiere apero según su configuración)
     const esAvellanos = centrosSeleccionados.includes('Avellanos');
     if (trabajoSeleccionado && req.apero && trabajoSeleccionado !== OTRO && trabajoSeleccionado !== 'Riego') {
       const cfg = esAvellanos ? APEROS_AVELLANOS[trabajoSeleccionado] : APEROS_GENERAL_DETALLE[trabajoSeleccionado];
@@ -1885,8 +1792,6 @@ window.validarPaso1 = function() {
 
   const btn = document.getElementById('btn-bomba-on');
   if (!btn) return;
-  // Bloqueo duro: el medidor no puede ser menor al último registro de este equipo
-  // (no aplica a "Otro (especificar)", porque cada carga puede ser un equipo físico distinto)
   if (ok && !esOtroEquipo && ultimoRegistroEquipo?.medidor_valor != null && mv !== '' && parseFloat(mv) < ultimoRegistroEquipo.medidor_valor) {
     ok = false;
     faltantes.push(`El ${medidor==='km'?'odómetro':'horómetro'} no puede ser menor al último registrado (${ultimoRegistroEquipo.medidor_valor.toFixed(1)})`);
@@ -1894,8 +1799,6 @@ window.validarPaso1 = function() {
   const horarioOk = dentroDeHorarioPermitido() || excepcionHorarioActiva || isAdmin || operadorExcepcionActiva(currentUser);
   btn.disabled = !ok || !horarioOk;
 
-  // Mostrar junto al botón qué falta completar, para que el operador sepa por
-  // qué no puede encender la bomba (en vez de quedar el botón gris sin explicación)
   const msgEl = document.getElementById('paso1-faltantes');
   if (msgEl) {
     if (!ok && faltantes.length) {
@@ -1940,8 +1843,6 @@ window.onOperadorSelectChange = function() {
   }
 }
 
-// Muestra chips con los equipos principales del operador (cuando tiene 2 o más),
-// para elegir rápido cuál usar en esta carga sin tener que abrir el selector completo
 function renderEquipoMultiSelector(lista) {
   const wrap = document.getElementById('equipo-multi-selector');
   if (!wrap) return;
@@ -1962,32 +1863,20 @@ window.onEquipoChange = async function() {
 
   const preset = !isAdmin ? presetDe(currentUser) : null;
   if (preset) {
-    // El operador tiene un preset fijo — se vuelve a aplicar tal cual, no se
-    // limpia nada (así "Cambiar equipo" no le rompe su trabajo/apero fijado)
     trabajoSeleccionado = preset.trabajo || null;
     aperoSeleccionado = preset.apero || null;
     aperoObsTexto = preset.aperoObsTexto || '';
   } else if (tipoEquipo(eq) === 'km' || eq === 'Otro (especificar)') {
-    // Vehículos km y equipo "Otro (especificar)" no usan trabajo ni apero — limpiar
     trabajoSeleccionado = null; aperoSeleccionado = null; aperoObsTexto = '';
   } else {
-    // El apero disponible puede depender del equipo (si algún apero fue restringido
-    // a equipos específicos desde Configurar), así que se limpia para que el
-    // operador vuelva a elegir uno válido para el equipo recién seleccionado.
     aperoSeleccionado = null; aperoObsTexto = '';
   }
 
-  // Si el equipo recién elegido tiene cultivo automático (ej. Generador
-  // Mitsubishi → Energía eléctrica), fijarlo y limpiar trabajo/apero — tiene
-  // prioridad incluso sobre un preset de operador
   const cultivoAuto = cultivoAutomaticoDe(eq);
   if (cultivoAuto) {
     centrosSeleccionados = [cultivoAuto];
     trabajoSeleccionado = null; aperoSeleccionado = null; aperoObsTexto = ''; centroObsTexto = '';
   } else if (!preset) {
-    // Cultivo SUGERIDO (no bloqueado) al cambiar a un vehículo km — se
-    // preselecciona, pero queda como chip normal: el usuario puede
-    // deseleccionarlo o cambiarlo con un clic
     const cultivoDefault = cultivoDefaultDe(eq);
     if (cultivoDefault) {
       centrosSeleccionados = [cultivoDefault];
@@ -1999,7 +1888,6 @@ window.onEquipoChange = async function() {
   await cargarUltimoRegistro(eq);
   cargarHorometroShelly(eq);
 
-  // Mostrar campo texto si eligió "Otro (especificar)"
   const variosWrap = document.getElementById('equipo-varios-wrap');
   if (variosWrap) {
     if (eq === 'Otro (especificar)') {
@@ -2016,17 +1904,10 @@ window.onEquipoChange = async function() {
   validarPaso1();
 }
 
-// Convierte el nombre del equipo tal como aparece en la app (ej. "Kubota 2320")
-// al ID del documento en Firestore (ej. "Kubota_2320") que usan los scripts
-// de los Shelly para guardar el horómetro (colección "horometros").
 function equipoADocIdHorometro(equipo) {
   return equipo.replace(/\s+/g, '_');
 }
 
-// Convierte segundos transcurridos en un texto legible tipo "hace 3 min" —
-// se usa para mostrar cuándo fue la última vez que el sensor (Shelly)
-// logró sincronizar, sin sonar alarmante: un rato largo sin actualizar
-// normalmente solo significa que el equipo está apagado, no una falla.
 function textoTiempoTranscurrido(seg) {
   if (seg < 60) return 'actualizado hace instantes';
   const min = Math.floor(seg / 60);
@@ -2037,10 +1918,6 @@ function textoTiempoTranscurrido(seg) {
   return `última actualización hace ${dias} día${dias !== 1 ? 's' : ''}`;
 }
 
-// Igual que textoTiempoTranscurrido, pero SIN la frase "hace instantes" — se usa
-// en los semáforos verde/amarillo/rojo (ESP32 y Shelly), donde por definición
-// solo se llega a este texto cuando el umbral de "conectado" ya se superó, así
-// que decir "instantes" ahí sería contradictorio con el estado "desconectado".
 function textoDesconectadoDesde(seg) {
   if (seg < 60) return `hace ${seg} seg`;
   const min = Math.floor(seg / 60);
@@ -2051,20 +1928,13 @@ function textoDesconectadoDesde(seg) {
   return `hace ${dias} día${dias !== 1 ? 's' : ''}`;
 }
 
-// ─── ESTADO DEL SISTEMA DE HORÓMETRO WIFI DEL EQUIPO SELECCIONADO ──
-// Un mismo semáforo para los 3 casos posibles de un equipo tipo horas:
-// 1) Tiene Shelly propio -> verde/amarillo/rojo según cuándo sincronizó
-// 2) Tiene JDLink -> verde/rojo según si hay sesión activa de John Deere
-// 3) Ninguno de los dos -> gris, informativo ("sin sistema asociado")
-// No tiene relación con las horas del horómetro en sí (esas van en su propio
-// cuadro) — esto solo indica el estado de conexión del sistema que las provee.
 let unsubEstadoShelly = null;
 let shellyUltimaRecepcionMs = null;
 let equipoSensorActual = null;
 let shellyUltimoIntentoReconexionMs = 0;
-const SHELLY_UMBRAL_VERDE_SEG = 20;     // el script sincroniza cada 15 seg, margen generoso
-const SHELLY_UMBRAL_AMARILLO_SEG = 120; // 2 min
-const SHELLY_UMBRAL_RECONECTAR_SEG = 150; // un poco más que el umbral amarillo
+const SHELLY_UMBRAL_VERDE_SEG = 20;
+const SHELLY_UMBRAL_AMARILLO_SEG = 120;
+const SHELLY_UMBRAL_RECONECTAR_SEG = 150;
 const SHELLY_COOLDOWN_RECONEXION_MS = 25000;
 
 function suscribirEstadoShelly(equipo) {
@@ -2089,13 +1959,11 @@ function renderEstadoShelly() {
   if (!equipo || tipoEquipo(equipo) !== 'hr') { el.innerHTML = ''; return; }
   const fuente = fuenteHorometroDe(equipo);
 
-  // Caso 1: equipo configurado en Manual — no hay ningún sistema que revisar
   if (fuente === 'manual') {
     el.innerHTML = '<span style="color:#9CA3AF;font-size:12px">⚪ Este equipo usa horómetro manual</span>';
     return;
   }
 
-  // Caso 2: equipo con JDLink — el "sensor" es la sesión de Operations Center
   if (fuente === 'jdlink') {
     el.innerHTML = jdAccessToken
       ? '<span style="color:var(--verde);font-size:12px">🟢 JDLink conectado (sesión activa)</span>'
@@ -2103,20 +1971,16 @@ function renderEstadoShelly() {
     return;
   }
 
-  // Caso 3: equipo con Shelly, pero todavía sin ningún dato recibido
   if (!shellyUltimaRecepcionMs) {
     el.innerHTML = '<span style="color:#9CA3AF;font-size:12px">⚪ Shelly configurado, sin datos todavía</span>';
     return;
   }
 
-  // Caso 4: Shelly con datos — semáforo según hace cuánto sincronizó. Si lleva
-  // mucho rato sin recibir nada, probablemente el canal en tiempo real de esta
-  // pestaña se quedó pegado (no necesariamente el Shelly) — reconectamos solo
   const seg = Math.floor((Date.now() - shellyUltimaRecepcionMs) / 1000);
   if (seg > SHELLY_UMBRAL_RECONECTAR_SEG && (Date.now() - shellyUltimoIntentoReconexionMs) > SHELLY_COOLDOWN_RECONEXION_MS) {
     shellyUltimoIntentoReconexionMs = Date.now();
     suscribirEstadoShelly(equipo);
-    return; // suscribirEstadoShelly ya vuelve a llamar renderEstadoShelly()
+    return;
   }
   const nombreShelly = 'Shelly ' + equipoADocIdHorometro(equipo);
   let html;
@@ -2126,10 +1990,6 @@ function renderEstadoShelly() {
   el.innerHTML = html;
 }
 
-// Si el equipo seleccionado tiene fuente "shelly", lee su horómetro desde
-// Firestore y lo precarga automáticamente — sin botón, a diferencia de JDLink
-// que el operador debe presionar para consultar. Si la fuente es "jdlink" o
-// "manual", esta función no interfiere para nada.
 async function cargarHorometroShelly(equipo) {
   const info = document.getElementById('shelly-horas-info');
   if (info) info.innerHTML = '';
@@ -2156,11 +2016,6 @@ async function cargarHorometroShelly(equipo) {
   } catch(e) { console.warn('Error leyendo horómetro del sensor:', e); }
 }
 
-// ─── CORRECCIÓN REMOTA DEL HORÓMETRO SHELLY (Configurar) ────
-// Si el horómetro de un equipo se descontroló mucho (por una instalación
-// nueva, un reset, etc.), el admin puede escribir el valor REAL desde acá.
-// El propio script del Shelly revisa esto cada ~40 seg y ajusta su acumulado
-// interno solo — no hace falta tocar la consola del Shelly para nada.
 function renderPanelCorreccionHorometro() {
   const sel = document.getElementById('correccion-horometro-equipo-sel');
   if (!sel) return;
@@ -2219,8 +2074,6 @@ window.setMedidor = function(tipo) {
 
 window.calcularEficiencia = function() {
   const lt = parseFloat(document.getElementById('litros').value);
-  // El totalizador ya no lo edita el operador — es totalizadorGlobal (contador único
-  // persistente en Firestore) + los litros de esta carga.
   const totalizadorInput = document.getElementById('totalizador');
   if (totalizadorInput && totalizadorGlobal != null) {
     totalizadorInput.value = !isNaN(lt) && lt > 0 ? Math.round(totalizadorGlobal + lt) : totalizadorGlobal;
@@ -2230,7 +2083,6 @@ window.calcularEficiencia = function() {
   const preview = document.getElementById('preview-eficiencia');
   actualizarResumenCultivos();
 
-  // Necesitamos al menos litros válidos para mostrar algo
   if (isNaN(lt) || lt <= 0) { preview.innerHTML = ''; return; }
   if (isNaN(mv) || mv < 0) { preview.innerHTML = ''; return; }
 
@@ -2241,13 +2093,11 @@ window.calcularEficiencia = function() {
     const diff = mv - mvPrev;
 
     if (diff > 0) {
-      // Calcular eficiencia
       const esKm = medidor === 'km';
       const ef = esKm ? (diff / lt) : (lt / diff);
       const efStr = esKm ? `${ef.toFixed(2)} km/L` : `${ef.toFixed(2)} L/hr`;
       const diffStr = `${diff.toFixed(medidor === 'km' ? 0 : 1)} ${medidor}`;
 
-      // Comparar con promedio histórico si hay eficiencias guardadas
       const efHistorica = ultimoRegistroEquipo.eficiencia;
       let tendenciaHtml = '';
       if (efHistorica && efHistorica > 0) {
@@ -2264,11 +2114,9 @@ window.calcularEficiencia = function() {
       html += `<div class="preview-row rojo">⚠️ El valor ingresado (${mv}) es menor al anterior (${mvPrev.toFixed(medidor==='km'?0:1)} ${medidor}) — verifica</div>`;
     }
   } else {
-    // Primer registro del equipo: no hay medidor anterior, mostrar nota
     html += `<div class="preview-row verde" style="background:#EFF6FF;color:#1D4ED8">📋 Primer registro de este equipo — sin eficiencia previa para comparar</div>`;
   }
 
-  // Validación totalizador
   if (!isNaN(tot) && tot > 0 && ultimoRegistroEquipo?.totalizador) {
     const dif = Math.abs((tot - ultimoRegistroEquipo.totalizador) - lt);
     html += dif <= parametrosSistema.margenTotalizador
@@ -2327,14 +2175,9 @@ function limpiarPreview() {
 }
 
 // ─── REGISTRO MANUAL DE CARGA (sin control de bomba) ────────
-// Para cuando la carga física ya ocurrió pero la app se cerró/falló a mitad de
-// camino (ej. se apagó el celular, se perdió la conexión) y quedó sin registrar.
-// El admin puede reconstruir el registro completo con los datos reales de esa
-// carga, SIN llamar a controlarBombaShelly en ningún momento — solo escribe el
-// registro en Firestore y ajusta saldo/totalizador, exactamente como si la
-// carga se hubiera hecho normal, pero sin tocar el relé físico.
 let manualCentrosSeleccionados = [];
 let manualUltimoRegistroEquipo = null;
+let manualRazonSocial = 'maitenes';
 
 window.abrirRegistroManual = function() {
   const { fecha, hora } = getNow();
@@ -2346,6 +2189,8 @@ window.abrirRegistroManual = function() {
   document.getElementById('manual-obs').value = '';
   manualCentrosSeleccionados = [];
   manualUltimoRegistroEquipo = null;
+  manualRazonSocial = 'maitenes';
+  renderManualRazonSocial();
   populateSelect('manual-equipo', config.equipos, 'Seleccionar equipo');
   populateSelect('manual-operador', config.operadores, 'Seleccionar operador');
   renderManualCultivos();
@@ -2356,6 +2201,21 @@ window.abrirRegistroManual = function() {
 
 window.cerrarRegistroManual = function() {
   document.getElementById('panel-registro-manual-form').style.display = 'none';
+}
+
+window.seleccionarManualRazonSocial = function(rs) {
+  manualRazonSocial = rs;
+  renderManualRazonSocial();
+}
+function renderManualRazonSocial() {
+  const wrap = document.getElementById('manual-razon-social-selector');
+  if (!wrap) return;
+  const opciones = [
+    { val: 'maitenes', label: '🌳 Los Maitenes' },
+    { val: 'jcar', label: '🏢 JCAR' },
+    { val: 'ambos', label: '🤝 Ambos' }
+  ];
+  wrap.innerHTML = opciones.map(o => `<div class="cultivo-chip ${manualRazonSocial===o.val?'sel':''}" onclick="seleccionarManualRazonSocial('${o.val}')">${o.label}</div>`).join('');
 }
 
 function renderManualCultivos() {
@@ -2447,6 +2307,7 @@ window.registrarCargaManual = async function() {
       trabajo: null, trabajo_detalle: null, apero: null, apero_detalle: null,
       litros: lt, medidor_tipo: tipoMedidor, medidor_valor: mv,
       medidor_fuente: 'manual', litros_fuente: 'manual',
+      razon_social: manualRazonSocial,
       totalizador: totBase, diff_medidor: diffMedidor, eficiencia,
       alerta_totalizador: alertaTotalizador, dif_totalizador: difTot,
       alerta_trabajado: alertaTrabajado, alerta_eficiencia: false,
@@ -2462,16 +2323,10 @@ window.registrarCargaManual = async function() {
   btn.disabled = false; btn.textContent = '✓ Registrar carga (sin bomba)';
 }
 
-// Candado independiente del botón en pantalla — evita que toques múltiples y
-// casi simultáneos (común cuando la conexión está lenta y el operador vuelve
-// a tocar pensando que no funcionó) disparen varios registros idénticos. A
-// diferencia de solo deshabilitar el botón del DOM, esta bandera es inmune a
-// cualquier re-render que pudiera recrear el elemento del botón sin el
-// atributo disabled.
 let registrandoDespacho = false;
 
 window.registrar = async function() {
-  if (registrandoDespacho) return; // ya hay un registro en curso — ignorar el toque repetido
+  if (registrandoDespacho) return;
   registrandoDespacho = true;
   try {
     await registrarInterno();
@@ -2506,10 +2361,6 @@ async function registrarInterno() {
   }
   if (lt > saldo) { toast(`⚠️ Sin suficiente combustible (${Math.round(saldo).toLocaleString('es-CL')} L)`, false); return; }
 
-  // El totalizador ahora es un contador global (no por equipo), así que la comparación
-  // se hace contra totalizadorGlobal (su valor antes de sumar esta carga) — como "tot" ya
-  // es exactamente totalizadorGlobal + lt (calculado, no leído a mano), esta diferencia
-  // siempre da 0; se mantiene el campo por compatibilidad con reportes históricos.
   let alertaTotalizador = false; let difTot = 0;
   if (totalizadorGlobal != null) {
     difTot = Math.abs((tot - totalizadorGlobal) - lt);
@@ -2523,8 +2374,6 @@ async function registrarInterno() {
     if (diffMedidor > 0 && lt > 0) eficiencia = medidor==='km' ? diffMedidor/lt : lt/diffMedidor;
   }
 
-  // Verificar desviación de eficiencia vs promedio histórico ANTES de guardar,
-  // así podemos marcar la columna correcta (Eficiencia) desde el momento del registro
   let alertaEficiencia = false; let promedioEfHist = null; let desviacionEf = null;
   if (eficiencia !== null) {
     try {
@@ -2539,7 +2388,6 @@ async function registrarInterno() {
     } catch(e) { console.warn('Error calculando desviación eficiencia:', e); }
   }
 
-  // Distribución por cultivo (si el equipo no exige cultivo y no se seleccionó ninguno, no hay distribución)
   const n = centrosSeleccionados.length;
   const ltPorCultivo = n > 0 ? lt / n : 0;
   const medPorCultivo = (n > 0 && diffMedidor > 0) ? diffMedidor / n : 0;
@@ -2558,7 +2406,7 @@ async function registrarInterno() {
     await addDoc(collection(db, 'registros'), {
       fecha, hora, equipo: eq, equipo_detalle: eqDetalle, operador: operadorRegistro,
       centros: centrosSeleccionados,
-      centro: centrosSeleccionados[0] || null, // compatibilidad
+      centro: centrosSeleccionados[0] || null,
       centro_detalle: centrosSeleccionados.includes('Otros (especificar)') ? centroObsTexto : null,
       distribucion,
       trabajo: trabajoSeleccionado,
@@ -2567,6 +2415,7 @@ async function registrarInterno() {
       apero_detalle: (aperoSeleccionado === OTRO || aperoSeleccionado === 'LIBRE') ? aperoObsTexto : null,
       litros: lt, medidor_tipo: medidor, medidor_valor: mv,
       medidor_fuente: medidorFuenteActual, litros_fuente: litrosFuenteActual,
+      razon_social: razonSocialSeleccionada,
       totalizador: tot, diff_medidor: diffMedidor, eficiencia,
       alerta_totalizador: alertaTotalizador, dif_totalizador: difTot,
       alerta_trabajado: alertaTrabajado,
@@ -2574,19 +2423,16 @@ async function registrarInterno() {
       obs, ts: Date.now()
     });
     await updateDoc(doc(db,'estanque','saldo'), { litros: increment(-lt) });
-    // Actualizar el contador global del totalizador (tot ya es totalizadorGlobal + lt)
     totalizadorGlobal = tot;
     await guardarTotalizadorGlobal();
     if (alertaTotalizador) enviarAlertaWsp(`⚠️ *ALERTA TOTALIZADOR · Los Maitenes*\n\nEquipo: *${eq}*\nOperador: *${operadorRegistro}*\nFecha: ${fecha} ${hora}\nLitros: ${lt.toFixed(1)} L\nDiferencia: *${difTot.toFixed(1)} L*\n\nVerificar cámara.`);
 
-    // Alerta eficiencia por WhatsApp (usa el mismo cálculo hecho antes de guardar)
     if (alertaEficiencia && promedioEfHist != null) {
       const tipoEf = medidor === 'km' ? 'km/L' : 'L/hr';
       const tendencia = eficiencia > promedioEfHist ? '⬆️ Mayor consumo' : '⬇️ Menor consumo';
       enviarAlertaWsp(`⚠️ *ALERTA EFICIENCIA · Los Maitenes*\n\nEquipo: *${eq}*\nOperador: *${operadorRegistro}*\nFecha: ${fecha} ${hora}\n\nEficiencia esta carga: *${eficiencia.toFixed(2)} ${tipoEf}*\nPromedio histórico: ${promedioEfHist.toFixed(2)} ${tipoEf}\nDesviación: *${desviacionEf.toFixed(0)}%* ${tendencia}\n\nVerificar estado del equipo.`);
     }
 
-    // Reset completo: volver al paso 1 para la siguiente carga
     document.getElementById('litros').value='';
     document.getElementById('medidor-valor').value='';
     document.getElementById('totalizador').value='';
@@ -2595,6 +2441,8 @@ async function registrarInterno() {
     if (opOtroWrap) opOtroWrap.innerHTML = '';
     centrosSeleccionados=[];
     trabajoSeleccionado = null; aperoSeleccionado = null; aperoObsTexto = ''; centroObsTexto = '';
+    razonSocialSeleccionada = 'maitenes';
+    renderRazonSocialSelector();
     const variosWrap = document.getElementById('equipo-varios-wrap');
     if (variosWrap) variosWrap.innerHTML = '';
     limpiarPreview(); renderCentrosSelector(); renderTrabajoSelector();
@@ -2615,19 +2463,9 @@ function enviarAlertaWsp(msg) {
 }
 
 // ─── LIMPIEZA Y RECÁLCULO DE EFICIENCIA HISTÓRICA ─────────
-// Ambas herramientas permiten acotar el ALCANCE (todos los equipos, o solo
-// algunos elegidos) y el PERÍODO (todo el historial, o solo los últimos X
-// días) antes de aplicar el cambio. Además, cada registro que se limpia
-// queda marcado con `eficiencia_limpiada: true` — así "Recalcular" puede
-// saber exactamente cuáles fueron limpiados a propósito y respetarlos (no
-// volver a llenarlos), sin importar qué alcance/período se haya usado en la
-// limpieza original. Esto es más robusto que comparar solo por fecha, ya
-// que el alcance de una limpieza puede ser parcial (solo ciertos equipos o
-// un rango de tiempo específico).
-
 let limpiezaAlcanceTodos = true;
 let limpiezaEquiposSel = [];
-let limpiezaPeriodoModo = 'todo'; // 'todo' | 'dias' | 'fecha'
+let limpiezaPeriodoModo = 'todo';
 
 window.setLimpiezaAlcance = function(todos) {
   limpiezaAlcanceTodos = todos;
@@ -2694,7 +2532,6 @@ window.limpiarEficienciaHistorica = async function() {
     });
     log.innerHTML = `<div style="color:#9CA3AF">Actualizando ${candidatos.length} registros...</div>`;
     let actualizados = 0;
-    // Firestore permite máximo 500 escrituras por batch — se procesa en lotes de 400
     for (let i = 0; i < candidatos.length; i += 400) {
       const lote = candidatos.slice(i, i + 400);
       const batch = writeBatch(db);
@@ -2718,7 +2555,6 @@ window.limpiarEficienciaHistorica = async function() {
   btn.disabled = false; btn.textContent = '🧹 Limpiar eficiencia histórica';
 }
 
-// Muestra la fecha de la última limpieza (informativo) junto al recálculo
 function renderPanelRecalculoOpcion() {
   const info = document.getElementById('recalc-limpieza-info');
   if (!info) return;
@@ -2729,7 +2565,7 @@ function renderPanelRecalculoOpcion() {
 
 let recalcAlcanceTodos = true;
 let recalcEquiposSel = [];
-let recalcPeriodoModo = 'todo'; // 'todo' | 'dias' | 'fecha'
+let recalcPeriodoModo = 'todo';
 
 window.setRecalcAlcance = function(todos) {
   recalcAlcanceTodos = todos;
@@ -2786,9 +2622,6 @@ window.recalcularEficiencia = async function() {
   log.innerHTML = '<div style="color:#9CA3AF">Cargando registros...</div>';
 
   try {
-    // Traer todos los registros ordenados por equipo y tiempo — se necesita el
-    // historial COMPLETO de cada equipo (aunque el alcance elegido sea menor)
-    // para calcular bien la diferencia con el registro anterior en los bordes
     const snap = await getDocs(query(collection(db, 'registros'), orderBy('ts', 'asc')));
     const todos = snap.docs.map(d => ({ id: d.id, ...d.data() }));
 
@@ -2804,16 +2637,13 @@ window.recalcularEficiencia = async function() {
     log.innerHTML = `<div style="color:#9CA3AF">Procesando ${equiposAProcesar.length} equipo(s)...</div>`;
 
     for (const eq of equiposAProcesar) {
-      const registrosEq = porEquipo[eq]; // ya ordenados por ts asc
-      let ventanaEficiencias = []; // últimas hasta 20 eficiencias válidas, en orden cronológico
+      const registrosEq = porEquipo[eq];
+      let ventanaEficiencias = [];
 
       for (let i = 0; i < registrosEq.length; i++) {
         const actual = registrosEq[i];
         const anterior = i > 0 ? registrosEq[i - 1] : null;
 
-        // Registro marcado como "limpiado a propósito" — si se pide
-        // respetarlo, se salta por completo: ni se escribe ni entra a la
-        // ventana de comparación de los siguientes registros
         if (respetarLimpieza && actual.eficiencia_limpiada === true) {
           respetados++;
           continue;
@@ -2840,8 +2670,6 @@ window.recalcularEficiencia = async function() {
           if (desviacion > 20) alertaEficiencia = true;
         }
 
-        // Si se restringió el período, los registros fuera de ese rango se
-        // usan igual para la cadena de cálculo (arriba) pero no se escriben
         const dentroDePeriodo = cutoffTs == null || (actual.ts || 0) >= cutoffTs;
 
         if (dentroDePeriodo) {
@@ -2866,7 +2694,6 @@ window.recalcularEficiencia = async function() {
           fueraDePeriodo++;
         }
 
-        // Mantener ventana de las últimas 20 eficiencias válidas (orden cronológico)
         if (eficiencia !== null) {
           ventanaEficiencias.push(eficiencia);
           if (ventanaEficiencias.length > 20) ventanaEficiencias.shift();
@@ -2896,14 +2723,10 @@ function loadHistorial() {
   unsubReg = onSnapshot(q, snap => {
     registros = snap.docs.map(d=>({id:d.id,...d.data()}));
     populateFiltros(); renderTabla();
-    if (isAdmin || isSupervisor) { populateFiltrosAnalytics(); renderAnalytics(); renderInformes(); populateFiltrosEficiencia(); renderEficienciaAnalisis(); }
+    if (isAdmin || isSupervisor) { populateFiltrosAnalytics(); renderAnalytics(); renderInformes(); populateFiltrosEficiencia(); renderEficienciaAnalisis(); renderPanelReintegroJCAR(); }
   });
 }
 
-// Filtros de Equipo/Apero en la pestaña Análisis — permiten acotar la
-// eficiencia (L/hr o km/L) a un equipo específico, o incluso a un equipo con
-// un apero específico (ej. "JD 5090 con Cimina 380"), ya que el consumo real
-// varía bastante según qué implemento esté arrastrando el tractor.
 function populateFiltrosAnalytics() {
   const selEq = document.getElementById('analytics-filtro-equipo');
   const selAp = document.getElementById('analytics-filtro-apero');
@@ -2912,8 +2735,6 @@ function populateFiltrosAnalytics() {
   const equipos = [...new Set(registros.map(r=>r.equipo))].sort();
   selEq.innerHTML = '<option value="">Todos los equipos</option>' +
     equipos.map(v => `<option value="${v}" ${v===curEq?'selected':''}>${v}</option>`).join('');
-  // La lista de aperos se acota al equipo elegido (si hay uno) — así el
-  // desplegable solo muestra aperos que ese equipo realmente ha usado
   const eqFiltro = selEq.value;
   const base = eqFiltro ? registros.filter(r => r.equipo === eqFiltro) : registros;
   const curAp = selAp.value;
@@ -2944,6 +2765,18 @@ function populateFiltros() {
   });
 }
 
+// Devuelve una pequeña etiqueta visual para la razón social de un registro —
+// nada para "maitenes" (el caso normal, mayoritario, no hay que destacarlo),
+// y un badge para "jcar"/"ambos" para que se note de un vistazo a dónde fue
+// ese combustible. Los registros de antes de este cambio no tienen el campo
+// y se tratan igual que "maitenes" (sin etiqueta).
+function badgeRazonSocial(r) {
+  const rs = r.razon_social;
+  if (rs === 'jcar') return ' <span class="badge" style="background:#FEF3DC;color:#92400E;font-size:10px" title="Carga atribuida a JCAR">🏢 JCAR</span>';
+  if (rs === 'ambos') return ' <span class="badge" style="background:#EFF6FF;color:#1D4ED8;font-size:10px" title="Carga compartida Los Maitenes / JCAR (50%)">🤝 Ambos</span>';
+  return '';
+}
+
 window.renderTabla = function() {
   const feq=document.getElementById('filtro-equipo')?.value||'';
   const fcc=document.getElementById('filtro-centro')?.value||'';
@@ -2963,9 +2796,8 @@ window.renderTabla = function() {
 
   if(!data.length){document.getElementById('historial-container').innerHTML=`<div class="empty"><div class="empty-icon">📋</div>No hay registros.</div>`;return;}
 
-  // Calcular promedio de eficiencia por equipo (para colorear)
   const promedioEfEquipo = {};
-  const todosRegistros = [...registros]; // usar todos, no solo filtrados
+  const todosRegistros = [...registros];
   const porEq = {};
   todosRegistros.forEach(r => {
     if (r.eficiencia && r.eficiencia > 0) {
@@ -2983,7 +2815,6 @@ window.renderTabla = function() {
       <tbody>${data.map(r=>{
         const tipo=r.medidor_tipo;
 
-        // Eficiencia con color relativo al promedio del equipo — ⚠️ propio si supera el umbral oficial (alerta_eficiencia)
         let efHtml = '<span style="color:#9CA3AF">—</span>';
         if (r.eficiencia && r.eficiencia > 0) {
           const esKm = tipo === 'km';
@@ -2994,11 +2825,9 @@ window.renderTabla = function() {
           if (prom) {
             const desv = (r.eficiencia - prom) / prom * 100;
             if (esKm) {
-              // km/L: mayor es mejor
               if (desv > 15)       { color = 'var(--verde)'; icono = ' ⬆️'; }
               else if (desv < -15) { color = 'var(--rojo)';  icono = ' ⬇️'; }
             } else {
-              // L/hr: mayor consumo = peor
               if (desv > 15)       { color = 'var(--rojo)';  icono = ' ⬆️'; }
               else if (desv < -15) { color = 'var(--verde)'; icono = ' ⬇️'; }
             }
@@ -3011,7 +2840,6 @@ window.renderTabla = function() {
         const trabajoStr = r.trabajo === 'Otro (especificar)' ? (r.trabajo_detalle||'Otro') : (r.trabajo||'—');
         const aperoStr = r.apero ? (r.apero === 'Otro (especificar)' ? (r.apero_detalle||'Otro') : (r.apero === 'LIBRE' ? (r.apero_detalle||'') : r.apero)) : '';
 
-        // Trabajado: ⚠️ propio si el medidor no avanzó (igual o menor al anterior)
         let trabajadoHtml = '<span style="color:#9CA3AF">—</span>';
         if (r.diff_medidor != null) {
           const valStr = `${r.diff_medidor.toFixed(tipo==='km'?0:1)} ${tipo}`;
@@ -3020,17 +2848,14 @@ window.renderTabla = function() {
             : `<span class="badge badge-${tipo}">${valStr}</span>`;
         }
 
-        // Cualquier advertencia (en cualquier columna) resalta la fila
         const tieneAlerta = r.alerta_totalizador || r.alerta_eficiencia || r.alerta_trabajado;
 
-        // Ícono de origen del dato — de dónde vino el valor (registros
-        // anteriores a este cambio no tienen el campo, no muestran ícono)
         const iconoLitros = iconoFuente(r.litros_fuente, { esp32: '📡', manual: '✍️' });
         const iconoMedidor = iconoFuente(r.medidor_fuente, { shelly: '🔌', jdlink: '🛰️', manual: '✍️' });
 
         return `<tr ${tieneAlerta?'style="background:#FFF5F5"':''}>
           <td class="td-mono">${r.fecha}<br><span style="color:#9CA3AF;font-size:11px">${r.hora}</span></td>
-          <td>${r.equipo_detalle?`${r.equipo}<br><span style="color:#9CA3AF;font-size:11px">${r.equipo_detalle}</span>`:r.equipo}</td>
+          <td>${r.equipo_detalle?`${r.equipo}<br><span style="color:#9CA3AF;font-size:11px">${r.equipo_detalle}</span>`:r.equipo}${badgeRazonSocial(r)}</td>
           <td>${r.operador}</td>
           <td style="font-size:12px">${cultivos}</td>
           <td style="font-size:12px">${trabajoStr}${aperoStr?'<br><span style="color:#9CA3AF">'+aperoStr+'</span>':''}</td>
@@ -3050,9 +2875,6 @@ window.renderTabla = function() {
     </table></div>`;
 }
 
-// Devuelve un ícono chico con tooltip indicando de dónde vino un valor
-// (Manual, Shelly, JDLink o ESP32). Si el registro es de antes de este
-// cambio (sin el campo guardado), no muestra nada — no se puede saber.
 function iconoFuente(fuente, mapa) {
   if (!fuente || !mapa[fuente]) return '';
   const titulos = { manual: 'Manual', shelly: 'Shelly', jdlink: 'JDLink', esp32: 'ESP32' };
@@ -3107,8 +2929,6 @@ window.guardarEdicion = async function() {
     const difLitros = litrosOriginales - litrosNuevos;
     if (Math.abs(difLitros) > 0.01) {
       await updateDoc(doc(db, 'estanque', 'saldo'), { litros: increment(difLitros) });
-      // Si cambian los litros de una carga ya guardada, el contador global del
-      // totalizador se ajusta en la misma proporción (resta la diferencia).
       if (totalizadorGlobal != null) {
         totalizadorGlobal = totalizadorGlobal - difLitros;
         await guardarTotalizadorGlobal();
@@ -3118,9 +2938,6 @@ window.guardarEdicion = async function() {
       fecha, hora, equipo, operador, centros, centro: centros[0],
       litros: litrosNuevos,
       medidor_valor: isNaN(medidor_valor) ? null : medidor_valor,
-      // Editar un registro siempre lo marca como manual — aunque el valor
-      // original haya venido de Shelly/JDLink/ESP32, ya no refleja lo que el
-      // sensor entregó, sino lo que el admin escribió a mano
       medidor_fuente: 'manual', litros_fuente: 'manual',
       totalizador: isNaN(totalizador) ? null : totalizador,
       obs: obs || null, editado_por: currentUser, editado_ts: Date.now()
@@ -3135,7 +2952,6 @@ window.eliminar = async function(id,litros) {
   if(!confirm('¿Eliminar? Los litros volverán al saldo y se descontarán del totalizador.'))return;
   await deleteDoc(doc(db,'registros',id));
   await updateDoc(doc(db,'estanque','saldo'),{litros:increment(parseFloat(litros)||0)});
-  // Descontar del contador global del totalizador, como si esta carga nunca hubiera pasado
   if (totalizadorGlobal != null) {
     totalizadorGlobal = totalizadorGlobal - (parseFloat(litros)||0);
     await guardarTotalizadorGlobal();
@@ -3147,7 +2963,8 @@ window.exportarExcel = function() {
   let data=[...registros];
   if(!isAdmin && !isSupervisor) data=data.filter(r=>r.operador===currentUser);
   if(!data.length){toast('No hay registros',false);return;}
-  const rows=data.map(r=>({'Fecha':r.fecha,'Hora':r.hora,'Equipo':r.equipo_detalle?`${r.equipo}: ${r.equipo_detalle}`:r.equipo,'Operador':r.operador,'Cultivos':(r.centros||[r.centro]).join(' / ')+(r.centro_detalle?` (${r.centro_detalle})`:''),'Trabajo':r.trabajo==='Otro (especificar)'?(r.trabajo_detalle||'Otro'):(r.trabajo||''),'Apero':r.apero?(r.apero==='Otro (especificar)'?(r.apero_detalle||'Otro'):(r.apero==='LIBRE'?(r.apero_detalle||''):r.apero)):'','Litros':r.litros,'Tipo Medidor':r.medidor_tipo==='km'?'Kilómetros':'Horas','Medidor Actual':r.medidor_valor,'Trabajado':r.diff_medidor||'','Eficiencia':r.eficiencia?(r.medidor_tipo==='km'?r.eficiencia.toFixed(2)+' km/L':r.eficiencia.toFixed(2)+' L/hr'):'','Totalizador':r.totalizador||'','Alerta':r.alerta_totalizador?'SÍ':'','Dif.Totalizador':r.dif_totalizador||'','Observación':r.obs||''}));
+  const rsLabel = { maitenes: 'Los Maitenes', jcar: 'JCAR', ambos: 'Ambos' };
+  const rows=data.map(r=>({'Fecha':r.fecha,'Hora':r.hora,'Equipo':r.equipo_detalle?`${r.equipo}: ${r.equipo_detalle}`:r.equipo,'Operador':r.operador,'Razón social':rsLabel[r.razon_social]||'Los Maitenes','Cultivos':(r.centros||[r.centro]).join(' / ')+(r.centro_detalle?` (${r.centro_detalle})`:''),'Trabajo':r.trabajo==='Otro (especificar)'?(r.trabajo_detalle||'Otro'):(r.trabajo||''),'Apero':r.apero?(r.apero==='Otro (especificar)'?(r.apero_detalle||'Otro'):(r.apero==='LIBRE'?(r.apero_detalle||''):r.apero)):'','Litros':r.litros,'Tipo Medidor':r.medidor_tipo==='km'?'Kilómetros':'Horas','Medidor Actual':r.medidor_valor,'Trabajado':r.diff_medidor||'','Eficiencia':r.eficiencia?(r.medidor_tipo==='km'?r.eficiencia.toFixed(2)+' km/L':r.eficiencia.toFixed(2)+' L/hr'):'','Totalizador':r.totalizador||'','Alerta':r.alerta_totalizador?'SÍ':'','Dif.Totalizador':r.dif_totalizador||'','Observación':r.obs||''}));
   const ws=XLSX.utils.json_to_sheet(rows);
   const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,'Combustible');
   XLSX.writeFile(wb,`maitenes-combustible-${new Date().toISOString().slice(0,10)}.xlsx`);
@@ -3155,6 +2972,12 @@ window.exportarExcel = function() {
 }
 
 // ─── ANALYTICS ────────────────────────────────────────────
+// NOTA: esta pestaña ("Análisis") solo reporta el consumo de Los Maitenes.
+// Una carga "jcar" se excluye por completo (factor 0) y una carga "ambos"
+// cuenta al 50% (factor 0.5), tanto en litros como en horas/km trabajados.
+// Las alertas de totalizador (medición física real) NO se ponderan — esas
+// siguen mostrando el 100% real, porque son un control de hardware, no de
+// contabilidad por razón social.
 function getPeriodoCorte() {
   const periodo=document.getElementById('periodo-select')?.value||'30d';
   const ahora=Date.now();
@@ -3170,12 +2993,14 @@ function renderAnalytics() {
   if (apFiltro) data = data.filter(r => r.apero === apFiltro);
   const equipoMap={};
   data.forEach(r=>{
+    const peso = factorMaitenes(r);
+    if (peso <= 0) return; // carga 100% JCAR — no entra al Análisis de Los Maitenes
     if(!equipoMap[r.equipo])equipoMap[r.equipo]={litros:0,trabajado:0,cargas:0,tipo:r.medidor_tipo,eficiencias:[],ultimaFecha:'',ultimoLt:0,alertas:0};
     const e=equipoMap[r.equipo];
-    e.litros+=r.litros||0; e.trabajado+=r.diff_medidor||0; e.cargas++;
+    e.litros+=(r.litros||0)*peso; e.trabajado+=(r.diff_medidor||0)*peso; e.cargas++;
     if(r.eficiencia)e.eficiencias.push(r.eficiencia);
     if(r.alerta_totalizador)e.alertas++;
-    if(!e.ultimaFecha||r.fecha>e.ultimaFecha){e.ultimaFecha=r.fecha;e.ultimoLt=r.litros;e.ultimaHora=r.hora;}
+    if(!e.ultimaFecha||r.fecha>e.ultimaFecha){e.ultimaFecha=r.fecha;e.ultimoLt=(r.litros||0)*peso;e.ultimaHora=r.hora;}
   });
 
   const equipoRows=Object.entries(equipoMap).sort((a,b)=>b[1].litros-a[1].litros).map(([eq,e])=>{
@@ -3183,7 +3008,6 @@ function renderAnalytics() {
     const efProm=e.eficiencias.length?(e.eficiencias.reduce((a,b)=>a+b,0)/e.eficiencias.length):null;
     const efStr=efProm?(tipo==='km'?`${efProm.toFixed(2)} km/L`:`${efProm.toFixed(2)} L/hr`):'—';
     const alertaStr=e.alertas>0?`<span style="color:var(--rojo);font-weight:600">⚠️ ${e.alertas}</span>`:'<span style="color:var(--verde)">✅ 0</span>';
-    // Calcular desviación de última carga vs promedio
     let desviacionStr = '—';
     if (efProm && e.eficiencias.length >= 3) {
       const ultima = e.eficiencias[0];
@@ -3194,18 +3018,16 @@ function renderAnalytics() {
     return `<tr><td><strong>${eq}</strong></td><td class="td-mono" style="color:var(--amarillo);font-weight:600">${e.litros.toFixed(1)} L</td><td>${e.cargas}</td><td class="td-mono">${e.trabajado>0?e.trabajado.toFixed(e.tipo==='km'?0:1)+' '+e.tipo:'—'}</td><td><span class="badge badge-${tipo}" style="font-size:12px">${efStr}</span></td><td>${desviacionStr}</td><td>${alertaStr}</td><td class="td-mono" style="font-size:11px">${e.ultimaFecha}<br><span style="color:#9CA3AF">${e.ultimaHora} · ${e.ultimoLt.toFixed(1)}L</span></td></tr>`;
   }).join('');
 
-  // Comparativa de eficiencia por APERO — solo tiene sentido cuando hay un
-  // equipo específico elegido (y no se filtró ya a un solo apero), para
-  // comparar entre sí los distintos implementos que ese tractor usa, ya que
-  // el consumo real varía harto según qué esté arrastrando
   let aperoPanel = '';
   if (eqFiltro && !apFiltro) {
     const aperoMap = {};
     data.forEach(r => {
       if (!r.apero || r.apero === 'LIBRE') return;
+      const peso = factorMaitenes(r);
+      if (peso <= 0) return;
       if (!aperoMap[r.apero]) aperoMap[r.apero] = { litros:0, trabajado:0, cargas:0, tipo:r.medidor_tipo, eficiencias:[] };
       const a = aperoMap[r.apero];
-      a.litros += r.litros||0; a.trabajado += r.diff_medidor||0; a.cargas++;
+      a.litros += (r.litros||0)*peso; a.trabajado += (r.diff_medidor||0)*peso; a.cargas++;
       if (r.eficiencia) a.eficiencias.push(r.eficiencia);
     });
     const aperoRows = Object.entries(aperoMap).sort((a,b)=>b[1].litros-a[1].litros).map(([ap,a])=>{
@@ -3222,9 +3044,10 @@ function renderAnalytics() {
   }
 
   const alertasData=data.filter(r=>r.alerta_totalizador);
-  const totalLt=data.reduce((s,r)=>s+(r.litros||0),0);
+  const totalLt=data.reduce((s,r)=>s+(r.litros||0)*factorMaitenes(r),0);
 
   document.getElementById('analytics-container').innerHTML=`
+    <div style="font-size:11px;color:var(--acero);margin-bottom:10px">📊 Este análisis solo considera el consumo de <strong>Los Maitenes</strong> (cargas "JCAR" se excluyen, "Ambos" cuenta al 50%).</div>
     <div class="stats-grid" style="margin-bottom:20px">
       <div class="stat-card"><div class="stat-label">Total período</div><div class="stat-value">${totalLt.toFixed(1)}<span>L</span></div></div>
       <div class="stat-card"><div class="stat-label">Despachos</div><div class="stat-value">${data.length}</div></div>
@@ -3240,7 +3063,9 @@ function renderAnalytics() {
 window.cambiarPeriodo = function() { renderAnalytics(); renderInformes(); }
 
 // ─── PESTAÑA EFICIENCIA (comparar equipos, detalle + medias, por período) ──
-let efPeriodoModo = 'todo'; // 'todo' | 'dias' | 'fecha'
+// Esta pestaña NO se pondera por razón social — muestra el rendimiento real
+// y completo de cada equipo/apero, sin importar para quién fue el trabajo.
+let efPeriodoModo = 'todo';
 let efAlcanceTodos = true;
 let efEquiposSel = [];
 
@@ -3324,9 +3149,8 @@ function renderEficienciaAnalisis() {
   let data = registros.filter(r => equipos.includes(r.equipo));
   if (ap) data = data.filter(r => r.apero === ap);
   if (cutoffTs != null) data = data.filter(r => (r.ts||0) >= cutoffTs);
-  data = data.sort((a,b) => a.ts - b.ts); // cronológico para el detalle
+  data = data.sort((a,b) => a.ts - b.ts);
 
-  // ── Comparación por equipo ──
   const porEquipo = {};
   data.forEach(r => {
     if (!porEquipo[r.equipo]) porEquipo[r.equipo] = { litros:0, trabajado:0, cargas:0, tipo:r.medidor_tipo, eficiencias:[] };
@@ -3365,7 +3189,6 @@ function renderEficienciaAnalisis() {
       <div class="stat-card"><div class="stat-label">Total litros</div><div class="stat-value">${totalLt.toFixed(1)}<span>L</span></div></div>
     </div>`;
 
-  // ── Detalle carga por carga (con columna Equipo, útil al comparar varios) ──
   const filasDetalle = data.slice().reverse().map(r => {
     const tipo = r.medidor_tipo || tipoEquipo(r.equipo);
     const unidad = tipo === 'km' ? 'km' : 'hr';
@@ -3383,7 +3206,7 @@ function renderEficienciaAnalisis() {
     const cultivos = (r.centros||[r.centro]).filter(Boolean).join(', ');
     return `<tr>
       <td class="td-mono">${r.fecha}<br><span style="color:#9CA3AF;font-size:11px">${r.hora}</span></td>
-      <td><strong>${r.equipo}</strong></td>
+      <td><strong>${r.equipo}</strong>${badgeRazonSocial(r)}</td>
       <td class="td-mono" style="color:var(--amarillo);font-weight:600">${(r.litros||0).toFixed(1)} L</td>
       <td class="td-mono">${trabajadoStr}</td>
       <td class="td-mono" style="color:${colorEf};font-weight:${colorEf!=='inherit'?'600':'400'}">${efStr}</td>
@@ -3414,19 +3237,22 @@ function renderEficienciaAnalisis() {
 
 
 // ─── INFORMES CULTIVO ──────────────────────────────────────
+// Igual que Análisis: solo reporta lo que corresponde a Los Maitenes.
+// "jcar" se excluye, "ambos" cuenta al 50% (tanto litros como horas).
 function renderInformes() {
   const corte = getPeriodoCorte();
   const data = registros.filter(r => r.ts >= corte);
 
-  // Construir mapa cultivo → { litros, horas, equipos }
   const cultivoMap = {};
-  const equipoCultivoMap = {}; // equipo → cultivo → { litros, horas }
+  const equipoCultivoMap = {};
 
   data.forEach(r => {
+    const peso = factorMaitenes(r);
+    if (peso <= 0) return; // 100% JCAR — no entra al informe de Los Maitenes
     const centros = r.centros || [r.centro];
     const n = centros.length;
-    const ltPorC = (r.litros || 0) / n;
-    const hrPorC = r.medidor_tipo === 'hr' && r.diff_medidor > 0 ? r.diff_medidor / n : 0;
+    const ltPorC = ((r.litros || 0) * peso) / n;
+    const hrPorC = r.medidor_tipo === 'hr' && r.diff_medidor > 0 ? ((r.diff_medidor * peso) / n) : 0;
 
     centros.forEach(c => {
       if (!cultivoMap[c]) cultivoMap[c] = { litros: 0, horas: 0, equipos: new Set() };
@@ -3443,7 +3269,6 @@ function renderInformes() {
 
   const totalLt = Object.values(cultivoMap).reduce((s, c) => s + c.litros, 0);
 
-  // Informe por cultivo
   const cultivoRows = Object.entries(cultivoMap).sort((a,b)=>b[1].litros-a[1].litros).map(([c, v]) => {
     const pct = totalLt > 0 ? (v.litros/totalLt*100).toFixed(1) : 0;
     const lxh = v.horas > 0 ? (v.litros/v.horas).toFixed(2) : '—';
@@ -3462,7 +3287,6 @@ function renderInformes() {
     </tr>`;
   }).join('');
 
-  // Cruce equipo x cultivo
   const equipos = Object.keys(equipoCultivoMap).sort();
   const cultivos = Object.keys(cultivoMap).sort();
 
@@ -3480,6 +3304,7 @@ function renderInformes() {
   }).join('');
 
   document.getElementById('informes-container').innerHTML = `
+    <div style="font-size:11px;color:var(--acero);margin-bottom:10px">🌳 Este informe solo considera el consumo de <strong>Los Maitenes</strong> (cargas "JCAR" se excluyen, "Ambos" cuenta al 50%).</div>
     <div class="panel" style="margin-bottom:16px">
       <div class="panel-title">Consumo por cultivo · horas · eficiencia</div>
       ${cultivoRows ? `<div class="table-wrap"><table>
@@ -3497,6 +3322,90 @@ function renderInformes() {
     </div>`;
 }
 
+// ─── REINTEGRO JCAR (solo admin, en Configurar) ─────────────
+// Lista las cargas atribuidas a JCAR (100%) o Ambos (50%) que todavía no se
+// han "reintegrado" físicamente al estanque. El admin marca el lote completo
+// como reintegrado cuando corresponda, lo que lo saca de la lista de
+// pendientes y queda guardado en un historial de reintegros.
+let jcarPendientesIds = [];
+
+function renderPanelReintegroJCAR() {
+  const cont = document.getElementById('jcar-reintegro-tabla');
+  const resumen = document.getElementById('jcar-reintegro-resumen');
+  if (!cont || !resumen) return;
+  const pendientes = registros.filter(r => (r.razon_social === 'jcar' || r.razon_social === 'ambos') && !r.jcar_reintegrado);
+  jcarPendientesIds = pendientes.map(r => r.id);
+  let totalLitros = 0, totalHoras = 0, totalKm = 0;
+  const filas = pendientes.slice().sort((a,b)=>a.ts-b.ts).map(r => {
+    const peso = factorJCAR(r);
+    const litrosCorresp = (r.litros||0) * peso;
+    const tipo = r.medidor_tipo;
+    const trabajadoCorresp = (r.diff_medidor||0) * peso;
+    totalLitros += litrosCorresp;
+    if (tipo === 'km') totalKm += trabajadoCorresp; else totalHoras += trabajadoCorresp;
+    return `<tr>
+      <td class="td-mono">${r.fecha}<br><span style="color:#9CA3AF;font-size:11px">${r.hora}</span></td>
+      <td>${r.equipo}</td>
+      <td>${r.razon_social === 'ambos' ? '🤝 Ambos (50%)' : '🏢 JCAR (100%)'}</td>
+      <td class="td-mono" style="color:var(--amarillo);font-weight:600">${litrosCorresp.toFixed(1)} L</td>
+      <td class="td-mono">${trabajadoCorresp>0 ? trabajadoCorresp.toFixed(tipo==='km'?0:1)+' '+tipo : '—'}</td>
+      <td>${r.operador}</td>
+    </tr>`;
+  }).join('');
+  resumen.innerHTML = `<div class="stats-grid" style="margin-bottom:14px">
+    <div class="stat-card"><div class="stat-label">Litros a reintegrar</div><div class="stat-value">${totalLitros.toFixed(1)}<span>L</span></div></div>
+    <div class="stat-card"><div class="stat-label">Horas</div><div class="stat-value">${totalHoras.toFixed(1)}<span>hr</span></div></div>
+    <div class="stat-card"><div class="stat-label">Km</div><div class="stat-value">${totalKm.toFixed(0)}<span>km</span></div></div>
+  </div>`;
+  cont.innerHTML = filas ? `<div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Equipo</th><th>Tipo</th><th>Litros</th><th>Trabajado</th><th>Operador</th></tr></thead><tbody>${filas}</tbody></table></div>` : '<div class="empty"><div class="empty-icon">✅</div>Sin litros JCAR pendientes de reintegro.</div>';
+  const btn = document.getElementById('btn-marcar-reintegro-jcar');
+  if (btn) btn.disabled = pendientes.length === 0;
+}
+
+window.marcarReintegroJCAR = async function() {
+  if (!jcarPendientesIds.length) { toast('No hay litros pendientes de reintegro', false); return; }
+  const pendientes = registros.filter(r => jcarPendientesIds.includes(r.id));
+  let totalLitros=0, totalHoras=0, totalKm=0;
+  pendientes.forEach(r=>{
+    const peso = factorJCAR(r);
+    totalLitros += (r.litros||0)*peso;
+    const trabCorresp = (r.diff_medidor||0)*peso;
+    if (r.medidor_tipo==='km') totalKm += trabCorresp; else totalHoras += trabCorresp;
+  });
+  if (!confirm(`¿Marcar ${jcarPendientesIds.length} registro(s) como reintegrados a JCAR?\n\nTotal: ${totalLitros.toFixed(1)} L · ${totalHoras.toFixed(1)} hr · ${totalKm.toFixed(0)} km\n\nEsta acción no se puede deshacer.`)) return;
+  const btn = document.getElementById('btn-marcar-reintegro-jcar');
+  if (btn) { btn.disabled = true; btn.textContent = 'Guardando...'; }
+  try {
+    for (let i=0;i<jcarPendientesIds.length;i+=400) {
+      const lote = jcarPendientesIds.slice(i,i+400);
+      const batch = writeBatch(db);
+      lote.forEach(id => batch.update(doc(db,'registros',id), { jcar_reintegrado: true, jcar_reintegrado_ts: Date.now(), jcar_reintegrado_por: currentUser }));
+      await batch.commit();
+    }
+    await addDoc(collection(db,'reintegros_jcar'), { litros: totalLitros, horas: totalHoras, km: totalKm, cantidadRegistros: jcarPendientesIds.length, ts: Date.now(), registrado_por: currentUser });
+    toast('✅ Reintegro marcado', true);
+    renderPanelReintegroJCAR();
+    cargarHistorialReintegrosJCAR();
+  } catch(e) { toast('Error: '+e.message, false); }
+  if (btn) { btn.disabled = false; btn.textContent = '✅ Marcar como reintegrado'; }
+}
+
+async function cargarHistorialReintegrosJCAR() {
+  const cont = document.getElementById('jcar-reintegro-historial');
+  if (!cont) return;
+  cont.innerHTML = '<div style="color:#9CA3AF;font-size:13px;padding:8px">Cargando...</div>';
+  try {
+    const snap = await getDocs(query(collection(db,'reintegros_jcar'), orderBy('ts','desc'), limit(20)));
+    const items = snap.docs.map(d => d.data());
+    if (!items.length) { cont.innerHTML = '<div style="color:#9CA3AF;font-size:13px;padding:8px">Sin reintegros registrados todavía.</div>'; return; }
+    cont.innerHTML = items.map(it => `<div class="config-item" style="flex-wrap:wrap;gap:6px">
+      <span style="flex:1;min-width:160px">
+        <strong>${new Date(it.ts).toLocaleDateString('es-CL')}</strong><br>
+        <span style="font-size:12px;color:var(--acero)">${(it.litros||0).toFixed(1)} L · ${(it.horas||0).toFixed(1)} hr · ${(it.km||0).toFixed(0)} km · ${it.cantidadRegistros||0} registro(s) · por ${it.registrado_por||'—'}</span>
+      </span>
+    </div>`).join('');
+  } catch(e) { cont.innerHTML = `<div style="color:var(--rojo);font-size:13px;padding:8px">Error: ${e.message}</div>`; }
+}
 
 // ─── GESTIÓN DE PINES (ADMIN) ──────────────────────────────
 const PINES_INICIALES = {
@@ -3519,10 +3428,9 @@ window.cargarPines = async function() {
   const container = document.getElementById('lista-pines');
   if (!container) return;
   container.innerHTML = '<div style="color:#9CA3AF;font-size:13px;padding:8px">Cargando...</div>';
-  
+
   let pines = await getPines();
-  
-  // Si un operador no tiene PIN asignado, asignarle el inicial
+
   let actualizado = false;
   config.operadores.forEach(op => {
     if (!pines[op]) {
@@ -3549,12 +3457,11 @@ window.resetearPin = async function(operador) {
   const pinNuevo = prompt(`Nuevo PIN para ${operador} (mínimo 4 dígitos):`);
   if (!pinNuevo || pinNuevo.length < 4) { toast('PIN inválido', false); return; }
   if (pinNuevo === ADMIN_PIN) { toast('Ese PIN está reservado', false); return; }
-  
+
   const pines = await getPines();
-  // Verificar que no esté en uso por otro operador
   const enUso = Object.entries(pines).find(([op, p]) => p === pinNuevo && op !== operador);
   if (enUso) { toast(`⚠️ Ese PIN ya lo usa ${enUso[0]}`, false); return; }
-  
+
   pines[operador] = pinNuevo;
   await setDoc(doc(db, 'config', 'pines'), pines);
   toast(`✓ PIN de ${operador} actualizado`, true);
@@ -3588,7 +3495,6 @@ window.eliminarItem = async function(tipo,idx) {
   config[tipo].splice(idx,1);
   if (tipo === 'equipos' && config.tiposEquipo) delete config.tiposEquipo[val];
   if (tipo === 'equipos' && config.requisitosEquipo) { delete config.requisitosEquipo[val]; requisitosEquipo = config.requisitosEquipo; }
-  // Si se elimina un equipo, sacarlo también de las restricciones de aperos
   if (tipo === 'equipos' && Array.isArray(config.aperos)) {
     config.aperos.forEach(a => {
       if (Array.isArray(a.equipos)) {
@@ -3598,7 +3504,6 @@ window.eliminarItem = async function(tipo,idx) {
     });
     aperosConfig = config.aperos;
   }
-  // Si se elimina un equipo, sacarlo de la lista de equipos principales de cada operador
   if (tipo === 'equipos' && config.equipoOperador) {
     Object.keys(config.equipoOperador).forEach(op => {
       const lista = equiposDe(op).filter(e => e !== val);
@@ -3606,22 +3511,18 @@ window.eliminarItem = async function(tipo,idx) {
     });
     equipoOperadorConfig = config.equipoOperador;
   }
-  // Si se elimina un equipo, sacarlo también de la configuración de fuente del horómetro
   if (tipo === 'equipos' && config.fuenteHorometro) {
     delete config.fuenteHorometro[val];
     fuenteHorometroConfig = config.fuenteHorometro;
   }
-  // Si se elimina un operador, sacar también su asignación de equipos
   if (tipo === 'operadores' && config.equipoOperador) {
     delete config.equipoOperador[val];
     equipoOperadorConfig = config.equipoOperador;
   }
-  // Si se elimina un operador, sacar también su preset de cultivo/trabajo/apero
   if (tipo === 'operadores' && config.presetsOperador) {
     delete config.presetsOperador[val];
     presetsOperadorConfig = config.presetsOperador;
   }
-  // Si se elimina un tipo de trabajo, sacarlo también de las asignaciones de aperos
   if (tipo === 'trabajos') {
     trabajosConfig = config.trabajos;
     if (Array.isArray(config.aperos)) {
@@ -3637,6 +3538,23 @@ window.eliminarItem = async function(tipo,idx) {
   await saveConfig();
   renderConfigListas(); initRegistro();
 }
+// ─── REORDENAR EQUIPOS (Configurar) ─────────────────────────
+// Mueve un equipo una posición arriba o abajo dentro del array config.equipos,
+// que es lo que define el orden en que aparecen en el selector de la app.
+// Solo aplica a la lista de equipos por ahora (es la que más importa reordenar
+// para que el listado quede agrupado de forma lógica para los operadores).
+window.moverEquipo = async function(idx, direccion) {
+  const lista = config.equipos;
+  const nuevoIdx = idx + direccion;
+  if (nuevoIdx < 0 || nuevoIdx >= lista.length) return;
+  const tmp = lista[idx];
+  lista[idx] = lista[nuevoIdx];
+  lista[nuevoIdx] = tmp;
+  try {
+    await saveConfig();
+    renderConfigListas();
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
 window.cambiarTipoEquipo = async function(equipo) {
   const actual = tipoEquipo(equipo);
   const nuevo = actual === 'km' ? 'hr' : 'km';
@@ -3650,7 +3568,6 @@ window.cambiarTipoEquipo = async function(equipo) {
   renderConfigListas();
   toast(`✓ ${equipo} ahora se registra en ${nuevo==='km'?'km/L':'L/hr'}`, true);
 }
-// Alterna si un equipo exige cultivo / tipo de trabajo / apero al cargar combustible
 window.toggleRequisitoEquipo = async function(equipo, campo) {
   if (!config.requisitosEquipo) config.requisitosEquipo = {};
   if (!config.requisitosEquipo[equipo]) config.requisitosEquipo[equipo] = { cultivo: true, trabajo: true, apero: true };
@@ -3663,9 +3580,6 @@ window.toggleRequisitoEquipo = async function(equipo, campo) {
     toast(`✓ ${equipo}: ${campo} ahora ${!actual ? 'es requerido' : 'no es requerido'}`, true);
   } catch(e) { toast('Error: ' + e.message, false); }
 }
-// Cicla la fuente del horómetro de un equipo: Manual → Shelly → JDLink → Manual.
-// Reemplaza al viejo interruptor binario de JDLink — ahora es un solo lugar
-// donde queda claro de dónde saca sus horas cada equipo.
 window.cambiarFuenteHorometro = async function(equipo) {
   const actual = fuenteHorometroDe(equipo);
   const siguiente = actual === 'manual' ? 'shelly' : actual === 'shelly' ? 'jdlink' : 'manual';
@@ -3693,6 +3607,10 @@ function renderConfigListas() {
           }[fuente];
           const badgeReq = (label, campo, activo) => `<span class="badge" style='font-size:9px;margin-left:3px;cursor:pointer;background:${activo?'var(--verde-suave)':'#F3F4F6'};color:${activo?'var(--verde)':'#9CA3AF'}' title="Click para cambiar si ${label.toLowerCase()} es requerido" onclick='toggleRequisitoEquipo(${JSON.stringify(v)},${JSON.stringify(campo)})'>${label}${activo?' ✓':' ✕'}</span>`;
           return `<div class="config-item" style="flex-wrap:wrap;gap:6px">
+            <div style="display:flex;flex-direction:column;gap:2px">
+              <button class="btn btn-secondary" style="padding:2px 6px;font-size:10px;line-height:1" title="Mover arriba" ${i===0?'disabled style="opacity:.3"':''} onclick="moverEquipo(${i},-1)">▲</button>
+              <button class="btn btn-secondary" style="padding:2px 6px;font-size:10px;line-height:1" title="Mover abajo" ${i===config.equipos.length-1?'disabled style="opacity:.3"':''} onclick="moverEquipo(${i},1)">▼</button>
+            </div>
             <span style="flex:1;min-width:120px">${v}</span>
             <span class="badge badge-${tipoEquipo(v)}" style='font-size:10px;cursor:pointer' title="Click para cambiar entre km/hr" onclick='cambiarTipoEquipo(${JSON.stringify(v)})'>${tipoEquipo(v)==='km'?'km/L ⇄':'L/hr ⇄'}</span>
             ${badgeReq('Cultivo','cultivo',req.cultivo)}
@@ -3709,10 +3627,8 @@ function renderConfigListas() {
 }
 
 // ─── APEROS / IMPLEMENTOS (Configurar) ──────────────────────
-// Estado en memoria del formulario "agregar apero nuevo"
 let nuevoAperoTrabajos = [];
 let nuevoAperoEquipos = [];
-// Estado en memoria del editor de asignación de un apero existente
 let edicionAperoIndex = null;
 let edicionAperoTrabajos = [];
 let edicionAperoEquipos = [];
@@ -3941,7 +3857,6 @@ function renderListaExcepcionesOperador() {
 }
 
 // ─── EQUIPO(S) PRINCIPAL(ES) POR OPERADOR (Configurar) ──────
-// Estado en memoria del editor de asignación (qué operador se está editando)
 let edicionEquipoOperadorNombre = null;
 let edicionEquiposSeleccionados = [];
 
@@ -4017,7 +3932,6 @@ window.guardarEdicionEquipoOperador = async function(idx) {
 }
 
 // ─── PRESET DE CULTIVO/TRABAJO/APERO POR OPERADOR (Configurar) ────
-// Estado en memoria del editor (qué operador se está editando)
 let presetEdicionOperador = null;
 let presetEdicionCultivos = [];
 let presetEdicionTrabajo = null;
@@ -4049,9 +3963,6 @@ function renderPanelPresetsOperador() {
   }
 }
 
-// Activa o desactiva el preset sin borrar los valores guardados — útil si
-// algún día quieres que ese operador elija normalmente por un tiempo, sin
-// tener que volver a armar todo el preset después
 window.togglePresetActivo = async function(op) {
   if (!presetsOperadorConfig[op]) return;
   const actual = presetsOperadorConfig[op].activo !== false;
@@ -4162,8 +4073,8 @@ window.setTab = function(id,el) {
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
   document.getElementById('tc-'+id).classList.add('active');
   if(el)el.classList.add('active');
-  if(['historial','admin','analytics','informes','eficiencia'].includes(id)) loadHistorial();
-  if(id==='config') { renderConfigListas(); renderPanelAperos(); renderPanelEquipoOperador(); renderPanelPresetsOperador(); renderPanelHorario(); renderPanelMantencionesConfig(); renderPanelParametros(); renderPanelCorreccionHorometro(); renderPanelTotalizadorManual(); renderPanelSaldoManual(); renderPanelRecalculoOpcion(); renderLimpiezaEquiposSelector(); renderRecalcEquiposSelector(); if(isAdmin) cargarPines(); actualizarToggleESP32(); }
+  if(['historial','admin','analytics','informes','eficiencia','config'].includes(id)) loadHistorial();
+  if(id==='config') { renderConfigListas(); renderPanelAperos(); renderPanelEquipoOperador(); renderPanelPresetsOperador(); renderPanelHorario(); renderPanelMantencionesConfig(); renderPanelParametros(); renderPanelCorreccionHorometro(); renderPanelTotalizadorManual(); renderPanelSaldoManual(); renderPanelRecalculoOpcion(); renderLimpiezaEquiposSelector(); renderRecalcEquiposSelector(); renderPanelReintegroJCAR(); cargarHistorialReintegrosJCAR(); if(isAdmin) cargarPines(); actualizarToggleESP32(); }
   if(id==='mantencion') { initMantencion(); }
   if(id==='registro' && isAdmin) escucharSolicitudesAdmin();
 }
@@ -4174,14 +4085,8 @@ function populateSelect(id,arr,placeholder) {
   sel.innerHTML=`<option value="" disabled selected>${placeholder}</option>`;
   arr.forEach(v=>{const o=document.createElement('option');o.value=v;o.textContent=v;if(v===cur)o.selected=true;sel.appendChild(o);});
 }
+
 // ─── MANTENCIONES ─────────────────────────────────────────
-// MANT_POR_HORAS/MANT_ANUAL/MANT_SIN_FRECUENCIA son solo la SEMILLA usada una
-// única vez para migrar a Firestore (config.datos.mantenciones). Desde ahí en
-// adelante, el catálogo real y editable vive en `mantencionesConfig`, con cada
-// ítem como { id, nombre, categoria: 'horas'|'km'|'anual'|'sin_frecuencia',
-// intervalo, intervalosPorEquipo: { equipo: valor, ... } }. `intervalo` es el
-// valor general; `intervalosPorEquipo` permite sobreescribirlo para un equipo
-// puntual (ej. un tractor que necesita cambio de aceite más seguido que el resto).
 const MANT_POR_HORAS = [
   { id: 'aceite_motor',      nombre: 'Cambio aceite motor',             intervalo: 250  },
   { id: 'filtro_hidraulico', nombre: 'Cambio filtro aceite hidráulico', intervalo: 500  },
@@ -4207,13 +4112,13 @@ function construirMantencionesDesdeHardcode() {
     ...MANT_SIN_FRECUENCIA.map(m => ({ ...m, categoria: 'sin_frecuencia', intervalo: null, intervalosPorEquipo: {} }))
   ];
 }
-let mantencionesConfig = []; // se carga desde Firestore (config.datos.mantenciones)
-const ALERTA_HRS_ANTES_DEFAULT = 20; // avisar cuando falten estas horas
-let alertaHrsAntes = ALERTA_HRS_ANTES_DEFAULT; // editable desde Configurar
+let mantencionesConfig = [];
+const ALERTA_HRS_ANTES_DEFAULT = 20;
+let alertaHrsAntes = ALERTA_HRS_ANTES_DEFAULT;
 
 let mantEquipoActual = null;
-let mantTipoActual = null;  // { id, nombre, intervalo, categoria }
-let mantRegistros = {};     // cache: equipo → { tipoId → último registro }
+let mantTipoActual = null;
+let mantRegistros = {};
 
 function equiposHr() {
   return config.equipos.filter(e => tipoEquipo(e) === 'hr' && e !== 'Otro (especificar)');
@@ -4221,12 +4126,9 @@ function equiposHr() {
 function equiposKm() {
   return config.equipos.filter(e => tipoEquipo(e) === 'km' && e !== 'Otro (especificar)');
 }
-// Todos los equipos con medidor (horas o km), usados en la pestaña Mantención
 function equiposConMedidor() {
   return config.equipos.filter(e => e !== 'Otro (especificar)');
 }
-// El intervalo real para un equipo puntual: usa la sobreescritura si existe,
-// si no cae al valor general del tipo de mantención
 function intervaloParaEquipo(tipo, equipo) {
   const ov = tipo.intervalosPorEquipo && tipo.intervalosPorEquipo[equipo];
   return (ov != null && ov !== '') ? ov : tipo.intervalo;
@@ -4418,16 +4320,13 @@ function initMantencion() {
   const sel = document.getElementById('mant-equipo-sel');
   const equipos = equiposConMedidor();
   const equiposAsignados = equiposDe(currentUser);
-  // Filtrar: operador solo ve su(s) equipo(s) asignado(s)
   const lista = isAdmin || isSupervisor ? equipos : equipos.filter(e => equiposAsignados.includes(e));
   sel.innerHTML = '<option value="" disabled selected>Seleccionar equipo</option>' +
     lista.map(e => `<option value="${e}">${e}</option>`).join('');
-  // Si operador tiene equipo(s) asignado(s), pre-seleccionar y cargar estado
   if (!isAdmin && !isSupervisor && equiposAsignados.length > 0) {
     sel.value = equiposAsignados[0];
     cargarEstadoMantencion();
   } else if (isAdmin || isSupervisor) {
-    // Admin/supervisor: cargar primer equipo de la lista
     if (lista.length > 0) {
       sel.value = lista[0];
       cargarEstadoMantencion();
@@ -4447,16 +4346,13 @@ window.cargarEstadoMantencion = async function() {
   document.getElementById('panel-mant-form').style.display = 'none';
   document.getElementById('panel-mant-historial').style.display = 'none';
 
-  // Último horómetro del equipo
   const snapComb = await getDocs(query(collection(db,'registros'), where('equipo','==',eq), orderBy('ts','desc'), limit(1)));
   const horometroActual = snapComb.empty ? null : (snapComb.docs[0].data().medidor_valor || 0);
 
-  // Traer última mantención de cada tipo para este equipo (sin orderBy para evitar índice)
   const snapMant = await getDocs(query(collection(db,'mantenciones'), where('equipo','==',eq)));
   const ultimasPorTipo = {};
   snapMant.docs.forEach(d => {
     const data = d.data();
-    // Quedarse solo con el más reciente por tipo
     if (!ultimasPorTipo[data.tipo_id] || data.ts > ultimasPorTipo[data.tipo_id].ts) {
       ultimasPorTipo[data.tipo_id] = { id: d.id, ...data };
     }
@@ -4468,7 +4364,7 @@ window.cargarEstadoMantencion = async function() {
 }
 
 function renderEstadoMantencion(eq, medidorActual, ultimasPorTipo) {
-  const unidadEq = tipoEquipo(eq); // 'hr' o 'km'
+  const unidadEq = tipoEquipo(eq);
   const categoriaMedidor = unidadEq === 'km' ? 'km' : 'horas';
   const etiquetaUnidad = unidadEq === 'km' ? 'km' : 'hr';
 
@@ -4479,7 +4375,6 @@ function renderEstadoMantencion(eq, medidorActual, ultimasPorTipo) {
     let estado = '', prox = '', color = 'var(--acero)', icono = '⚪';
 
     if (!intervalo) {
-      // Sin intervalo definido
       estado = ult ? `Último: ${ult.fecha} (${medidorUlt ? medidorUlt.toFixed(0)+' '+etiquetaUnidad : '—'})` : 'Sin registro';
       icono = ult ? '✅' : '⚪';
       color = 'var(--acero)';
@@ -4567,7 +4462,6 @@ window.abrirFormMant = async function(tipoId, nombre, categoria, intervalo) {
   document.getElementById('mant-fecha').value = fecha;
   document.getElementById('mant-obs').value = '';
   document.getElementById('mant-form-title').textContent = `Registrar: ${nombre}`;
-  // Horómetro/odómetro solo para mantenciones por horas o por kilómetros
   const hrField = document.getElementById('mant-horometro-field');
   const esPorMedidor = categoria === 'horas' || categoria === 'km';
   hrField.style.display = esPorMedidor ? 'flex' : 'none';
@@ -4575,11 +4469,9 @@ window.abrirFormMant = async function(tipoId, nombre, categoria, intervalo) {
     const unidad = categoria === 'km' ? 'km' : 'hr';
     const labelEl = document.getElementById('mant-horometro-label');
     if (labelEl) labelEl.textContent = categoria === 'km' ? 'Odómetro actual (km)' : 'Horómetro actual (hr)';
-    // Pre-llenar con el último valor conocido del combustible
     const snapComb = await getDocs(query(collection(db,'registros'), where('equipo','==',mantEquipoActual), orderBy('ts','desc'), limit(1)));
     const medidorUltimo = snapComb.empty ? null : (snapComb.docs[0].data().medidor_valor || 0);
     document.getElementById('mant-horometro').value = medidorUltimo !== null ? medidorUltimo.toFixed(0) : '';
-    // Mostrar rango permitido para operadores
     const hintEl = document.getElementById('mant-hr-hint');
     if (hintEl) {
       if (!isAdmin && !isSupervisor && medidorUltimo !== null) {
@@ -4591,10 +4483,8 @@ window.abrirFormMant = async function(tipoId, nombre, categoria, intervalo) {
       }
     }
   }
-  // Campo extra para "Otro"
   const formPanel = document.getElementById('panel-mant-form');
   formPanel.style.display = 'block';
-  // Si es "otro", agregar campo descripción
   let otroHtml = '';
   if (tipoId === 'otro') {
     otroHtml = `<div class="field" id="mant-otro-field"><label>Descripción del trabajo</label><input type="text" id="mant-obs-tipo" placeholder="Ej: Cambio correas distribución..."></div>`;
@@ -4626,7 +4516,6 @@ window.guardarMantencion = async function() {
     horometro = parseFloat(document.getElementById('mant-horometro').value);
     if (isNaN(horometro) || horometro < 0) { toast(`Ingresa el ${mantTipoActual.categoria === 'km' ? 'odómetro' : 'horómetro'}`, false); return; }
 
-    // Operador: validar que el medidor esté dentro de un margen razonable del último registro de combustible
     if (!isAdmin && !isSupervisor) {
       const snapComb = await getDocs(query(collection(db,'registros'), where('equipo','==',mantEquipoActual), orderBy('ts','desc'), limit(1)));
       if (snapComb.empty) {
@@ -4799,6 +4688,11 @@ select:focus,input:focus{outline:none;border-color:var(--amarillo);box-shadow:0 
 .dist-title{font-size:11px;font-weight:600;color:var(--verde);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;}
 .dist-row{display:flex;justify-content:space-between;font-size:13px;padding:2px 0;color:var(--verde);}
 
+/* RAZÓN SOCIAL — selector destacado arriba del formulario de carga */
+.razon-social-box{background:var(--fondo);border:2px solid var(--borde);border-radius:8px;padding:12px 14px;margin-bottom:14px;}
+.razon-social-box .cultivos-label{margin-bottom:8px;}
+.razon-social-box .centros-selector{margin-bottom:0;}
+
 .btn{padding:10px 20px;border:none;border-radius:6px;font-family:var(--sans);font-size:14px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:6px;}
 .btn-primary{background:var(--amarillo);color:var(--negro);width:100%;justify-content:center;font-size:15px;padding:14px;margin-top:4px;}
 .btn-primary:hover{background:#e09515;}
@@ -4808,6 +4702,7 @@ select:focus,input:focus{outline:none;border-color:var(--amarillo);box-shadow:0 
 .btn-full{width:100%;justify-content:center;}
 .btn-verde{background:var(--verde);color:var(--blanco);width:100%;justify-content:center;font-size:15px;padding:14px;}
 .btn-verde:hover{background:#256b3b;}
+.btn-verde:disabled{opacity:.5;cursor:not-allowed;}
 .stats-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px;}
 @media(max-width:460px){.stats-grid{grid-template-columns:1fr 1fr;}}
 .stat-card{background:var(--blanco);border:1px solid var(--borde);border-radius:8px;padding:14px;}
@@ -4916,6 +4811,16 @@ tbody td{padding:10px 12px;vertical-align:middle;}
           <div class="fh-box"><div class="fh-label">FECHA</div><div class="fh-valor" id="fecha-display">—</div></div>
           <div class="fh-box"><div class="fh-label">HORA</div><div class="fh-valor" id="hora-display">—</div></div>
         </div>
+
+        <!-- RAZÓN SOCIAL: selector bien visible, arriba de todo lo demás.
+             Predeterminado "Los Maitenes" — si se deja así, todo funciona
+             exactamente igual que siempre. No filtra equipos, labores ni
+             aperos: es puramente para saber a quién se le atribuye el gasto. -->
+        <div class="razon-social-box">
+          <div class="cultivos-label">Razón social</div>
+          <div class="centros-selector" id="razon-social-selector"></div>
+        </div>
+
         <div id="operador-field" style="display:none" class="field">
           <label>Operador</label>
           <div class="select-wrapper"><select id="operador-select" onchange="onOperadorSelectChange()"></select></div><div id="operador-otro-wrap"></div>
@@ -5143,369 +5048,366 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       </div>
     </div>
 
-    <!-- CONFIG -->
+    <!-- CONFIGURAR -->
     <div id="tc-config" class="tab-content">
       <div class="panel">
-        <div class="panel-title">Equipos</div>
-        <div class="config-lista" id="lista-equipos"></div>
-        <div class="config-add">
-          <input type="text" id="nuevo-equipo" placeholder="Ej: JD 6130">
-          <div class="select-wrapper" style="width:130px;flex-shrink:0">
-            <select id="nuevo-equipo-tipo">
-              <option value="hr">Horas (L/hr)</option>
-              <option value="km">Kilómetros (km/L)</option>
+        <div class="panel-title">⚙️ Equipos</div>
+        <div class="field" style="margin-bottom:8px">
+          <div class="config-add">
+            <input type="text" id="nuevo-equipo" placeholder="Nombre del equipo">
+            <select id="nuevo-equipo-tipo" style="max-width:110px">
+              <option value="hr">Horas</option>
+              <option value="km">Km</option>
             </select>
+            <button class="btn-add" onclick="agregar('equipos')">+ Agregar</button>
           </div>
-          <button class="btn-add" onclick="agregar('equipos')">+ Agregar</button>
         </div>
-        <div class="hint">Click en km/L ó L/hr para cambiar el tipo de medidor. Click en Cultivo/Trabajo/Apero para cambiar si ese campo es requerido. Click en el badge "⏱" para elegir de dónde saca sus horas ese equipo: Manual → Shelly → JDLink (para JDLink, primero debe estar emparejado en connections.deere.com).</div>
+        <div class="config-lista" id="lista-equipos"></div>
       </div>
+
       <div class="panel">
-        <div class="panel-title">🔩 Aperos / Implementos</div>
-        <p class="hint" style="margin-bottom:12px">Cada apero puede asignarse a uno o más tipos de trabajo y, opcionalmente, restringirse a equipos específicos. Si no se marca ningún equipo, queda disponible para todos.</p>
+        <div class="panel-title">🧰 Aperos / Implementos</div>
+        <div class="field">
+          <label>Nuevo apero</label>
+          <div class="cultivos-label" style="margin-top:6px">Trabajos donde aparece (vacío = todos)</div>
+          <div class="centros-selector" id="nuevo-apero-trabajos"></div>
+          <div class="cultivos-label" style="margin-top:6px">Equipos habilitados (vacío = todos)</div>
+          <div class="centros-selector" id="nuevo-apero-equipos"></div>
+          <div class="config-add" style="margin-top:8px">
+            <input type="text" id="nuevo-apero-nombre" placeholder="Nombre del apero">
+            <button class="btn-add" onclick="agregarApero()">+ Agregar</button>
+          </div>
+        </div>
         <div class="config-lista" id="lista-aperos"></div>
-        <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--borde)">
-          <div class="field"><label>Nombre del nuevo apero</label><input type="text" id="nuevo-apero-nombre" placeholder="Ej: Rastra de discos"></div>
-          <div class="field">
-            <label>Tipos de trabajo donde aparece (opcional)</label>
-            <div class="centros-selector" id="nuevo-apero-trabajos"></div>
-          </div>
-          <div class="field">
-            <label>Equipos habilitados (opcional — vacío = todos)</label>
-            <div class="centros-selector" id="nuevo-apero-equipos"></div>
-          </div>
-          <button class="btn-add" style="width:100%;justify-content:center" onclick="agregarApero()">+ Agregar apero</button>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">👷 Operadores</div>
+        <div class="config-add">
+          <input type="text" id="nuevo-operador" placeholder="Nombre del operador">
+          <button class="btn-add" onclick="agregar('operadores')">+ Agregar</button>
         </div>
+        <div class="config-lista" id="lista-operadores" style="margin-top:10px"></div>
       </div>
+
       <div class="panel">
-        <div class="panel-title">Operadores</div>
-        <div class="config-lista" id="lista-operadores"></div>
-        <div class="config-add"><input type="text" id="nuevo-operador" placeholder="Ej: Pedro Soto"><button class="btn-add" onclick="agregar('operadores')">+ Agregar</button></div>
-      </div>
-      <div class="panel">
-        <div class="panel-title">🚜 Equipo(s) asignado(s) por operador</div>
-        <p class="hint" style="margin-bottom:12px">Cada operador puede tener hasta 3 equipos principales — al ingresar a la app, se le muestran para elegir rápido. Un mismo equipo puede ser principal para más de un operador a la vez.</p>
+        <div class="panel-title">🚜 Equipo(s) principal(es) por operador</div>
         <div class="config-lista" id="lista-equipo-operador"></div>
       </div>
+
       <div class="panel">
-        <div class="panel-title">🔒 Preestablecer cultivo/trabajo/apero por operador</div>
-        <p class="hint" style="margin-bottom:12px">Fija de antemano el cultivo, trabajo y apero de un operador. Mientras esté "Activo", él ve esos valores ya seleccionados (puede leerlos) pero no puede cambiarlos — solo enciende y apaga la bomba. Puedes activarlo/desactivarlo cuando quieras sin perder los datos guardados; él nunca se entera del cambio.</p>
-        <div class="config-lista" id="lista-presets-operador"></div>
-        <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--borde)">
-          <div class="field">
-            <label>Operador</label>
-            <div class="select-wrapper"><select id="preset-operador-sel" onchange="onPresetOperadorSelChange()"></select></div>
-          </div>
-          <div id="preset-operador-editor"></div>
+        <div class="panel-title">🎯 Preset simplificado por operador (cultivo/trabajo/apero fijos)</div>
+        <div class="hint" style="margin-bottom:10px">Si un operador tiene un preset activo, no ve los selectores de cultivo/trabajo/apero — solo enciende y apaga la bomba con esos valores ya fijados.</div>
+        <div class="field">
+          <label>Elegir operador para editar su preset</label>
+          <div class="select-wrapper"><select id="preset-operador-sel" onchange="onPresetOperadorSelChange()"></select></div>
         </div>
+        <div id="preset-operador-editor"></div>
+        <div class="cultivos-label" style="margin-top:16px">Presets guardados</div>
+        <div class="config-lista" id="lista-presets-operador"></div>
       </div>
+
       <div class="panel">
-        <div class="panel-title">Cultivos / Centros de Costo</div>
-        <div class="config-lista" id="lista-centros"></div>
-        <div class="config-add"><input type="text" id="nuevo-centro" placeholder="Ej: Praderas"><button class="btn-add" onclick="agregar('centros')">+ Agregar</button></div>
+        <div class="panel-title">🌾 Cultivos / Centros de costo</div>
+        <div class="config-add">
+          <input type="text" id="nuevo-centro" placeholder="Nombre del cultivo">
+          <button class="btn-add" onclick="agregar('centros')">+ Agregar</button>
+        </div>
+        <div class="config-lista" id="lista-centros" style="margin-top:10px"></div>
       </div>
+
       <div class="panel">
-        <div class="panel-title">🚧 Tipos de trabajo</div>
-        <p class="hint" style="margin-bottom:12px">Las categorías de labor que aparecen al cargar combustible (Siembra, Fumigación, etc.). Los aperos se asignan a estos tipos de trabajo desde el panel de Aperos / Implementos.</p>
-        <div class="config-lista" id="lista-trabajos"></div>
-        <div class="config-add"><input type="text" id="nuevo-trabajo" placeholder="Ej: Poda"><button class="btn-add" onclick="agregar('trabajos')">+ Agregar</button></div>
+        <div class="panel-title">🔨 Tipos de trabajo</div>
+        <div class="config-add">
+          <input type="text" id="nuevo-trabajo" placeholder="Nombre del trabajo">
+          <button class="btn-add" onclick="agregar('trabajos')">+ Agregar</button>
+        </div>
+        <div class="config-lista" id="lista-trabajos" style="margin-top:10px"></div>
       </div>
-      <div class="panel">
-        <div class="panel-title">🔑 Gestión de PINs</div>
-        <div id="lista-pines"><div style="color:#9CA3AF;font-size:13px;padding:8px">Cargando...</div></div>
-        <button class="btn btn-secondary" style="margin-top:12px;width:100%;justify-content:center" onclick="cargarPines()">↺ Actualizar</button>
-      </div>
+
       <div class="panel">
         <div class="panel-title">⏰ Horario permitido para cargar combustible</div>
-        <p class="hint" style="margin-bottom:12px">Los operadores solo pueden cargar combustible dentro de estos días y horas (el administrador siempre puede, sin restricción).</p>
-        <div class="field">
-          <label>Días habilitados</label>
-          <div class="centros-selector" id="horario-dias-selector"></div>
-        </div>
-        <div class="grid-2">
+        <div class="cultivos-label">Días habilitados</div>
+        <div class="centros-selector" id="horario-dias-selector"></div>
+        <div class="grid-2" style="margin-top:10px">
           <div class="field">
             <label>Hora inicio</label>
-            <input type="number" id="horario-hora-inicio" min="0" max="24" step="1" placeholder="Ej: 8">
+            <input type="number" id="horario-hora-inicio" min="0" max="24" step="1" placeholder="8">
           </div>
           <div class="field">
             <label>Hora fin</label>
-            <input type="number" id="horario-hora-fin" min="0" max="24" step="1" placeholder="Ej: 18">
+            <input type="number" id="horario-hora-fin" min="0" max="24" step="1" placeholder="18">
           </div>
         </div>
-        <button class="btn btn-verde" style="width:100%;justify-content:center" onclick="guardarHorarioPermitido()">✓ Guardar horario</button>
-      </div>
-      <div class="panel">
-        <div class="panel-title">🔓 Excepciones de horario por operador</div>
-        <p class="hint" style="margin-bottom:12px">Habilita a un operador en particular para cargar combustible sin restricción de horario, sin importar qué equipo use ese día — de forma indefinida, o solo por un tiempo determinado.</p>
+        <button class="btn btn-verde btn-full" style="margin-top:8px" onclick="guardarHorarioPermitido()">✓ Guardar horario</button>
+
+        <div class="cultivos-label" style="margin-top:20px">Habilitar operador fuera de horario</div>
+        <div class="field">
+          <div class="select-wrapper"><select id="excepcion-operador-sel"></select></div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <input type="number" id="excepcion-horas-input" min="1" step="1" placeholder="Horas" style="max-width:110px">
+          <button class="btn btn-secondary" onclick="habilitarOperadorPorHoras()">Habilitar por X horas</button>
+          <button class="btn btn-secondary" onclick="habilitarOperadorIndefinido()">Habilitar indefinido</button>
+        </div>
+        <div class="cultivos-label" style="margin-top:14px">Excepciones activas</div>
         <div class="config-lista" id="lista-excepciones-equipo"></div>
-        <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--borde)">
-          <div class="field">
-            <label>Operador</label>
-            <div class="select-wrapper"><select id="excepcion-operador-sel"></select></div>
-          </div>
-          <button class="btn btn-secondary" style="width:100%;justify-content:center;margin-bottom:10px" onclick="habilitarOperadorIndefinido()">♾️ Habilitar indefinido (sin restricción)</button>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">🔧 Catálogo de mantenciones</div>
+        <div class="field">
+          <label>Umbral de alerta (horas/km antes del vencimiento)</label>
           <div style="display:flex;gap:8px">
-            <input type="number" id="excepcion-horas-input" min="1" step="1" placeholder="Horas" style="flex:1;min-width:0">
-            <button class="btn btn-verde" style="white-space:nowrap;width:auto;flex-shrink:0" onclick="habilitarOperadorPorHoras()">⏳ Habilitar por X horas</button>
+            <input type="number" id="alerta-hrs-antes-input" min="0" step="1" style="max-width:120px">
+            <button class="btn btn-secondary" onclick="guardarAlertaHrsAntes()">Guardar</button>
           </div>
         </div>
-      </div>
-      <div class="panel">
-        <div class="panel-title">📡 Caudalímetro ESP32</div>
-        <div class="esp32-estado-widget" style="margin-bottom:10px"></div>
-        <p style="font-size:13px;color:var(--acero);margin-bottom:14px">Elige cómo se ingresan los litros. Cuando el Piusi K600 esté instalado activa el modo automático.</p>
-        <div style="display:flex;border:1px solid var(--borde);border-radius:6px;overflow:hidden;margin-bottom:10px">
-          <button id="esp32-btn-manual" onclick="guardarModoESP32(false)" style="flex:1;padding:10px;font-size:13px;font-weight:600;cursor:pointer;border:none;font-family:var(--sans)">✏️ Manual</button>
-          <button id="esp32-btn-auto" onclick="guardarModoESP32(true)" style="flex:1;padding:10px;font-size:13px;font-weight:600;cursor:pointer;border:none;font-family:var(--sans)">📡 Automático ESP32</button>
+        <div class="cultivos-label" style="margin-top:10px">Nueva mantención</div>
+        <div class="field">
+          <div class="select-wrapper"><select id="nueva-mant-categoria" onchange="onNuevaMantCategoriaChange()">
+            <option value="horas">Por horas</option>
+            <option value="km">Por kilómetros</option>
+            <option value="anual">Anual</option>
+            <option value="sin_frecuencia">Sin frecuencia fija</option>
+          </select></div>
         </div>
-        <div style="font-size:12px;color:var(--acero)">Manual: operador escribe los litros · Automático: se leen desde el caudalímetro en tiempo real</div>
-        <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--borde)">
-          <label>Calibración (pulsos por litro)</label>
-          <div style="display:flex;gap:8px;margin-top:6px">
-            <input type="number" id="pulsos-por-litro-input" min="1" step="0.1" placeholder="Ej: 33.5" style="flex:1">
-            <button class="btn btn-secondary" onclick="guardarCalibracionPulsos()" style="white-space:nowrap">Guardar</button>
-          </div>
-          <div class="hint">Litros = pulsos ÷ este número. Ajustalo aquí si calibrás el Piusi con un volumen conocido — no hace falta tocar el ESP32.</div>
+        <div id="nueva-mant-intervalo-wrap" class="field">
+          <label id="nueva-mant-intervalo-label">Cada cuántas horas</label>
+          <input type="number" id="nueva-mant-intervalo" min="1" step="1" placeholder="Ej: 250">
         </div>
+        <div class="config-add">
+          <input type="text" id="nueva-mant-nombre" placeholder="Nombre de la mantención">
+          <button class="btn-add" onclick="agregarMantencionConfig()">+ Agregar</button>
+        </div>
+        <div class="cultivos-label" style="margin-top:16px">Mantenciones configuradas</div>
+        <div class="config-lista" id="lista-mantenciones-config"></div>
       </div>
+
       <div class="panel">
-        <div class="panel-title">🔧 Corregir horómetro Shelly</div>
-        <p class="hint" style="margin-bottom:12px">Si el horómetro de un equipo se descontroló (instalación nueva, reset del Shelly, etc.), escribe acá el valor real — el Shelly lo revisa solo en menos de un minuto y ajusta su acumulado, sin tener que tocar su consola.</p>
+        <div class="panel-title">🛢️ Parámetros del sistema</div>
+        <div class="field">
+          <label>Capacidad del estanque (L)</label>
+          <input type="number" id="param-capacidad" min="1" step="1">
+        </div>
+        <div class="field">
+          <label>Alerta de stock bajo (L)</label>
+          <input type="number" id="param-alerta" min="0" step="1">
+        </div>
+        <div class="field">
+          <label>Margen de tolerancia del totalizador (L)</label>
+          <input type="number" id="param-margen" min="0" step="0.1">
+        </div>
+        <button class="btn btn-verde btn-full" onclick="guardarParametrosSistema()">✓ Guardar parámetros</button>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">📡 John Deere Operations Center (JDLink)</div>
+        <div id="jd-config-estado" style="font-size:13px;margin-bottom:10px">Cargando...</div>
+        <button id="btn-jdlink-config" class="btn btn-secondary btn-full" onclick="iniciarLoginJD()">🔗 Conectar con John Deere</button>
+        <button id="btn-jdlink-desconectar" class="btn btn-danger btn-full" style="display:none;justify-content:center;padding:10px" onclick="desconectarJD()">Desconectar</button>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">🔌 Corrección de horómetro Shelly</div>
         <div class="field">
           <label>Equipo</label>
           <div class="select-wrapper"><select id="correccion-horometro-equipo-sel"></select></div>
         </div>
-        <div style="display:flex;gap:8px">
-          <input type="number" id="correccion-horometro-valor" min="0" step="0.1" placeholder="Horómetro real, ej: 7615.8" style="flex:1;min-width:0">
-          <button class="btn btn-verde" onclick="aplicarCorreccionHorometro()" style="white-space:nowrap;width:auto;flex-shrink:0">Aplicar</button>
+        <div class="field">
+          <label>Horómetro real (hr)</label>
+          <input type="number" id="correccion-horometro-valor" min="0" step="0.1" placeholder="Ej: 4520.5">
+        </div>
+        <button class="btn btn-verde btn-full" onclick="aplicarCorreccionHorometro()">✓ Enviar corrección</button>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">📊 Calibración del caudalímetro ESP32</div>
+        <div style="display:flex;gap:8px;margin-bottom:10px">
+          <button id="esp32-btn-manual" class="btn btn-secondary" style="flex:1;justify-content:center" onclick="guardarModoESP32(false)">Manual</button>
+          <button id="esp32-btn-auto" class="btn btn-secondary" style="flex:1;justify-content:center" onclick="guardarModoESP32(true)">Automático (ESP32)</button>
+        </div>
+        <div class="field">
+          <label>Pulsos por litro</label>
+          <div style="display:flex;gap:8px">
+            <input type="number" id="pulsos-por-litro-input" min="1" step="0.1">
+            <button class="btn btn-secondary" onclick="guardarCalibracionPulsos()">Guardar</button>
+          </div>
         </div>
       </div>
+
       <div class="panel">
-        <div class="panel-title">🧮 Actualizar totalizador interno</div>
-        <p class="hint" style="margin-bottom:12px">Resincroniza el contador interno del totalizador (el que se compara contra los litros de cada carga). Úsalo si decidiste dejar de comparar contra el medidor físico Samoa por un desfase de calibración acumulado. No mueve saldo del estanque ni combustible real.</p>
-        <div id="totalizador-actual-info" style="font-size:13px;color:var(--acero);margin-bottom:10px">Cargando...</div>
-        <div style="display:flex;gap:8px">
-          <input type="number" id="totalizador-manual-input" min="0" step="1" placeholder="Nuevo valor, ej: 623930" style="flex:1;min-width:0">
-          <button class="btn btn-verde" onclick="guardarTotalizadorManual()" style="white-space:nowrap;width:auto;flex-shrink:0">Aplicar</button>
+        <div class="panel-title">🔢 Totalizador (ajuste manual)</div>
+        <div id="totalizador-actual-info" style="font-size:13px;margin-bottom:10px">Cargando...</div>
+        <div class="field">
+          <label>Nuevo valor del totalizador (L)</label>
+          <input type="number" id="totalizador-manual-input" min="0" step="1">
         </div>
+        <button class="btn btn-secondary btn-full" onclick="guardarTotalizadorManual()">Actualizar totalizador</button>
       </div>
+
       <div class="panel">
-        <div class="panel-title">⛽ Ajustar saldo del estanque</div>
-        <p class="hint" style="margin-bottom:12px">Escribe el valor REAL (medido físicamente) si el saldo que calcula la app no coincide — por ejemplo si quedó en 0 pero en realidad queda combustible, o al revés. Reemplaza directamente el saldo mostrado, sin necesidad de simular una carga o cisterna falsa para cuadrarlo.</p>
-        <div id="saldo-actual-info" style="font-size:13px;color:var(--acero);margin-bottom:10px">Cargando...</div>
-        <div style="display:flex;gap:8px">
-          <input type="number" id="saldo-manual-input" min="0" step="1" placeholder="Litros reales, ej: 500" style="flex:1;min-width:0">
-          <button class="btn btn-verde" onclick="guardarSaldoManual()" style="white-space:nowrap;width:auto;flex-shrink:0">Aplicar</button>
+        <div class="panel-title">🛢️ Saldo del estanque (ajuste manual)</div>
+        <div id="saldo-actual-info" style="font-size:13px;margin-bottom:10px">Cargando...</div>
+        <div class="field">
+          <label>Nuevo saldo (L)</label>
+          <input type="number" id="saldo-manual-input" min="0" step="1">
         </div>
+        <button class="btn btn-danger btn-full" style="justify-content:center;padding:10px" onclick="guardarSaldoManual()">Ajustar saldo</button>
       </div>
+
       <div class="panel">
-        <div class="panel-title">📝 Registrar carga manual (sin bomba)</div>
-        <p class="hint" style="margin-bottom:12px">Úsalo SOLO cuando una carga ya ocurrió físicamente pero quedó sin registrar por un problema con la app (se cerró, perdió conexión, etc. a mitad de la carga). Esto NO enciende ni apaga la bomba — solo guarda el registro con los datos reales de lo que ya pasó.</p>
-        <button class="btn btn-secondary" style="width:100%;justify-content:center" onclick="abrirRegistroManual()">+ Registrar carga que ya ocurrió</button>
-        <div id="panel-registro-manual-form" style="display:none;margin-top:16px;padding-top:16px;border-top:1px solid var(--borde)">
+        <div class="panel-title">✍️ Registro manual de carga (sin control de bomba)</div>
+        <div class="hint" style="margin-bottom:10px">Usar solo si una carga física ya ocurrió y quedó sin registrar por un problema con la app.</div>
+        <button class="btn btn-secondary btn-full" onclick="abrirRegistroManual()">+ Registrar carga manual</button>
+        <div id="panel-registro-manual-form" style="display:none;margin-top:14px;border-top:1px solid var(--borde);padding-top:14px">
+          <div class="razon-social-box">
+            <div class="cultivos-label">Razón social</div>
+            <div class="centros-selector" id="manual-razon-social-selector"></div>
+          </div>
           <div class="grid-2">
             <div class="field"><label>Fecha</label><input type="date" id="manual-fecha"></div>
-            <div class="field"><label>Hora</label><input type="text" id="manual-hora" placeholder="HH:MM" maxlength="5"></div>
-          </div>
-          <div class="field"><label>Equipo</label><div class="select-wrapper"><select id="manual-equipo" onchange="onManualEquipoChange()"></select></div></div>
-          <div class="field"><label>Operador (quien cargó realmente)</label><div class="select-wrapper"><select id="manual-operador"></select></div></div>
-          <div style="margin-bottom:14px">
-            <div style="font-size:11px;font-weight:600;color:var(--acero);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Último registro de este equipo</div>
-            <div id="manual-info-anterior"><span style="color:#9CA3AF;font-size:12px">Seleccioná un equipo para ver el último registro.</span></div>
+            <div class="field"><label>Hora</label><input type="text" id="manual-hora" placeholder="HH:MM"></div>
           </div>
           <div class="field">
-            <label>Cultivos (opcional)</label>
-            <div class="centros-selector" id="manual-cultivos-selector"></div>
+            <label>Equipo</label>
+            <div class="select-wrapper"><select id="manual-equipo" onchange="onManualEquipoChange()"></select></div>
           </div>
+          <div class="field">
+            <label>Operador</label>
+            <div class="select-wrapper"><select id="manual-operador"></select></div>
+          </div>
+          <div id="manual-info-anterior" style="margin-bottom:10px"></div>
+          <div class="cultivos-label">Cultivos</div>
+          <div class="centros-selector" id="manual-cultivos-selector"></div>
           <div class="grid-2">
-            <div class="field"><label>Litros despachados</label><input type="number" id="manual-litros" min="0" step="0.1" placeholder="0.0"></div>
-            <div class="field"><label>Horómetro/Odómetro actual (<span id="manual-medidor-unidad">hr</span>)</label><input type="number" id="manual-medidor-valor" min="0" step="0.1" placeholder="0"></div>
+            <div class="field"><label>Litros</label><input type="number" id="manual-litros" min="0" step="0.1"></div>
+            <div class="field"><label>Horómetro/Odómetro (<span id="manual-medidor-unidad">hr</span>)</label><input type="number" id="manual-medidor-valor" min="0" step="0.1"></div>
           </div>
-          <div class="field"><label>Totalizador SAMOA (opcional — se calcula solo si se deja vacío)</label><input type="number" id="manual-totalizador" min="0" step="1" placeholder="Se calcula automáticamente"></div>
-          <div class="field"><label>Observación</label><input type="text" id="manual-obs" placeholder="Ej: registrado a mano, app se cerró durante la carga"></div>
+          <div class="field"><label>Totalizador (opcional — se calcula solo si se deja vacío)</label><input type="number" id="manual-totalizador" min="0" step="1"></div>
+          <div class="field"><label>Observación</label><input type="text" id="manual-obs"></div>
           <div class="modal-actions">
-            <button class="btn btn-secondary" onclick="cerrarRegistroManual()" style="flex:1;justify-content:center">Cancelar</button>
-            <button class="btn btn-verde" id="btn-registrar-manual" onclick="registrarCargaManual()" style="flex:2">✓ Registrar carga (sin bomba)</button>
+            <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="cerrarRegistroManual()">Cancelar</button>
+            <button class="btn btn-verde" style="flex:2" id="btn-registrar-manual" onclick="registrarCargaManual()">✓ Registrar carga (sin bomba)</button>
           </div>
         </div>
       </div>
-      <div class="panel" id="panel-jdlink-config">
-        <div class="panel-title">🟢 John Deere Operations Center</div>
-        <div id="jd-config-estado" style="font-size:13px;color:var(--acero);margin-bottom:12px">Cargando estado...</div>
-        <button id="btn-jdlink-config" onclick="iniciarLoginJD()" class="btn btn-secondary" style="width:100%;justify-content:center">
-          🔗 Conectar con John Deere
-        </button>
-        <button id="btn-jdlink-desconectar" onclick="desconectarJD()" class="btn" style="width:100%;justify-content:center;background:var(--rojo);color:white;display:none;margin-top:8px">
-          Desconectar John Deere
-        </button>
-        <div style="font-size:11px;color:var(--acero);margin-top:10px">Solo el administrador necesita conectar. La sesión se renueva automáticamente.</div>
+
+      <!-- REINTEGRO JCAR: solo visible/relevante para el admin. Muestra los
+           litros/horas/km de cargas "JCAR" o "Ambos" pendientes de devolver
+           físicamente al estanque, y permite marcar el lote como reintegrado. -->
+      <div class="panel">
+        <div class="panel-title">🏢 Reintegro JCAR</div>
+        <div class="hint" style="margin-bottom:10px">Litros/horas/km de cargas atribuidas a JCAR (100%) o Ambos (50%) que todavía no se han devuelto físicamente al estanque.</div>
+        <div id="jcar-reintegro-resumen"></div>
+        <div id="jcar-reintegro-tabla"></div>
+        <button id="btn-marcar-reintegro-jcar" class="btn btn-verde btn-full" style="margin-top:12px" onclick="marcarReintegroJCAR()">✅ Marcar como reintegrado</button>
+        <div class="cultivos-label" style="margin-top:16px">Historial de reintegros</div>
+        <div id="jcar-reintegro-historial"></div>
       </div>
 
       <div class="panel">
-        <div class="panel-title">🔧 Herramientas de mantenimiento</div>
-        <p style="font-size:13px;color:var(--acero);margin-bottom:14px">Recalcula la eficiencia (L/hr o km/L) en base al horómetro/odómetro entre cargas consecutivas de cada equipo.</p>
-
-        <div class="field">
-          <label>Alcance</label>
-          <div class="centros-selector">
-            <div class="cultivo-chip sel" id="recalc-alcance-todos" onclick="setRecalcAlcance(true)">Todos los equipos</div>
-            <div class="cultivo-chip" id="recalc-alcance-especificos" onclick="setRecalcAlcance(false)">Equipos específicos</div>
-          </div>
-          <div id="recalc-equipos-selector" class="centros-selector" style="display:none"></div>
+        <div class="panel-title">🧹 Limpieza y recálculo de eficiencia histórica</div>
+        <div class="cultivos-label">Limpiar eficiencia histórica</div>
+        <div class="centros-selector">
+          <div class="cultivo-chip sel" id="limpieza-alcance-todos" onclick="setLimpiezaAlcance(true)">Todos los equipos</div>
+          <div class="cultivo-chip" id="limpieza-alcance-especificos" onclick="setLimpiezaAlcance(false)">Equipos específicos</div>
         </div>
-        <div class="field">
-          <label>Período</label>
-          <div class="centros-selector">
-            <div class="cultivo-chip sel" id="recalc-periodo-todo" onclick="setRecalcPeriodo('todo')">Todo el historial</div>
-            <div class="cultivo-chip" id="recalc-periodo-dias" onclick="setRecalcPeriodo('dias')">Últimos X días</div>
-            <div class="cultivo-chip" id="recalc-periodo-fecha" onclick="setRecalcPeriodo('fecha')">Desde una fecha</div>
-          </div>
-          <div id="recalc-dias-input-wrap" style="display:none;margin-top:8px">
-            <input type="number" id="recalc-dias-valor" min="1" step="1" placeholder="Ej: 90">
-          </div>
-          <div id="recalc-fecha-input-wrap" style="display:none;margin-top:8px">
-            <input type="date" id="recalc-fecha-valor">
-          </div>
+        <div id="limpieza-equipos-selector" class="centros-selector" style="display:none"></div>
+        <div class="centros-selector" style="margin-top:8px">
+          <div class="cultivo-chip sel" id="limpieza-periodo-todo" onclick="setLimpiezaPeriodo('todo')">Todo el historial</div>
+          <div class="cultivo-chip" id="limpieza-periodo-dias" onclick="setLimpiezaPeriodo('dias')">Últimos X días</div>
+          <div class="cultivo-chip" id="limpieza-periodo-fecha" onclick="setLimpiezaPeriodo('fecha')">Desde una fecha</div>
         </div>
+        <div id="limpieza-dias-input-wrap" style="display:none;margin-top:8px"><input type="number" id="limpieza-dias-valor" min="1" step="1" placeholder="Ej: 90"></div>
+        <div id="limpieza-fecha-input-wrap" style="display:none;margin-top:8px"><input type="date" id="limpieza-fecha-valor"></div>
+        <button id="btn-limpiar-eficiencia" class="btn btn-danger btn-full" style="justify-content:center;padding:10px;margin-top:10px" onclick="limpiarEficienciaHistorica()">🧹 Limpiar eficiencia histórica</button>
+        <div id="limpieza-eficiencia-log" style="display:none;margin-top:10px;font-size:13px"></div>
 
-        <div style="margin-bottom:10px;padding:10px 12px;background:var(--fondo);border-radius:6px;border:1px solid var(--borde)">
-          <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;text-transform:none;letter-spacing:normal;font-weight:400">
-            <input type="checkbox" id="recalc-solo-nuevos" checked style="margin-top:2px">
-            <span style="font-size:12px;color:var(--acero)">Respetar registros que fueron limpiados a propósito con "Limpiar eficiencia histórica" (no volver a calcularles eficiencia)</span>
-          </label>
-          <div id="recalc-limpieza-info" style="font-size:11px;color:#9CA3AF;margin-top:6px"></div>
+        <div class="cultivos-label" style="margin-top:20px">Recalcular eficiencia histórica</div>
+        <div id="recalc-limpieza-info" class="hint" style="margin-bottom:8px"></div>
+        <div class="centros-selector">
+          <div class="cultivo-chip sel" id="recalc-alcance-todos" onclick="setRecalcAlcance(true)">Todos los equipos</div>
+          <div class="cultivo-chip" id="recalc-alcance-especificos" onclick="setRecalcAlcance(false)">Equipos específicos</div>
         </div>
-
-        <button class="btn btn-secondary" id="btn-recalcular" onclick="recalcularEficiencia()" style="width:100%;justify-content:center">⚡ Recalcular eficiencia</button>
-        <div id="recalculo-log" style="display:none;margin-top:12px;background:var(--fondo);border:1px solid var(--borde);border-radius:6px;padding:12px;font-size:13px;line-height:1.8"></div>
-
-        <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--borde)">
-          <p style="font-size:13px;color:var(--acero);margin-bottom:14px">Si el historial de horómetros tuvo problemas (Shelly recién instalado, valores incorrectos, etc.), deja el campo de eficiencia en blanco en los registros elegidos — sin borrar litros, fechas ni horómetros. Las próximas cargas vuelven a calcular su eficiencia normalmente.</p>
-
-          <div class="field">
-            <label>Alcance</label>
-            <div class="centros-selector">
-              <div class="cultivo-chip sel" id="limpieza-alcance-todos" onclick="setLimpiezaAlcance(true)">Todos los equipos</div>
-              <div class="cultivo-chip" id="limpieza-alcance-especificos" onclick="setLimpiezaAlcance(false)">Equipos específicos</div>
-            </div>
-            <div id="limpieza-equipos-selector" class="centros-selector" style="display:none"></div>
-          </div>
-          <div class="field">
-            <label>Período</label>
-            <div class="centros-selector">
-              <div class="cultivo-chip sel" id="limpieza-periodo-todo" onclick="setLimpiezaPeriodo('todo')">Todo el historial</div>
-              <div class="cultivo-chip" id="limpieza-periodo-dias" onclick="setLimpiezaPeriodo('dias')">Últimos X días</div>
-              <div class="cultivo-chip" id="limpieza-periodo-fecha" onclick="setLimpiezaPeriodo('fecha')">Desde una fecha</div>
-            </div>
-            <div id="limpieza-dias-input-wrap" style="display:none;margin-top:8px">
-              <input type="number" id="limpieza-dias-valor" min="1" step="1" placeholder="Ej: 90">
-            </div>
-            <div id="limpieza-fecha-input-wrap" style="display:none;margin-top:8px">
-              <input type="date" id="limpieza-fecha-valor">
-            </div>
-          </div>
-
-          <button class="btn" style="width:100%;justify-content:center;background:var(--rojo);color:white" id="btn-limpiar-eficiencia" onclick="limpiarEficienciaHistorica()">🧹 Limpiar eficiencia histórica</button>
-          <div id="limpieza-eficiencia-log" style="display:none;margin-top:12px;background:var(--fondo);border:1px solid var(--borde);border-radius:6px;padding:12px;font-size:13px;line-height:1.8"></div>
+        <div id="recalc-equipos-selector" class="centros-selector" style="display:none"></div>
+        <div class="centros-selector" style="margin-top:8px">
+          <div class="cultivo-chip sel" id="recalc-periodo-todo" onclick="setRecalcPeriodo('todo')">Todo el historial</div>
+          <div class="cultivo-chip" id="recalc-periodo-dias" onclick="setRecalcPeriodo('dias')">Últimos X días</div>
+          <div class="cultivo-chip" id="recalc-periodo-fecha" onclick="setRecalcPeriodo('fecha')">Desde una fecha</div>
         </div>
+        <div id="recalc-dias-input-wrap" style="display:none;margin-top:8px"><input type="number" id="recalc-dias-valor" min="1" step="1" placeholder="Ej: 90"></div>
+        <div id="recalc-fecha-input-wrap" style="display:none;margin-top:8px"><input type="date" id="recalc-fecha-valor"></div>
+        <label style="display:flex;align-items:center;gap:8px;margin-top:10px;text-transform:none;font-weight:400;font-size:13px">
+          <input type="checkbox" id="recalc-solo-nuevos" style="width:auto"> Respetar registros limpiados a propósito
+        </label>
+        <button id="btn-recalcular" class="btn btn-verde btn-full" style="margin-top:10px" onclick="recalcularEficiencia()">⚡ Recalcular eficiencia histórica</button>
+        <div id="recalculo-log" style="display:none;margin-top:10px;font-size:13px"></div>
       </div>
+
       <div class="panel">
-        <div class="panel-title">🛠 Catálogo de mantenciones</div>
-        <p class="hint" style="margin-bottom:12px">Qué mantenciones existen y cada cuántas horas toca cada una (para las "por horas"). Aplican igual a todos los equipos con horómetro.</p>
-        <div class="config-lista" id="lista-mantenciones-config"></div>
-        <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--borde)">
-          <div class="field"><label>Nombre</label><input type="text" id="nueva-mant-nombre" placeholder="Ej: Cambio correas"></div>
-          <div class="field">
-            <label>Frecuencia</label>
-            <div class="select-wrapper">
-              <select id="nueva-mant-categoria" onchange="onNuevaMantCategoriaChange()">
-                <option value="horas">Por horas (cada X horas de uso)</option>
-                <option value="km">Por kilómetros (cada X km recorridos)</option>
-                <option value="anual">Anual (cada 365 días)</option>
-                <option value="sin_frecuencia">Sin frecuencia fija</option>
-              </select>
-            </div>
-          </div>
-          <div class="field" id="nueva-mant-intervalo-wrap"><label id="nueva-mant-intervalo-label">Cada cuántas horas</label><input type="number" id="nueva-mant-intervalo" min="1" step="1" placeholder="Ej: 250"></div>
-          <button class="btn-add" style="width:100%;justify-content:center" onclick="agregarMantencionConfig()">+ Agregar mantención</button>
-        </div>
-        <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--borde)">
-          <label>Avisar con cuántas horas de anticipación</label>
-          <div style="display:flex;gap:8px;margin-top:6px">
-            <input type="number" id="alerta-hrs-antes-input" min="0" step="1" placeholder="Ej: 20" style="flex:1">
-            <button class="btn btn-secondary" onclick="guardarAlertaHrsAntes()" style="white-space:nowrap">Guardar</button>
-          </div>
-        </div>
-      </div>
-      <div class="panel">
-        <div class="panel-title">Parámetros del sistema</div>
-        <div class="field"><label>Capacidad del estanque (L)</label><input type="number" id="param-capacidad" min="1" step="1"></div>
-        <div class="field"><label>Alerta de stock bajo (L)</label><input type="number" id="param-alerta" min="0" step="1"></div>
-        <div class="field"><label>Margen tolerancia totalizador (L)</label><input type="number" id="param-margen" min="0" step="0.1"></div>
-        <button class="btn btn-verde" style="width:100%;justify-content:center" onclick="guardarParametrosSistema()">✓ Guardar parámetros</button>
+        <div class="panel-title">🔑 Gestión de PINs</div>
+        <div class="config-lista" id="lista-pines"></div>
       </div>
     </div>
   </main>
 </div>
 
-<!-- MODAL PIN -->
-<div class="modal-overlay" id="modal-pin">
-  <div class="modal-box">
-    <div class="modal-title">🔑 Cambiar PIN</div>
-    <div class="alerta-pin" id="pin-forzado-msg">⚠️ Es tu primer acceso. Debés cambiar tu PIN antes de continuar.</div>
-    <div class="field"><label>PIN nuevo (mínimo 4 dígitos)</label><input type="password" id="pin-nuevo" placeholder="••••" maxlength="6" inputmode="numeric"></div>
-    <div class="field"><label>Confirmar PIN</label><input type="password" id="pin-confirmar" placeholder="••••" maxlength="6" inputmode="numeric"></div>
-    <div class="modal-actions">
-      <button class="btn btn-secondary" id="btn-cancelar-pin" onclick="cerrarCambioPin()" style="flex:1;justify-content:center">Cancelar</button>
-      <button class="btn btn-verde" onclick="guardarPin()" style="flex:2">Guardar PIN</button>
-    </div>
-  </div>
-</div>
-
 <!-- MODAL CISTERNA -->
 <div class="modal-overlay" id="modal-cisterna">
   <div class="modal-box">
-    <div class="modal-title">🚛 Carga de cisterna</div>
-    <div class="field"><label>Fecha de carga</label><input type="date" id="fecha-cisterna"></div>
-    <div class="field"><label>Litros recibidos</label><input type="number" id="litros-cisterna" min="0" step="1" placeholder="Ej: 8000"></div>
-    <div class="field"><label>Observación (opcional)</label><input type="text" id="obs-cisterna" placeholder="Ej: Proveedor COPEC, remito 1234"></div>
+    <div class="modal-title">🚛 Carga desde cisterna</div>
+    <div class="field"><label>Litros cargados</label><input type="number" id="litros-cisterna" min="0" step="1"></div>
+    <div class="field"><label>Fecha</label><input type="date" id="fecha-cisterna"></div>
+    <div class="field"><label>Observación</label><input type="text" id="obs-cisterna"></div>
     <div class="modal-actions">
-      <button class="btn btn-secondary" onclick="cerrarCargaCisterna()" style="flex:1;justify-content:center">Cancelar</button>
-      <button class="btn btn-verde" id="btn-cisterna" onclick="registrarCisterna()" style="flex:2">Confirmar carga</button>
+      <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="cerrarCargaCisterna()">Cancelar</button>
+      <button class="btn btn-verde" style="flex:2" id="btn-cisterna" onclick="registrarCisterna()">Confirmar carga</button>
     </div>
   </div>
 </div>
 
-<!-- MODAL EDITAR -->
+<!-- MODAL CAMBIO DE PIN -->
+<div class="modal-overlay" id="modal-pin">
+  <div class="modal-box">
+    <div class="modal-title">🔑 Cambiar PIN</div>
+    <div class="alerta-pin" id="pin-forzado-msg">Por seguridad, elegí un PIN personal antes de continuar.</div>
+    <div class="field"><label>Nuevo PIN</label><input type="password" id="pin-nuevo" maxlength="6" inputmode="numeric"></div>
+    <div class="field"><label>Confirmar PIN</label><input type="password" id="pin-confirmar" maxlength="6" inputmode="numeric"></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" id="btn-cancelar-pin" style="flex:1;justify-content:center" onclick="cerrarCambioPin()">Cancelar</button>
+      <button class="btn btn-verde" style="flex:2" onclick="guardarPin()">✓ Guardar PIN</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL EDITAR REGISTRO -->
 <div class="modal-overlay" id="modal-editar">
-  <div class="modal-box" style="max-width:520px;max-height:90vh;overflow-y:auto">
+  <div class="modal-box">
     <div class="modal-title">✏️ Editar registro</div>
     <input type="hidden" id="edit-id">
     <input type="hidden" id="edit-litros-original">
     <div class="grid-2">
       <div class="field"><label>Fecha</label><input type="date" id="edit-fecha"></div>
-      <div class="field"><label>Hora</label><input type="text" id="edit-hora" placeholder="HH:MM" maxlength="5"></div>
+      <div class="field"><label>Hora</label><input type="text" id="edit-hora" placeholder="HH:MM"></div>
     </div>
     <div class="field"><label>Equipo</label><div class="select-wrapper"><select id="edit-equipo"></select></div></div>
     <div class="field"><label>Operador</label><div class="select-wrapper"><select id="edit-operador"></select></div></div>
-    <div class="field">
-      <label>Cultivos</label>
-      <select id="edit-cultivos" multiple size="4" style="height:auto;min-height:90px;padding:6px"></select>
-      <div class="hint">Mantén Ctrl para seleccionar varios</div>
-    </div>
+    <div class="field"><label>Cultivos (Ctrl/Cmd+click para varios)</label><select id="edit-cultivos" multiple size="4"></select></div>
     <div class="grid-2">
       <div class="field"><label>Litros</label><input type="number" id="edit-litros" min="0" step="0.1"></div>
-      <div class="field"><label>Horómetro / Odómetro</label><input type="number" id="edit-medidor" min="0" step="0.1"></div>
+      <div class="field"><label>Horómetro/Odómetro</label><input type="number" id="edit-medidor" min="0" step="0.1"></div>
     </div>
-    <div class="field"><label>Totalizador SAMOA</label><input type="number" id="edit-totalizador" min="0" step="1"></div>
+    <div class="field"><label>Totalizador</label><input type="number" id="edit-totalizador" min="0" step="1"></div>
     <div class="field"><label>Observación</label><input type="text" id="edit-obs"></div>
     <div class="modal-actions">
-      <button class="btn btn-secondary" onclick="cerrarEditar()" style="flex:1;justify-content:center">Cancelar</button>
-      <button class="btn btn-verde" id="btn-guardar-edicion" onclick="guardarEdicion()" style="flex:2">✓ Guardar cambios</button>
+      <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="cerrarEditar()">Cancelar</button>
+      <button class="btn btn-verde" style="flex:2" id="btn-guardar-edicion" onclick="guardarEdicion()">✓ Guardar cambios</button>
     </div>
   </div>
 </div>
 
-<div class="toast" id="toast"></div>
+<div id="toast" class="toast"></div>
+
 </body>
 </html>
