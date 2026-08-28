@@ -2451,9 +2451,28 @@ async function registrarInterno() {
     try { await setDoc(doc(db, 'config', 'sistema'), { bombaActiva: false }, { merge: true }); } catch(e) {}
     document.getElementById('panel-paso2').style.display = 'none';
     document.getElementById('panel-cargando').style.display = 'none';
-    document.getElementById('panel-paso1').style.display = 'block';
-    validarPaso1();
-    toast(alertaTotalizador?`⚠️ Registrado y bomba apagada — dif ${difTot.toFixed(1)} L`:'✓ Bomba apagada y despacho registrado', !alertaTotalizador);
+    const etiquetaMedidor = medidor === 'km' ? 'km' : 'hrs';
+    document.getElementById('confirmacion-equipo').textContent = eq;
+    document.getElementById('confirmacion-litros').textContent = `${lt.toFixed(1)} L`;
+    document.getElementById('confirmacion-medidor').textContent = (mv != null) ? `${mv.toFixed(1)} ${etiquetaMedidor}` : '—';
+    const pendientesMant = (!esOtroEquipo) ? await chequearMantencionesPendientes(eq, mv) : [];
+    const contMant = document.getElementById('confirmacion-mantencion');
+    contMant.innerHTML = pendientesMant.length ? `
+      <div style="margin-top:16px;padding:10px 14px;background:var(--rojo-suave);border-radius:6px;text-align:left">
+        <div style="font-size:13px;font-weight:700;color:var(--rojo);margin-bottom:4px">🔧 Mantención pendiente</div>
+        ${pendientesMant.map(p => `<div style="font-size:12px;color:#7A2E22;margin-top:2px">${p}</div>`).join('')}
+      </div>` : (esOtroEquipo ? '' : `
+      <div style="margin-top:16px;padding:10px 14px;background:var(--verde-suave);border-radius:6px;text-align:left">
+        <div style="font-size:13px;font-weight:700;color:var(--verde)">✅ No tienes mantenciones pendientes</div>
+      </div>`);
+    document.getElementById('panel-confirmacion').style.display = 'block';
+    if (alertaTotalizador) toast(`⚠️ Registrado — dif. totalizador ${difTot.toFixed(1)} L`, false);
+    setTimeout(() => {
+      document.getElementById('panel-confirmacion').style.display = 'none';
+      document.getElementById('panel-paso1').style.display = 'block';
+      validarPaso1();
+      logout();
+    }, 10000);
   } catch(e) { toast('Error: '+e.message, false); }
   btn.disabled=false; btn.textContent='⏸ Apagar bomba y registrar despacho';
 }
@@ -4134,6 +4153,34 @@ function intervaloParaEquipo(tipo, equipo) {
   return (ov != null && ov !== '') ? ov : tipo.intervalo;
 }
 
+async function chequearMantencionesPendientes(eq, medidorActual) {
+  try {
+    if (medidorActual == null) return [];
+    const unidadEq = tipoEquipo(eq);
+    const categoriaMedidor = unidadEq === 'km' ? 'km' : 'horas';
+    const etiquetaUnidad = unidadEq === 'km' ? 'km' : 'hr';
+    const tipos = mantencionesConfig.filter(t => t.categoria === categoriaMedidor);
+    if (!tipos.length) return [];
+    const snapMant = await getDocs(query(collection(db,'mantenciones'), where('equipo','==',eq)));
+    const ultimasPorTipo = {};
+    snapMant.docs.forEach(d => {
+      const data = d.data();
+      if (!ultimasPorTipo[data.tipo_id] || data.ts > ultimasPorTipo[data.tipo_id].ts) ultimasPorTipo[data.tipo_id] = data;
+    });
+    const pendientes = [];
+    tipos.forEach(tipo => {
+      const intervalo = intervaloParaEquipo(tipo, eq);
+      if (!intervalo) return;
+      const ult = ultimasPorTipo[tipo.id];
+      const medidorUlt = ult?.horometro || 0;
+      const faltan = (medidorUlt + intervalo) - medidorActual;
+      if (faltan < 0) pendientes.push(`⛔ ${tipo.nombre} — vencida hace ${Math.abs(faltan).toFixed(0)} ${etiquetaUnidad}`);
+      else if (faltan <= alertaHrsAntes) pendientes.push(`⚠️ ${tipo.nombre} — en ${faltan.toFixed(0)} ${etiquetaUnidad}`);
+    });
+    return pendientes;
+  } catch(e) { console.warn('Error chequeando mantenciones:', e); return []; }
+}
+
 // ─── CATÁLOGO DE MANTENCIONES (Configurar) ──────────────────
 let edicionIntervaloEquipoIdx = null;
 let edicionIntervalosPorEquipo = {};
@@ -4607,11 +4654,11 @@ async function renderAlertasMantencion() {
 }
 
 
-function toast(msg,ok=true) {
-  const t=document.getElementById('toast'); t.textContent=msg;
+function toast(msg,ok=true,duracionMs=2800) {
+  const t=document.getElementById('toast'); t.innerHTML=msg;
   t.className='toast'+(ok?' success':'');
   setTimeout(()=>t.classList.add('show'),10);
-  setTimeout(()=>t.classList.remove('show'),2800);
+  setTimeout(()=>t.classList.remove('show'),duracionMs);
 }
 </script>
 <style>
@@ -4886,6 +4933,16 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       <div id="panel-cargando" class="panel" style="display:none;background:var(--negro);border-color:var(--amarillo);text-align:center">
         <div style="font-size:15px;color:var(--amarillo);font-weight:600;margin-bottom:6px">🟢 Bomba encendida</div>
         <div style="font-size:13px;color:#9CA3AF">Cargando combustible en <strong id="equipo-cargando" style="color:white"></strong>...</div>
+      </div>
+
+      <!-- CONFIRMACIÓN: bomba apagada, resumen de la carga -->
+      <div id="panel-confirmacion" class="panel" style="display:none;background:var(--negro);border-color:var(--verde);text-align:center;padding:32px 20px">
+        <div style="font-size:40px;margin-bottom:10px">✅</div>
+        <div style="font-size:18px;color:var(--verde);font-weight:700;margin-bottom:16px">Bomba apagada correctamente</div>
+        <div style="font-size:15px;color:white;margin-bottom:8px">Equipo: <strong id="confirmacion-equipo"></strong></div>
+        <div style="font-size:15px;color:white;margin-bottom:8px">Litros cargados: <strong id="confirmacion-litros" style="color:var(--amarillo)"></strong></div>
+        <div style="font-size:15px;color:white">Horómetro/Odómetro actual: <strong id="confirmacion-medidor" style="color:var(--amarillo)"></strong></div>
+        <div id="confirmacion-mantencion"></div>
       </div>
 
       <!-- PASO 2: Datos después de cargar -->
