@@ -797,7 +797,21 @@ const DEFAULT_CONFIG = {
 let currentUser = null;
 let isAdmin = false;
 let isSupervisor = false;
+let isSubadmin = false;
 const SUPERVISOR_NOMBRE = 'Camila Faundez';
+
+// ─── ASISTENCIA / TRABAJADORES (módulo separado de combustible) ─────
+// Roster de trabajadores a controlar (independiente de config.operadores,
+// que son quienes cargan combustible) y lista de subadministradores con
+// acceso solo a la pestaña "Asistencia" — nunca ven combustible.
+let trabajadoresAsistenciaConfig = [];
+
+async function getPinesAsistencia() {
+  const snap = await getDoc(doc(db, 'config', 'pines_asistencia'));
+  if (snap.exists()) return snap.data();
+  await setDoc(doc(db, 'config', 'pines_asistencia'), {});
+  return {};
+}
 let medidor = 'hr';
 let registros = [];
 let config = { ...DEFAULT_CONFIG };
@@ -1022,6 +1036,12 @@ async function loadConfig() {
         config.presetsOperador = { 'JCAZ': { cultivos: ['Mantención'], trabajo: null, apero: null, aperoObsTexto: '', activo: true } };
         await setDoc(doc(db, 'config', 'datos'), config);
       }
+      // Migración automática: roster de trabajadores para el módulo de
+      // Asistencia — totalmente independiente de config.operadores (combustible)
+      if (!config.trabajadoresAsistencia) {
+        config.trabajadoresAsistencia = [];
+        await setDoc(doc(db, 'config', 'datos'), config);
+      }
     } else {
       config = { ...DEFAULT_CONFIG, tiposEquipo: { ...EQUIPO_TIPO_DEFAULT }, aperos: construirAperosDesdeHardcode() };
       config.requisitosEquipo = construirRequisitosDesdeDefault();
@@ -1032,6 +1052,7 @@ async function loadConfig() {
       config.parametros = { capacidad: CAPACIDAD_DEFAULT, alertaLitros: ALERTA_LITROS_DEFAULT, margenTotalizador: MARGEN_TOTALIZADOR_DEFAULT };
       config.fuenteHorometro = construirFuenteHorometroDesdeDefault();
       config.presetsOperador = { 'JCAZ': { cultivos: ['Mantención'], trabajo: null, apero: null, aperoObsTexto: '', activo: true } };
+      config.trabajadoresAsistencia = [];
       await setDoc(doc(db, 'config', 'datos'), config);
     }
     tiposEquipo = config.tiposEquipo || {};
@@ -1044,6 +1065,7 @@ async function loadConfig() {
     parametrosSistema = config.parametros || { capacidad: CAPACIDAD_DEFAULT, alertaLitros: ALERTA_LITROS_DEFAULT, margenTotalizador: MARGEN_TOTALIZADOR_DEFAULT };
     fuenteHorometroConfig = config.fuenteHorometro || {};
     presetsOperadorConfig = config.presetsOperador || {};
+    trabajadoresAsistenciaConfig = config.trabajadoresAsistencia || [];
   } catch(e) { console.error(e); }
 }
 async function saveConfig() { await setDoc(doc(db, 'config', 'datos'), config); }
@@ -1058,12 +1080,17 @@ async function getPines() {
 }
 
 async function verificarPin(pin) {
-  if (pin === ADMIN_PIN) return { ok: true, admin: true, supervisor: false, nombre: ADMIN_NOMBRE };
+  if (pin === ADMIN_PIN) return { ok: true, admin: true, supervisor: false, subadmin: false, nombre: ADMIN_NOMBRE };
   const pines = await getPines();
   const operador = Object.entries(pines).find(([, p]) => p === pin);
   if (operador) {
     const esSupervisor = operador[0] === SUPERVISOR_NOMBRE;
-    return { ok: true, admin: false, supervisor: esSupervisor, nombre: operador[0], pinInicial: pin === PIN_INICIAL };
+    return { ok: true, admin: false, supervisor: esSupervisor, subadmin: false, nombre: operador[0], pinInicial: pin === PIN_INICIAL };
+  }
+  const pinesAsis = await getPinesAsistencia();
+  const subadmin = Object.entries(pinesAsis).find(([, p]) => p === pin);
+  if (subadmin) {
+    return { ok: true, admin: false, supervisor: false, subadmin: true, nombre: subadmin[0], pinInicial: pin === PIN_INICIAL };
   }
   return { ok: false };
 }
@@ -1144,17 +1171,25 @@ window.intentarLogin = async function() {
   const result = await verificarPin(pin);
   btn.disabled = false; btn.textContent = 'Ingresar';
   if (!result.ok) { toast('PIN incorrecto', false); document.getElementById('pin-input').value=''; return; }
-  currentUser = result.nombre; isAdmin = result.admin; isSupervisor = result.supervisor || false;
-  document.getElementById('user-label').textContent = isAdmin ? `⚙ ${result.nombre}` : (isSupervisor ? `👁 ${result.nombre}` : result.nombre);
-  ['tab-admin','tab-config','tab-analytics','tab-informes','tab-eficiencia','btn-cisterna-header'].forEach(id => document.getElementById(id).style.display = 'none');
+  currentUser = result.nombre; isAdmin = result.admin; isSupervisor = result.supervisor || false; isSubadmin = result.subadmin || false;
+  document.getElementById('user-label').textContent = isAdmin ? `⚙ ${result.nombre}` : (isSupervisor ? `👁 ${result.nombre}` : (isSubadmin ? `🕒 ${result.nombre}` : result.nombre));
+  ['tab-registro','tab-historial','tab-mantencion','tab-admin','tab-config','tab-analytics','tab-informes','tab-eficiencia','btn-cisterna-header','tab-asistencia','tab-config-trabajadores'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
+  document.getElementById('pin-input').value = '';
+  if (isSubadmin) {
+    document.getElementById('tab-asistencia').style.display = 'block';
+    showScreen('app');
+    setTab('asistencia', document.getElementById('tab-asistencia'));
+    if (result.pinInicial) setTimeout(() => mostrarCambioPin(true), 500);
+    return;
+  }
+  ['tab-registro','tab-historial','tab-mantencion'].forEach(id => document.getElementById(id).style.display = 'block');
   if (isAdmin) {
-    ['tab-admin','tab-config','tab-analytics','tab-informes','tab-eficiencia'].forEach(id => document.getElementById(id).style.display = 'block');
+    ['tab-admin','tab-config','tab-analytics','tab-informes','tab-eficiencia','tab-asistencia','tab-config-trabajadores'].forEach(id => document.getElementById(id).style.display = 'block');
     document.getElementById('btn-cisterna-header').style.display = 'flex';
   }
   if (isSupervisor) {
     ['tab-analytics','tab-informes','tab-eficiencia','tab-admin'].forEach(id => document.getElementById(id).style.display = 'block');
   }
-  document.getElementById('pin-input').value = '';
   excepcionHorarioActiva = false;
   solicitudPendienteId = null;
   if (unsubSolicitud) { unsubSolicitud(); unsubSolicitud = null; }
@@ -1166,10 +1201,11 @@ window.intentarLogin = async function() {
 }
 
 window.logout = function() {
-  currentUser = null; isAdmin = false; isSupervisor = false;
+  currentUser = null; isAdmin = false; isSupervisor = false; isSubadmin = false;
   if (unsubReg) { unsubReg(); unsubReg = null; }
   if (unsubSolicitud) { unsubSolicitud(); unsubSolicitud = null; }
   if (unsubSolicitudesAdmin) { unsubSolicitudesAdmin(); unsubSolicitudesAdmin = null; }
+  if (unsubAsistencia) { unsubAsistencia(); unsubAsistencia = null; }
   solicitudPendienteId = null;
   showScreen('login');
 }
@@ -1189,6 +1225,13 @@ window.guardarPin = async function() {
   if (nuevo === ADMIN_PIN) { toast('Ese PIN está reservado', false); return; }
   if (nuevo !== confirmar) { toast('Los PINs no coinciden', false); return; }
   if (isAdmin) { toast('El admin no puede cambiar su PIN desde aquí', false); return; }
+  if (isSubadmin) {
+    const pinesAsis = await getPinesAsistencia();
+    pinesAsis[currentUser] = nuevo;
+    await setDoc(doc(db, 'config', 'pines_asistencia'), pinesAsis);
+    cerrarCambioPin(); toast('✓ PIN actualizado', true);
+    return;
+  }
   const pines = await getPines();
   pines[currentUser] = nuevo;
   await setDoc(doc(db, 'config', 'pines'), pines);
@@ -3426,6 +3469,211 @@ async function cargarHistorialReintegrosJCAR() {
   } catch(e) { cont.innerHTML = `<div style="color:var(--rojo);font-size:13px;padding:8px">Error: ${e.message}</div>`; }
 }
 
+// ─── ASISTENCIA / TRABAJADORES ──────────────────────────────
+// Módulo completamente separado de combustible: roster de trabajadores,
+// subadministradores con acceso exclusivo a esta pestaña, y registro de
+// "contramuestra" de horas extra (lo que observa el admin/subadmin vs lo
+// que el trabajador anotó por su cuenta) para revisión semanal.
+let unsubAsistencia = null;
+let asistenciaRegistros = [];
+
+function initAsistencia() {
+  populateSelect('asistencia-trabajador', trabajadoresAsistenciaConfig, 'Seleccionar trabajador');
+  populateSelect('asistencia-centro', config.centros, 'Seleccionar centro de costo');
+  document.getElementById('asistencia-fecha').value = getNow().fecha;
+  document.getElementById('asistencia-horas-trabajador').value = '';
+  document.getElementById('asistencia-horas-registro').value = '';
+  document.getElementById('asistencia-obs').value = '';
+  cargarAsistencia();
+}
+
+function cargarAsistencia() {
+  if (unsubAsistencia) unsubAsistencia();
+  const q = query(collection(db, 'asistencia'), orderBy('ts', 'desc'));
+  unsubAsistencia = onSnapshot(q, snap => {
+    asistenciaRegistros = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    populateFiltroAsistenciaTrabajador();
+    renderTablaAsistencia();
+  });
+}
+
+function populateFiltroAsistenciaTrabajador() {
+  const sel = document.getElementById('asistencia-filtro-trabajador');
+  if (!sel) return;
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">Todos los trabajadores</option>' +
+    trabajadoresAsistenciaConfig.map(t => `<option value="${t}" ${t===cur?'selected':''}>${t}</option>`).join('');
+}
+
+window.registrarAsistencia = async function() {
+  const trabajador = document.getElementById('asistencia-trabajador').value;
+  const fecha = document.getElementById('asistencia-fecha').value;
+  const centro = document.getElementById('asistencia-centro').value;
+  const horasTrab = document.getElementById('asistencia-horas-trabajador').value;
+  const horasReg = document.getElementById('asistencia-horas-registro').value;
+  const obs = document.getElementById('asistencia-obs').value.trim();
+  if (!trabajador || !fecha) { toast('Selecciona trabajador y fecha', false); return; }
+  if (horasTrab === '' && horasReg === '') { toast('Ingresá al menos un valor de horas extra', false); return; }
+  const btn = document.getElementById('btn-registrar-asistencia');
+  btn.disabled = true; btn.textContent = 'Guardando...';
+  try {
+    await addDoc(collection(db, 'asistencia'), {
+      trabajador, fecha, centro_costo: centro || null,
+      horas_trabajador: horasTrab !== '' ? parseFloat(horasTrab) : null,
+      horas_registro: horasReg !== '' ? parseFloat(horasReg) : null,
+      obs, registrado_por: currentUser, ts: Date.now()
+    });
+    document.getElementById('asistencia-horas-trabajador').value = '';
+    document.getElementById('asistencia-horas-registro').value = '';
+    document.getElementById('asistencia-obs').value = '';
+    toast('✓ Registro de asistencia guardado', true);
+  } catch(e) { toast('Error: ' + e.message, false); }
+  btn.disabled = false; btn.textContent = '✓ Guardar registro';
+}
+
+window.renderTablaAsistencia = function() {
+  const fTrab = document.getElementById('asistencia-filtro-trabajador')?.value || '';
+  const fPeriodo = document.getElementById('asistencia-filtro-periodo')?.value || 'todo';
+  const ahora = Date.now();
+  const corte = { '7d': ahora-7*86400000, '30d': ahora-30*86400000, 'todo': 0 }[fPeriodo] || 0;
+  let data = [...asistenciaRegistros].filter(r => r.ts >= corte);
+  if (fTrab) data = data.filter(r => r.trabajador === fTrab);
+
+  let sumaTrab = 0, sumaReg = 0;
+  data.forEach(r => { sumaTrab += r.horas_trabajador || 0; sumaReg += r.horas_registro || 0; });
+  const dif = Math.abs(sumaTrab - sumaReg);
+
+  document.getElementById('asistencia-stats').innerHTML = `
+    <div class="stat-card"><div class="stat-label">Horas extra (trabajador)</div><div class="stat-value">${sumaTrab.toFixed(1)}<span>hr</span></div></div>
+    <div class="stat-card"><div class="stat-label">Horas extra (registro)</div><div class="stat-value">${sumaReg.toFixed(1)}<span>hr</span></div></div>
+    <div class="stat-card"><div class="stat-label">Diferencia</div><div class="stat-value" style="color:${dif>0.5?'var(--rojo)':'var(--verde)'}">${dif.toFixed(1)}<span>hr</span></div></div>`;
+
+  const cont = document.getElementById('asistencia-tabla-container');
+  if (!data.length) { cont.innerHTML = '<div class="empty"><div class="empty-icon">📋</div>Sin registros.</div>'; return; }
+
+  cont.innerHTML = `<div class="table-wrap"><table>
+    <thead><tr><th>Fecha</th><th>Trabajador</th><th>Centro</th><th>Hrs. trabajador</th><th>Hrs. registro</th><th>Dif.</th><th>Obs.</th><th>Registró</th>${isAdmin?'<th></th>':''}</tr></thead>
+    <tbody>${data.map(r => {
+      const ht = r.horas_trabajador, hr = r.horas_registro;
+      const difFila = (ht != null && hr != null) ? Math.abs(ht - hr) : null;
+      const filaAlerta = difFila != null && difFila > 0.5;
+      return `<tr ${filaAlerta?'style="background:#FFF5F5"':''}>
+        <td class="td-mono">${r.fecha}</td>
+        <td><strong>${r.trabajador}</strong></td>
+        <td style="font-size:12px">${r.centro_costo || '—'}</td>
+        <td class="td-mono">${ht != null ? ht.toFixed(1)+' hr' : '—'}</td>
+        <td class="td-mono">${hr != null ? hr.toFixed(1)+' hr' : '—'}</td>
+        <td class="td-mono" style="color:${filaAlerta?'var(--rojo)':'inherit'};font-weight:${filaAlerta?'600':'400'}">${difFila != null ? (filaAlerta?'⚠️ ':'')+difFila.toFixed(1)+' hr' : '—'}</td>
+        <td style="font-size:12px;color:#6B7280">${r.obs || '—'}</td>
+        <td style="font-size:12px">${r.registrado_por}</td>
+        ${isAdmin?`<td><button class="btn btn-danger" onclick="eliminarAsistencia('${r.id}')">✕</button></td>`:''}
+      </tr>`;
+    }).join('')}</tbody>
+  </table></div>`;
+}
+
+window.eliminarAsistencia = async function(id) {
+  if (!confirm('¿Eliminar este registro de asistencia?')) return;
+  await deleteDoc(doc(db, 'asistencia', id));
+  toast('Eliminado', false);
+}
+
+// ─── CONFIG. TRABAJADORES (pestaña separada, solo admin) ────
+function renderConfigTrabajadores() {
+  renderListaTrabajadoresAsistencia();
+  cargarListaSubadmins();
+}
+
+function renderListaTrabajadoresAsistencia() {
+  const cont = document.getElementById('lista-trabajadores-asistencia');
+  if (!cont) return;
+  cont.innerHTML = trabajadoresAsistenciaConfig.length ? trabajadoresAsistenciaConfig.map((v, i) =>
+    `<div class="config-item"><span>${v}</span><button class="btn btn-danger" onclick="eliminarTrabajadorAsistencia(${i})">✕</button></div>`
+  ).join('') : '<div style="color:#9CA3AF;font-size:13px;padding:8px">Sin trabajadores agregados.</div>';
+}
+
+window.agregarTrabajadorAsistencia = async function() {
+  const inp = document.getElementById('nuevo-trabajador-asistencia');
+  const val = inp.value.trim();
+  if (!val) return;
+  if (trabajadoresAsistenciaConfig.includes(val)) { toast('Ese trabajador ya está en la lista', false); return; }
+  trabajadoresAsistenciaConfig.push(val);
+  config.trabajadoresAsistencia = trabajadoresAsistenciaConfig;
+  try {
+    await saveConfig();
+    inp.value = '';
+    renderListaTrabajadoresAsistencia();
+    toast('✓ Trabajador agregado', true);
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
+window.eliminarTrabajadorAsistencia = async function(idx) {
+  if (!confirm('¿Eliminar este trabajador de la lista? (los registros históricos de asistencia no se borran)')) return;
+  trabajadoresAsistenciaConfig.splice(idx, 1);
+  config.trabajadoresAsistencia = trabajadoresAsistenciaConfig;
+  try {
+    await saveConfig();
+    renderListaTrabajadoresAsistencia();
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
+window.cargarListaSubadmins = async function() {
+  const cont = document.getElementById('lista-subadmins');
+  if (!cont) return;
+  cont.innerHTML = '<div style="color:#9CA3AF;font-size:13px;padding:8px">Cargando...</div>';
+  const pines = await getPinesAsistencia();
+  const nombres = Object.keys(pines);
+  cont.innerHTML = nombres.length ? nombres.map(nombre => {
+    const pin = pines[nombre];
+    const esInicial = pin === PIN_INICIAL;
+    return `<div class="config-item" style="flex-wrap:wrap;gap:8px">
+      <span style="flex:1;min-width:140px">${nombre}</span>
+      <span class="badge ${esInicial?'badge-km':'badge-hr'}" style="font-family:var(--mono);font-size:13px;padding:4px 10px">${esInicial ? '⏳ '+pin : '✅ personalizado'}</span>
+      <button class="btn btn-secondary" style="padding:6px 12px;font-size:12px" onclick="resetearPinSubadmin('${nombre}')">Resetear</button>
+      <button class="btn btn-danger" onclick="eliminarSubadmin('${nombre}')">Quitar acceso</button>
+    </div>`;
+  }).join('') : '<div style="color:#9CA3AF;font-size:13px;padding:8px">Sin subadministradores agregados.</div>';
+}
+
+window.agregarSubadmin = async function() {
+  const inp = document.getElementById('nuevo-subadmin-nombre');
+  const nombre = inp.value.trim();
+  if (!nombre) { toast('Ingresá el nombre del subadministrador', false); return; }
+  const pines = await getPinesAsistencia();
+  if (pines[nombre] != null) { toast('Ya existe un subadministrador con ese nombre', false); return; }
+  pines[nombre] = PIN_INICIAL;
+  try {
+    await setDoc(doc(db, 'config', 'pines_asistencia'), pines);
+    inp.value = '';
+    cargarListaSubadmins();
+    toast(`✓ ${nombre} agregado con PIN inicial ${PIN_INICIAL} (se le pedirá cambiarlo al ingresar)`, true);
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
+window.resetearPinSubadmin = async function(nombre) {
+  const pinNuevo = prompt(`Nuevo PIN para ${nombre} (mínimo 4 dígitos):`);
+  if (!pinNuevo || pinNuevo.length < 4) { toast('PIN inválido', false); return; }
+  if (pinNuevo === ADMIN_PIN) { toast('Ese PIN está reservado', false); return; }
+  const pines = await getPinesAsistencia();
+  pines[nombre] = pinNuevo;
+  try {
+    await setDoc(doc(db, 'config', 'pines_asistencia'), pines);
+    toast(`✓ PIN de ${nombre} actualizado`, true);
+    cargarListaSubadmins();
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
+window.eliminarSubadmin = async function(nombre) {
+  if (!confirm(`¿Quitar el acceso de ${nombre}? Ya no va a poder ingresar a la app.`)) return;
+  const pines = await getPinesAsistencia();
+  delete pines[nombre];
+  try {
+    await setDoc(doc(db, 'config', 'pines_asistencia'), pines);
+    cargarListaSubadmins();
+    toast(`Acceso de ${nombre} eliminado`, false);
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
 // ─── GESTIÓN DE PINES (ADMIN) ──────────────────────────────
 const PINES_INICIALES = {
   'José Jarpa': '1001',
@@ -4095,6 +4343,8 @@ window.setTab = function(id,el) {
   if(['historial','admin','analytics','informes','eficiencia','config'].includes(id)) loadHistorial();
   if(id==='config') { renderConfigListas(); renderPanelAperos(); renderPanelEquipoOperador(); renderPanelPresetsOperador(); renderPanelHorario(); renderPanelMantencionesConfig(); renderPanelParametros(); renderPanelCorreccionHorometro(); renderPanelTotalizadorManual(); renderPanelSaldoManual(); renderPanelRecalculoOpcion(); renderLimpiezaEquiposSelector(); renderRecalcEquiposSelector(); renderPanelReintegroJCAR(); cargarHistorialReintegrosJCAR(); if(isAdmin) cargarPines(); actualizarToggleESP32(); }
   if(id==='mantencion') { initMantencion(); }
+  if(id==='asistencia') { initAsistencia(); }
+  if(id==='config-trabajadores') { renderConfigTrabajadores(); }
   if(id==='registro' && isAdmin) escucharSolicitudesAdmin();
 }
 
@@ -4830,14 +5080,16 @@ tbody td{padding:10px 12px;vertical-align:middle;}
   </header>
 
   <div class="tabs">
-    <button class="tab active" onclick="setTab('registro',this)">Registrar</button>
-    <button class="tab" onclick="setTab('historial',this)">Mi historial</button>
-    <button class="tab" onclick="setTab('mantencion',this)">Mantención</button>
+    <button class="tab active" id="tab-registro" onclick="setTab('registro',this)">Registrar</button>
+    <button class="tab" id="tab-historial" onclick="setTab('historial',this)">Mi historial</button>
+    <button class="tab" id="tab-mantencion" onclick="setTab('mantencion',this)">Mantención</button>
     <button class="tab" id="tab-admin" style="display:none" onclick="setTab('admin',this)">Todos</button>
     <button class="tab" id="tab-analytics" style="display:none" onclick="setTab('analytics',this)">Análisis</button>
     <button class="tab" id="tab-informes" style="display:none" onclick="setTab('informes',this)">Informes</button>
     <button class="tab" id="tab-eficiencia" style="display:none" onclick="setTab('eficiencia',this)">Eficiencia</button>
     <button class="tab" id="tab-config" style="display:none" onclick="setTab('config',this)">Configurar</button>
+    <button class="tab" id="tab-asistencia" style="display:none" onclick="setTab('asistencia',this)">🕒 Asistencia</button>
+    <button class="tab" id="tab-config-trabajadores" style="display:none" onclick="setTab('config-trabajadores',this)">⚙️ Config. Trabajadores</button>
   </div>
 
   <main>
@@ -5405,6 +5657,66 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       <div class="panel">
         <div class="panel-title">🔑 Gestión de PINs</div>
         <div class="config-lista" id="lista-pines"></div>
+      </div>
+    </div>
+    <!-- ASISTENCIA -->
+    <div id="tc-asistencia" class="tab-content">
+      <div class="panel">
+        <div class="panel-title">🕒 Registrar caso</div>
+        <div class="grid-2">
+          <div class="field"><label>Fecha</label><input type="date" id="asistencia-fecha"></div>
+          <div class="field">
+            <label>Trabajador</label>
+            <div class="select-wrapper"><select id="asistencia-trabajador"></select></div>
+          </div>
+        </div>
+        <div class="field">
+          <label>Centro de costo</label>
+          <div class="select-wrapper"><select id="asistencia-centro"></select></div>
+        </div>
+        <div class="grid-2">
+          <div class="field"><label>Horas extra según el trabajador</label><input type="number" id="asistencia-horas-trabajador" min="0" step="0.1" placeholder="Ej: 2"></div>
+          <div class="field"><label>Horas extra según tu registro</label><input type="number" id="asistencia-horas-registro" min="0" step="0.1" placeholder="Ej: 1.5"></div>
+        </div>
+        <div class="field"><label>Observación (opcional)</label><input type="text" id="asistencia-obs" placeholder="Detalle, motivo de la diferencia, etc."></div>
+        <button id="btn-registrar-asistencia" class="btn btn-verde btn-full" onclick="registrarAsistencia()">✓ Guardar registro</button>
+      </div>
+
+      <div id="asistencia-stats" class="stats-grid"></div>
+
+      <div class="panel">
+        <div class="panel-title">📋 Registros — comparación semanal</div>
+        <div class="filtros" style="margin-bottom:12px">
+          <div class="select-wrapper"><select id="asistencia-filtro-trabajador" onchange="renderTablaAsistencia()"></select></div>
+          <div class="select-wrapper"><select id="asistencia-filtro-periodo" onchange="renderTablaAsistencia()">
+            <option value="7d">Últimos 7 días</option>
+            <option value="30d">Últimos 30 días</option>
+            <option value="todo" selected>Todo el historial</option>
+          </select></div>
+        </div>
+        <div id="asistencia-tabla-container"></div>
+      </div>
+    </div>
+
+    <!-- CONFIG. TRABAJADORES (separado de Configurar de combustible) -->
+    <div id="tc-config-trabajadores" class="tab-content">
+      <div class="panel">
+        <div class="panel-title">🧑‍🌾 Trabajadores (control de asistencia)</div>
+        <div class="config-add">
+          <input type="text" id="nuevo-trabajador-asistencia" placeholder="Nombre del trabajador">
+          <button class="btn-add" onclick="agregarTrabajadorAsistencia()">+ Agregar</button>
+        </div>
+        <div class="config-lista" id="lista-trabajadores-asistencia" style="margin-top:10px"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">🔑 Subadministradores (acceso solo a Asistencia)</div>
+        <div class="hint" style="margin-bottom:10px">Estas personas ingresan con su propio PIN y ven únicamente la pestaña "Asistencia" — nunca combustible.</div>
+        <div class="config-add">
+          <input type="text" id="nuevo-subadmin-nombre" placeholder="Nombre del subadministrador">
+          <button class="btn-add" onclick="agregarSubadmin()">+ Agregar</button>
+        </div>
+        <div class="config-lista" id="lista-subadmins" style="margin-top:10px"></div>
       </div>
     </div>
   </main>
