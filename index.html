@@ -3251,6 +3251,14 @@ function renderEficienciaAnalisis() {
       <div class="stat-card"><div class="stat-label">Total litros</div><div class="stat-value">${totalLt.toFixed(1)}<span>L</span></div></div>
     </div>`;
 
+  const porEquipoApero = {};
+  data.forEach(r => {
+    if (!r.apero || r.apero === 'LIBRE') return;
+    const key = r.equipo + '||' + r.apero;
+    if (!porEquipoApero[key]) porEquipoApero[key] = [];
+    if (r.eficiencia) porEquipoApero[key].push(r.eficiencia);
+  });
+
   const filasDetalle = data.slice().reverse().map(r => {
     const tipo = r.medidor_tipo || tipoEquipo(r.equipo);
     const unidad = tipo === 'km' ? 'km' : 'hr';
@@ -3264,6 +3272,10 @@ function renderEficienciaAnalisis() {
       const malo = tipo === 'km' ? desv < -15 : desv > 15;
       if (bueno) colorEf = 'var(--verde)'; else if (malo) colorEf = 'var(--rojo)';
     }
+    const keyEA = r.equipo + '||' + (r.apero || '');
+    const efsEA = porEquipoApero[keyEA] || [];
+    const efPromEA = efsEA.length ? efsEA.reduce((a,b)=>a+b,0)/efsEA.length : null;
+    const efPromEAStr = efPromEA != null ? `${efPromEA.toFixed(2)} ${unidadEf}` : '—';
     const trabajadoStr = r.diff_medidor != null ? `${r.diff_medidor.toFixed(tipo==='km'?0:1)} ${unidad}` : '—';
     const cultivos = (r.centros||[r.centro]).filter(Boolean).join(', ');
     return `<tr>
@@ -3272,6 +3284,7 @@ function renderEficienciaAnalisis() {
       <td class="td-mono" style="color:var(--amarillo);font-weight:600">${(r.litros||0).toFixed(1)} L</td>
       <td class="td-mono">${trabajadoStr}</td>
       <td class="td-mono" style="color:${colorEf};font-weight:${colorEf!=='inherit'?'600':'400'}">${efStr}</td>
+      <td class="td-mono" style="font-size:12px;color:var(--acero)">${efPromEAStr}</td>
       <td style="font-size:12px">${r.apero || '—'}</td>
       <td style="font-size:12px">${cultivos || '—'}</td>
       <td>${r.operador}</td>
@@ -3289,8 +3302,9 @@ function renderEficienciaAnalisis() {
     </div>
     <div class="panel">
       <div class="panel-title">Detalle de cargas</div>
+      <div class="hint" style="margin-bottom:10px">"Eficiencia" es la de esta carga puntual. "Efic. prom. equipo+apero" es el promedio histórico de ese mismo tractor con ese mismo apero, para comparar manzanas con manzanas.</div>
       ${filasDetalle ? `<div class="table-wrap"><table>
-        <thead><tr><th>Fecha/Hora</th><th>Equipo</th><th>Litros</th><th>Trabajado</th><th>Eficiencia</th><th>Apero</th><th>Cultivos</th><th>Operador</th></tr></thead>
+        <thead><tr><th>Fecha/Hora</th><th>Equipo</th><th>Litros</th><th>Trabajado</th><th>Eficiencia</th><th>Efic. prom. equipo+apero</th><th>Apero</th><th>Cultivos</th><th>Operador</th></tr></thead>
         <tbody>${filasDetalle}</tbody>
       </table></div>` : '<div class="empty"><div class="empty-icon">📋</div>Sin cargas en este período.</div>'}
     </div>`;
