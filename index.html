@@ -2859,21 +2859,31 @@ window.renderTabla = function() {
   if(!data.length){document.getElementById('historial-container').innerHTML=`<div class="empty"><div class="empty-icon">📋</div>No hay registros.</div>`;return;}
 
   const promedioEfEquipo = {};
+  const promedioEfEquipoApero = {};
   const todosRegistros = [...registros];
   const porEq = {};
+  const porEqApero = {};
   todosRegistros.forEach(r => {
     if (r.eficiencia && r.eficiencia > 0) {
       if (!porEq[r.equipo]) porEq[r.equipo] = [];
       porEq[r.equipo].push(r.eficiencia);
+      if (r.apero && r.apero !== 'LIBRE') {
+        const key = r.equipo + '||' + r.apero;
+        if (!porEqApero[key]) porEqApero[key] = [];
+        porEqApero[key].push(r.eficiencia);
+      }
     }
   });
   Object.entries(porEq).forEach(([eq, efs]) => {
     promedioEfEquipo[eq] = efs.reduce((a,b) => a+b, 0) / efs.length;
   });
+  Object.entries(porEqApero).forEach(([key, efs]) => {
+    promedioEfEquipoApero[key] = efs.reduce((a,b) => a+b, 0) / efs.length;
+  });
 
   document.getElementById('historial-container').innerHTML=`
     <div class="table-wrap"><table>
-      <thead><tr><th>Fecha/Hora</th><th>Equipo</th><th>Operador</th><th>Cultivos</th><th>Trabajo</th><th>Litros</th><th>Trabajado</th><th>Eficiencia</th><th>Totalizador</th><th>Obs.</th><th></th></tr></thead>
+      <thead><tr><th>Fecha/Hora</th><th>Equipo</th><th>Operador</th><th>Cultivos</th><th>Trabajo</th><th>Litros</th><th>Trabajado</th><th>Eficiencia</th><th>Prom. equipo / apero</th><th>Totalizador</th><th>Obs.</th><th></th></tr></thead>
       <tbody>${data.map(r=>{
         const tipo=r.medidor_tipo;
 
@@ -2896,6 +2906,18 @@ window.renderTabla = function() {
           }
           if (r.alerta_eficiencia) color = 'var(--rojo)';
           efHtml = `<span style="color:${color};font-weight:${color!=='inherit'?'600':'400'}">${r.alerta_eficiencia?'⚠️ ':''}${efStr}${icono}</span>`;
+        }
+
+        const unidadEf = tipo === 'km' ? 'km/L' : 'L/hr';
+        const promEq = promedioEfEquipo[r.equipo];
+        const keyEA = r.equipo + '||' + (r.apero || '');
+        const promEA = (r.apero && r.apero !== 'LIBRE') ? promedioEfEquipoApero[keyEA] : null;
+        let promHtml = '<span style="color:#9CA3AF">—</span>';
+        if (promEq != null) {
+          promHtml = `<div style="font-size:11px;line-height:1.5;color:var(--acero)">
+            <div>Equipo: <strong>${promEq.toFixed(2)} ${unidadEf}</strong></div>
+            ${promEA != null ? `<div>+ Apero: <strong>${promEA.toFixed(2)} ${unidadEf}</strong></div>` : ''}
+          </div>`;
         }
 
         const cultivos=(r.centros||[r.centro]).join(', ') + (r.centro_detalle ? ` (${r.centro_detalle})` : '');
@@ -2924,6 +2946,7 @@ window.renderTabla = function() {
           <td class="td-mono" style="color:var(--amarillo);font-weight:600">${(r.litros||0).toFixed(1)} L${iconoLitros}</td>
           <td class="td-mono" style="font-size:12px">${trabajadoHtml}${iconoMedidor}</td>
           <td class="td-mono" style="font-size:12px">${efHtml}</td>
+          <td class="td-mono">${promHtml}</td>
           <td class="td-mono" style="font-size:12px">${r.alerta_totalizador?'⚠️':'✅'} ${(r.totalizador||0).toLocaleString('es-CL')}</td>
           <td style="color:#6B7280;font-size:12px">${r.obs||'—'}</td>
           ${(isAdmin||isSupervisor||r.operador===currentUser)?`<td style="white-space:nowrap">
