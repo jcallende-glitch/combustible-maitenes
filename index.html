@@ -818,6 +818,14 @@ async function getPinesAsistencia() {
 // Roster de potreros (independiente de equipos/trabajadores) y lista de
 // encargados de campo con acceso solo a la pestaña "Cuaderno de Campo".
 let potrerosConfig = [];
+// Lista de cultivos preestablecidos para registrar una Siembra en potreros
+// anuales — el admin la administra desde Config. Potreros; al registrar,
+// se elige por chips (no texto libre), para mantener nombres consistentes.
+let cultivosCampoConfig = [];
+// Tipos de producto para clasificar una Aplicación (ej. Herbicida, Fungicida,
+// Fertilizante...) — el admin la administra desde Config. Potreros; se
+// pueden elegir varios a la vez en un mismo registro.
+let tiposProductoCampoConfig = [];
 
 async function getPinesCampo() {
   const snap = await getDoc(doc(db, 'config', 'pines_campo'));
@@ -1061,6 +1069,18 @@ async function loadConfig() {
         config.potreros = [];
         await setDoc(doc(db, 'config', 'datos'), config);
       }
+      // Migración automática: lista de cultivos preestablecidos para el
+      // Cuaderno de Campo (usada al registrar una Siembra)
+      if (!config.cultivosCampo) {
+        config.cultivosCampo = [];
+        await setDoc(doc(db, 'config', 'datos'), config);
+      }
+      // Migración automática: tipos de producto para el Cuaderno de Campo
+      // (usada al registrar una Aplicación — selección múltiple)
+      if (!config.tiposProductoCampo) {
+        config.tiposProductoCampo = [];
+        await setDoc(doc(db, 'config', 'datos'), config);
+      }
     } else {
       config = { ...DEFAULT_CONFIG, tiposEquipo: { ...EQUIPO_TIPO_DEFAULT }, aperos: construirAperosDesdeHardcode() };
       config.requisitosEquipo = construirRequisitosDesdeDefault();
@@ -1073,6 +1093,8 @@ async function loadConfig() {
       config.presetsOperador = { 'JCAZ': { cultivos: ['Mantención'], trabajo: null, apero: null, aperoObsTexto: '', activo: true } };
       config.trabajadoresAsistencia = [];
       config.potreros = [];
+      config.cultivosCampo = [];
+      config.tiposProductoCampo = [];
       await setDoc(doc(db, 'config', 'datos'), config);
     }
     tiposEquipo = config.tiposEquipo || {};
@@ -1087,6 +1109,8 @@ async function loadConfig() {
     presetsOperadorConfig = config.presetsOperador || {};
     trabajadoresAsistenciaConfig = config.trabajadoresAsistencia || [];
     potrerosConfig = config.potreros || [];
+    cultivosCampoConfig = config.cultivosCampo || [];
+    tiposProductoCampoConfig = config.tiposProductoCampo || [];
   } catch(e) { console.error(e); }
 }
 async function saveConfig() { await setDoc(doc(db, 'config', 'datos'), config); }
@@ -3813,12 +3837,15 @@ const TIPOS_LABOR_CAMPO = [
 ];
 
 let campoPotreroActual = null;
+let camposLaborPotrerosSel = [];
+let campoLaborPotrerosDetalle = {}; // { [nombrePotrero]: { modo: 'completo'|'parcial', hectareas: number|null } }
 let campoTipoLaborSeleccionado = null;
 let laboresCampoRegistros = [];
 let unsubLaboresCampo = null;
 
 function initCampo() {
   if (!campoPotreroActual && potrerosConfig.length) campoPotreroActual = potrerosConfig[0].nombre;
+  camposLaborPotrerosSel = campoPotreroActual ? [campoPotreroActual] : [];
   renderSelectorPotrero();
   campoTipoLaborSeleccionado = null;
   document.getElementById('campo-labor-campos').innerHTML = '';
@@ -3827,6 +3854,7 @@ function initCampo() {
     const { fecha } = getNow();
     document.getElementById('campo-labor-fecha').value = fecha;
     renderTipoLaborSelector();
+    renderCamposLaborPotrerosSelector();
     suscribirLaboresPotrero(campoPotreroActual);
   } else {
     document.getElementById('campo-estado-potrero').innerHTML = '<div class="empty"><div class="empty-icon">🌾</div>Todavía no hay potreros configurados. Pídele al admin que los agregue en "Config. Potreros".</div>';
@@ -3842,9 +3870,11 @@ function renderSelectorPotrero() {
 
 window.seleccionarPotrero = function(nombre) {
   campoPotreroActual = nombre;
+  camposLaborPotrerosSel = [nombre];
   campoTipoLaborSeleccionado = null;
   renderSelectorPotrero();
   renderTipoLaborSelector();
+  renderCamposLaborPotrerosSelector();
   document.getElementById('campo-labor-campos').innerHTML = '';
   document.getElementById('campo-labor-form-wrap').style.display = 'block';
   suscribirLaboresPotrero(nombre);
@@ -3895,9 +3925,91 @@ function renderTipoLaborSelector() {
 
 window.seleccionarTipoLaborCampo = function(tipo) {
   campoTipoLaborSeleccionado = tipo;
+  // Para Siembra solo se pueden elegir potreros anuales — si algún potrero
+  // seleccionado es frutal, se saca automáticamente de la selección.
+  if (tipo === 'siembra') {
+    camposLaborPotrerosSel = camposLaborPotrerosSel.filter(nombre => {
+      const p = potrerosConfig.find(x => x.nombre === nombre);
+      return p && p.tipo !== 'frutal';
+    });
+    if (!camposLaborPotrerosSel.length && campoPotreroActual) {
+      const pActual = potrerosConfig.find(x => x.nombre === campoPotreroActual);
+      if (pActual && pActual.tipo !== 'frutal') camposLaborPotrerosSel = [campoPotreroActual];
+    }
+  }
   renderTipoLaborSelector();
+  renderCamposLaborPotrerosSelector();
   renderCamposLaborTipo();
 }
+
+function renderCamposLaborPotrerosSelector() {
+  const wrap = document.getElementById('campo-labor-potreros-selector');
+  if (!wrap) return;
+  const lista = campoTipoLaborSeleccionado === 'siembra'
+    ? potrerosConfig.filter(p => p.tipo !== 'frutal')
+    : potrerosConfig;
+  wrap.innerHTML = lista.map(p => `<div class="cultivo-chip ${camposLaborPotrerosSel.includes(p.nombre)?'sel':''}" onclick='toggleCampoLaborPotrero(${JSON.stringify(p.nombre)})'>${p.nombre}</div>`).join('');
+  renderListaPotrerosLaborSeleccionados();
+}
+
+// Mantiene campoLaborPotrerosDetalle sincronizado con camposLaborPotrerosSel:
+// agrega una entrada por defecto ("completo") a los potreros nuevos y
+// descarta las de los que ya no están seleccionados.
+function sincronizarDetallePotrerosLabor() {
+  const nuevo = {};
+  camposLaborPotrerosSel.forEach(nombre => {
+    nuevo[nombre] = campoLaborPotrerosDetalle[nombre] || { modo: 'completo', hectareas: null, obs: '' };
+  });
+  campoLaborPotrerosDetalle = nuevo;
+}
+
+function renderListaPotrerosLaborSeleccionados() {
+  sincronizarDetallePotrerosLabor();
+  const cont = document.getElementById('campo-labor-potreros-lista');
+  if (!cont) return;
+  if (!camposLaborPotrerosSel.length) { cont.innerHTML = ''; return; }
+  cont.innerHTML = camposLaborPotrerosSel.map(nombre => {
+    const d = campoLaborPotrerosDetalle[nombre] || { modo: 'completo', hectareas: null, obs: '' };
+    return `
+      <div class="config-item" style="flex-wrap:wrap;gap:8px">
+        <span style="flex:1;min-width:110px"><strong>${nombre}</strong></span>
+        <div style="display:flex;gap:6px">
+          <button type="button" class="btn ${d.modo==='completo'?'btn-verde':'btn-secondary'}" style="font-size:11px;padding:6px 10px" onclick='setModoAplicacionPotrero(${JSON.stringify(nombre)},"completo")'>Completo</button>
+          <button type="button" class="btn ${d.modo==='parcial'?'btn-verde':'btn-secondary'}" style="font-size:11px;padding:6px 10px" onclick='setModoAplicacionPotrero(${JSON.stringify(nombre)},"parcial")'>Parcial</button>
+        </div>
+        ${d.modo === 'parcial' ? `
+          <input type="number" min="0" step="0.1" placeholder="Ha aplicadas (opcional)" style="width:150px" value="${d.hectareas ?? ''}" oninput='onHectareasParcialInput(${JSON.stringify(nombre)},this.value)'>
+          <input type="text" placeholder="Observación (opcional, ej: sector norte)" style="flex:1;min-width:180px" value="${d.obs || ''}" oninput='onObsParcialInput(${JSON.stringify(nombre)},this.value)'>` : ''}
+      </div>`;
+  }).join('');
+}
+
+window.setModoAplicacionPotrero = function(nombre, modo) {
+  if (!campoLaborPotrerosDetalle[nombre]) campoLaborPotrerosDetalle[nombre] = { modo: 'completo', hectareas: null, obs: '' };
+  campoLaborPotrerosDetalle[nombre].modo = modo;
+  if (modo === 'completo') { campoLaborPotrerosDetalle[nombre].hectareas = null; campoLaborPotrerosDetalle[nombre].obs = ''; }
+  renderListaPotrerosLaborSeleccionados();
+}
+
+window.onHectareasParcialInput = function(nombre, valor) {
+  if (!campoLaborPotrerosDetalle[nombre]) campoLaborPotrerosDetalle[nombre] = { modo: 'parcial', hectareas: null, obs: '' };
+  campoLaborPotrerosDetalle[nombre].hectareas = valor !== '' ? parseFloat(valor) : null;
+}
+
+window.onObsParcialInput = function(nombre, valor) {
+  if (!campoLaborPotrerosDetalle[nombre]) campoLaborPotrerosDetalle[nombre] = { modo: 'parcial', hectareas: null, obs: '' };
+  campoLaborPotrerosDetalle[nombre].obs = valor;
+}
+
+window.toggleCampoLaborPotrero = function(nombre) {
+  const i = camposLaborPotrerosSel.indexOf(nombre);
+  if (i >= 0) camposLaborPotrerosSel.splice(i, 1); else camposLaborPotrerosSel.push(nombre);
+  renderCamposLaborPotrerosSelector();
+}
+
+let campoSiembraCultivoSel = null;
+let campoAplTiposProductoSel = [];
+let campoAplProductosSel = [];
 
 function renderCamposLaborTipo() {
   const cont = document.getElementById('campo-labor-campos');
@@ -3905,22 +4017,37 @@ function renderCamposLaborTipo() {
   const tipo = campoTipoLaborSeleccionado;
   if (!tipo) { cont.innerHTML = ''; return; }
   if (tipo === 'siembra') {
+    campoSiembraCultivoSel = null;
     cont.innerHTML = `
+      <div class="cultivos-label">Cultivo</div>
+      <div class="centros-selector" id="campo-siembra-cultivo-selector"></div>
+      ${!cultivosCampoConfig.length ? '<div class="hint" style="margin-bottom:10px">No hay cultivos configurados todavía — pídele al admin que los agregue en "Config. Potreros".</div>' : ''}
       <div class="grid-2">
-        <div class="field"><label>Cultivo</label><input type="text" id="campo-siembra-cultivo" placeholder="Ej: Trigo, Maíz, Canola..."></div>
         <div class="field"><label>Variedad (opcional)</label><input type="text" id="campo-siembra-variedad"></div>
-      </div>
-      <div class="field"><label>Hectáreas sembradas (opcional)</label><input type="number" id="campo-siembra-hectareas" min="0" step="0.1"></div>`;
+        <div class="field"><label>Hectáreas sembradas (opcional)</label><input type="number" id="campo-siembra-hectareas" min="0" step="0.1"></div>
+      </div>`;
+    renderCampoSiembraCultivoSelector();
   } else if (tipo === 'aplicacion') {
+    campoAplTiposProductoSel = [];
+    campoAplProductosSel = [];
     cont.innerHTML = `
+      <div class="field"><label>Mojamiento (L/ha)</label><input type="number" id="campo-apl-mojamiento" min="0" step="1" placeholder="Ej: 200"></div>
+      <div class="cultivos-label">Tipo de producto (elegí uno o más)</div>
+      <div class="centros-selector" id="campo-apl-tipo-producto-selector"></div>
+      ${!tiposProductoCampoConfig.length ? '<div class="hint" style="margin-bottom:10px">No hay tipos de producto configurados todavía — pídele al admin que los agregue en "Config. Potreros".</div>' : ''}
+      <div class="cultivos-label" style="margin-top:10px">Productos aplicados</div>
+      <div id="campo-apl-productos-lista"></div>
       <div class="grid-2">
         <div class="field"><label>Producto</label><input type="text" id="campo-apl-producto" placeholder="Ej: Glifosato, Urea..."></div>
         <div class="field"><label>Dosis</label><input type="text" id="campo-apl-dosis" placeholder="Ej: 2 L/ha, 150 kg/ha..."></div>
       </div>
+      <button type="button" class="btn btn-secondary" style="margin-bottom:14px" onclick="agregarCampoAplProducto()">+ Agregar producto a la lista</button>
       <div class="grid-2">
         <div class="field"><label>Objetivo (opcional)</label><input type="text" id="campo-apl-objetivo" placeholder="Ej: Maleza, fertilización..."></div>
         <div class="field"><label>Equipo utilizado (opcional)</label><div class="select-wrapper"><select id="campo-apl-equipo"><option value="">—</option>${config.equipos.map(e=>`<option value="${e}">${e}</option>`).join('')}</select></div></div>
       </div>`;
+    renderCampoAplTipoProductoSelector();
+    renderCampoAplProductosLista();
   } else if (tipo === 'trabajo_suelo') {
     cont.innerHTML = `
       <div class="grid-2">
@@ -3944,63 +4071,129 @@ function renderCamposLaborTipo() {
   }
 }
 
+function renderCampoSiembraCultivoSelector() {
+  const wrap = document.getElementById('campo-siembra-cultivo-selector');
+  if (!wrap) return;
+  wrap.innerHTML = cultivosCampoConfig.map(c => `<div class="cultivo-chip ${campoSiembraCultivoSel===c?'sel':''}" onclick='seleccionarCampoSiembraCultivo(${JSON.stringify(c)})'>${c}</div>`).join('');
+}
+
+window.seleccionarCampoSiembraCultivo = function(c) {
+  campoSiembraCultivoSel = c;
+  renderCampoSiembraCultivoSelector();
+}
+
+function renderCampoAplTipoProductoSelector() {
+  const wrap = document.getElementById('campo-apl-tipo-producto-selector');
+  if (!wrap) return;
+  wrap.innerHTML = tiposProductoCampoConfig.map(t => `<div class="cultivo-chip ${campoAplTiposProductoSel.includes(t)?'sel':''}" onclick='toggleCampoAplTipoProducto(${JSON.stringify(t)})'>${t}</div>`).join('');
+}
+
+window.toggleCampoAplTipoProducto = function(t) {
+  const i = campoAplTiposProductoSel.indexOf(t);
+  if (i >= 0) campoAplTiposProductoSel.splice(i, 1); else campoAplTiposProductoSel.push(t);
+  renderCampoAplTipoProductoSelector();
+}
+
+function renderCampoAplProductosLista() {
+  const cont = document.getElementById('campo-apl-productos-lista');
+  if (!cont) return;
+  cont.innerHTML = campoAplProductosSel.length ? campoAplProductosSel.map((p, i) => `
+    <div class="config-item" style="padding:8px 12px;margin-bottom:6px">
+      <span style="font-size:13px"><strong>${p.producto}</strong> — ${p.dosis}</span>
+      <button class="btn btn-danger" onclick="eliminarCampoAplProducto(${i})">✕</button>
+    </div>`).join('') : '';
+}
+
+window.agregarCampoAplProducto = function() {
+  const inpProd = document.getElementById('campo-apl-producto');
+  const inpDosis = document.getElementById('campo-apl-dosis');
+  const producto = inpProd.value.trim();
+  const dosis = inpDosis.value.trim();
+  if (!producto || !dosis) { toast('Completá producto y dosis antes de agregar', false); return; }
+  campoAplProductosSel.push({ producto, dosis });
+  inpProd.value = ''; inpDosis.value = '';
+  renderCampoAplProductosLista();
+}
+
+window.eliminarCampoAplProducto = function(idx) {
+  campoAplProductosSel.splice(idx, 1);
+  renderCampoAplProductosLista();
+}
+
 window.registrarLaborCampo = async function() {
-  if (!campoPotreroActual) { toast('Selecciona un potrero', false); return; }
+  if (!camposLaborPotrerosSel.length) { toast('Selecciona al menos un potrero', false); return; }
   if (!campoTipoLaborSeleccionado) { toast('Selecciona el tipo de labor', false); return; }
   const fecha = document.getElementById('campo-labor-fecha').value;
   const obs = document.getElementById('campo-labor-obs').value.trim();
   if (!fecha) { toast('Selecciona una fecha', false); return; }
 
   const tipo = campoTipoLaborSeleccionado;
-  const payload = { potrero: campoPotreroActual, tipo, fecha, anio: fecha.slice(0,4), obs, operador: currentUser, ts: Date.now() };
+  const payloadBase = { tipo, fecha, anio: fecha.slice(0,4), obs, operador: currentUser, ts: Date.now() };
 
   if (tipo === 'siembra') {
-    const cultivo = document.getElementById('campo-siembra-cultivo').value.trim();
-    if (!cultivo) { toast('Ingresá el cultivo sembrado', false); return; }
-    payload.cultivo = cultivo;
-    payload.variedad = document.getElementById('campo-siembra-variedad').value.trim() || null;
+    if (!campoSiembraCultivoSel) { toast('Selecciona el cultivo sembrado', false); return; }
+    payloadBase.cultivo = campoSiembraCultivoSel;
+    payloadBase.variedad = document.getElementById('campo-siembra-variedad').value.trim() || null;
     const ha = document.getElementById('campo-siembra-hectareas').value;
-    payload.hectareas = ha !== '' ? parseFloat(ha) : null;
+    payloadBase.hectareas = ha !== '' ? parseFloat(ha) : null;
   } else if (tipo === 'aplicacion') {
-    const producto = document.getElementById('campo-apl-producto').value.trim();
-    const dosis = document.getElementById('campo-apl-dosis').value.trim();
-    if (!producto || !dosis) { toast('Completá producto y dosis', false); return; }
-    payload.producto = producto;
-    payload.dosis = dosis;
-    payload.objetivo = document.getElementById('campo-apl-objetivo').value.trim() || null;
-    payload.equipo = document.getElementById('campo-apl-equipo').value || null;
+    const prodPendiente = document.getElementById('campo-apl-producto').value.trim();
+    const dosisPendiente = document.getElementById('campo-apl-dosis').value.trim();
+    const productos = [...campoAplProductosSel];
+    if (prodPendiente && dosisPendiente) productos.push({ producto: prodPendiente, dosis: dosisPendiente });
+    if (!productos.length) { toast('Agregá al menos un producto con su dosis', false); return; }
+    const mojamientoRaw = document.getElementById('campo-apl-mojamiento').value;
+    payloadBase.mojamiento = mojamientoRaw !== '' ? parseFloat(mojamientoRaw) : null;
+    payloadBase.tiposProducto = [...campoAplTiposProductoSel];
+    payloadBase.productos = productos;
+    payloadBase.objetivo = document.getElementById('campo-apl-objetivo').value.trim() || null;
+    payloadBase.equipo = document.getElementById('campo-apl-equipo').value || null;
   } else if (tipo === 'trabajo_suelo') {
     const labor = document.getElementById('campo-suelo-labor').value.trim();
     if (!labor) { toast('Ingresá la labor realizada', false); return; }
-    payload.labor = labor;
-    payload.equipo = document.getElementById('campo-suelo-equipo').value || null;
+    payloadBase.labor = labor;
+    payloadBase.equipo = document.getElementById('campo-suelo-equipo').value || null;
   } else if (tipo === 'riego') {
     const metodo = document.getElementById('campo-riego-metodo').value.trim();
     if (!metodo) { toast('Ingresá el método de riego', false); return; }
-    payload.metodo = metodo;
+    payloadBase.metodo = metodo;
     const dur = document.getElementById('campo-riego-duracion').value;
-    payload.duracion = dur !== '' ? parseFloat(dur) : null;
+    payloadBase.duracion = dur !== '' ? parseFloat(dur) : null;
   } else if (tipo === 'cosecha') {
     const kg = document.getElementById('campo-cosecha-kg').value;
     if (kg === '' || isNaN(parseFloat(kg))) { toast('Ingresá los kilos cosechados', false); return; }
-    payload.kg = parseFloat(kg);
+    payloadBase.kg = parseFloat(kg);
     const hum = document.getElementById('campo-cosecha-humedad').value;
-    payload.humedad = hum !== '' ? parseFloat(hum) : null;
+    payloadBase.humedad = hum !== '' ? parseFloat(hum) : null;
   } else if (tipo === 'otro') {
     const detalle = document.getElementById('campo-otro-detalle').value.trim();
     if (!detalle) { toast('Describe la labor realizada', false); return; }
-    payload.detalle = detalle;
+    payloadBase.detalle = detalle;
   }
 
   const btn = document.getElementById('btn-registrar-labor-campo');
   btn.disabled = true; btn.textContent = 'Guardando...';
   try {
-    await addDoc(collection(db, 'labores_campo'), payload);
+    const batch = writeBatch(db);
+    camposLaborPotrerosSel.forEach(nombrePotrero => {
+      const detalle = campoLaborPotrerosDetalle[nombrePotrero] || { modo: 'completo', hectareas: null, obs: '' };
+      const ref = doc(collection(db, 'labores_campo'));
+      batch.set(ref, {
+        ...payloadBase,
+        potrero: nombrePotrero,
+        aplicacion_completa: detalle.modo === 'completo',
+        hectareas_aplicadas: detalle.modo === 'parcial' ? detalle.hectareas : null,
+        obs_parcial: detalle.modo === 'parcial' ? (detalle.obs || null) : null
+      });
+    });
+    await batch.commit();
     document.getElementById('campo-labor-obs').value = '';
     campoTipoLaborSeleccionado = null;
+    camposLaborPotrerosSel = campoPotreroActual ? [campoPotreroActual] : [];
     renderTipoLaborSelector();
+    renderCamposLaborPotrerosSelector();
     document.getElementById('campo-labor-campos').innerHTML = '';
-    toast('✓ Labor registrada', true);
+    toast(camposLaborPotrerosSel.length > 1 ? `✓ Labor registrada en ${camposLaborPotrerosSel.length} potreros` : '✓ Labor registrada', true);
   } catch(e) { toast('Error: ' + e.message, false); }
   btn.disabled = false; btn.textContent = '✓ Guardar labor';
 }
@@ -4016,16 +4209,26 @@ function populateFiltroAnioCampo() {
 
 function detalleLaborCampo(l) {
   const p = potrerosConfig.find(x => x.nombre === l.potrero);
-  if (l.tipo === 'siembra') return `${l.cultivo}${l.variedad?' · '+l.variedad:''}${l.hectareas?' · '+l.hectareas+' ha':''}`;
-  if (l.tipo === 'aplicacion') return `${l.producto} — ${l.dosis}${l.objetivo?' · '+l.objetivo:''}${l.equipo?' · '+l.equipo:''}`;
-  if (l.tipo === 'trabajo_suelo') return `${l.labor}${l.equipo?' · '+l.equipo:''}`;
-  if (l.tipo === 'riego') return `${l.metodo}${l.duracion?' · '+l.duracion+' hr':''}`;
-  if (l.tipo === 'cosecha') {
+  let base = '—';
+  if (l.tipo === 'siembra') base = `${l.cultivo}${l.variedad?' · '+l.variedad:''}${l.hectareas?' · '+l.hectareas+' ha':''}`;
+  else if (l.tipo === 'aplicacion') {
+    const prefTipo = l.tiposProducto && l.tiposProducto.length ? '['+l.tiposProducto.join(', ')+'] ' : '';
+    const prodStr = Array.isArray(l.productos) && l.productos.length
+      ? l.productos.map(pr => `${pr.producto} (${pr.dosis})`).join(', ')
+      : `${l.producto} — ${l.dosis}`;
+    const mojaStr = l.mojamiento != null ? ` · Mojamiento: ${l.mojamiento} L/ha` : '';
+    base = `${prefTipo}${prodStr}${mojaStr}${l.objetivo?' · '+l.objetivo:''}${l.equipo?' · '+l.equipo:''}`;
+  } else if (l.tipo === 'trabajo_suelo') base = `${l.labor}${l.equipo?' · '+l.equipo:''}`;
+  else if (l.tipo === 'riego') base = `${l.metodo}${l.duracion?' · '+l.duracion+' hr':''}`;
+  else if (l.tipo === 'cosecha') {
     const rend = (p && p.hectareas) ? ` · ${(l.kg/p.hectareas).toFixed(0)} kg/ha` : '';
-    return `${l.kg.toLocaleString('es-CL')} kg${rend}${l.humedad?' · humedad '+l.humedad+'%':''}`;
+    base = `${l.kg.toLocaleString('es-CL')} kg${rend}${l.humedad?' · humedad '+l.humedad+'%':''}`;
+  } else if (l.tipo === 'otro') base = l.detalle;
+
+  if (l.aplicacion_completa === false) {
+    base += ` · ⚠️ Parcial${l.hectareas_aplicadas != null ? ' ('+l.hectareas_aplicadas+' ha)' : ''}${l.obs_parcial ? ' — '+l.obs_parcial : ''}`;
   }
-  if (l.tipo === 'otro') return l.detalle;
-  return '—';
+  return base;
 }
 
 window.renderHistorialLabores = function() {
@@ -4058,7 +4261,75 @@ window.eliminarLaborCampo = async function(id) {
 // ─── CONFIG. POTREROS (pestaña separada, solo admin) ─────────
 function renderConfigPotreros() {
   renderListaPotreros();
+  renderListaCultivosCampo();
+  renderListaTiposProductoCampo();
   cargarListaEncargadosCampo();
+}
+
+function renderListaTiposProductoCampo() {
+  const cont = document.getElementById('lista-tipos-producto-campo');
+  if (!cont) return;
+  cont.innerHTML = tiposProductoCampoConfig.length ? tiposProductoCampoConfig.map((t, i) =>
+    `<div class="config-item"><span>${t}</span><button class="btn btn-danger" onclick="eliminarTipoProductoCampo(${i})">✕</button></div>`
+  ).join('') : '<div style="color:#9CA3AF;font-size:13px;padding:8px">Sin tipos de producto agregados.</div>';
+}
+
+window.agregarTipoProductoCampo = async function() {
+  const inp = document.getElementById('nuevo-tipo-producto-campo');
+  const val = inp.value.trim();
+  if (!val) return;
+  if (tiposProductoCampoConfig.some(t => t.toLowerCase() === val.toLowerCase())) { toast('Ese tipo de producto ya está en la lista', false); return; }
+  tiposProductoCampoConfig.push(val);
+  config.tiposProductoCampo = tiposProductoCampoConfig;
+  try {
+    await saveConfig();
+    inp.value = '';
+    renderListaTiposProductoCampo();
+    toast('✓ Tipo de producto agregado', true);
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
+window.eliminarTipoProductoCampo = async function(idx) {
+  if (!confirm('¿Eliminar este tipo de producto de la lista? (las aplicaciones históricas ya registradas no se borran)')) return;
+  tiposProductoCampoConfig.splice(idx, 1);
+  config.tiposProductoCampo = tiposProductoCampoConfig;
+  try {
+    await saveConfig();
+    renderListaTiposProductoCampo();
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
+function renderListaCultivosCampo() {
+  const cont = document.getElementById('lista-cultivos-campo');
+  if (!cont) return;
+  cont.innerHTML = cultivosCampoConfig.length ? cultivosCampoConfig.map((c, i) =>
+    `<div class="config-item"><span>${c}</span><button class="btn btn-danger" onclick="eliminarCultivoCampo(${i})">✕</button></div>`
+  ).join('') : '<div style="color:#9CA3AF;font-size:13px;padding:8px">Sin cultivos agregados.</div>';
+}
+
+window.agregarCultivoCampo = async function() {
+  const inp = document.getElementById('nuevo-cultivo-campo');
+  const val = inp.value.trim();
+  if (!val) return;
+  if (cultivosCampoConfig.some(c => c.toLowerCase() === val.toLowerCase())) { toast('Ese cultivo ya está en la lista', false); return; }
+  cultivosCampoConfig.push(val);
+  config.cultivosCampo = cultivosCampoConfig;
+  try {
+    await saveConfig();
+    inp.value = '';
+    renderListaCultivosCampo();
+    toast('✓ Cultivo agregado', true);
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
+window.eliminarCultivoCampo = async function(idx) {
+  if (!confirm('¿Eliminar este cultivo de la lista? (las siembras históricas ya registradas no se borran)')) return;
+  cultivosCampoConfig.splice(idx, 1);
+  config.cultivosCampo = cultivosCampoConfig;
+  try {
+    await saveConfig();
+    renderListaCultivosCampo();
+  } catch(e) { toast('Error: ' + e.message, false); }
 }
 
 window.onNuevoPotreroTipoChange = function() {
@@ -4071,12 +4342,30 @@ function renderListaPotreros() {
   if (!cont) return;
   cont.innerHTML = potrerosConfig.length ? potrerosConfig.map((p, i) => `
     <div class="config-item" style="flex-wrap:wrap;gap:8px">
+      <div style="display:flex;flex-direction:column;gap:2px">
+        <button class="btn btn-secondary" style="padding:2px 6px;font-size:10px;line-height:1" title="Mover arriba" ${i===0?'disabled style="opacity:.3"':''} onclick="moverPotrero(${i},-1)">▲</button>
+        <button class="btn btn-secondary" style="padding:2px 6px;font-size:10px;line-height:1" title="Mover abajo" ${i===potrerosConfig.length-1?'disabled style="opacity:.3"':''} onclick="moverPotrero(${i},1)">▼</button>
+      </div>
       <span style="flex:1;min-width:140px">
         <strong>${p.nombre}</strong><br>
         <span style="font-size:12px;color:var(--acero)">${p.hectareas != null ? p.hectareas+' ha' : 'sin ha'} · ${p.tipo === 'frutal' ? '🌳 Frutal ('+(p.cultivoPermanente||'—')+')' : '🌾 Anual'}</span>
       </span>
       <button class="btn btn-danger" onclick="eliminarPotrero(${i})">✕</button>
     </div>`).join('') : '<div style="color:#9CA3AF;font-size:13px;padding:8px">Sin potreros agregados.</div>';
+}
+
+window.moverPotrero = async function(idx, direccion) {
+  const nuevoIdx = idx + direccion;
+  if (nuevoIdx < 0 || nuevoIdx >= potrerosConfig.length) return;
+  const tmp = potrerosConfig[idx];
+  potrerosConfig[idx] = potrerosConfig[nuevoIdx];
+  potrerosConfig[nuevoIdx] = tmp;
+  config.potreros = potrerosConfig;
+  try {
+    await saveConfig();
+    renderListaPotreros();
+    renderSelectorPotrero();
+  } catch(e) { toast('Error: ' + e.message, false); }
 }
 
 window.agregarPotrero = async function() {
@@ -6246,6 +6535,9 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         <div class="panel-title">Registrar labor</div>
         <div class="cultivos-label">Tipo de labor</div>
         <div class="centros-selector" id="campo-tipo-labor-selector"></div>
+        <div class="cultivos-label" style="margin-top:10px">Potreros a los que aplica (elegí uno o más)</div>
+        <div class="centros-selector" id="campo-labor-potreros-selector"></div>
+        <div id="campo-labor-potreros-lista" style="margin-bottom:10px"></div>
         <div id="campo-labor-campos"></div>
         <div class="field" style="margin-top:8px"><label>Fecha</label><input type="date" id="campo-labor-fecha"></div>
         <div class="field"><label>Observación (opcional)</label><input type="text" id="campo-labor-obs" placeholder="Detalle adicional..."></div>
@@ -6282,6 +6574,26 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         </div>
         <button class="btn-add" onclick="agregarPotrero()" style="width:100%;justify-content:center;margin-top:8px">+ Agregar potrero</button>
         <div class="config-lista" id="lista-potreros" style="margin-top:16px"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">🌱 Cultivos (para registrar Siembra)</div>
+        <div class="hint" style="margin-bottom:10px">Lista de cultivos preestablecidos que aparecen como opciones al registrar una Siembra en un potrero anual — así no se escribe a mano cada vez.</div>
+        <div class="config-add">
+          <input type="text" id="nuevo-cultivo-campo" placeholder="Ej: Trigo, Maíz, Canola...">
+          <button class="btn-add" onclick="agregarCultivoCampo()">+ Agregar</button>
+        </div>
+        <div class="config-lista" id="lista-cultivos-campo" style="margin-top:10px"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">🧪 Tipos de producto (para Aplicación)</div>
+        <div class="hint" style="margin-bottom:10px">Lista de tipos preestablecidos (ej. Herbicida, Fungicida, Fertilizante) que aparecen como opciones al registrar una Aplicación — se puede elegir más de uno a la vez.</div>
+        <div class="config-add">
+          <input type="text" id="nuevo-tipo-producto-campo" placeholder="Ej: Herbicida, Fungicida, Insecticida...">
+          <button class="btn-add" onclick="agregarTipoProductoCampo()">+ Agregar</button>
+        </div>
+        <div class="config-lista" id="lista-tipos-producto-campo" style="margin-top:10px"></div>
       </div>
 
       <div class="panel">
