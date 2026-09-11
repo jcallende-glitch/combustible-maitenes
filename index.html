@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Control Combustible · Los Maitenes</title>
+<title>Control Los Maitenes</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
@@ -798,6 +798,7 @@ let currentUser = null;
 let isAdmin = false;
 let isSupervisor = false;
 let isSubadmin = false;
+let isCampo = false;
 const SUPERVISOR_NOMBRE = 'Camila Faundez';
 
 // ─── ASISTENCIA / TRABAJADORES (módulo separado de combustible) ─────
@@ -810,6 +811,18 @@ async function getPinesAsistencia() {
   const snap = await getDoc(doc(db, 'config', 'pines_asistencia'));
   if (snap.exists()) return snap.data();
   await setDoc(doc(db, 'config', 'pines_asistencia'), {});
+  return {};
+}
+
+// ─── CUADERNO DE CAMPO (módulo separado de combustible y de asistencia) ──
+// Roster de potreros (independiente de equipos/trabajadores) y lista de
+// encargados de campo con acceso solo a la pestaña "Cuaderno de Campo".
+let potrerosConfig = [];
+
+async function getPinesCampo() {
+  const snap = await getDoc(doc(db, 'config', 'pines_campo'));
+  if (snap.exists()) return snap.data();
+  await setDoc(doc(db, 'config', 'pines_campo'), {});
   return {};
 }
 let medidor = 'hr';
@@ -1042,6 +1055,12 @@ async function loadConfig() {
         config.trabajadoresAsistencia = [];
         await setDoc(doc(db, 'config', 'datos'), config);
       }
+      // Migración automática: roster de potreros para el Cuaderno de Campo —
+      // totalmente independiente de equipos/trabajadores
+      if (!config.potreros) {
+        config.potreros = [];
+        await setDoc(doc(db, 'config', 'datos'), config);
+      }
     } else {
       config = { ...DEFAULT_CONFIG, tiposEquipo: { ...EQUIPO_TIPO_DEFAULT }, aperos: construirAperosDesdeHardcode() };
       config.requisitosEquipo = construirRequisitosDesdeDefault();
@@ -1053,6 +1072,7 @@ async function loadConfig() {
       config.fuenteHorometro = construirFuenteHorometroDesdeDefault();
       config.presetsOperador = { 'JCAZ': { cultivos: ['Mantención'], trabajo: null, apero: null, aperoObsTexto: '', activo: true } };
       config.trabajadoresAsistencia = [];
+      config.potreros = [];
       await setDoc(doc(db, 'config', 'datos'), config);
     }
     tiposEquipo = config.tiposEquipo || {};
@@ -1066,6 +1086,7 @@ async function loadConfig() {
     fuenteHorometroConfig = config.fuenteHorometro || {};
     presetsOperadorConfig = config.presetsOperador || {};
     trabajadoresAsistenciaConfig = config.trabajadoresAsistencia || [];
+    potrerosConfig = config.potreros || [];
   } catch(e) { console.error(e); }
 }
 async function saveConfig() { await setDoc(doc(db, 'config', 'datos'), config); }
@@ -1080,17 +1101,22 @@ async function getPines() {
 }
 
 async function verificarPin(pin) {
-  if (pin === ADMIN_PIN) return { ok: true, admin: true, supervisor: false, subadmin: false, nombre: ADMIN_NOMBRE };
+  if (pin === ADMIN_PIN) return { ok: true, admin: true, supervisor: false, subadmin: false, campo: false, nombre: ADMIN_NOMBRE };
   const pines = await getPines();
   const operador = Object.entries(pines).find(([, p]) => p === pin);
   if (operador) {
     const esSupervisor = operador[0] === SUPERVISOR_NOMBRE;
-    return { ok: true, admin: false, supervisor: esSupervisor, subadmin: false, nombre: operador[0], pinInicial: pin === PIN_INICIAL };
+    return { ok: true, admin: false, supervisor: esSupervisor, subadmin: false, campo: false, nombre: operador[0], pinInicial: pin === PIN_INICIAL };
   }
   const pinesAsis = await getPinesAsistencia();
   const subadmin = Object.entries(pinesAsis).find(([, p]) => p === pin);
   if (subadmin) {
-    return { ok: true, admin: false, supervisor: false, subadmin: true, nombre: subadmin[0], pinInicial: pin === PIN_INICIAL };
+    return { ok: true, admin: false, supervisor: false, subadmin: true, campo: false, nombre: subadmin[0], pinInicial: pin === PIN_INICIAL };
+  }
+  const pinesCampo = await getPinesCampo();
+  const encargadoCampo = Object.entries(pinesCampo).find(([, p]) => p === pin);
+  if (encargadoCampo) {
+    return { ok: true, admin: false, supervisor: false, subadmin: false, campo: true, nombre: encargadoCampo[0], pinInicial: pin === PIN_INICIAL };
   }
   return { ok: false };
 }
@@ -1171,10 +1197,11 @@ window.intentarLogin = async function() {
   const result = await verificarPin(pin);
   btn.disabled = false; btn.textContent = 'Ingresar';
   if (!result.ok) { toast('PIN incorrecto', false); document.getElementById('pin-input').value=''; return; }
-  currentUser = result.nombre; isAdmin = result.admin; isSupervisor = result.supervisor || false; isSubadmin = result.subadmin || false;
-  document.getElementById('user-label').textContent = isAdmin ? `⚙ ${result.nombre}` : (isSupervisor ? `👁 ${result.nombre}` : (isSubadmin ? `🕒 ${result.nombre}` : result.nombre));
-  ['tab-registro','tab-historial','tab-mantencion','tab-admin','tab-config','tab-analytics','tab-informes','tab-eficiencia','btn-cisterna-header','tab-asistencia','tab-config-trabajadores'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
+  currentUser = result.nombre; isAdmin = result.admin; isSupervisor = result.supervisor || false; isSubadmin = result.subadmin || false; isCampo = result.campo || false;
+  document.getElementById('user-label').textContent = isAdmin ? `⚙ ${result.nombre}` : (isSupervisor ? `👁 ${result.nombre}` : (isSubadmin ? `🕒 ${result.nombre}` : (isCampo ? `🌱 ${result.nombre}` : result.nombre)));
+  ['tab-registro','tab-historial','tab-mantencion','tab-admin','tab-config','tab-analytics','tab-informes','tab-eficiencia','btn-cisterna-header','tab-asistencia','tab-config-trabajadores','tab-campo','tab-config-potreros'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
   document.getElementById('pin-input').value = '';
+  document.getElementById('btn-secciones-header').style.display = isAdmin ? 'inline-flex' : 'none';
   if (isSubadmin) {
     document.getElementById('tab-asistencia').style.display = 'block';
     showScreen('app');
@@ -1182,11 +1209,23 @@ window.intentarLogin = async function() {
     if (result.pinInicial) setTimeout(() => mostrarCambioPin(true), 500);
     return;
   }
-  ['tab-registro','tab-historial','tab-mantencion'].forEach(id => document.getElementById(id).style.display = 'block');
-  if (isAdmin) {
-    ['tab-admin','tab-config','tab-analytics','tab-informes','tab-eficiencia','tab-asistencia','tab-config-trabajadores'].forEach(id => document.getElementById(id).style.display = 'block');
-    document.getElementById('btn-cisterna-header').style.display = 'flex';
+  if (isCampo) {
+    document.getElementById('tab-campo').style.display = 'block';
+    showScreen('app');
+    setTab('campo', document.getElementById('tab-campo'));
+    if (result.pinInicial) setTimeout(() => mostrarCambioPin(true), 500);
+    return;
   }
+  if (isAdmin) {
+    // El admin es el único rol con acceso a más de una sección a la vez —
+    // en vez de mostrar las ~10 pestañas mezcladas, elige primero qué
+    // sección abrir. Puede volver a este selector con el botón "☰ Secciones".
+    showScreen('app');
+    mostrarSelectorSecciones();
+    if (result.pinInicial) setTimeout(() => mostrarCambioPin(true), 500);
+    return;
+  }
+  ['tab-registro','tab-historial','tab-mantencion'].forEach(id => document.getElementById(id).style.display = 'block');
   if (isSupervisor) {
     ['tab-analytics','tab-informes','tab-eficiencia','tab-admin'].forEach(id => document.getElementById(id).style.display = 'block');
   }
@@ -1196,17 +1235,58 @@ window.intentarLogin = async function() {
   const msgAviso = document.getElementById('estado-solicitud-msg');
   if (msgAviso) msgAviso.textContent = `⛔ Fuera de horario (${textoHorarioPermitido()})`;
   initRegistro(); showScreen('app'); setTab('registro', document.querySelector('.tab'));
-  if (isAdmin) escucharSolicitudesAdmin();
   if (result.pinInicial) setTimeout(() => mostrarCambioPin(true), 500);
 }
 
+// ─── SELECTOR DE SECCIÓN (solo admin) ───────────────────────
+const SECCIONES_TABS = {
+  combustible: ['tab-registro','tab-historial','tab-mantencion','tab-admin','tab-config','tab-analytics','tab-informes','tab-eficiencia'],
+  asistencia: ['tab-asistencia','tab-config-trabajadores'],
+  campo: ['tab-campo','tab-config-potreros']
+};
+
+window.mostrarSelectorSecciones = function() {
+  document.getElementById('tabs-bar').style.display = 'none';
+  document.getElementById('app-main').style.display = 'none';
+  document.getElementById('panel-secciones').style.display = 'block';
+}
+
+window.abrirSeccion = function(seccion) {
+  Object.values(SECCIONES_TABS).flat().forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
+  document.getElementById('btn-cisterna-header').style.display = 'none';
+  SECCIONES_TABS[seccion].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'block'; });
+  document.getElementById('panel-secciones').style.display = 'none';
+  document.getElementById('tabs-bar').style.display = 'flex';
+  document.getElementById('app-main').style.display = 'block';
+  if (seccion === 'combustible') {
+    document.getElementById('btn-cisterna-header').style.display = 'flex';
+    excepcionHorarioActiva = false;
+    solicitudPendienteId = null;
+    if (unsubSolicitud) { unsubSolicitud(); unsubSolicitud = null; }
+    const msgAviso = document.getElementById('estado-solicitud-msg');
+    if (msgAviso) msgAviso.textContent = `⛔ Fuera de horario (${textoHorarioPermitido()})`;
+    initRegistro();
+    setTab('registro', document.getElementById('tab-registro'));
+    escucharSolicitudesAdmin();
+  } else if (seccion === 'asistencia') {
+    setTab('asistencia', document.getElementById('tab-asistencia'));
+  } else if (seccion === 'campo') {
+    setTab('campo', document.getElementById('tab-campo'));
+  }
+}
+
 window.logout = function() {
-  currentUser = null; isAdmin = false; isSupervisor = false; isSubadmin = false;
+  currentUser = null; isAdmin = false; isSupervisor = false; isSubadmin = false; isCampo = false;
   if (unsubReg) { unsubReg(); unsubReg = null; }
   if (unsubSolicitud) { unsubSolicitud(); unsubSolicitud = null; }
   if (unsubSolicitudesAdmin) { unsubSolicitudesAdmin(); unsubSolicitudesAdmin = null; }
   if (unsubAsistencia) { unsubAsistencia(); unsubAsistencia = null; }
+  if (unsubLaboresCampo) { unsubLaboresCampo(); unsubLaboresCampo = null; }
   solicitudPendienteId = null;
+  document.getElementById('panel-secciones').style.display = 'none';
+  document.getElementById('tabs-bar').style.display = 'flex';
+  document.getElementById('app-main').style.display = 'block';
+  document.getElementById('btn-secciones-header').style.display = 'none';
   showScreen('login');
 }
 
@@ -1229,6 +1309,13 @@ window.guardarPin = async function() {
     const pinesAsis = await getPinesAsistencia();
     pinesAsis[currentUser] = nuevo;
     await setDoc(doc(db, 'config', 'pines_asistencia'), pinesAsis);
+    cerrarCambioPin(); toast('✓ PIN actualizado', true);
+    return;
+  }
+  if (isCampo) {
+    const pinesCampo = await getPinesCampo();
+    pinesCampo[currentUser] = nuevo;
+    await setDoc(doc(db, 'config', 'pines_campo'), pinesCampo);
     cerrarCambioPin(); toast('✓ PIN actualizado', true);
     return;
   }
@@ -3711,6 +3798,378 @@ window.eliminarSubadmin = async function(nombre) {
   } catch(e) { toast('Error: ' + e.message, false); }
 }
 
+// ─── CUADERNO DE CAMPO ───────────────────────────────────────
+// Módulo completamente separado de combustible y de asistencia: roster de
+// potreros (anuales que rotan cultivo cada temporada, o frutales con cultivo
+// permanente), registro de labores (siembra, aplicación, trabajo de suelo,
+// riego, cosecha, otro) y comparación de historial entre años por potrero.
+const TIPOS_LABOR_CAMPO = [
+  { id: 'siembra', label: '🌱 Siembra', soloAnual: true },
+  { id: 'aplicacion', label: '💧 Aplicación' },
+  { id: 'trabajo_suelo', label: '🚜 Trabajo de suelo' },
+  { id: 'riego', label: '🚿 Riego' },
+  { id: 'cosecha', label: '🌾 Cosecha' },
+  { id: 'otro', label: '📝 Otro' }
+];
+
+let campoPotreroActual = null;
+let campoTipoLaborSeleccionado = null;
+let laboresCampoRegistros = [];
+let unsubLaboresCampo = null;
+
+function initCampo() {
+  if (!campoPotreroActual && potrerosConfig.length) campoPotreroActual = potrerosConfig[0].nombre;
+  renderSelectorPotrero();
+  campoTipoLaborSeleccionado = null;
+  document.getElementById('campo-labor-campos').innerHTML = '';
+  document.getElementById('campo-labor-form-wrap').style.display = campoPotreroActual ? 'block' : 'none';
+  if (campoPotreroActual) {
+    const { fecha } = getNow();
+    document.getElementById('campo-labor-fecha').value = fecha;
+    renderTipoLaborSelector();
+    suscribirLaboresPotrero(campoPotreroActual);
+  } else {
+    document.getElementById('campo-estado-potrero').innerHTML = '<div class="empty"><div class="empty-icon">🌾</div>Todavía no hay potreros configurados. Pídele al admin que los agregue en "Config. Potreros".</div>';
+    document.getElementById('campo-historial-container').innerHTML = '';
+  }
+}
+
+function renderSelectorPotrero() {
+  const wrap = document.getElementById('campo-potrero-selector');
+  if (!wrap) return;
+  wrap.innerHTML = potrerosConfig.map(p => `<div class="cultivo-chip ${campoPotreroActual===p.nombre?'sel':''}" onclick='seleccionarPotrero(${JSON.stringify(p.nombre)})'>${p.nombre}</div>`).join('');
+}
+
+window.seleccionarPotrero = function(nombre) {
+  campoPotreroActual = nombre;
+  campoTipoLaborSeleccionado = null;
+  renderSelectorPotrero();
+  renderTipoLaborSelector();
+  document.getElementById('campo-labor-campos').innerHTML = '';
+  document.getElementById('campo-labor-form-wrap').style.display = 'block';
+  suscribirLaboresPotrero(nombre);
+}
+
+function suscribirLaboresPotrero(nombre) {
+  if (unsubLaboresCampo) { unsubLaboresCampo(); unsubLaboresCampo = null; }
+  const q = query(collection(db, 'labores_campo'), where('potrero','==',nombre), orderBy('ts','desc'));
+  unsubLaboresCampo = onSnapshot(q, snap => {
+    laboresCampoRegistros = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    renderEstadoPotrero(nombre);
+    populateFiltroAnioCampo();
+    renderHistorialLabores();
+  });
+}
+
+function renderEstadoPotrero(nombre) {
+  const cont = document.getElementById('campo-estado-potrero');
+  if (!cont) return;
+  const p = potrerosConfig.find(x => x.nombre === nombre);
+  if (!p) { cont.innerHTML = ''; return; }
+  let cultivoActual;
+  if (p.tipo === 'frutal') {
+    cultivoActual = p.cultivoPermanente || '—';
+  } else {
+    const siembras = laboresCampoRegistros.filter(l => l.tipo === 'siembra').sort((a,b) => b.ts - a.ts);
+    cultivoActual = siembras.length
+      ? `${siembras[0].cultivo}${siembras[0].variedad ? ' · ' + siembras[0].variedad : ''} <span style="color:#9CA3AF">(sembrado ${siembras[0].fecha})</span>`
+      : 'Sin siembra registrada';
+  }
+  cont.innerHTML = `
+    <div class="anterior-box">
+      <div class="anterior-row"><span>Potrero:</span><strong>${nombre}</strong></div>
+      <div class="anterior-row"><span>Hectáreas:</span><strong>${p.hectareas != null ? p.hectareas + ' ha' : '—'}</strong></div>
+      <div class="anterior-row"><span>Tipo:</span><strong>${p.tipo === 'frutal' ? '🌳 Frutal' : '🌾 Anual'}</strong></div>
+      <div class="anterior-row"><span>${p.tipo === 'frutal' ? 'Cultivo permanente' : 'Cultivo actual'}:</span><strong>${cultivoActual}</strong></div>
+    </div>`;
+}
+
+function renderTipoLaborSelector() {
+  const wrap = document.getElementById('campo-tipo-labor-selector');
+  if (!wrap) return;
+  const p = potrerosConfig.find(x => x.nombre === campoPotreroActual);
+  const esAnual = p && p.tipo !== 'frutal';
+  const tipos = TIPOS_LABOR_CAMPO.filter(t => !t.soloAnual || esAnual);
+  wrap.innerHTML = tipos.map(t => `<div class="cultivo-chip ${campoTipoLaborSeleccionado===t.id?'sel':''}" onclick="seleccionarTipoLaborCampo('${t.id}')">${t.label}</div>`).join('');
+}
+
+window.seleccionarTipoLaborCampo = function(tipo) {
+  campoTipoLaborSeleccionado = tipo;
+  renderTipoLaborSelector();
+  renderCamposLaborTipo();
+}
+
+function renderCamposLaborTipo() {
+  const cont = document.getElementById('campo-labor-campos');
+  if (!cont) return;
+  const tipo = campoTipoLaborSeleccionado;
+  if (!tipo) { cont.innerHTML = ''; return; }
+  if (tipo === 'siembra') {
+    cont.innerHTML = `
+      <div class="grid-2">
+        <div class="field"><label>Cultivo</label><input type="text" id="campo-siembra-cultivo" placeholder="Ej: Trigo, Maíz, Canola..."></div>
+        <div class="field"><label>Variedad (opcional)</label><input type="text" id="campo-siembra-variedad"></div>
+      </div>
+      <div class="field"><label>Hectáreas sembradas (opcional)</label><input type="number" id="campo-siembra-hectareas" min="0" step="0.1"></div>`;
+  } else if (tipo === 'aplicacion') {
+    cont.innerHTML = `
+      <div class="grid-2">
+        <div class="field"><label>Producto</label><input type="text" id="campo-apl-producto" placeholder="Ej: Glifosato, Urea..."></div>
+        <div class="field"><label>Dosis</label><input type="text" id="campo-apl-dosis" placeholder="Ej: 2 L/ha, 150 kg/ha..."></div>
+      </div>
+      <div class="grid-2">
+        <div class="field"><label>Objetivo (opcional)</label><input type="text" id="campo-apl-objetivo" placeholder="Ej: Maleza, fertilización..."></div>
+        <div class="field"><label>Equipo utilizado (opcional)</label><div class="select-wrapper"><select id="campo-apl-equipo"><option value="">—</option>${config.equipos.map(e=>`<option value="${e}">${e}</option>`).join('')}</select></div></div>
+      </div>`;
+  } else if (tipo === 'trabajo_suelo') {
+    cont.innerHTML = `
+      <div class="grid-2">
+        <div class="field"><label>Labor realizada</label><input type="text" id="campo-suelo-labor" placeholder="Ej: Rastra, arado, subsolado..."></div>
+        <div class="field"><label>Equipo utilizado (opcional)</label><div class="select-wrapper"><select id="campo-suelo-equipo"><option value="">—</option>${config.equipos.map(e=>`<option value="${e}">${e}</option>`).join('')}</select></div></div>
+      </div>`;
+  } else if (tipo === 'riego') {
+    cont.innerHTML = `
+      <div class="grid-2">
+        <div class="field"><label>Método</label><input type="text" id="campo-riego-metodo" placeholder="Ej: Pivote, goteo, tendido..."></div>
+        <div class="field"><label>Duración (horas, opcional)</label><input type="number" id="campo-riego-duracion" min="0" step="0.5"></div>
+      </div>`;
+  } else if (tipo === 'cosecha') {
+    cont.innerHTML = `
+      <div class="grid-2">
+        <div class="field"><label>Kilos cosechados</label><input type="number" id="campo-cosecha-kg" min="0" step="1"></div>
+        <div class="field"><label>Humedad % (opcional)</label><input type="number" id="campo-cosecha-humedad" min="0" step="0.1"></div>
+      </div>`;
+  } else if (tipo === 'otro') {
+    cont.innerHTML = `<div class="field"><label>Detalle</label><input type="text" id="campo-otro-detalle" placeholder="Describe la labor realizada..."></div>`;
+  }
+}
+
+window.registrarLaborCampo = async function() {
+  if (!campoPotreroActual) { toast('Selecciona un potrero', false); return; }
+  if (!campoTipoLaborSeleccionado) { toast('Selecciona el tipo de labor', false); return; }
+  const fecha = document.getElementById('campo-labor-fecha').value;
+  const obs = document.getElementById('campo-labor-obs').value.trim();
+  if (!fecha) { toast('Selecciona una fecha', false); return; }
+
+  const tipo = campoTipoLaborSeleccionado;
+  const payload = { potrero: campoPotreroActual, tipo, fecha, anio: fecha.slice(0,4), obs, operador: currentUser, ts: Date.now() };
+
+  if (tipo === 'siembra') {
+    const cultivo = document.getElementById('campo-siembra-cultivo').value.trim();
+    if (!cultivo) { toast('Ingresá el cultivo sembrado', false); return; }
+    payload.cultivo = cultivo;
+    payload.variedad = document.getElementById('campo-siembra-variedad').value.trim() || null;
+    const ha = document.getElementById('campo-siembra-hectareas').value;
+    payload.hectareas = ha !== '' ? parseFloat(ha) : null;
+  } else if (tipo === 'aplicacion') {
+    const producto = document.getElementById('campo-apl-producto').value.trim();
+    const dosis = document.getElementById('campo-apl-dosis').value.trim();
+    if (!producto || !dosis) { toast('Completá producto y dosis', false); return; }
+    payload.producto = producto;
+    payload.dosis = dosis;
+    payload.objetivo = document.getElementById('campo-apl-objetivo').value.trim() || null;
+    payload.equipo = document.getElementById('campo-apl-equipo').value || null;
+  } else if (tipo === 'trabajo_suelo') {
+    const labor = document.getElementById('campo-suelo-labor').value.trim();
+    if (!labor) { toast('Ingresá la labor realizada', false); return; }
+    payload.labor = labor;
+    payload.equipo = document.getElementById('campo-suelo-equipo').value || null;
+  } else if (tipo === 'riego') {
+    const metodo = document.getElementById('campo-riego-metodo').value.trim();
+    if (!metodo) { toast('Ingresá el método de riego', false); return; }
+    payload.metodo = metodo;
+    const dur = document.getElementById('campo-riego-duracion').value;
+    payload.duracion = dur !== '' ? parseFloat(dur) : null;
+  } else if (tipo === 'cosecha') {
+    const kg = document.getElementById('campo-cosecha-kg').value;
+    if (kg === '' || isNaN(parseFloat(kg))) { toast('Ingresá los kilos cosechados', false); return; }
+    payload.kg = parseFloat(kg);
+    const hum = document.getElementById('campo-cosecha-humedad').value;
+    payload.humedad = hum !== '' ? parseFloat(hum) : null;
+  } else if (tipo === 'otro') {
+    const detalle = document.getElementById('campo-otro-detalle').value.trim();
+    if (!detalle) { toast('Describe la labor realizada', false); return; }
+    payload.detalle = detalle;
+  }
+
+  const btn = document.getElementById('btn-registrar-labor-campo');
+  btn.disabled = true; btn.textContent = 'Guardando...';
+  try {
+    await addDoc(collection(db, 'labores_campo'), payload);
+    document.getElementById('campo-labor-obs').value = '';
+    campoTipoLaborSeleccionado = null;
+    renderTipoLaborSelector();
+    document.getElementById('campo-labor-campos').innerHTML = '';
+    toast('✓ Labor registrada', true);
+  } catch(e) { toast('Error: ' + e.message, false); }
+  btn.disabled = false; btn.textContent = '✓ Guardar labor';
+}
+
+function populateFiltroAnioCampo() {
+  const sel = document.getElementById('campo-filtro-anio');
+  if (!sel) return;
+  const cur = sel.value;
+  const anios = [...new Set(laboresCampoRegistros.map(l => l.anio))].sort((a,b) => b.localeCompare(a));
+  sel.innerHTML = '<option value="">Todos los años</option>' +
+    anios.map(a => `<option value="${a}" ${a===cur?'selected':''}>${a}</option>`).join('');
+}
+
+function detalleLaborCampo(l) {
+  const p = potrerosConfig.find(x => x.nombre === l.potrero);
+  if (l.tipo === 'siembra') return `${l.cultivo}${l.variedad?' · '+l.variedad:''}${l.hectareas?' · '+l.hectareas+' ha':''}`;
+  if (l.tipo === 'aplicacion') return `${l.producto} — ${l.dosis}${l.objetivo?' · '+l.objetivo:''}${l.equipo?' · '+l.equipo:''}`;
+  if (l.tipo === 'trabajo_suelo') return `${l.labor}${l.equipo?' · '+l.equipo:''}`;
+  if (l.tipo === 'riego') return `${l.metodo}${l.duracion?' · '+l.duracion+' hr':''}`;
+  if (l.tipo === 'cosecha') {
+    const rend = (p && p.hectareas) ? ` · ${(l.kg/p.hectareas).toFixed(0)} kg/ha` : '';
+    return `${l.kg.toLocaleString('es-CL')} kg${rend}${l.humedad?' · humedad '+l.humedad+'%':''}`;
+  }
+  if (l.tipo === 'otro') return l.detalle;
+  return '—';
+}
+
+window.renderHistorialLabores = function() {
+  const fAnio = document.getElementById('campo-filtro-anio')?.value || '';
+  let data = [...laboresCampoRegistros];
+  if (fAnio) data = data.filter(l => l.anio === fAnio);
+  const cont = document.getElementById('campo-historial-container');
+  if (!cont) return;
+  if (!data.length) { cont.innerHTML = '<div class="empty"><div class="empty-icon">📋</div>Sin labores registradas.</div>'; return; }
+  const tipoLabel = {}; TIPOS_LABOR_CAMPO.forEach(t => tipoLabel[t.id] = t.label);
+  cont.innerHTML = `<div class="table-wrap"><table>
+    <thead><tr><th>Fecha</th><th>Tipo</th><th>Detalle</th><th>Obs.</th><th>Registró</th>${isAdmin?'<th></th>':''}</tr></thead>
+    <tbody>${data.map(l => `<tr>
+      <td class="td-mono">${l.fecha}</td>
+      <td style="font-size:13px;font-weight:600">${tipoLabel[l.tipo] || l.tipo}</td>
+      <td style="font-size:12px">${detalleLaborCampo(l)}</td>
+      <td style="font-size:12px;color:#6B7280">${l.obs || '—'}</td>
+      <td style="font-size:12px">${l.operador}</td>
+      ${isAdmin?`<td><button class="btn btn-danger" onclick="eliminarLaborCampo('${l.id}')">✕</button></td>`:''}
+    </tr>`).join('')}</tbody>
+  </table></div>`;
+}
+
+window.eliminarLaborCampo = async function(id) {
+  if (!confirm('¿Eliminar esta labor registrada?')) return;
+  await deleteDoc(doc(db, 'labores_campo', id));
+  toast('Eliminado', false);
+}
+
+// ─── CONFIG. POTREROS (pestaña separada, solo admin) ─────────
+function renderConfigPotreros() {
+  renderListaPotreros();
+  cargarListaEncargadosCampo();
+}
+
+window.onNuevoPotreroTipoChange = function() {
+  const tipo = document.getElementById('nuevo-potrero-tipo').value;
+  document.getElementById('nuevo-potrero-cultivo-wrap').style.display = tipo === 'frutal' ? 'block' : 'none';
+}
+
+function renderListaPotreros() {
+  const cont = document.getElementById('lista-potreros');
+  if (!cont) return;
+  cont.innerHTML = potrerosConfig.length ? potrerosConfig.map((p, i) => `
+    <div class="config-item" style="flex-wrap:wrap;gap:8px">
+      <span style="flex:1;min-width:140px">
+        <strong>${p.nombre}</strong><br>
+        <span style="font-size:12px;color:var(--acero)">${p.hectareas != null ? p.hectareas+' ha' : 'sin ha'} · ${p.tipo === 'frutal' ? '🌳 Frutal ('+(p.cultivoPermanente||'—')+')' : '🌾 Anual'}</span>
+      </span>
+      <button class="btn btn-danger" onclick="eliminarPotrero(${i})">✕</button>
+    </div>`).join('') : '<div style="color:#9CA3AF;font-size:13px;padding:8px">Sin potreros agregados.</div>';
+}
+
+window.agregarPotrero = async function() {
+  const inpNombre = document.getElementById('nuevo-potrero-nombre');
+  const nombre = inpNombre.value.trim();
+  const hectareasRaw = document.getElementById('nuevo-potrero-hectareas').value;
+  const tipo = document.getElementById('nuevo-potrero-tipo').value;
+  const cultivoPermanente = document.getElementById('nuevo-potrero-cultivo-permanente').value.trim();
+  if (!nombre) { toast('Ingresá el nombre del potrero', false); return; }
+  if (potrerosConfig.some(p => p.nombre.toLowerCase() === nombre.toLowerCase())) { toast('Ya existe un potrero con ese nombre', false); return; }
+  if (tipo === 'frutal' && !cultivoPermanente) { toast('Ingresá el cultivo permanente del frutal', false); return; }
+  potrerosConfig.push({
+    nombre,
+    hectareas: hectareasRaw !== '' ? parseFloat(hectareasRaw) : null,
+    tipo,
+    cultivoPermanente: tipo === 'frutal' ? cultivoPermanente : null
+  });
+  config.potreros = potrerosConfig;
+  try {
+    await saveConfig();
+    inpNombre.value = ''; document.getElementById('nuevo-potrero-hectareas').value = ''; document.getElementById('nuevo-potrero-cultivo-permanente').value = '';
+    renderListaPotreros();
+    toast('✓ Potrero agregado', true);
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
+window.eliminarPotrero = async function(idx) {
+  if (!confirm('¿Eliminar este potrero? (las labores históricas registradas no se borran)')) return;
+  potrerosConfig.splice(idx, 1);
+  config.potreros = potrerosConfig;
+  try {
+    await saveConfig();
+    renderListaPotreros();
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
+window.cargarListaEncargadosCampo = async function() {
+  const cont = document.getElementById('lista-encargados-campo');
+  if (!cont) return;
+  cont.innerHTML = '<div style="color:#9CA3AF;font-size:13px;padding:8px">Cargando...</div>';
+  const pines = await getPinesCampo();
+  const nombres = Object.keys(pines);
+  cont.innerHTML = nombres.length ? nombres.map(nombre => {
+    const pin = pines[nombre];
+    const esInicial = pin === PIN_INICIAL;
+    return `<div class="config-item" style="flex-wrap:wrap;gap:8px">
+      <span style="flex:1;min-width:140px">${nombre}</span>
+      <span class="badge ${esInicial?'badge-km':'badge-hr'}" style="font-family:var(--mono);font-size:13px;padding:4px 10px">${esInicial ? '⏳ '+pin : '✅ personalizado'}</span>
+      <button class="btn btn-secondary" style="padding:6px 12px;font-size:12px" onclick="resetearPinEncargadoCampo('${nombre}')">Resetear</button>
+      <button class="btn btn-danger" onclick="eliminarEncargadoCampo('${nombre}')">Quitar acceso</button>
+    </div>`;
+  }).join('') : '<div style="color:#9CA3AF;font-size:13px;padding:8px">Sin encargados de campo agregados.</div>';
+}
+
+window.agregarEncargadoCampo = async function() {
+  const inp = document.getElementById('nuevo-encargado-campo-nombre');
+  const nombre = inp.value.trim();
+  if (!nombre) { toast('Ingresá el nombre del encargado', false); return; }
+  const pines = await getPinesCampo();
+  if (pines[nombre] != null) { toast('Ya existe un encargado con ese nombre', false); return; }
+  pines[nombre] = PIN_INICIAL;
+  try {
+    await setDoc(doc(db, 'config', 'pines_campo'), pines);
+    inp.value = '';
+    cargarListaEncargadosCampo();
+    toast(`✓ ${nombre} agregado con PIN inicial ${PIN_INICIAL} (se le pedirá cambiarlo al ingresar)`, true);
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
+window.resetearPinEncargadoCampo = async function(nombre) {
+  const pinNuevo = prompt(`Nuevo PIN para ${nombre} (mínimo 4 dígitos):`);
+  if (!pinNuevo || pinNuevo.length < 4) { toast('PIN inválido', false); return; }
+  if (pinNuevo === ADMIN_PIN) { toast('Ese PIN está reservado', false); return; }
+  const pines = await getPinesCampo();
+  pines[nombre] = pinNuevo;
+  try {
+    await setDoc(doc(db, 'config', 'pines_campo'), pines);
+    toast(`✓ PIN de ${nombre} actualizado`, true);
+    cargarListaEncargadosCampo();
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
+window.eliminarEncargadoCampo = async function(nombre) {
+  if (!confirm(`¿Quitar el acceso de ${nombre}? Ya no va a poder ingresar a la app.`)) return;
+  const pines = await getPinesCampo();
+  delete pines[nombre];
+  try {
+    await setDoc(doc(db, 'config', 'pines_campo'), pines);
+    cargarListaEncargadosCampo();
+    toast(`Acceso de ${nombre} eliminado`, false);
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
 // ─── GESTIÓN DE PINES (ADMIN) ──────────────────────────────
 const PINES_INICIALES = {
   'José Jarpa': '1001',
@@ -4382,6 +4841,8 @@ window.setTab = function(id,el) {
   if(id==='mantencion') { initMantencion(); }
   if(id==='asistencia') { initAsistencia(); }
   if(id==='config-trabajadores') { renderConfigTrabajadores(); }
+  if(id==='campo') { initCampo(); }
+  if(id==='config-potreros') { renderConfigPotreros(); }
   if(id==='registro' && isAdmin) escucharSolicitudesAdmin();
 }
 
@@ -5090,9 +5551,9 @@ tbody td{padding:10px 12px;vertical-align:middle;}
 <div id="screen-login" class="screen">
   <div class="login-card">
     <div class="login-logo">
-      <div class="icon">⛽</div>
-      <h1>Los Maitenes</h1>
-      <p>Control de Combustible</p>
+      <div class="icon">🌳</div>
+      <h1>Control Los Maitenes</h1>
+      <p>Combustible · Asistencia · Cuaderno de Campo</p>
     </div>
     <div class="pin-input-wrap">
       <input type="password" id="pin-input" placeholder="••••" maxlength="6" inputmode="numeric" onkeydown="if(event.key==='Enter')intentarLogin()">
@@ -5105,10 +5566,11 @@ tbody td{padding:10px 12px;vertical-align:middle;}
 <div id="screen-app" class="screen">
   <header>
     <div class="header-left">
-      <div class="fuel-icon">⛽</div>
-      <h1>Los Maitenes</h1>
+      <div class="fuel-icon">🌳</div>
+      <h1>Control Los Maitenes</h1>
     </div>
     <div class="header-right">
+      <button class="btn-pin" id="btn-secciones-header" style="display:none" onclick="mostrarSelectorSecciones()">☰ Secciones</button>
       <button class="btn-cisterna-hdr" id="btn-cisterna-header" style="display:none" onclick="abrirCargaCisterna()">🚛 Cisterna</button>
       <button class="btn-pin" onclick="mostrarCambioPin(false)">🔑</button>
       <span class="user-badge" id="user-label"></span>
@@ -5116,7 +5578,20 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     </div>
   </header>
 
-  <div class="tabs">
+  <!-- SELECTOR DE SECCIÓN: solo para admin, que es el único rol con acceso
+       a más de un módulo a la vez. Todos los demás roles (operador,
+       supervisor, subadministrador de Asistencia, encargado de Campo) entran
+       directo a su única sección disponible, igual que siempre. -->
+  <div id="panel-secciones" style="display:none;max-width:640px;margin:40px auto;padding:0 16px">
+    <div style="font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--acero);margin-bottom:16px;text-align:center">¿Qué sección quieres abrir?</div>
+    <div style="display:flex;flex-direction:column;gap:12px">
+      <button class="btn" style="background:var(--negro);color:var(--amarillo);justify-content:flex-start;padding:20px;font-size:16px;border-radius:10px" onclick="abrirSeccion('combustible')">⛽ Combustible</button>
+      <button class="btn" style="background:var(--negro);color:var(--amarillo);justify-content:flex-start;padding:20px;font-size:16px;border-radius:10px" onclick="abrirSeccion('asistencia')">🕒 Asistencia</button>
+      <button class="btn" style="background:var(--negro);color:var(--amarillo);justify-content:flex-start;padding:20px;font-size:16px;border-radius:10px" onclick="abrirSeccion('campo')">🌱 Cuaderno de Campo</button>
+    </div>
+  </div>
+
+  <div class="tabs" id="tabs-bar">
     <button class="tab active" id="tab-registro" onclick="setTab('registro',this)">Registrar</button>
     <button class="tab" id="tab-historial" onclick="setTab('historial',this)">Mi historial</button>
     <button class="tab" id="tab-mantencion" onclick="setTab('mantencion',this)">Mantención</button>
@@ -5127,9 +5602,11 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     <button class="tab" id="tab-config" style="display:none" onclick="setTab('config',this)">Configurar</button>
     <button class="tab" id="tab-asistencia" style="display:none" onclick="setTab('asistencia',this)">🕒 Asistencia</button>
     <button class="tab" id="tab-config-trabajadores" style="display:none" onclick="setTab('config-trabajadores',this)">⚙️ Config. Trabajadores</button>
+    <button class="tab" id="tab-campo" style="display:none" onclick="setTab('campo',this)">🌱 Cuaderno de Campo</button>
+    <button class="tab" id="tab-config-potreros" style="display:none" onclick="setTab('config-potreros',this)">⚙️ Config. Potreros</button>
   </div>
 
-  <main>
+  <main id="app-main">
     <!-- REGISTRAR -->
     <div id="tc-registro" class="tab-content active">
       <div class="saldo-widget"></div>
@@ -5754,6 +6231,67 @@ tbody td{padding:10px 12px;vertical-align:middle;}
           <button class="btn-add" onclick="agregarSubadmin()">+ Agregar</button>
         </div>
         <div class="config-lista" id="lista-subadmins" style="margin-top:10px"></div>
+      </div>
+    </div>
+
+    <!-- CUADERNO DE CAMPO -->
+    <div id="tc-campo" class="tab-content">
+      <div class="panel">
+        <div class="panel-title">🌱 Potrero</div>
+        <div class="centros-selector" id="campo-potrero-selector"></div>
+        <div id="campo-estado-potrero"></div>
+      </div>
+
+      <div class="panel" id="campo-labor-form-wrap" style="display:none">
+        <div class="panel-title">Registrar labor</div>
+        <div class="cultivos-label">Tipo de labor</div>
+        <div class="centros-selector" id="campo-tipo-labor-selector"></div>
+        <div id="campo-labor-campos"></div>
+        <div class="field" style="margin-top:8px"><label>Fecha</label><input type="date" id="campo-labor-fecha"></div>
+        <div class="field"><label>Observación (opcional)</label><input type="text" id="campo-labor-obs" placeholder="Detalle adicional..."></div>
+        <button id="btn-registrar-labor-campo" class="btn btn-verde btn-full" onclick="registrarLaborCampo()">✓ Guardar labor</button>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">📋 Historial del potrero</div>
+        <div class="filtros" style="margin-bottom:12px">
+          <div class="select-wrapper"><select id="campo-filtro-anio" onchange="renderHistorialLabores()"></select></div>
+        </div>
+        <div id="campo-historial-container"></div>
+      </div>
+    </div>
+
+    <!-- CONFIG. POTREROS (separado de Configurar de combustible) -->
+    <div id="tc-config-potreros" class="tab-content">
+      <div class="panel">
+        <div class="panel-title">🌾 Potreros</div>
+        <div class="grid-2">
+          <div class="field"><label>Nombre del potrero</label><input type="text" id="nuevo-potrero-nombre"></div>
+          <div class="field"><label>Hectáreas (opcional)</label><input type="number" id="nuevo-potrero-hectareas" min="0" step="0.1"></div>
+        </div>
+        <div class="field">
+          <label>Tipo</label>
+          <div class="select-wrapper"><select id="nuevo-potrero-tipo" onchange="onNuevoPotreroTipoChange()">
+            <option value="anual">🌾 Anual (rota cultivo cada temporada)</option>
+            <option value="frutal">🌳 Frutal (cultivo permanente)</option>
+          </select></div>
+        </div>
+        <div class="field" id="nuevo-potrero-cultivo-wrap" style="display:none">
+          <label>Cultivo permanente</label>
+          <input type="text" id="nuevo-potrero-cultivo-permanente" placeholder="Ej: Avellanos">
+        </div>
+        <button class="btn-add" onclick="agregarPotrero()" style="width:100%;justify-content:center;margin-top:8px">+ Agregar potrero</button>
+        <div class="config-lista" id="lista-potreros" style="margin-top:16px"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">🔑 Encargados de campo (acceso solo a Cuaderno de Campo)</div>
+        <div class="hint" style="margin-bottom:10px">Estas personas ingresan con su propio PIN y ven únicamente la pestaña "Cuaderno de Campo" — nunca combustible ni asistencia.</div>
+        <div class="config-add">
+          <input type="text" id="nuevo-encargado-campo-nombre" placeholder="Nombre del encargado">
+          <button class="btn-add" onclick="agregarEncargadoCampo()">+ Agregar</button>
+        </div>
+        <div class="config-lista" id="lista-encargados-campo" style="margin-top:10px"></div>
       </div>
     </div>
   </main>
