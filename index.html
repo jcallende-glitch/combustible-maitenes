@@ -3892,6 +3892,16 @@ function suscribirLaboresPotrero(nombre) {
   });
 }
 
+// Formatea el texto de un registro de siembra (o asignación de cultivo),
+// mostrando "pendiente de siembra" si aún no tiene fecha real.
+function formatoSiembra(s) {
+  const variedadStr = s.variedad ? ' · ' + s.variedad : '';
+  if (!s.fecha || s.pendiente) {
+    return `${s.cultivo}${variedadStr} <span style="color:#92400E">(pendiente de siembra)</span>`;
+  }
+  return `${s.cultivo}${variedadStr} <span style="color:#9CA3AF">(sembrado ${s.fecha})</span>`;
+}
+
 function renderEstadoPotrero(nombre) {
   const cont = document.getElementById('campo-estado-potrero');
   if (!cont) return;
@@ -3902,9 +3912,7 @@ function renderEstadoPotrero(nombre) {
     cultivoActual = p.cultivoPermanente || '—';
   } else {
     const siembras = laboresCampoRegistros.filter(l => l.tipo === 'siembra').sort((a,b) => b.ts - a.ts);
-    cultivoActual = siembras.length
-      ? `${siembras[0].cultivo}${siembras[0].variedad ? ' · ' + siembras[0].variedad : ''} <span style="color:#9CA3AF">(sembrado ${siembras[0].fecha})</span>`
-      : 'Sin siembra registrada';
+    cultivoActual = siembras.length ? formatoSiembra(siembras[0]) : 'Sin cultivo asignado';
   }
   cont.innerHTML = `
     <div class="anterior-box">
@@ -4214,7 +4222,7 @@ function populateFiltroAnioCampo() {
 function detalleLaborCampo(l) {
   const p = potrerosConfig.find(x => x.nombre === l.potrero);
   let base = '—';
-  if (l.tipo === 'siembra') base = `${l.cultivo}${l.variedad?' · '+l.variedad:''}${l.hectareas?' · '+l.hectareas+' ha':''}`;
+  if (l.tipo === 'siembra') base = `${l.cultivo}${l.variedad?' · '+l.variedad:''}${l.hectareas?' · '+l.hectareas+' ha':''}${(!l.fecha||l.pendiente)?' · <span style="color:#92400E">pendiente de siembra</span>':''}`;
   else if (l.tipo === 'aplicacion') {
     const prefTipo = l.tiposProducto && l.tiposProducto.length ? '['+l.tiposProducto.join(', ')+'] ' : '';
     const prodStr = Array.isArray(l.productos) && l.productos.length
@@ -4246,7 +4254,7 @@ window.renderHistorialLabores = function() {
   cont.innerHTML = `<div class="table-wrap"><table>
     <thead><tr><th>Fecha</th><th>Tipo</th><th>Detalle</th><th>Obs.</th><th>Registró</th>${isAdmin?'<th></th>':''}</tr></thead>
     <tbody>${data.map(l => `<tr>
-      <td class="td-mono">${l.fecha}</td>
+      <td class="td-mono">${l.fecha || '—'}</td>
       <td style="font-size:13px;font-weight:600">${tipoLabel[l.tipo] || l.tipo}</td>
       <td style="font-size:12px">${detalleLaborCampo(l)}</td>
       <td style="font-size:12px;color:#6B7280">${l.obs || '—'}</td>
@@ -4283,7 +4291,9 @@ function textoCultivoActual(nombrePotrero) {
   const p = potrerosConfig.find(x => x.nombre === nombrePotrero);
   if (p && p.tipo === 'frutal') return p.cultivoPermanente || 'sin definir';
   const c = cultivoActualPorPotrero[nombrePotrero];
-  return c ? `${c.cultivo}${c.variedad ? ' · '+c.variedad : ''} (${c.fecha})` : 'sin definir';
+  if (!c) return 'sin definir';
+  const variedadStr = c.variedad ? ' · '+c.variedad : '';
+  return (!c.fecha || c.pendiente) ? `${c.cultivo}${variedadStr} (pendiente de siembra)` : `${c.cultivo}${variedadStr} (${c.fecha})`;
 }
 
 async function renderConfigPotreros() {
@@ -4399,12 +4409,15 @@ window.abrirEdicionCultivoPotrero = function(idx) {
 function renderEditorCultivoPotrero(idx) {
   const cont = document.getElementById(`potrero-cultivo-editor-${idx}`);
   if (!cont) return;
-  const { fecha } = getNow();
   cont.innerHTML = `
     <div style="background:var(--fondo);border:1px solid var(--borde);border-radius:6px;padding:10px;margin-top:4px">
       <div class="cultivos-label">Cultivo de esta temporada</div>
       ${cultivosCampoConfig.length ? `<div class="centros-selector">${cultivosCampoConfig.map(c => `<div class="cultivo-chip ${edicionPotreroCultivoSel===c?'sel':''}" onclick='seleccionarEdicionPotreroCultivo(${JSON.stringify(c)},${idx})'>${c}</div>`).join('')}</div>` : '<div class="hint" style="margin-bottom:8px">Agregá cultivos en el panel de arriba primero.</div>'}
-      <div class="field" style="margin-top:8px"><label>Fecha de siembra</label><input type="date" id="potrero-cultivo-fecha-${idx}" value="${fecha}"></div>
+      <div class="field" style="margin-top:8px">
+        <label>Fecha de siembra (opcional)</label>
+        <input type="date" id="potrero-cultivo-fecha-${idx}">
+        <div class="hint">Déjala en blanco si el cultivo queda asignado pero todavía no se siembra — quedará como "pendiente de siembra".</div>
+      </div>
       <div style="display:flex;gap:8px;margin-top:10px">
         <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="cerrarEdicionCultivoPotrero(${idx})">Cancelar</button>
         <button class="btn btn-verde" style="flex:1" onclick="guardarCultivoPotrero(${idx})">✓ Guardar</button>
@@ -4427,19 +4440,19 @@ window.guardarCultivoPotrero = async function(idx) {
   const p = potrerosConfig[idx];
   if (!p) return;
   if (!edicionPotreroCultivoSel) { toast('Selecciona un cultivo', false); return; }
-  const fecha = document.getElementById(`potrero-cultivo-fecha-${idx}`).value;
-  if (!fecha) { toast('Selecciona una fecha', false); return; }
+  const fecha = document.getElementById(`potrero-cultivo-fecha-${idx}`).value || null;
   try {
     const nuevoRegistro = {
       potrero: p.nombre, tipo: 'siembra', cultivo: edicionPotreroCultivoSel, variedad: null, hectareas: null,
-      fecha, anio: fecha.slice(0,4), obs: '', operador: currentUser, ts: Date.now()
+      fecha, pendiente: !fecha, anio: fecha ? fecha.slice(0,4) : String(new Date().getFullYear()),
+      obs: '', operador: currentUser, ts: Date.now()
     };
     await addDoc(collection(db, 'labores_campo'), nuevoRegistro);
     const actual = cultivoActualPorPotrero[p.nombre];
     if (!actual || nuevoRegistro.ts > actual.ts) cultivoActualPorPotrero[p.nombre] = nuevoRegistro;
     cerrarEdicionCultivoPotrero(idx);
     renderListaPotreros();
-    toast(`✓ Cultivo de "${p.nombre}" definido: ${edicionPotreroCultivoSel}`, true);
+    toast(`✓ Cultivo de "${p.nombre}" definido: ${edicionPotreroCultivoSel}${fecha ? '' : ' (pendiente de siembra)'}`, true);
   } catch(e) { toast('Error: ' + e.message, false); }
 }
 
