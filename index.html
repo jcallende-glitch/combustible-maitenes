@@ -826,6 +826,11 @@ let cultivosCampoConfig = [];
 // Fertilizante...) — el admin la administra desde Config. Potreros; se
 // pueden elegir varios a la vez en un mismo registro.
 let tiposProductoCampoConfig = [];
+// Tipos de labor personalizados (además de los 6 fijos: Siembra, Aplicación,
+// Trabajo de suelo, Riego, Cosecha, Otro) — el admin los administra desde
+// Config. Potreros. Cada uno puede restringirse a cultivos específicos
+// (cultivos: [] = aparece para todos los cultivos, igual que los aperos).
+let tiposLaborCampoConfig = [];
 
 async function getPinesCampo() {
   const snap = await getDoc(doc(db, 'config', 'pines_campo'));
@@ -1081,6 +1086,12 @@ async function loadConfig() {
         config.tiposProductoCampo = [];
         await setDoc(doc(db, 'config', 'datos'), config);
       }
+      // Migración automática: tipos de labor personalizados para el
+      // Cuaderno de Campo (además de los 6 fijos), restringibles por cultivo
+      if (!config.tiposLaborCampo) {
+        config.tiposLaborCampo = [];
+        await setDoc(doc(db, 'config', 'datos'), config);
+      }
     } else {
       config = { ...DEFAULT_CONFIG, tiposEquipo: { ...EQUIPO_TIPO_DEFAULT }, aperos: construirAperosDesdeHardcode() };
       config.requisitosEquipo = construirRequisitosDesdeDefault();
@@ -1095,6 +1106,7 @@ async function loadConfig() {
       config.potreros = [];
       config.cultivosCampo = [];
       config.tiposProductoCampo = [];
+      config.tiposLaborCampo = [];
       await setDoc(doc(db, 'config', 'datos'), config);
     }
     tiposEquipo = config.tiposEquipo || {};
@@ -1111,6 +1123,7 @@ async function loadConfig() {
     potrerosConfig = config.potreros || [];
     cultivosCampoConfig = config.cultivosCampo || [];
     tiposProductoCampoConfig = config.tiposProductoCampo || [];
+    tiposLaborCampoConfig = config.tiposLaborCampo || [];
   } catch(e) { console.error(e); }
 }
 async function saveConfig() { await setDoc(doc(db, 'config', 'datos'), config); }
@@ -3923,13 +3936,29 @@ function renderEstadoPotrero(nombre) {
     </div>`;
 }
 
+function cultivoDeReferenciaPotrero(nombrePotrero) {
+  const p = potrerosConfig.find(x => x.nombre === nombrePotrero);
+  if (!p) return null;
+  if (p.tipo === 'frutal') return p.cultivoPermanente || null;
+  const c = cultivoActualPorPotrero[nombrePotrero];
+  return c ? c.cultivo : null;
+}
+
 function renderTipoLaborSelector() {
   const wrap = document.getElementById('campo-tipo-labor-selector');
   if (!wrap) return;
   const p = potrerosConfig.find(x => x.nombre === campoPotreroActual);
   const esAnual = p && p.tipo !== 'frutal';
-  const tipos = TIPOS_LABOR_CAMPO.filter(t => !t.soloAnual || esAnual);
-  wrap.innerHTML = tipos.map(t => `<div class="cultivo-chip ${campoTipoLaborSeleccionado===t.id?'sel':''}" onclick="seleccionarTipoLaborCampo('${t.id}')">${t.label}</div>`).join('');
+  const cultivoRef = cultivoDeReferenciaPotrero(campoPotreroActual);
+
+  const tiposFijos = TIPOS_LABOR_CAMPO.filter(t => !t.soloAnual || esAnual)
+    .map(t => ({ id: t.id, label: t.label }));
+  const tiposPersonalizados = tiposLaborCampoConfig
+    .filter(t => !t.cultivos || t.cultivos.length === 0 || (cultivoRef && t.cultivos.includes(cultivoRef)))
+    .map(t => ({ id: 'custom:' + t.nombre, label: '🧩 ' + t.nombre }));
+
+  const tipos = [...tiposFijos, ...tiposPersonalizados];
+  wrap.innerHTML = tipos.map(t => `<div class="cultivo-chip ${campoTipoLaborSeleccionado===t.id?'sel':''}" onclick='seleccionarTipoLaborCampo(${JSON.stringify(t.id)})'>${t.label}</div>`).join('');
 }
 
 window.seleccionarTipoLaborCampo = function(tipo) {
@@ -4080,6 +4109,9 @@ function renderCamposLaborTipo() {
       </div>`;
   } else if (tipo === 'otro') {
     cont.innerHTML = `<div class="field"><label>Detalle</label><input type="text" id="campo-otro-detalle" placeholder="Describe la labor realizada..."></div>`;
+  } else if (tipo.startsWith('custom:')) {
+    const nombreTipo = tipo.slice(7);
+    cont.innerHTML = `<div class="field"><label>Detalle de "${nombreTipo}"</label><input type="text" id="campo-custom-detalle" placeholder="Describe lo realizado..."></div>`;
   }
 }
 
@@ -4141,6 +4173,10 @@ window.registrarLaborCampo = async function() {
 
   const tipo = campoTipoLaborSeleccionado;
   const payloadBase = { tipo, fecha, anio: fecha.slice(0,4), obs, operador: currentUser, ts: Date.now() };
+  if (tipo.startsWith('custom:')) {
+    payloadBase.tipo = 'personalizado';
+    payloadBase.nombreTipo = tipo.slice(7);
+  }
 
   if (tipo === 'siembra') {
     if (!campoSiembraCultivoSel) { toast('Selecciona el cultivo sembrado', false); return; }
@@ -4180,6 +4216,10 @@ window.registrarLaborCampo = async function() {
   } else if (tipo === 'otro') {
     const detalle = document.getElementById('campo-otro-detalle').value.trim();
     if (!detalle) { toast('Describe la labor realizada', false); return; }
+    payloadBase.detalle = detalle;
+  } else if (tipo.startsWith('custom:')) {
+    const detalle = document.getElementById('campo-custom-detalle').value.trim();
+    if (!detalle) { toast('Describe lo realizado', false); return; }
     payloadBase.detalle = detalle;
   }
 
@@ -4236,6 +4276,7 @@ function detalleLaborCampo(l) {
     const rend = (p && p.hectareas) ? ` · ${(l.kg/p.hectareas).toFixed(0)} kg/ha` : '';
     base = `${l.kg.toLocaleString('es-CL')} kg${rend}${l.humedad?' · humedad '+l.humedad+'%':''}`;
   } else if (l.tipo === 'otro') base = l.detalle;
+  else if (l.tipo === 'personalizado') base = l.detalle;
 
   if (l.aplicacion_completa === false) {
     base += ` · ⚠️ Parcial${l.hectareas_aplicadas != null ? ' ('+l.hectareas_aplicadas+' ha)' : ''}${l.obs_parcial ? ' — '+l.obs_parcial : ''}`;
@@ -4255,7 +4296,7 @@ window.renderHistorialLabores = function() {
     <thead><tr><th>Fecha</th><th>Tipo</th><th>Detalle</th><th>Obs.</th><th>Registró</th>${isAdmin?'<th></th>':''}</tr></thead>
     <tbody>${data.map(l => `<tr>
       <td class="td-mono">${l.fecha || '—'}</td>
-      <td style="font-size:13px;font-weight:600">${tipoLabel[l.tipo] || l.tipo}</td>
+      <td style="font-size:13px;font-weight:600">${l.tipo === 'personalizado' ? '🧩 '+l.nombreTipo : (tipoLabel[l.tipo] || l.tipo)}</td>
       <td style="font-size:12px">${detalleLaborCampo(l)}</td>
       <td style="font-size:12px;color:#6B7280">${l.obs || '—'}</td>
       <td style="font-size:12px">${l.operador}</td>
@@ -4301,7 +4342,100 @@ async function renderConfigPotreros() {
   renderListaPotreros();
   renderListaCultivosCampo();
   renderListaTiposProductoCampo();
+  renderListaTiposLaborCampo();
   cargarListaEncargadosCampo();
+}
+
+let edicionTipoLaborCampoIdx = null;
+let edicionTipoLaborCampoCultivos = [];
+
+function renderListaTiposLaborCampo() {
+  const cont = document.getElementById('lista-tipos-labor-campo');
+  if (!cont) return;
+  cont.innerHTML = tiposLaborCampoConfig.length ? tiposLaborCampoConfig.map((t, i) => `
+    <div class="config-item" style="flex-direction:column;align-items:stretch;gap:6px">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+        <strong style="font-size:14px">${t.nombre}</strong>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-secondary" style="font-size:11px;padding:6px 10px" onclick="abrirEdicionTipoLaborCampo(${i})">✏️ Cultivos</button>
+          <button class="btn btn-danger" onclick="eliminarTipoLaborCampo(${i})">✕</button>
+        </div>
+      </div>
+      <div style="font-size:12px;color:var(--acero)"><strong>Cultivos:</strong> ${t.cultivos && t.cultivos.length ? t.cultivos.join(', ') : 'Todos'}</div>
+      <div id="tipo-labor-campo-editor-${i}"></div>
+    </div>`).join('') : '<div style="color:#9CA3AF;font-size:13px;padding:8px">Sin tipos de labor personalizados.</div>';
+}
+
+window.agregarTipoLaborCampo = async function() {
+  const inp = document.getElementById('nuevo-tipo-labor-campo');
+  const nombre = inp.value.trim();
+  if (!nombre) { toast('Ingresá el nombre del tipo de labor', false); return; }
+  if (tiposLaborCampoConfig.some(t => t.nombre.toLowerCase() === nombre.toLowerCase())) { toast('Ya existe un tipo de labor con ese nombre', false); return; }
+  tiposLaborCampoConfig.push({ nombre, cultivos: [] });
+  config.tiposLaborCampo = tiposLaborCampoConfig;
+  try {
+    await saveConfig();
+    inp.value = '';
+    renderListaTiposLaborCampo();
+    toast('✓ Tipo de labor agregado', true);
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
+window.eliminarTipoLaborCampo = async function(idx) {
+  if (!confirm('¿Eliminar este tipo de labor? (las labores históricas ya registradas no se borran)')) return;
+  tiposLaborCampoConfig.splice(idx, 1);
+  config.tiposLaborCampo = tiposLaborCampoConfig;
+  try {
+    await saveConfig();
+    renderListaTiposLaborCampo();
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
+window.abrirEdicionTipoLaborCampo = function(idx) {
+  const t = tiposLaborCampoConfig[idx];
+  if (!t) return;
+  edicionTipoLaborCampoIdx = idx;
+  edicionTipoLaborCampoCultivos = [...(t.cultivos || [])];
+  renderEditorTipoLaborCampo(idx);
+}
+
+function renderEditorTipoLaborCampo(idx) {
+  const cont = document.getElementById(`tipo-labor-campo-editor-${idx}`);
+  if (!cont) return;
+  cont.innerHTML = `
+    <div style="background:var(--fondo);border:1px solid var(--borde);border-radius:6px;padding:10px;margin-top:4px">
+      <div class="cultivos-label">Cultivos donde aparece (vacío = todos)</div>
+      <div class="centros-selector">${cultivosCampoConfig.map(c => `<div class="cultivo-chip ${edicionTipoLaborCampoCultivos.includes(c)?'sel':''}" onclick='toggleEdicionTipoLaborCampoCultivo(${JSON.stringify(c)},${idx})'>${c}</div>`).join('')}</div>
+      ${!cultivosCampoConfig.length ? '<div class="hint">Agregá cultivos en el panel de arriba primero.</div>' : ''}
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="cerrarEdicionTipoLaborCampo(${idx})">Cancelar</button>
+        <button class="btn btn-verde" style="flex:1" onclick="guardarEdicionTipoLaborCampo(${idx})">✓ Guardar</button>
+      </div>
+    </div>`;
+}
+
+window.toggleEdicionTipoLaborCampoCultivo = function(c, idx) {
+  const i = edicionTipoLaborCampoCultivos.indexOf(c);
+  if (i >= 0) edicionTipoLaborCampoCultivos.splice(i, 1); else edicionTipoLaborCampoCultivos.push(c);
+  renderEditorTipoLaborCampo(idx);
+}
+
+window.cerrarEdicionTipoLaborCampo = function(idx) {
+  edicionTipoLaborCampoIdx = null;
+  const cont = document.getElementById(`tipo-labor-campo-editor-${idx}`);
+  if (cont) cont.innerHTML = '';
+}
+
+window.guardarEdicionTipoLaborCampo = async function(idx) {
+  if (!tiposLaborCampoConfig[idx]) return;
+  tiposLaborCampoConfig[idx].cultivos = [...edicionTipoLaborCampoCultivos];
+  config.tiposLaborCampo = tiposLaborCampoConfig;
+  try {
+    await saveConfig();
+    edicionTipoLaborCampoIdx = null;
+    renderListaTiposLaborCampo();
+    toast('✓ Cultivos actualizados', true);
+  } catch(e) { toast('Error: ' + e.message, false); }
 }
 
 function renderListaTiposProductoCampo() {
@@ -6696,6 +6830,16 @@ tbody td{padding:10px 12px;vertical-align:middle;}
           <button class="btn-add" onclick="agregarTipoProductoCampo()">+ Agregar</button>
         </div>
         <div class="config-lista" id="lista-tipos-producto-campo" style="margin-top:10px"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">🔨 Tipos de labor personalizados</div>
+        <div class="hint" style="margin-bottom:10px">Además de los 6 tipos fijos (Siembra, Aplicación, Trabajo de suelo, Riego, Cosecha, Otro), acá puedes agregar tipos propios (ej. Poda, Deshije, Raleo) y restringirlos a cultivos específicos — si no restringís ninguno, aparece para todos.</div>
+        <div class="config-add">
+          <input type="text" id="nuevo-tipo-labor-campo" placeholder="Ej: Poda, Deshije, Raleo...">
+          <button class="btn-add" onclick="agregarTipoLaborCampo()">+ Agregar</button>
+        </div>
+        <div class="config-lista" id="lista-tipos-labor-campo" style="margin-top:10px"></div>
       </div>
 
       <div class="panel">
