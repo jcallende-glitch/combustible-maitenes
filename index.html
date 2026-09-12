@@ -831,6 +831,10 @@ let tiposProductoCampoConfig = [];
 // Config. Potreros. Cada uno puede restringirse a cultivos específicos
 // (cultivos: [] = aparece para todos los cultivos, igual que los aperos).
 let tiposLaborCampoConfig = [];
+// IDs de los 6 tipos fijos (Siembra, Aplicación, Trabajo de suelo, Riego,
+// Cosecha, Otro) que el admin decidió ocultar — no se pueden borrar del
+// código porque tienen formularios propios, pero si no se usan, no aparecen.
+let tiposLaborCampoDeshabilitados = [];
 
 async function getPinesCampo() {
   const snap = await getDoc(doc(db, 'config', 'pines_campo'));
@@ -1092,6 +1096,11 @@ async function loadConfig() {
         config.tiposLaborCampo = [];
         await setDoc(doc(db, 'config', 'datos'), config);
       }
+      // Migración automática: tipos fijos de labor ocultados por el admin
+      if (!config.tiposLaborCampoDeshabilitados) {
+        config.tiposLaborCampoDeshabilitados = [];
+        await setDoc(doc(db, 'config', 'datos'), config);
+      }
     } else {
       config = { ...DEFAULT_CONFIG, tiposEquipo: { ...EQUIPO_TIPO_DEFAULT }, aperos: construirAperosDesdeHardcode() };
       config.requisitosEquipo = construirRequisitosDesdeDefault();
@@ -1107,6 +1116,7 @@ async function loadConfig() {
       config.cultivosCampo = [];
       config.tiposProductoCampo = [];
       config.tiposLaborCampo = [];
+      config.tiposLaborCampoDeshabilitados = [];
       await setDoc(doc(db, 'config', 'datos'), config);
     }
     tiposEquipo = config.tiposEquipo || {};
@@ -1124,6 +1134,7 @@ async function loadConfig() {
     cultivosCampoConfig = config.cultivosCampo || [];
     tiposProductoCampoConfig = config.tiposProductoCampo || [];
     tiposLaborCampoConfig = config.tiposLaborCampo || [];
+    tiposLaborCampoDeshabilitados = config.tiposLaborCampoDeshabilitados || [];
   } catch(e) { console.error(e); }
 }
 async function saveConfig() { await setDoc(doc(db, 'config', 'datos'), config); }
@@ -3951,7 +3962,7 @@ function renderTipoLaborSelector() {
   const esAnual = p && p.tipo !== 'frutal';
   const cultivoRef = cultivoDeReferenciaPotrero(campoPotreroActual);
 
-  const tiposFijos = TIPOS_LABOR_CAMPO.filter(t => !t.soloAnual || esAnual)
+  const tiposFijos = TIPOS_LABOR_CAMPO.filter(t => (!t.soloAnual || esAnual) && !tiposLaborCampoDeshabilitados.includes(t.id))
     .map(t => ({ id: t.id, label: t.label }));
   const tiposPersonalizados = tiposLaborCampoConfig
     .filter(t => !t.cultivos || t.cultivos.length === 0 || (cultivoRef && t.cultivos.includes(cultivoRef)))
@@ -4284,6 +4295,15 @@ function detalleLaborCampo(l) {
   return base;
 }
 
+let campoHistorialOrden = 'asc'; // 'asc' = más antiguo primero (cronológico), 'desc' = más reciente primero
+
+window.setCampoHistorialOrden = function(orden) {
+  campoHistorialOrden = orden;
+  document.getElementById('campo-orden-asc')?.classList.toggle('sel', orden==='asc');
+  document.getElementById('campo-orden-desc')?.classList.toggle('sel', orden==='desc');
+  renderHistorialLabores();
+}
+
 window.renderHistorialLabores = function() {
   const fAnio = document.getElementById('campo-filtro-anio')?.value || '';
   let data = [...laboresCampoRegistros];
@@ -4291,6 +4311,14 @@ window.renderHistorialLabores = function() {
   const cont = document.getElementById('campo-historial-container');
   if (!cont) return;
   if (!data.length) { cont.innerHTML = '<div class="empty"><div class="empty-icon">📋</div>Sin labores registradas.</div>'; return; }
+  // Orden por la fecha real de la labor (no por cuándo se ingresó al sistema).
+  // Los registros sin fecha (ej. siembra pendiente) quedan al final.
+  data.sort((a, b) => {
+    if (!a.fecha && !b.fecha) return b.ts - a.ts;
+    if (!a.fecha) return 1;
+    if (!b.fecha) return -1;
+    return campoHistorialOrden === 'asc' ? a.fecha.localeCompare(b.fecha) : b.fecha.localeCompare(a.fecha);
+  });
   const tipoLabel = {}; TIPOS_LABOR_CAMPO.forEach(t => tipoLabel[t.id] = t.label);
   cont.innerHTML = `<div class="table-wrap"><table>
     <thead><tr><th>Fecha</th><th>Tipo</th><th>Detalle</th><th>Obs.</th><th>Registró</th>${isAdmin?'<th></th>':''}</tr></thead>
@@ -4342,8 +4370,32 @@ async function renderConfigPotreros() {
   renderListaPotreros();
   renderListaCultivosCampo();
   renderListaTiposProductoCampo();
+  renderListaTiposLaborFijos();
   renderListaTiposLaborCampo();
   cargarListaEncargadosCampo();
+}
+
+function renderListaTiposLaborFijos() {
+  const cont = document.getElementById('lista-tipos-labor-fijos');
+  if (!cont) return;
+  cont.innerHTML = TIPOS_LABOR_CAMPO.map(t => {
+    const activo = !tiposLaborCampoDeshabilitados.includes(t.id);
+    return `<div class="config-item">
+      <span>${t.label}</span>
+      <span class="badge" style='cursor:pointer;background:${activo?'var(--verde-suave)':'#F3F4F6'};color:${activo?'var(--verde)':'#9CA3AF'}' title="Click para ${activo?'ocultar':'volver a mostrar'}" onclick='toggleTipoLaborFijo(${JSON.stringify(t.id)})'>${activo?'✓ Activo':'✕ Oculto'}</span>
+    </div>`;
+  }).join('');
+}
+
+window.toggleTipoLaborFijo = async function(id) {
+  const i = tiposLaborCampoDeshabilitados.indexOf(id);
+  if (i >= 0) tiposLaborCampoDeshabilitados.splice(i, 1); else tiposLaborCampoDeshabilitados.push(id);
+  config.tiposLaborCampoDeshabilitados = tiposLaborCampoDeshabilitados;
+  try {
+    await saveConfig();
+    renderListaTiposLaborFijos();
+    toast('✓ Actualizado', true);
+  } catch(e) { toast('Error: ' + e.message, false); }
 }
 
 let edicionTipoLaborCampoIdx = null;
@@ -6784,6 +6836,8 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         <div class="panel-title">📋 Historial del potrero</div>
         <div class="filtros" style="margin-bottom:12px">
           <div class="select-wrapper"><select id="campo-filtro-anio" onchange="renderHistorialLabores()"></select></div>
+          <div class="cultivo-chip sel" id="campo-orden-asc" onclick="setCampoHistorialOrden('asc')">↑ Más antiguo primero</div>
+          <div class="cultivo-chip" id="campo-orden-desc" onclick="setCampoHistorialOrden('desc')">↓ Más reciente primero</div>
         </div>
         <div id="campo-historial-container"></div>
       </div>
@@ -6833,8 +6887,13 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       </div>
 
       <div class="panel">
-        <div class="panel-title">🔨 Tipos de labor personalizados</div>
-        <div class="hint" style="margin-bottom:10px">Además de los 6 tipos fijos (Siembra, Aplicación, Trabajo de suelo, Riego, Cosecha, Otro), acá puedes agregar tipos propios (ej. Poda, Deshije, Raleo) y restringirlos a cultivos específicos — si no restringís ninguno, aparece para todos.</div>
+        <div class="panel-title">🔨 Tipos de labor</div>
+        <div class="cultivos-label">Tipos fijos (activar/desactivar)</div>
+        <div class="hint" style="margin-bottom:10px">No se pueden borrar del todo porque tienen formularios propios, pero si no los usas, puedes ocultarlos para que no se repitan con tus tipos personalizados.</div>
+        <div class="config-lista" id="lista-tipos-labor-fijos" style="margin-bottom:16px"></div>
+
+        <div class="cultivos-label">Tipos personalizados</div>
+        <div class="hint" style="margin-bottom:10px">Agregá tipos propios (ej. Poda, Deshije, Raleo) y restringilos a cultivos específicos — si no restringís ninguno, aparece para todos.</div>
         <div class="config-add">
           <input type="text" id="nuevo-tipo-labor-campo" placeholder="Ej: Poda, Deshije, Raleo...">
           <button class="btn-add" onclick="agregarTipoLaborCampo()">+ Agregar</button>
