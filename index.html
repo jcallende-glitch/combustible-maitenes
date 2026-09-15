@@ -5,6 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Control Los Maitenes</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/togeojson@0.16.0/togeojson.js"></script>
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import { getFirestore, collection, addDoc, deleteDoc, doc, onSnapshot, query, orderBy, where, setDoc, getDoc, updateDoc, increment, limit, getDocs, serverTimestamp, writeBatch } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
@@ -3875,6 +3880,7 @@ async function initCampo() {
   document.getElementById('campo-labor-campos').innerHTML = '';
   document.getElementById('campo-labor-form-wrap').style.display = campoPotreroActual ? 'block' : 'none';
   await cargarCultivosActualesPotreros();
+  renderMapaPotreros('campo-mapa', true);
   if (campoPotreroActual) {
     const { fecha } = getNow();
     document.getElementById('campo-labor-fecha').value = fecha;
@@ -4122,7 +4128,21 @@ function renderCamposLaborTipo() {
     cont.innerHTML = `<div class="field"><label>Detalle</label><input type="text" id="campo-otro-detalle" placeholder="Describe la labor realizada..."></div>`;
   } else if (tipo.startsWith('custom:')) {
     const nombreTipo = tipo.slice(7);
-    cont.innerHTML = `<div class="field"><label>Detalle de "${nombreTipo}"</label><input type="text" id="campo-custom-detalle" placeholder="Describe lo realizado..."></div>`;
+    const tipoDef = tiposLaborCampoConfig.find(t => t.nombre === nombreTipo);
+    if (tipoDef && tipoDef.tieneProductos) {
+      campoAplProductosSel = [];
+      cont.innerHTML = `
+        <div class="cultivos-label">Productos aplicados</div>
+        <div id="campo-apl-productos-lista"></div>
+        <div class="grid-2">
+          <div class="field"><label>Producto</label><input type="text" id="campo-apl-producto" placeholder="Ej: Urea, Nitrato de potasio..."></div>
+          <div class="field"><label>Dosis</label><input type="text" id="campo-apl-dosis" placeholder="Ej: 150 kg/ha..."></div>
+        </div>
+        <button type="button" class="btn btn-secondary" style="margin-bottom:14px" onclick="agregarCampoAplProducto()">+ Agregar producto a la lista</button>`;
+      renderCampoAplProductosLista();
+    } else {
+      cont.innerHTML = `<div class="field"><label>Detalle de "${nombreTipo}"</label><input type="text" id="campo-custom-detalle" placeholder="Describe lo realizado..."></div>`;
+    }
   }
 }
 
@@ -4229,9 +4249,20 @@ window.registrarLaborCampo = async function() {
     if (!detalle) { toast('Describe la labor realizada', false); return; }
     payloadBase.detalle = detalle;
   } else if (tipo.startsWith('custom:')) {
-    const detalle = document.getElementById('campo-custom-detalle').value.trim();
-    if (!detalle) { toast('Describe lo realizado', false); return; }
-    payloadBase.detalle = detalle;
+    const nombreTipo = tipo.slice(7);
+    const tipoDef = tiposLaborCampoConfig.find(t => t.nombre === nombreTipo);
+    if (tipoDef && tipoDef.tieneProductos) {
+      const prodPendiente = document.getElementById('campo-apl-producto').value.trim();
+      const dosisPendiente = document.getElementById('campo-apl-dosis').value.trim();
+      const productos = [...campoAplProductosSel];
+      if (prodPendiente && dosisPendiente) productos.push({ producto: prodPendiente, dosis: dosisPendiente });
+      if (!productos.length) { toast('Agregá al menos un producto con su dosis', false); return; }
+      payloadBase.productos = productos;
+    } else {
+      const detalle = document.getElementById('campo-custom-detalle').value.trim();
+      if (!detalle) { toast('Describe lo realizado', false); return; }
+      payloadBase.detalle = detalle;
+    }
   }
 
   const btn = document.getElementById('btn-registrar-labor-campo');
@@ -4287,7 +4318,11 @@ function detalleLaborCampo(l) {
     const rend = (p && p.hectareas) ? ` · ${(l.kg/p.hectareas).toFixed(0)} kg/ha` : '';
     base = `${l.kg.toLocaleString('es-CL')} kg${rend}${l.humedad?' · humedad '+l.humedad+'%':''}`;
   } else if (l.tipo === 'otro') base = l.detalle;
-  else if (l.tipo === 'personalizado') base = l.detalle;
+  else if (l.tipo === 'personalizado') {
+    base = Array.isArray(l.productos) && l.productos.length
+      ? l.productos.map(pr => `${pr.producto} (${pr.dosis})`).join(', ')
+      : l.detalle;
+  }
 
   if (l.aplicacion_completa === false) {
     base += ` · ⚠️ Parcial${l.hectareas_aplicadas != null ? ' ('+l.hectareas_aplicadas+' ha)' : ''}${l.obs_parcial ? ' — '+l.obs_parcial : ''}`;
@@ -4365,6 +4400,172 @@ function textoCultivoActual(nombrePotrero) {
   return (!c.fecha || c.pendiente) ? `${c.cultivo}${variedadStr} (pendiente de siembra)` : `${c.cultivo}${variedadStr} (${c.fecha})`;
 }
 
+// ─── MAPA DEL CAMPO (Leaflet + satélite gratis + polígonos desde KML) ────
+// Cada potrero guarda su polígono (config.potreros[i].poligono, array de
+// [lat,lng]) importado una vez desde un KML dibujado en Google Earth. El
+// color de cada potrero en el mapa se calcula del nombre de su cultivo
+// actual (mismo cultivo = mismo color siempre, en toda la app).
+const PALETA_COLORES_CULTIVO = ['#2D7D46','#1D4ED8','#C0392B','#92400E','#7C3AED','#DB2777','#0D9488','#CA8A04','#4B5563','#EA580C'];
+function colorParaCultivo(nombreCultivo) {
+  if (!nombreCultivo) return '#9CA3AF';
+  let hash = 0;
+  for (let i = 0; i < nombreCultivo.length; i++) hash = (hash * 31 + nombreCultivo.charCodeAt(i)) >>> 0;
+  return PALETA_COLORES_CULTIVO[hash % PALETA_COLORES_CULTIVO.length];
+}
+
+let shapesImportadasKML = [];
+let mapasLeafletInstancias = {};
+
+window.onKmlFileSelected = function(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  if (typeof toGeoJSON === 'undefined') { toast('No se pudo cargar el lector de KML — revisa tu conexión', false); return; }
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      const xml = new DOMParser().parseFromString(e.target.result, 'text/xml');
+      const geojson = toGeoJSON.kml(xml);
+      const formas = [];
+      (geojson.features || []).forEach(f => {
+        if (!f.geometry) return;
+        let anillo = null;
+        if (f.geometry.type === 'Polygon') anillo = f.geometry.coordinates[0];
+        else if (f.geometry.type === 'MultiPolygon') anillo = f.geometry.coordinates[0][0];
+        if (!anillo) return;
+        const coords = anillo.map(c => [c[1], c[0]]);
+        const nombreKML = (f.properties && f.properties.name) || 'Sin nombre';
+        const coincidencia = potrerosConfig.find(p => p.nombre.toLowerCase() === nombreKML.toLowerCase());
+        formas.push({ nombreKML, coords, potreroAsignado: coincidencia ? coincidencia.nombre : null });
+      });
+      if (!formas.length) { toast('No se encontraron polígonos en el archivo', false); return; }
+      shapesImportadasKML = formas;
+      renderPanelImportacionKML();
+      toast(`✓ ${formas.length} forma(s) leídas del KML — asignalas a un potrero abajo`, true);
+    } catch(err) { toast('Error leyendo el archivo KML: ' + err.message, false); }
+  };
+  reader.readAsText(file);
+}
+
+function renderPanelImportacionKML() {
+  const cont = document.getElementById('kml-formas-lista');
+  const wrapGuardar = document.getElementById('kml-guardar-wrap');
+  if (!cont) return;
+  if (!shapesImportadasKML.length) { cont.innerHTML = ''; if (wrapGuardar) wrapGuardar.style.display = 'none'; return; }
+  cont.innerHTML = shapesImportadasKML.map((f, i) => `
+    <div class="config-item" style="flex-wrap:wrap;gap:8px">
+      <span style="flex:1;min-width:140px"><strong>${f.nombreKML}</strong> <span style="font-size:11px;color:#9CA3AF">(${f.coords.length} puntos)</span></span>
+      <div class="select-wrapper" style="min-width:180px;max-width:220px">
+        <select onchange="asignarFormaAPotrero(${i}, this.value)">
+          <option value="">— No asignar —</option>
+          ${potrerosConfig.map(p => `<option value="${p.nombre}" ${f.potreroAsignado===p.nombre?'selected':''}>${p.nombre}</option>`).join('')}
+        </select>
+      </div>
+    </div>`).join('');
+  if (wrapGuardar) wrapGuardar.style.display = 'block';
+}
+
+window.asignarFormaAPotrero = function(idx, nombrePotrero) {
+  if (!shapesImportadasKML[idx]) return;
+  shapesImportadasKML[idx].potreroAsignado = nombrePotrero || null;
+}
+
+window.guardarAsignacionesKML = async function() {
+  const asignadas = shapesImportadasKML.filter(f => f.potreroAsignado);
+  if (!asignadas.length) { toast('Asigná al menos una forma a un potrero', false); return; }
+  asignadas.forEach(f => {
+    const p = potrerosConfig.find(x => x.nombre === f.potreroAsignado);
+    if (p) p.poligono = f.coords;
+  });
+  config.potreros = potrerosConfig;
+  try {
+    await saveConfig();
+    toast(`✓ ${asignadas.length} potrero(s) con mapa asignado`, true);
+    shapesImportadasKML = [];
+    renderPanelImportacionKML();
+    const inputFile = document.getElementById('kml-file-input');
+    if (inputFile) inputFile.value = '';
+    renderListaPotreros();
+    renderMapaCampoPreview();
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
+let dibujoPotreroDestino = null;
+
+function renderMapaPotreros(containerId, clickable, drawable) {
+  const el = document.getElementById(containerId);
+  if (!el || typeof L === 'undefined') return;
+  const conPoligono = potrerosConfig.filter(p => Array.isArray(p.poligono) && p.poligono.length >= 3);
+  if (mapasLeafletInstancias[containerId]) {
+    mapasLeafletInstancias[containerId].remove();
+    delete mapasLeafletInstancias[containerId];
+  }
+  if (!conPoligono.length && !drawable) {
+    el.innerHTML = '<div style="padding:16px;text-align:center;color:#9CA3AF;font-size:13px">Todavía no hay potreros con mapa dibujado. Pídele al admin que dibuje los potreros en "Config. Potreros".</div>';
+    return;
+  }
+  el.innerHTML = '';
+  const map = L.map(containerId);
+  mapasLeafletInstancias[containerId] = map;
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    attribution: 'Tiles &copy; Esri', maxZoom: 20
+  }).addTo(map);
+  const bounds = [];
+  conPoligono.forEach(p => {
+    const cultivo = p.tipo === 'frutal' ? p.cultivoPermanente : (cultivoActualPorPotrero[p.nombre] ? cultivoActualPorPotrero[p.nombre].cultivo : null);
+    const color = colorParaCultivo(cultivo);
+    const poly = L.polygon(p.poligono, { color, fillColor: color, fillOpacity: 0.45, weight: 2 }).addTo(map);
+    poly.bindTooltip(`${p.nombre}${cultivo ? ' — ' + cultivo : ' — sin definir'}`, { sticky: true });
+    if (clickable) poly.on('click', () => seleccionarPotrero(p.nombre));
+    p.poligono.forEach(c => bounds.push(c));
+  });
+  if (bounds.length) {
+    map.fitBounds(bounds);
+  } else {
+    map.setView([-33.45, -70.65], 12);
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(pos => {
+        if (mapasLeafletInstancias[containerId]) map.setView([pos.coords.latitude, pos.coords.longitude], 17);
+      }, () => {}, { timeout: 5000 });
+    }
+  }
+  if (drawable) {
+    const drawControl = new L.Control.Draw({
+      draw: {
+        polygon: { allowIntersection: false, showArea: true, shapeOptions: { color: '#F5A623' } },
+        polyline: false, rectangle: false, circle: false, circlemarker: false, marker: false
+      },
+      edit: false
+    });
+    map.addControl(drawControl);
+    map.on(L.Draw.Event.CREATED, async (e) => {
+      const nombrePotrero = document.getElementById('dibujo-potrero-sel')?.value || '';
+      if (!nombrePotrero) { toast('Elegí primero a qué potrero corresponde este dibujo', false); return; }
+      const latlngs = e.layer.getLatLngs()[0].map(ll => [ll.lat, ll.lng]);
+      const p = potrerosConfig.find(x => x.nombre === nombrePotrero);
+      if (!p) return;
+      p.poligono = latlngs;
+      config.potreros = potrerosConfig;
+      try {
+        await saveConfig();
+        toast(`✓ Mapa de "${nombrePotrero}" guardado`, true);
+        renderListaPotreros();
+        renderMapaCampoPreview();
+      } catch(err) { toast('Error: ' + err.message, false); }
+    });
+  }
+  setTimeout(() => { if (mapasLeafletInstancias[containerId]) mapasLeafletInstancias[containerId].invalidateSize(); }, 150);
+}
+
+window.renderMapaCampoPreview = function() {
+  const sel = document.getElementById('dibujo-potrero-sel');
+  if (sel) {
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">Seleccionar potrero a dibujar</option>' +
+      potrerosConfig.map(p => `<option value="${p.nombre}" ${p.nombre===cur?'selected':''}>${p.nombre}${Array.isArray(p.poligono)&&p.poligono.length?' ✓':''}</option>`).join('');
+  }
+  renderMapaPotreros('config-mapa-preview', false, true);
+}
+
 async function renderConfigPotreros() {
   await cargarCultivosActualesPotreros();
   renderListaPotreros();
@@ -4373,6 +4574,7 @@ async function renderConfigPotreros() {
   renderListaTiposLaborFijos();
   renderListaTiposLaborCampo();
   cargarListaEncargadosCampo();
+  renderMapaCampoPreview();
 }
 
 function renderListaTiposLaborFijos() {
@@ -4409,6 +4611,7 @@ function renderListaTiposLaborCampo() {
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
         <strong style="font-size:14px">${t.nombre}</strong>
         <div style="display:flex;gap:6px">
+          <span class="badge" style='cursor:pointer;background:${t.tieneProductos?'var(--verde-suave)':'#F3F4F6'};color:${t.tieneProductos?'var(--verde)':'#9CA3AF'}' title="Click para cambiar" onclick="toggleTipoLaborCampoProductos(${i})">${t.tieneProductos?'✓ Producto/dosis':'✕ Producto/dosis'}</span>
           <button class="btn btn-secondary" style="font-size:11px;padding:6px 10px" onclick="abrirEdicionTipoLaborCampo(${i})">✏️ Cultivos</button>
           <button class="btn btn-danger" onclick="eliminarTipoLaborCampo(${i})">✕</button>
         </div>
@@ -4418,16 +4621,29 @@ function renderListaTiposLaborCampo() {
     </div>`).join('') : '<div style="color:#9CA3AF;font-size:13px;padding:8px">Sin tipos de labor personalizados.</div>';
 }
 
+window.toggleTipoLaborCampoProductos = async function(idx) {
+  if (!tiposLaborCampoConfig[idx]) return;
+  tiposLaborCampoConfig[idx].tieneProductos = !tiposLaborCampoConfig[idx].tieneProductos;
+  config.tiposLaborCampo = tiposLaborCampoConfig;
+  try {
+    await saveConfig();
+    renderListaTiposLaborCampo();
+    toast(`✓ ${tiposLaborCampoConfig[idx].nombre}: ${tiposLaborCampoConfig[idx].tieneProductos ? 'ahora usa' : 'ya no usa'} producto/dosis`, true);
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
 window.agregarTipoLaborCampo = async function() {
   const inp = document.getElementById('nuevo-tipo-labor-campo');
   const nombre = inp.value.trim();
+  const tieneProductos = document.getElementById('nuevo-tipo-labor-productos').checked;
   if (!nombre) { toast('Ingresá el nombre del tipo de labor', false); return; }
   if (tiposLaborCampoConfig.some(t => t.nombre.toLowerCase() === nombre.toLowerCase())) { toast('Ya existe un tipo de labor con ese nombre', false); return; }
-  tiposLaborCampoConfig.push({ nombre, cultivos: [] });
+  tiposLaborCampoConfig.push({ nombre, cultivos: [], tieneProductos });
   config.tiposLaborCampo = tiposLaborCampoConfig;
   try {
     await saveConfig();
     inp.value = '';
+    document.getElementById('nuevo-tipo-labor-productos').checked = false;
     renderListaTiposLaborCampo();
     toast('✓ Tipo de labor agregado', true);
   } catch(e) { toast('Error: ' + e.message, false); }
@@ -6815,6 +7031,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     <div id="tc-campo" class="tab-content">
       <div class="panel">
         <div class="panel-title">🌱 Potrero</div>
+        <div id="campo-mapa" style="height:280px;border-radius:8px;overflow:hidden;margin-bottom:14px;background:var(--fondo)"></div>
         <div class="centros-selector" id="campo-potrero-selector"></div>
         <div id="campo-estado-potrero"></div>
       </div>
@@ -6867,6 +7084,33 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       </div>
 
       <div class="panel">
+        <div class="panel-title">🗺️ Mapa del campo</div>
+
+        <div class="cultivos-label">✏️ Dibujar directamente en el mapa (recomendado)</div>
+        <div class="hint" style="margin-bottom:10px">
+          Elegí un potrero, tocá el ícono de polígono (⬠) arriba a la izquierda del mapa, y marcá sus esquinas tocando sobre la imagen satelital. Tocá el primer punto de nuevo (o el ✓) para cerrar la forma — se guarda solo, sin salir de la app.
+        </div>
+        <div class="field">
+          <label>Potrero a dibujar</label>
+          <div class="select-wrapper"><select id="dibujo-potrero-sel"></select></div>
+        </div>
+        <div id="config-mapa-preview" style="height:320px;border-radius:8px;overflow:hidden;background:var(--fondo);margin-bottom:16px"></div>
+
+        <div class="cultivos-label">O importar desde Google Earth (alternativa)</div>
+        <div class="hint" style="margin-bottom:10px">
+          Si preferís dibujarlos en Google Earth (un polígono por potrero, nombrándolo igual que en la app si podés), exportalos como archivo <strong>.kml</strong> y subilo acá.
+        </div>
+        <div class="field">
+          <label>Archivo KML</label>
+          <input type="file" id="kml-file-input" accept=".kml" onchange="onKmlFileSelected(event)">
+        </div>
+        <div id="kml-formas-lista"></div>
+        <div id="kml-guardar-wrap" style="display:none;margin-top:10px">
+          <button class="btn btn-verde btn-full" onclick="guardarAsignacionesKML()">✓ Guardar asignaciones</button>
+        </div>
+      </div>
+
+      <div class="panel">
         <div class="panel-title">🌱 Cultivos (para registrar Siembra)</div>
         <div class="hint" style="margin-bottom:10px">Lista de cultivos preestablecidos que aparecen como opciones al registrar una Siembra en un potrero anual — así no se escribe a mano cada vez.</div>
         <div class="config-add">
@@ -6893,9 +7137,12 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         <div class="config-lista" id="lista-tipos-labor-fijos" style="margin-bottom:16px"></div>
 
         <div class="cultivos-label">Tipos personalizados</div>
-        <div class="hint" style="margin-bottom:10px">Agregá tipos propios (ej. Poda, Deshije, Raleo) y restringilos a cultivos específicos — si no restringís ninguno, aparece para todos.</div>
+        <div class="hint" style="margin-bottom:10px">Agregá tipos propios (ej. Poda, Deshije, Fertilización) y restringilos a cultivos específicos — si no restringís ninguno, aparece para todos.</div>
+        <label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;text-transform:none;font-weight:400;font-size:13px">
+          <input type="checkbox" id="nuevo-tipo-labor-productos" style="width:auto"> Usa lista de producto + dosis (como Aplicación)
+        </label>
         <div class="config-add">
-          <input type="text" id="nuevo-tipo-labor-campo" placeholder="Ej: Poda, Deshije, Raleo...">
+          <input type="text" id="nuevo-tipo-labor-campo" placeholder="Ej: Poda, Deshije, Fertilización...">
           <button class="btn-add" onclick="agregarTipoLaborCampo()">+ Agregar</button>
         </div>
         <div class="config-lista" id="lista-tipos-labor-campo" style="margin-top:10px"></div>
