@@ -4491,6 +4491,91 @@ window.guardarAsignacionesKML = async function() {
 
 let dibujoPotreroDestino = null;
 
+// ─── CAMINAR EL PERÍMETRO (GPS del celular) ─────────────────
+// Alternativa a dibujar tocando la pantalla: usa el GPS del celular para ir
+// marcando el borde del potrero mientras el operador camina alrededor con
+// el teléfono en la mano. Más preciso que mirar la foto satelital y elegir
+// las esquinas a ojo, especialmente para potreros irregulares.
+let caminataActiva = false;
+let caminataPuntos = [];
+let caminataWatchId = null;
+let caminataPolyline = null;
+
+function distanciaMetros(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const toRad = d => d * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+window.toggleCaminataPerimetro = function() {
+  if (caminataActiva) finalizarCaminataPerimetro();
+  else iniciarCaminataPerimetro();
+}
+
+function iniciarCaminataPerimetro() {
+  const nombrePotrero = document.getElementById('dibujo-potrero-sel')?.value || '';
+  if (!nombrePotrero) { toast('Elegí primero a qué potrero corresponde', false); return; }
+  if (!navigator.geolocation) { toast('Este dispositivo no tiene GPS disponible en el navegador', false); return; }
+  caminataPuntos = [];
+  caminataActiva = true;
+  actualizarUiCaminata();
+  const map = mapasLeafletInstancias['config-mapa-preview'];
+  caminataWatchId = navigator.geolocation.watchPosition(pos => {
+    const lat = pos.coords.latitude, lng = pos.coords.longitude;
+    const ultimo = caminataPuntos[caminataPuntos.length - 1];
+    if (!ultimo || distanciaMetros(ultimo[0], ultimo[1], lat, lng) > 3) {
+      caminataPuntos.push([lat, lng]);
+      actualizarUiCaminata();
+      if (map) {
+        if (caminataPolyline) map.removeLayer(caminataPolyline);
+        caminataPolyline = L.polyline(caminataPuntos, { color: '#F5A623', weight: 4 }).addTo(map);
+        map.panTo([lat, lng]);
+      }
+    }
+  }, err => {
+    toast('Error de GPS: ' + err.message, false);
+  }, { enableHighAccuracy: true, maximumAge: 2000 });
+}
+
+async function finalizarCaminataPerimetro() {
+  if (caminataWatchId != null) { navigator.geolocation.clearWatch(caminataWatchId); caminataWatchId = null; }
+  caminataActiva = false;
+  actualizarUiCaminata();
+  if (caminataPuntos.length < 3) {
+    toast('Se necesitan al menos 3 puntos distintos — caminá un poco más el borde', false);
+    caminataPuntos = [];
+    const map = mapasLeafletInstancias['config-mapa-preview'];
+    if (map && caminataPolyline) { map.removeLayer(caminataPolyline); caminataPolyline = null; }
+    return;
+  }
+  const nombrePotrero = document.getElementById('dibujo-potrero-sel')?.value || '';
+  const p = potrerosConfig.find(x => x.nombre === nombrePotrero);
+  if (!p) return;
+  p.poligono = caminataPuntos;
+  config.potreros = potrerosConfig;
+  try {
+    await saveConfig();
+    toast(`✓ Mapa de "${nombrePotrero}" guardado (${caminataPuntos.length} puntos caminados)`, true);
+    caminataPuntos = [];
+    caminataPolyline = null;
+    renderListaPotreros();
+    renderMapaCampoPreview();
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
+function actualizarUiCaminata() {
+  const btn = document.getElementById('btn-caminata');
+  const estado = document.getElementById('caminata-estado');
+  if (btn) {
+    btn.textContent = caminataActiva ? '⏹ Finalizar (cerrar el potrero)' : '📍 Caminar el perímetro';
+    btn.style.background = caminataActiva ? 'var(--rojo)' : 'var(--negro)';
+  }
+  if (estado) estado.textContent = caminataActiva ? `Caminando... ${caminataPuntos.length} punto(s) marcados` : '';
+}
+
 function renderMapaPotreros(containerId, clickable, drawable) {
   const el = document.getElementById(containerId);
   if (!el || typeof L === 'undefined') return;
@@ -7086,13 +7171,21 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       <div class="panel">
         <div class="panel-title">🗺️ Mapa del campo</div>
 
-        <div class="cultivos-label">✏️ Dibujar directamente en el mapa (recomendado)</div>
-        <div class="hint" style="margin-bottom:10px">
-          Elegí un potrero, tocá el ícono de polígono (⬠) arriba a la izquierda del mapa, y marcá sus esquinas tocando sobre la imagen satelital. Tocá el primer punto de nuevo (o el ✓) para cerrar la forma — se guarda solo, sin salir de la app.
-        </div>
         <div class="field">
-          <label>Potrero a dibujar</label>
+          <label>Potrero a marcar</label>
           <div class="select-wrapper"><select id="dibujo-potrero-sel"></select></div>
+        </div>
+
+        <div class="cultivos-label">📍 Caminar el perímetro (recomendado desde el celular, en terreno)</div>
+        <div class="hint" style="margin-bottom:10px">
+          Elegí el potrero arriba, tocá "Caminar el perímetro" y llevá el celular contigo bordeando el potrero. La app va marcando el camino solo con el GPS. Al completar la vuelta, tocá "Finalizar" para cerrar y guardar la forma.
+        </div>
+        <button type="button" id="btn-caminata" class="btn btn-full" style="background:var(--negro);color:var(--amarillo);justify-content:center" onclick="toggleCaminataPerimetro()">📍 Caminar el perímetro</button>
+        <div id="caminata-estado" style="font-size:12px;color:var(--acero);margin:6px 0 14px;text-align:center"></div>
+
+        <div class="cultivos-label">✏️ O dibujar tocando la imagen satelital</div>
+        <div class="hint" style="margin-bottom:10px">
+          Con el potrero elegido arriba, tocá el ícono de polígono (⬠) en el mapa, y marcá sus esquinas tocando sobre la imagen. Tocá el primer punto de nuevo (o el ✓) para cerrar la forma.
         </div>
         <div id="config-mapa-preview" style="height:320px;border-radius:8px;overflow:hidden;background:var(--fondo);margin-bottom:16px"></div>
 
