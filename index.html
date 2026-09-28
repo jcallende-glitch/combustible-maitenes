@@ -6354,9 +6354,17 @@ const estadoConfigInv = {
   bajo:    { label: "Stock bajo", color: "#92400E",       bg: "var(--amarillo-suave)", dot: "var(--amarillo)" },
   agotado: { label: "Agotado",    color: "var(--rojo)",   bg: "var(--rojo-suave)", dot: "var(--rojo)" },
 };
+const CATEGORIAS_INV = ["Herbicida","Fungicida","Insecticida","Foliar","Coadyuvante","Otros"];
 const categoriaColorInv = {
   Herbicida: "#2D7D46", Fungicida: "#4A5568", Insecticida: "#8B5A2B",
   Foliar: "#1D4ED8", Coadyuvante: "#6B46C1", Otros: "#6B7280",
+};
+// Alias de categorías del CSV que no son categorías propias, sino que
+// se agrupan dentro de una existente (ej: Aminoácido/Bioestimulante → Foliar).
+const ALIAS_CATEGORIA_INV = {
+  "aminoacido": "Foliar", "aminoácido": "Foliar",
+  "bioestimulante": "Foliar",
+  "acaricida": "Insecticida",
 };
 
 let productosInv = [];
@@ -6892,6 +6900,119 @@ window.guardarNuevoDesdeIngresoInv = async function() {
     cerrarModalInv("modal-inv-nuevo-desde-ingreso");
     toast("✓ Producto agregado al inventario", true);
   } catch(e) { toast("Error: " + e.message, false); }
+}
+
+// ── Importar CSV masivo (carga inicial de inventario) ──────
+let filasImportarInv = [];
+
+// Parser CSV simple que respeta campos entre comillas con comas adentro
+// (ej. decimales chilenos como "5,8" que vienen citados en el archivo).
+function parsearCSVInv(texto) {
+  const filas = [];
+  let fila = [], campo = "", dentroComillas = false;
+  for (let i = 0; i < texto.length; i++) {
+    const c = texto[i];
+    if (dentroComillas) {
+      if (c === '"') { if (texto[i+1] === '"') { campo += '"'; i++; } else dentroComillas = false; }
+      else campo += c;
+    } else {
+      if (c === '"') dentroComillas = true;
+      else if (c === ",") { fila.push(campo); campo = ""; }
+      else if (c === "\n" || c === "\r") {
+        if (c === "\r" && texto[i+1] === "\n") i++;
+        fila.push(campo); campo = "";
+        if (fila.some(x => x.trim() !== "")) filas.push(fila);
+        fila = [];
+      } else campo += c;
+    }
+  }
+  if (campo !== "" || fila.length) { fila.push(campo); if (fila.some(x => x.trim() !== "")) filas.push(fila); }
+  return filas;
+}
+function normalizarCategoriaInv(raw) {
+  const v = (raw||"").trim();
+  if (!v) return "Otros";
+  const match = CATEGORIAS_INV.find(c => c.toLowerCase() === v.toLowerCase());
+  if (match) return match;
+  const alias = ALIAS_CATEGORIA_INV[v.toLowerCase()];
+  return alias || "Otros";
+}
+// Convierte números en formato chileno ("1.234,5" o "5,8") a Number.
+function parseNumeroClInv(raw) {
+  let s = String(raw==null?"":raw).trim();
+  if (!s) return 0;
+  s = s.replace(/\./g, "").replace(",", ".");
+  const n = parseFloat(s);
+  return isNaN(n) ? 0 : n;
+}
+window.abrirImportarCsvInv = function() {
+  filasImportarInv = [];
+  document.getElementById("inv-importar-file").value = "";
+  document.getElementById("inv-importar-preview").innerHTML = "";
+  document.getElementById("inv-importar-btn-confirmar").disabled = true;
+  document.getElementById("inv-importar-bodega").value = BODEGAS_INV[0];
+  document.getElementById("inv-importar-bodega-nombre").textContent = BODEGAS_INV[0];
+  document.getElementById("modal-inv-importar").style.display = "flex";
+}
+window.onArchivoImportarInv = function(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const filas = parsearCSVInv(reader.result);
+    if (!filas.length) { toast("El archivo está vacío", false); return; }
+    const header = filas[0].map(h => h.trim().toLowerCase());
+    const idxNombre = header.findIndex(h => h.includes("nombre"));
+    const idxCategoria = header.findIndex(h => h.includes("categor"));
+    const idxMarca = header.findIndex(h => h.includes("marca") || h.includes("fabricante"));
+    const idxStock = header.findIndex(h => h.includes("stock"));
+    if (idxNombre === -1) { toast('No encontré la columna "Nombre" en el CSV', false); return; }
+    filasImportarInv = filas.slice(1).map(f => ({
+      nombre: (f[idxNombre]||"").trim(),
+      categoria: normalizarCategoriaInv(idxCategoria>-1 ? f[idxCategoria] : ""),
+      fabricante: idxMarca>-1 ? (f[idxMarca]||"").trim() : "",
+      stock: idxStock>-1 ? parseNumeroClInv(f[idxStock]) : 0,
+    })).filter(r => r.nombre);
+    const yaExisten = filasImportarInv.filter(r => productosInv.some(p => p.nombre.toLowerCase() === r.nombre.toLowerCase()));
+    const nuevos = filasImportarInv.filter(r => !productosInv.some(p => p.nombre.toLowerCase() === r.nombre.toLowerCase()));
+    document.getElementById("inv-importar-preview").innerHTML = `
+      <div class="hint" style="margin:10px 0">
+        <strong>${filasImportarInv.length}</strong> productos leídos del CSV ·
+        <strong style="color:var(--verde)">${nuevos.length} nuevos</strong> se van a crear ·
+        <strong style="color:var(--amarillo)">${yaExisten.length} ya existen</strong> en el inventario (se omiten, no se toca su stock actual)
+      </div>
+      <div class="hint">La unidad queda en "L" por defecto — corregí con ✏️ Editar los que sean en kg, g, mL o t.</div>`;
+    document.getElementById("inv-importar-btn-confirmar").disabled = nuevos.length === 0;
+  };
+  reader.readAsText(file, "UTF-8");
+}
+window.confirmarImportarCsvInv = async function() {
+  const bodega = document.getElementById("inv-importar-bodega").value;
+  const nuevos = filasImportarInv.filter(r => !productosInv.some(p => p.nombre.toLowerCase() === r.nombre.toLowerCase()));
+  if (!nuevos.length) { toast("No hay productos nuevos para importar", false); return; }
+  try {
+    const batch = writeBatch(dbInv);
+    nuevos.forEach(r => {
+      const ref = doc(collection(dbInv, "productos"));
+      batch.set(ref, {
+        nombre: r.nombre,
+        categoria: r.categoria,
+        ingredienteActivo: "",
+        fabricante: r.fabricante,
+        proveedor: "",
+        cultivosCompatibles: "",
+        stock: { [BODEGAS_INV[0]]: 0, [BODEGAS_INV[1]]: 0, [bodega]: r.stock },
+        unidad: "L",
+        stockMinimo: 0,
+        precio: 0,
+        etiquetaUrl: "", hojaUrl: "",
+        ts: Date.now(),
+      });
+    });
+    await batch.commit();
+    cerrarModalInv("modal-inv-importar");
+    toast(`✓ ${nuevos.length} productos importados a ${bodega}`, true);
+  } catch(e) { toast("Error al importar: " + e.message, false); }
 }
 
 window.cerrarModalInv = function(id) { const el = document.getElementById(id); if (el) el.style.display = "none"; }
@@ -7877,6 +7998,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
           <input type="text" id="inv-input-busqueda" placeholder="Buscar por nombre o ingrediente activo..." oninput="onBusquedaInv()" style="flex:1;min-width:200px">
           <button class="btn btn-secondary" id="inv-btn-vista" onclick="toggleVistaInv()">🔬 Agrupar por ingrediente activo</button>
+          <button class="btn btn-secondary" style="width:auto" onclick="abrirImportarCsvInv()">📄 Importar CSV</button>
           <button class="btn btn-secondary" style="width:auto" onclick="abrirTraspasoInv()">🔁 Traspaso entre bodegas</button>
           <button class="btn btn-verde" style="width:auto" onclick="abrirNuevoProductoInv()">+ Nuevo producto</button>
         </div>
@@ -8084,6 +8206,21 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     <div class="modal-actions">
       <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="cerrarModalInv('modal-inv-traspaso')">Cancelar</button>
       <button class="btn btn-verde" style="flex:2" onclick="confirmarTraspasoInv()">Confirmar traspaso</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL IMPORTAR CSV -->
+<div class="modal-overlay" id="modal-inv-importar">
+  <div class="modal-box" style="max-width:520px;max-height:90vh;overflow-y:auto">
+    <div class="modal-title">📄 Importar productos desde CSV</div>
+    <div class="hint" style="margin-bottom:12px">Columnas esperadas: Nombre, Categoría, Marca, Stock (y opcionalmente Precio). El stock se carga completo en <strong id="inv-importar-bodega-nombre">Bodega Cultivos</strong> — después lo repartís con el traspaso.</div>
+    <div class="field"><label>¿A qué bodega entra el stock del CSV?</label><div class="select-wrapper"><select id="inv-importar-bodega" onchange="document.getElementById('inv-importar-bodega-nombre').textContent=this.value"><option>Bodega Cultivos</option><option>Bodega Frutales</option></select></div></div>
+    <div class="field"><label>Archivo CSV</label><input type="file" id="inv-importar-file" accept=".csv" onchange="onArchivoImportarInv(event)"></div>
+    <div id="inv-importar-preview"></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="cerrarModalInv('modal-inv-importar')">Cancelar</button>
+      <button class="btn btn-verde" style="flex:2" id="inv-importar-btn-confirmar" onclick="confirmarImportarCsvInv()" disabled>Importar</button>
     </div>
   </div>
 </div>
