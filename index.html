@@ -6603,6 +6603,12 @@ window.onProductoTraspasoInvChange = function() {
   if (!p) { info.textContent = ""; return; }
   info.textContent = BODEGAS_INV.map(b => `${b}: ${stockInv(p,b)} ${p.unidad||"L"}`).join(" · ");
 }
+window.usarTodoTraspasoInv = function() {
+  const p = productosInv.find(x => x.id === document.getElementById("inv-traspaso-producto").value);
+  if (!p) { toast("Elegí un producto primero", false); return; }
+  const origen = document.getElementById("inv-traspaso-origen").value;
+  document.getElementById("inv-traspaso-cantidad").value = stockInv(p, origen);
+}
 window.confirmarTraspasoInv = async function() {
   const p = productosInv.find(x => x.id === document.getElementById("inv-traspaso-producto").value);
   if (!p) { toast("Elegí un producto", false); return; }
@@ -8202,7 +8208,13 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       <div class="field"><label>Desde</label><div class="select-wrapper"><select id="inv-traspaso-origen"></select></div></div>
       <div class="field"><label>Hacia</label><div class="select-wrapper"><select id="inv-traspaso-destino"></select></div></div>
     </div>
-    <div class="field"><label>Cantidad</label><input type="number" id="inv-traspaso-cantidad" min="0"></div>
+    <div class="field">
+      <label>Cantidad</label>
+      <div style="display:flex;gap:8px">
+        <input type="number" id="inv-traspaso-cantidad" min="0" style="flex:1">
+        <button type="button" class="btn btn-secondary" style="width:auto;white-space:nowrap" onclick="usarTodoTraspasoInv()">Usar todo</button>
+      </div>
+    </div>
     <div class="modal-actions">
       <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="cerrarModalInv('modal-inv-traspaso')">Cancelar</button>
       <button class="btn btn-verde" style="flex:2" onclick="confirmarTraspasoInv()">Confirmar traspaso</button>
