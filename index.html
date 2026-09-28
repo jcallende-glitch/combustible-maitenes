@@ -1295,7 +1295,8 @@ window.intentarLogin = async function() {
 const SECCIONES_TABS = {
   combustible: ['tab-registro','tab-historial','tab-mantencion','tab-admin','tab-config','tab-analytics','tab-informes','tab-eficiencia'],
   asistencia: ['tab-asistencia','tab-config-trabajadores'],
-  campo: ['tab-campo','tab-config-potreros']
+  campo: ['tab-campo','tab-config-potreros'],
+  inventario: ['tab-inv-inventario','tab-inv-ingresos','tab-inv-alertas']
 };
 
 window.mostrarSelectorSecciones = function() {
@@ -1325,6 +1326,9 @@ window.abrirSeccion = function(seccion) {
     setTab('asistencia', document.getElementById('tab-asistencia'));
   } else if (seccion === 'campo') {
     setTab('campo', document.getElementById('tab-campo'));
+  } else if (seccion === 'inventario') {
+    initInventario();
+    setTab('inv-inventario', document.getElementById('tab-inv-inventario'));
   }
 }
 
@@ -1335,6 +1339,9 @@ window.logout = function() {
   if (unsubSolicitudesAdmin) { unsubSolicitudesAdmin(); unsubSolicitudesAdmin = null; }
   if (unsubAsistencia) { unsubAsistencia(); unsubAsistencia = null; }
   if (unsubLaboresCampo) { unsubLaboresCampo(); unsubLaboresCampo = null; }
+  if (unsubProductosInv) { unsubProductosInv(); unsubProductosInv = null; }
+  if (unsubIngresosInv) { unsubIngresosInv(); unsubIngresosInv = null; }
+  inventarioInicializado = false;
   solicitudPendienteId = null;
   document.getElementById('panel-secciones').style.display = 'none';
   document.getElementById('tabs-bar').style.display = 'flex';
@@ -5721,6 +5728,7 @@ window.setTab = function(id,el) {
   if(id==='config-trabajadores') { renderConfigTrabajadores(); }
   if(id==='campo') { initCampo(); }
   if(id==='config-potreros') { renderConfigPotreros(); }
+  if(id==='inv-ingresos') { renderItemsIngresoInv(); }
   if(id==='registro' && isAdmin) escucharSolicitudesAdmin();
 }
 
@@ -6286,6 +6294,505 @@ function toast(msg,ok=true,duracionMs=2800) {
   setTimeout(()=>t.classList.add('show'),10);
   setTimeout(()=>t.classList.remove('show'),duracionMs);
 }
+
+// ═══════════════════════════════════════════════════════════
+// INVENTARIO AGROQUÍMICOS (proyecto Firebase separado — solo admin)
+// ═══════════════════════════════════════════════════════════
+const firebaseConfigInv = {
+  apiKey: "AIzaSyCNp1RaGDdZfc63jZ4hxXUjUwr9xRZxMsw",
+  authDomain: "inventario-los-maitenes-aa79c.firebaseapp.com",
+  projectId: "inventario-los-maitenes-aa79c",
+  storageBucket: "inventario-los-maitenes-aa79c.firebasestorage.app",
+  messagingSenderId: "635297006041",
+  appId: "1:635297006041:web:8b3f412a92cb33caf119c8"
+};
+const appInv = initializeApp(firebaseConfigInv, "inventario");
+const dbInv = getFirestore(appInv);
+
+const CATALOGO_INV = [
+  { nombre: "Roundup", categoria: "Herbicida", ingredienteActivo: "Glifosato 48%", fabricante: "Bayer" },
+  { nombre: "Faena", categoria: "Herbicida", ingredienteActivo: "Glifosato 48%", fabricante: "Nufarm" },
+  { nombre: "Touchdown IQ", categoria: "Herbicida", ingredienteActivo: "Glifosato 62%", fabricante: "Syngenta" },
+  { nombre: "Hierbamina", categoria: "Herbicida", ingredienteActivo: "2,4-D 72%", fabricante: "Nufarm" },
+  { nombre: "Esteron 47E", categoria: "Herbicida", ingredienteActivo: "2,4-D éster 47%", fabricante: "Corteva" },
+  { nombre: "Gramoxone", categoria: "Herbicida", ingredienteActivo: "Paraquat 27.6%", fabricante: "Syngenta" },
+  { nombre: "Sencor 70 WG", categoria: "Herbicida", ingredienteActivo: "Metribuzin 70%", fabricante: "Bayer" },
+  { nombre: "Select", categoria: "Herbicida", ingredienteActivo: "Cletodim 24%", fabricante: "Arysta" },
+  { nombre: "Poast", categoria: "Herbicida", ingredienteActivo: "Setoxidim 18.4%", fabricante: "BASF" },
+  { nombre: "Dithane M-45", categoria: "Fungicida", ingredienteActivo: "Mancozeb 80%", fabricante: "Corteva" },
+  { nombre: "Amistar", categoria: "Fungicida", ingredienteActivo: "Azoxistrobina 25%", fabricante: "Syngenta" },
+  { nombre: "Score", categoria: "Fungicida", ingredienteActivo: "Difenoconazol 25%", fabricante: "Syngenta" },
+  { nombre: "Tilt", categoria: "Fungicida", ingredienteActivo: "Propiconazol 25%", fabricante: "Syngenta" },
+  { nombre: "Folicur", categoria: "Fungicida", ingredienteActivo: "Tebuconazol 25%", fabricante: "Bayer" },
+  { nombre: "Cabrio Top", categoria: "Fungicida", ingredienteActivo: "Piraclostrobina 5% + Metiram 55%", fabricante: "BASF" },
+  { nombre: "Miravis Ace", categoria: "Fungicida", ingredienteActivo: "Pydiflumetofen 20% + Propiconazol 15%", fabricante: "Syngenta" },
+  { nombre: "Switch", categoria: "Fungicida", ingredienteActivo: "Ciprodinil 37.5% + Fludioxonil 25%", fabricante: "Syngenta" },
+  { nombre: "Captan 80 WG", categoria: "Fungicida", ingredienteActivo: "Captan 80%", fabricante: "Arysta" },
+  { nombre: "Kocide 2000", categoria: "Fungicida", ingredienteActivo: "Hidróxido de cobre 53.8%", fabricante: "Corteva" },
+  { nombre: "Scala", categoria: "Fungicida", ingredienteActivo: "Pirimetanil 40%", fabricante: "Bayer" },
+  { nombre: "Lorsban 75 WG", categoria: "Insecticida", ingredienteActivo: "Clorpirifós 75%", fabricante: "Corteva" },
+  { nombre: "Karate Zeon", categoria: "Insecticida", ingredienteActivo: "Lambda cihalotrina 10%", fabricante: "Syngenta" },
+  { nombre: "Decis Forte", categoria: "Insecticida", ingredienteActivo: "Deltametrina 10%", fabricante: "Bayer" },
+  { nombre: "Confidor", categoria: "Insecticida", ingredienteActivo: "Imidacloprid 35%", fabricante: "Bayer" },
+  { nombre: "Actara", categoria: "Insecticida", ingredienteActivo: "Tiametoxam 25%", fabricante: "Syngenta" },
+  { nombre: "Movento", categoria: "Insecticida", ingredienteActivo: "Spirotetramat 15%", fabricante: "Bayer" },
+  { nombre: "Vertimec", categoria: "Insecticida", ingredienteActivo: "Abamectina 1.8%", fabricante: "Syngenta" },
+  { nombre: "Exalt", categoria: "Insecticida", ingredienteActivo: "Spinetoram 12%", fabricante: "Corteva" },
+  { nombre: "Bayfolan", categoria: "Foliar", ingredienteActivo: "N-P-K + microelementos", fabricante: "Bayer" },
+  { nombre: "Fetrilon Combi", categoria: "Foliar", ingredienteActivo: "Fe, Mn, Zn, Cu, B, Mo quelatos", fabricante: "COMPO Expert" },
+  { nombre: "Nutribor", categoria: "Foliar", ingredienteActivo: "Boro 15%", fabricante: "Tradecorp" },
+  { nombre: "Stopit", categoria: "Foliar", ingredienteActivo: "Calcio 15%", fabricante: "Tradecorp" },
+  { nombre: "Silwet L-77", categoria: "Coadyuvante", ingredienteActivo: "Poliéter siliconado 80%", fabricante: "Momentive" },
+  { nombre: "Break-Thru S240", categoria: "Coadyuvante", ingredienteActivo: "Trisiloaxano 90%", fabricante: "Evonik" },
+  { nombre: "Agrotin", categoria: "Coadyuvante", ingredienteActivo: "Aceite mineral parafínico 83%", fabricante: "Nufarm" },
+  { nombre: "Citowett", categoria: "Coadyuvante", ingredienteActivo: "Alquilarilpoliglicoléter 40%", fabricante: "BASF" },
+];
+const UNIDADES_INV = ["L","kg","g","mL","t"];
+const estadoConfigInv = {
+  ok:      { label: "Normal",     color: "var(--verde)", bg: "var(--verde-suave)", dot: "var(--verde)" },
+  bajo:    { label: "Stock bajo", color: "#92400E",       bg: "var(--amarillo-suave)", dot: "var(--amarillo)" },
+  agotado: { label: "Agotado",    color: "var(--rojo)",   bg: "var(--rojo-suave)", dot: "var(--rojo)" },
+};
+const categoriaColorInv = {
+  Herbicida: "#2D7D46", Fungicida: "#4A5568", Insecticida: "#8B5A2B",
+  Foliar: "#1D4ED8", Coadyuvante: "#6B46C1", Otros: "#6B7280",
+};
+
+let productosInv = [];
+let ingresosInv = [];
+let unsubProductosInv = null;
+let unsubIngresosInv = null;
+let filtroCategoriaInv = "Todos";
+let vistaAgrupadaInv = false;
+let busquedaInv = "";
+let inventarioInicializado = false;
+let itemsIngresoInv = [{nombre:'',cantidad:1,unidad:'L',precioUnitario:0}];
+
+function initInventario() {
+  if (inventarioInicializado) { renderInventarioTabla(); renderAlertasInv(); renderStatsInv(); renderIngresosInv(); return; }
+  inventarioInicializado = true;
+  unsubProductosInv = onSnapshot(query(collection(dbInv, "productos"), orderBy("nombre")), snap => {
+    productosInv = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    renderInventarioTabla();
+    renderAlertasInv();
+    renderStatsInv();
+  });
+  unsubIngresosInv = onSnapshot(query(collection(dbInv, "ingresos"), orderBy("ts", "desc")), snap => {
+    ingresosInv = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    renderIngresosInv();
+  });
+}
+
+function getEstadoInv(p) {
+  if (!p.stock || p.stock === 0) return "agotado";
+  if (p.stock <= (p.stockMinimo || 0)) return "bajo";
+  return "ok";
+}
+
+function renderStatsInv() {
+  const total = productosInv.length;
+  const alertas = productosInv.filter(p => getEstadoInv(p) !== "ok").length;
+  const agotados = productosInv.filter(p => getEstadoInv(p) === "agotado").length;
+  const bajos = productosInv.filter(p => getEstadoInv(p) === "bajo").length;
+  const set = (id,v) => { const el=document.getElementById(id); if(el) el.textContent=v; };
+  set("inv-stat-total", total);
+  set("inv-stat-alertas", alertas);
+  set("inv-stat-agotados", agotados);
+  set("inv-stat-bajos", bajos);
+}
+
+window.toggleVistaInv = function() {
+  vistaAgrupadaInv = !vistaAgrupadaInv;
+  const btn = document.getElementById("inv-btn-vista");
+  if (btn) btn.textContent = vistaAgrupadaInv ? "📋 Vista normal" : "🔬 Agrupar por ingrediente activo";
+  const chips = document.getElementById("inv-chips-cat-wrap");
+  if (chips) chips.style.display = vistaAgrupadaInv ? "none" : "flex";
+  renderInventarioTabla();
+}
+
+window.setFiltroInv = function(cat, el) {
+  filtroCategoriaInv = cat;
+  document.querySelectorAll('#inv-chips-cat-wrap .cultivo-chip').forEach(c => c.classList.remove('sel'));
+  if (el) el.classList.add('sel');
+  renderInventarioTabla();
+}
+
+window.onBusquedaInv = function() {
+  const el = document.getElementById("inv-input-busqueda");
+  busquedaInv = el ? el.value.toLowerCase() : "";
+  renderInventarioTabla();
+}
+
+function renderInventarioTabla() {
+  const tbody = document.getElementById("inv-tabla-body");
+  if (!tbody) return;
+  let data = productosInv.filter(p => {
+    const catOk = filtroCategoriaInv === "Todos" || p.categoria === filtroCategoriaInv;
+    const busOk = !busquedaInv || p.nombre.toLowerCase().includes(busquedaInv) || (p.ingredienteActivo||"").toLowerCase().includes(busquedaInv);
+    return catOk && busOk;
+  });
+  if (!data.length) { tbody.innerHTML = `<tr><td colspan="7" class="empty">No se encontraron productos</td></tr>`; return; }
+
+  const filaProducto = (p, indent) => {
+    const ec = estadoConfigInv[getEstadoInv(p)];
+    const cc = categoriaColorInv[p.categoria] || "#6B7280";
+    const hasEtiq = !!p.etiquetaUrl, hasHoja = !!p.hojaUrl;
+    return `<tr>
+      <td${indent?' style="padding-left:28px"':''}>
+        <div style="font-weight:600">${p.nombre}</div>
+        ${p.fabricante ? `<div style="font-size:11px;color:var(--acero)">${p.fabricante}</div>` : ""}
+      </td>
+      <td><span class="badge" style="background:${cc}22;color:${cc}">${p.categoria}</span></td>
+      <td style="font-size:12px">${p.ingredienteActivo || "—"}</td>
+      <td><strong style="color:${p.stock<=(p.stockMinimo||0)?"var(--rojo)":"var(--negro)"}">${p.stock||0}</strong> <span style="font-size:11px;color:var(--acero)">${p.unidad||"L"}</span></td>
+      <td>
+        ${hasEtiq ? `<a href="${p.etiquetaUrl}" target="_blank" class="badge badge-km">🏷 Etiqueta</a>` : `<button class="btn-danger" onclick="abrirDocModalInv('${p.id}','etiqueta')">+ Etiqueta</button>`}<br>
+        ${hasHoja ? `<a href="${p.hojaUrl}" target="_blank" class="badge badge-hr" style="margin-top:3px;display:inline-block">🛡 Hoja seg.</a>` : `<button class="btn-danger" onclick="abrirDocModalInv('${p.id}','hoja')">+ Hoja seg.</button>`}
+      </td>
+      <td><span class="badge" style="background:${ec.bg};color:${ec.color}">${ec.label}</span></td>
+      <td style="white-space:nowrap">
+        <button class="btn-secondary" style="padding:5px 9px" onclick="abrirAjusteInv('${p.id}')" title="Ajustar stock">⇅</button>
+        <button class="btn-secondary" style="padding:5px 9px" onclick="abrirEditarProductoInv('${p.id}')" title="Editar">✏️</button>
+        <button class="btn-danger" onclick="eliminarProductoInv('${p.id}')" title="Eliminar">🗑</button>
+      </td>
+    </tr>`;
+  };
+
+  if (!vistaAgrupadaInv) { tbody.innerHTML = data.map(p => filaProducto(p, false)).join(""); return; }
+
+  const grupos = {};
+  data.forEach(p => { const key = p.ingredienteActivo || "Sin ingrediente activo definido"; (grupos[key] = grupos[key] || []).push(p); });
+  const entradas = Object.entries(grupos).sort((a,b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
+  tbody.innerHTML = entradas.map(([ingrediente, prods]) => {
+    const esGrupo = prods.length > 1;
+    const stockTotal = prods.reduce((s,p) => s + (p.stock||0), 0);
+    const encabezado = `<tr style="background:var(--fondo)"><td colspan="7" style="font-weight:700;padding:10px 12px">${ingrediente}${esGrupo ? ` <span class="badge">${prods.length} productos · total ${stockTotal} ${prods[0].unidad||"L"}</span>` : ""}</td></tr>`;
+    return encabezado + prods.map(p => filaProducto(p, true)).join("");
+  }).join("");
+}
+
+// ── Alertas ────────────────────────────────────────────────
+function renderAlertasInv() {
+  const alertas = productosInv.filter(p => getEstadoInv(p) !== "ok");
+  const tabBtn = document.getElementById("tab-inv-alertas");
+  if (tabBtn) tabBtn.textContent = `🔔 Alertas${alertas.length ? ` (${alertas.length})` : ""}`;
+  const cont = document.getElementById("inv-alertas-container");
+  if (!cont) return;
+  if (!alertas.length) { cont.innerHTML = `<div class="empty"><div class="empty-icon">✅</div>Sin alertas pendientes</div>`; return; }
+  cont.innerHTML = alertas.map(p => {
+    const ec = estadoConfigInv[getEstadoInv(p)];
+    return `<div class="panel" style="display:flex;align-items:center;gap:16px;border-left:4px solid ${ec.dot};margin-bottom:10px">
+      <div style="flex:1">
+        <div style="font-weight:700">${p.nombre}</div>
+        <div style="font-size:12px;color:var(--acero);margin-top:2px">${p.ingredienteActivo||""}${p.fabricante?" · "+p.fabricante:""}</div>
+      </div>
+      <div style="text-align:right">
+        <span class="badge" style="background:${ec.bg};color:${ec.color}">${ec.label}</span>
+        <div style="font-size:12px;color:var(--acero);margin-top:4px">Stock: ${p.stock||0} ${p.unidad||"L"} · Mín: ${p.stockMinimo||0}</div>
+      </div>
+      <button class="btn-add" onclick="abrirAjusteInv('${p.id}')">Ajustar stock</button>
+    </div>`;
+  }).join("");
+}
+
+// ── Ajuste de stock ────────────────────────────────────────
+let ajusteProductoInvId = null;
+window.abrirAjusteInv = function(id) {
+  const p = productosInv.find(x => x.id === id);
+  if (!p) return;
+  ajusteProductoInvId = id;
+  document.getElementById("inv-ajuste-nombre").textContent = p.nombre;
+  document.getElementById("inv-ajuste-stock-actual").textContent = `Stock actual: ${p.stock||0} ${p.unidad||"L"}`;
+  document.getElementById("inv-ajuste-cantidad").value = "";
+  document.getElementById("inv-ajuste-tipo-entrada").classList.add("active");
+  document.getElementById("inv-ajuste-tipo-salida").classList.remove("active");
+  document.getElementById("modal-inv-ajuste").style.display = "flex";
+}
+window.setTipoAjusteInv = function(tipo) {
+  document.getElementById("inv-ajuste-tipo-entrada").classList.toggle("active", tipo==="entrada");
+  document.getElementById("inv-ajuste-tipo-salida").classList.toggle("active", tipo==="salida");
+}
+window.confirmarAjusteInv = async function() {
+  const p = productosInv.find(x => x.id === ajusteProductoInvId);
+  if (!p) return;
+  const entrada = document.getElementById("inv-ajuste-tipo-entrada").classList.contains("active");
+  const cant = Number(document.getElementById("inv-ajuste-cantidad").value);
+  if (!cant) { toast("Ingresá una cantidad", false); return; }
+  const nuevoStock = entrada ? (p.stock||0) + cant : Math.max(0, (p.stock||0) - cant);
+  try {
+    await updateDoc(doc(dbInv, "productos", ajusteProductoInvId), { stock: nuevoStock });
+    cerrarModalInv("modal-inv-ajuste");
+    toast(`✓ Stock actualizado: ${nuevoStock} ${p.unidad||"L"}`, true);
+  } catch(e) { toast("Error: " + e.message, false); }
+}
+
+// ── Modal Producto (nuevo/editar) ──────────────────────────
+let editProductoInvId = null;
+let sugerenciasProdInv = [];
+window.abrirNuevoProductoInv = function() {
+  editProductoInvId = null;
+  document.getElementById("modal-inv-prod-titulo").textContent = "Nuevo producto";
+  limpiarFormProdInv();
+  document.getElementById("modal-inv-producto").style.display = "flex";
+}
+window.abrirEditarProductoInv = function(id) {
+  const p = productosInv.find(x => x.id === id);
+  if (!p) return;
+  editProductoInvId = id;
+  document.getElementById("modal-inv-prod-titulo").textContent = "Editar producto";
+  document.getElementById("prod-inv-nombre").value = p.nombre || "";
+  document.getElementById("prod-inv-categoria").value = p.categoria || "Herbicida";
+  document.getElementById("prod-inv-ingrediente").value = p.ingredienteActivo || "";
+  document.getElementById("prod-inv-fabricante").value = p.fabricante || "";
+  document.getElementById("prod-inv-proveedor").value = p.proveedor || "";
+  document.getElementById("prod-inv-cultivos").value = p.cultivosCompatibles || "";
+  document.getElementById("prod-inv-stock").value = p.stock || 0;
+  document.getElementById("prod-inv-unidad").value = p.unidad || "L";
+  document.getElementById("prod-inv-minimo").value = p.stockMinimo || 0;
+  document.getElementById("prod-inv-precio").value = p.precio || 0;
+  document.getElementById("prod-inv-etiqueta").value = p.etiquetaUrl || "";
+  document.getElementById("prod-inv-hoja").value = p.hojaUrl || "";
+  document.getElementById("modal-inv-producto").style.display = "flex";
+}
+function limpiarFormProdInv() {
+  ["prod-inv-nombre","prod-inv-ingrediente","prod-inv-fabricante","prod-inv-proveedor","prod-inv-cultivos","prod-inv-etiqueta","prod-inv-hoja"].forEach(id => document.getElementById(id).value = "");
+  document.getElementById("prod-inv-categoria").value = "Herbicida";
+  document.getElementById("prod-inv-unidad").value = "L";
+  document.getElementById("prod-inv-stock").value = 0;
+  document.getElementById("prod-inv-minimo").value = 0;
+  document.getElementById("prod-inv-precio").value = 0;
+}
+window.onNombreProdInvChange = function() {
+  const val = document.getElementById("prod-inv-nombre").value;
+  const cont = document.getElementById("prod-inv-autocomplete");
+  if (val.length < 2) { cont.innerHTML = ""; sugerenciasProdInv = []; return; }
+  sugerenciasProdInv = CATALOGO_INV.filter(c => c.nombre.toLowerCase().includes(val.toLowerCase())).slice(0, 7);
+  cont.innerHTML = sugerenciasProdInv.map((s,i) => `
+    <div onclick="elegirSugerenciaProdInv(${i})" style="padding:9px 12px;cursor:pointer;border-bottom:1px solid var(--borde);display:flex;justify-content:space-between;align-items:center">
+      <div><div style="font-weight:600;font-size:13px">${s.nombre}</div><div style="font-size:11px;color:var(--acero)">${s.ingredienteActivo}</div></div>
+      <span style="font-size:11px;color:var(--acero)">${s.fabricante}</span>
+    </div>`).join("");
+}
+window.elegirSugerenciaProdInv = function(i) {
+  const s = sugerenciasProdInv[i];
+  if (!s) return;
+  document.getElementById("prod-inv-nombre").value = s.nombre;
+  document.getElementById("prod-inv-categoria").value = s.categoria;
+  document.getElementById("prod-inv-ingrediente").value = s.ingredienteActivo;
+  document.getElementById("prod-inv-fabricante").value = s.fabricante;
+  document.getElementById("prod-inv-autocomplete").innerHTML = "";
+}
+window.guardarProductoInv = async function() {
+  const nombre = document.getElementById("prod-inv-nombre").value.trim();
+  if (!nombre) { toast("El nombre es obligatorio", false); return; }
+  const data = {
+    nombre,
+    categoria: document.getElementById("prod-inv-categoria").value,
+    ingredienteActivo: document.getElementById("prod-inv-ingrediente").value.trim(),
+    fabricante: document.getElementById("prod-inv-fabricante").value.trim(),
+    proveedor: document.getElementById("prod-inv-proveedor").value.trim(),
+    cultivosCompatibles: document.getElementById("prod-inv-cultivos").value.trim(),
+    stock: Number(document.getElementById("prod-inv-stock").value) || 0,
+    unidad: document.getElementById("prod-inv-unidad").value,
+    stockMinimo: Number(document.getElementById("prod-inv-minimo").value) || 0,
+    precio: Number(document.getElementById("prod-inv-precio").value) || 0,
+    etiquetaUrl: document.getElementById("prod-inv-etiqueta").value.trim(),
+    hojaUrl: document.getElementById("prod-inv-hoja").value.trim(),
+    ts: Date.now(),
+  };
+  try {
+    if (editProductoInvId) {
+      await updateDoc(doc(dbInv, "productos", editProductoInvId), data);
+      toast("✓ Producto actualizado", true);
+    } else {
+      await addDoc(collection(dbInv, "productos"), data);
+      toast("✓ Producto agregado", true);
+    }
+    cerrarModalInv("modal-inv-producto");
+  } catch(e) { toast("Error: " + e.message, false); }
+}
+window.eliminarProductoInv = async function(id) {
+  if (!confirm("¿Eliminar este producto?")) return;
+  try { await deleteDoc(doc(dbInv, "productos", id)); toast("Producto eliminado", false); }
+  catch(e) { toast("Error: " + e.message, false); }
+}
+
+// ── Modal Doc rápido (etiqueta / hoja de seguridad) ────────
+let docModalInvId = null, docModalInvTipo = null;
+window.abrirDocModalInv = function(id, tipo) {
+  const p = productosInv.find(x => x.id === id);
+  if (!p) return;
+  docModalInvId = id; docModalInvTipo = tipo;
+  document.getElementById("inv-doc-modal-titulo").textContent = tipo === "etiqueta" ? "🏷 Etiqueta · " + p.nombre : "🛡 Hoja de seguridad · " + p.nombre;
+  document.getElementById("inv-doc-url-input").value = tipo === "etiqueta" ? (p.etiquetaUrl||"") : (p.hojaUrl||"");
+  document.getElementById("modal-inv-doc").style.display = "flex";
+}
+window.guardarDocInv = async function() {
+  const url = document.getElementById("inv-doc-url-input").value.trim();
+  const campo = docModalInvTipo === "etiqueta" ? "etiquetaUrl" : "hojaUrl";
+  try {
+    await updateDoc(doc(dbInv, "productos", docModalInvId), { [campo]: url });
+    cerrarModalInv("modal-inv-doc");
+    toast("✓ Documento guardado", true);
+  } catch(e) { toast("Error: " + e.message, false); }
+}
+
+// ── Ingresos (registro manual de bodega) ───────────────────
+function renderItemsIngresoInv() {
+  const cont = document.getElementById("inv-items-ingreso");
+  if (!cont) return;
+  cont.innerHTML = itemsIngresoInv.map((it, idx) => {
+    const enInventario = it.nombre && productosInv.some(p => p.nombre.toLowerCase() === it.nombre.toLowerCase());
+    return `<div class="config-item" style="flex-direction:column;align-items:stretch;gap:8px">
+      <div style="display:flex;gap:8px;align-items:flex-start">
+        <div style="flex:1;position:relative">
+          <input type="text" id="inv-item-nombre-${idx}" value="${it.nombre}" placeholder="Nombre del producto" oninput="onNombreItemIngresoInvChange(${idx})" autocomplete="off">
+          <div id="inv-item-autocomplete-${idx}" style="position:absolute;z-index:10;background:var(--blanco);width:100%;box-shadow:0 8px 24px rgba(0,0,0,.15);border-radius:6px"></div>
+          ${it.nombre ? `<div style="font-size:10px;margin-top:3px;color:${enInventario?"var(--verde)":"#B45309"}">${enInventario?"✓ Ya está en inventario (suma stock)":"⚠️ Producto nuevo — quedará pendiente de registrar"}</div>` : ""}
+        </div>
+        <button class="btn-danger" onclick="quitarItemIngresoInv(${idx})">🗑</button>
+      </div>
+      <div class="grid-2" style="grid-template-columns:1fr 1fr 1fr;gap:8px">
+        <div class="field" style="margin-bottom:0"><label>Cantidad</label><input type="number" value="${it.cantidad}" oninput="actualizarItemIngresoInv(${idx},'cantidad',Number(this.value))"></div>
+        <div class="field" style="margin-bottom:0"><label>Unidad</label><div class="select-wrapper"><select onchange="actualizarItemIngresoInv(${idx},'unidad',this.value)">${UNIDADES_INV.map(u=>`<option ${u===it.unidad?"selected":""}>${u}</option>`).join("")}</select></div></div>
+        <div class="field" style="margin-bottom:0"><label>Precio unit. $</label><input type="number" value="${it.precioUnitario||0}" oninput="actualizarItemIngresoInv(${idx},'precioUnitario',Number(this.value))"></div>
+      </div>
+    </div>`;
+  }).join("");
+}
+window.actualizarItemIngresoInv = function(idx, campo, valor) {
+  if (!itemsIngresoInv[idx]) return;
+  itemsIngresoInv[idx][campo] = valor;
+}
+window.quitarItemIngresoInv = function(idx) {
+  itemsIngresoInv.splice(idx, 1);
+  if (!itemsIngresoInv.length) itemsIngresoInv.push({nombre:'',cantidad:1,unidad:'L',precioUnitario:0});
+  renderItemsIngresoInv();
+}
+window.agregarItemIngresoInv = function() {
+  itemsIngresoInv.push({nombre:'',cantidad:1,unidad:'L',precioUnitario:0});
+  renderItemsIngresoInv();
+}
+window.onNombreItemIngresoInvChange = function(idx) {
+  const val = document.getElementById("inv-item-nombre-"+idx).value;
+  actualizarItemIngresoInv(idx, "nombre", val);
+  const cont = document.getElementById("inv-item-autocomplete-"+idx);
+  if (!cont) return;
+  if (val.length < 2) { cont.innerHTML = ""; return; }
+  const matches = CATALOGO_INV.filter(c => c.nombre.toLowerCase().includes(val.toLowerCase())).slice(0, 6);
+  cont.innerHTML = matches.map(s => `<div onclick="elegirSugerenciaItemInv(${idx},'${s.nombre.replace(/'/g,"\\'")}')" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--borde);background:var(--blanco);font-size:13px"><strong>${s.nombre}</strong> <span style="color:var(--acero);font-size:11px">· ${s.ingredienteActivo}</span></div>`).join("");
+}
+window.elegirSugerenciaItemInv = function(idx, nombre) {
+  actualizarItemIngresoInv(idx, "nombre", nombre);
+  document.getElementById("inv-item-nombre-"+idx).value = nombre;
+  document.getElementById("inv-item-autocomplete-"+idx).innerHTML = "";
+  renderItemsIngresoInv();
+}
+window.guardarIngresoInv = async function() {
+  const proveedor = document.getElementById("inv-ingreso-proveedor").value.trim();
+  const nroDocumento = document.getElementById("inv-ingreso-nrodoc").value.trim();
+  const items = itemsIngresoInv.filter(it => it.nombre && it.nombre.trim() && it.cantidad > 0);
+  if (!items.length) { toast("Agregá al menos un producto con nombre y cantidad", false); return; }
+  const conocidos = items.filter(it => productosInv.some(p => p.nombre.toLowerCase() === it.nombre.trim().toLowerCase()));
+  const nuevos = items.filter(it => !productosInv.some(p => p.nombre.toLowerCase() === it.nombre.trim().toLowerCase()));
+  try {
+    for (const it of conocidos) {
+      const p = productosInv.find(x => x.nombre.toLowerCase() === it.nombre.trim().toLowerCase());
+      await updateDoc(doc(dbInv, "productos", p.id), { stock: (p.stock||0) + Number(it.cantidad), precio: it.precioUnitario || p.precio || 0 });
+    }
+    await addDoc(collection(dbInv, "ingresos"), {
+      proveedor, nroDocumento, items, itemsPendientes: nuevos,
+      fecha: new Date().toISOString(), ts: Date.now(),
+    });
+    itemsIngresoInv = [{nombre:'',cantidad:1,unidad:'L',precioUnitario:0}];
+    document.getElementById("inv-ingreso-proveedor").value = "";
+    document.getElementById("inv-ingreso-nrodoc").value = "";
+    renderItemsIngresoInv();
+    toast("✓ Ingreso guardado" + (nuevos.length ? ` · ${nuevos.length} producto(s) nuevo(s) pendiente(s) de registrar` : " y stock actualizado"), true);
+  } catch(e) { toast("Error: " + e.message, false); }
+}
+function renderIngresosInv() {
+  const tabBtn = document.getElementById("tab-inv-ingresos");
+  if (tabBtn) tabBtn.textContent = `📥 Ingresos${ingresosInv.length ? ` (${ingresosInv.length})` : ""}`;
+  const pendientes = ingresosInv.filter(i => (i.itemsPendientes||[]).length > 0);
+  const panel = document.getElementById("inv-panel-pendientes");
+  if (panel) {
+    if (pendientes.length) {
+      panel.style.display = "block";
+      panel.innerHTML = `<div style="font-weight:700;color:#92400E;margin-bottom:10px">⚠️ Productos nuevos pendientes de registrar</div>` +
+        pendientes.flatMap(ing => (ing.itemsPendientes||[]).map(item => `
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid #FDE68A">
+            <div><div style="font-weight:600;font-size:13px">${item.nombre}</div><div style="font-size:11px;color:var(--acero)">${item.cantidad} ${item.unidad} · ${ing.proveedor||"Sin proveedor"}</div></div>
+            <button class="btn-add" onclick="abrirNuevoDesdeIngresoInv('${ing.id}','${item.nombre.replace(/'/g,"\\'")}',${item.cantidad},'${item.unidad}',${item.precioUnitario||0},'${(ing.proveedor||"").replace(/'/g,"\\'")}')">+ Registrar</button>
+          </div>`)).join("");
+    } else { panel.style.display = "none"; }
+  }
+  const hist = document.getElementById("inv-historial-ingresos");
+  if (!hist) return;
+  if (!ingresosInv.length) { hist.innerHTML = `<div class="empty">Todavía no hay ingresos registrados</div>`; return; }
+  hist.innerHTML = ingresosInv.slice(0, 25).map(ing => `
+    <div class="config-item" style="flex-direction:column;align-items:stretch;gap:6px">
+      <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:4px">
+        <strong>${ing.proveedor||"Sin proveedor"}${ing.nroDocumento?" · Doc. "+ing.nroDocumento:""}</strong>
+        <span style="font-size:11px;color:var(--acero)">${ing.fecha ? new Date(ing.ts).toLocaleDateString("es-CL",{day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit"}) : ""}</span>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:4px">${(ing.items||[]).map(it => {
+        const pend = (ing.itemsPendientes||[]).some(p => p.nombre === it.nombre);
+        return `<span class="badge" style="background:${pend?"var(--amarillo-suave)":"var(--verde-suave)"};color:${pend?"#92400E":"var(--verde)"}">${pend?"⚠️ ":""}${it.nombre} · ${it.cantidad} ${it.unidad}</span>`;
+      }).join("")}</div>
+    </div>`).join("");
+}
+
+// ── Modal Nuevo Producto desde Ingreso pendiente ───────────
+let npIngresoInvId = null, npNombreInv = null;
+window.abrirNuevoDesdeIngresoInv = function(ingresoId, nombre, cantidad, unidad, precio, proveedor) {
+  npIngresoInvId = ingresoId; npNombreInv = nombre;
+  const enCatalogo = CATALOGO_INV.find(c => c.nombre.toLowerCase() === nombre.toLowerCase());
+  document.getElementById("np-inv-nombre").value = nombre;
+  document.getElementById("np-inv-categoria").value = enCatalogo?.categoria || "Herbicida";
+  document.getElementById("np-inv-ingrediente").value = enCatalogo?.ingredienteActivo || "";
+  document.getElementById("np-inv-fabricante").value = enCatalogo?.fabricante || "";
+  document.getElementById("np-inv-proveedor").value = proveedor || "";
+  document.getElementById("np-inv-cultivos").value = "";
+  document.getElementById("np-inv-stock").value = cantidad;
+  document.getElementById("np-inv-unidad").value = unidad;
+  document.getElementById("np-inv-minimo").value = 0;
+  document.getElementById("np-inv-precio").value = precio || 0;
+  document.getElementById("np-inv-etiqueta").value = "";
+  document.getElementById("np-inv-hoja").value = "";
+  document.getElementById("modal-inv-nuevo-desde-ingreso").style.display = "flex";
+}
+window.guardarNuevoDesdeIngresoInv = async function() {
+  const nombre = document.getElementById("np-inv-nombre").value.trim();
+  if (!nombre) { toast("El nombre es obligatorio", false); return; }
+  const data = {
+    nombre,
+    categoria: document.getElementById("np-inv-categoria").value,
+    ingredienteActivo: document.getElementById("np-inv-ingrediente").value.trim(),
+    fabricante: document.getElementById("np-inv-fabricante").value.trim(),
+    proveedor: document.getElementById("np-inv-proveedor").value.trim(),
+    cultivosCompatibles: document.getElementById("np-inv-cultivos").value.trim(),
+    stock: Number(document.getElementById("np-inv-stock").value) || 0,
+    unidad: document.getElementById("np-inv-unidad").value,
+    stockMinimo: Number(document.getElementById("np-inv-minimo").value) || 0,
+    precio: Number(document.getElementById("np-inv-precio").value) || 0,
+    etiquetaUrl: document.getElementById("np-inv-etiqueta").value.trim(),
+    hojaUrl: document.getElementById("np-inv-hoja").value.trim(),
+    ts: Date.now(),
+  };
+  try {
+    await addDoc(collection(dbInv, "productos"), data);
+    const ing = ingresosInv.find(x => x.id === npIngresoInvId);
+    if (ing) {
+      const newPend = (ing.itemsPendientes||[]).filter(it => it.nombre !== npNombreInv);
+      await updateDoc(doc(dbInv, "ingresos", npIngresoInvId), { itemsPendientes: newPend });
+    }
+    cerrarModalInv("modal-inv-nuevo-desde-ingreso");
+    toast("✓ Producto agregado al inventario", true);
+  } catch(e) { toast("Error: " + e.message, false); }
+}
+
+window.cerrarModalInv = function(id) { const el = document.getElementById(id); if (el) el.style.display = "none"; }
 </script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
@@ -6466,6 +6973,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       <button class="btn" style="background:var(--negro);color:var(--amarillo);justify-content:flex-start;padding:20px;font-size:16px;border-radius:10px" onclick="abrirSeccion('combustible')">⛽ Combustible</button>
       <button class="btn" style="background:var(--negro);color:var(--amarillo);justify-content:flex-start;padding:20px;font-size:16px;border-radius:10px" onclick="abrirSeccion('asistencia')">🕒 Asistencia</button>
       <button class="btn" style="background:var(--negro);color:var(--amarillo);justify-content:flex-start;padding:20px;font-size:16px;border-radius:10px" onclick="abrirSeccion('campo')">🌱 Cuaderno de Campo</button>
+      <button class="btn" style="background:var(--negro);color:var(--amarillo);justify-content:flex-start;padding:20px;font-size:16px;border-radius:10px" onclick="abrirSeccion('inventario')">📦 Inventario Agroquímicos</button>
     </div>
   </div>
 
@@ -6482,6 +6990,9 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     <button class="tab" id="tab-config-trabajadores" style="display:none" onclick="setTab('config-trabajadores',this)">⚙️ Config. Trabajadores</button>
     <button class="tab" id="tab-campo" style="display:none" onclick="setTab('campo',this)">🌱 Cuaderno de Campo</button>
     <button class="tab" id="tab-config-potreros" style="display:none" onclick="setTab('config-potreros',this)">⚙️ Config. Potreros</button>
+    <button class="tab" id="tab-inv-inventario" style="display:none" onclick="setTab('inv-inventario',this)">📦 Inventario</button>
+    <button class="tab" id="tab-inv-ingresos" style="display:none" onclick="setTab('inv-ingresos',this)">📥 Ingresos</button>
+    <button class="tab" id="tab-inv-alertas" style="display:none" onclick="setTab('inv-alertas',this)">🔔 Alertas</button>
   </div>
 
   <main id="app-main">
@@ -7251,6 +7762,60 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         <div class="config-lista" id="lista-encargados-campo" style="margin-top:10px"></div>
       </div>
     </div>
+
+    <!-- INVENTARIO AGROQUÍMICOS -->
+    <div id="tc-inv-inventario" class="tab-content">
+      <div class="stats-grid" style="grid-template-columns:repeat(4,1fr)">
+        <div class="stat-card"><div class="stat-label">Productos</div><div class="stat-value" id="inv-stat-total">0</div></div>
+        <div class="stat-card"><div class="stat-label">Alertas</div><div class="stat-value" id="inv-stat-alertas" style="color:var(--amarillo)">0</div></div>
+        <div class="stat-card"><div class="stat-label">Agotados</div><div class="stat-value" id="inv-stat-agotados" style="color:var(--rojo)">0</div></div>
+        <div class="stat-card"><div class="stat-label">Stock bajo</div><div class="stat-value" id="inv-stat-bajos" style="color:#92400E">0</div></div>
+      </div>
+      <div class="panel">
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
+          <input type="text" id="inv-input-busqueda" placeholder="Buscar por nombre o ingrediente activo..." oninput="onBusquedaInv()" style="flex:1;min-width:200px">
+          <button class="btn btn-secondary" id="inv-btn-vista" onclick="toggleVistaInv()">🔬 Agrupar por ingrediente activo</button>
+          <button class="btn btn-verde" style="width:auto" onclick="abrirNuevoProductoInv()">+ Nuevo producto</button>
+        </div>
+        <div class="centros-selector" id="inv-chips-cat-wrap">
+          <span class="cultivo-chip sel" onclick="setFiltroInv('Todos', this)">Todos</span>
+          <span class="cultivo-chip" onclick="setFiltroInv('Herbicida', this)">Herbicida</span>
+          <span class="cultivo-chip" onclick="setFiltroInv('Fungicida', this)">Fungicida</span>
+          <span class="cultivo-chip" onclick="setFiltroInv('Insecticida', this)">Insecticida</span>
+          <span class="cultivo-chip" onclick="setFiltroInv('Foliar', this)">Foliar</span>
+          <span class="cultivo-chip" onclick="setFiltroInv('Coadyuvante', this)">Coadyuvante</span>
+          <span class="cultivo-chip" onclick="setFiltroInv('Otros', this)">Otros</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Producto</th><th>Categoría</th><th>Ingrediente activo</th><th>Stock</th><th>Documentos</th><th>Estado</th><th></th></tr></thead>
+            <tbody id="inv-tabla-body"><tr><td colspan="7" class="empty">Cargando...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div id="tc-inv-ingresos" class="tab-content">
+      <div id="inv-panel-pendientes" style="display:none;margin-bottom:16px"></div>
+      <div class="panel">
+        <div class="panel-title">📥 Nuevo ingreso de bodega</div>
+        <div class="grid-2">
+          <div class="field"><label>Proveedor / Razón social</label><input type="text" id="inv-ingreso-proveedor" placeholder="Nombre del proveedor"></div>
+          <div class="field"><label>N° documento</label><input type="text" id="inv-ingreso-nrodoc" placeholder="Factura / guía"></div>
+        </div>
+        <div id="inv-items-ingreso"></div>
+        <button class="btn-add" style="width:100%;justify-content:center;margin-top:8px" onclick="agregarItemIngresoInv()">+ Agregar producto</button>
+        <button class="btn btn-verde" style="margin-top:16px" onclick="guardarIngresoInv()">✓ Guardar ingreso</button>
+      </div>
+      <div class="panel">
+        <div class="panel-title">Historial de ingresos</div>
+        <div id="inv-historial-ingresos"></div>
+      </div>
+    </div>
+
+    <div id="tc-inv-alertas" class="tab-content">
+      <div id="inv-alertas-container"></div>
+    </div>
   </main>
 </div>
 
@@ -7304,6 +7869,96 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     <div class="modal-actions">
       <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="cerrarEditar()">Cancelar</button>
       <button class="btn btn-verde" style="flex:2" id="btn-guardar-edicion" onclick="guardarEdicion()">✓ Guardar cambios</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL AJUSTE STOCK INVENTARIO -->
+<div class="modal-overlay" id="modal-inv-ajuste">
+  <div class="modal-box">
+    <div class="modal-title">Ajustar stock · <span id="inv-ajuste-nombre"></span></div>
+    <div class="hint" id="inv-ajuste-stock-actual" style="margin-bottom:14px"></div>
+    <div class="field">
+      <label>Tipo de movimiento</label>
+      <div class="medidor-group">
+        <button type="button" class="medidor-btn active" id="inv-ajuste-tipo-entrada" onclick="setTipoAjusteInv('entrada')">📥 Entrada</button>
+        <button type="button" class="medidor-btn" id="inv-ajuste-tipo-salida" onclick="setTipoAjusteInv('salida')">📤 Salida</button>
+      </div>
+    </div>
+    <div class="field"><label>Cantidad</label><input type="number" id="inv-ajuste-cantidad" min="0"></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="cerrarModalInv('modal-inv-ajuste')">Cancelar</button>
+      <button class="btn btn-verde" style="flex:2" onclick="confirmarAjusteInv()">Confirmar</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL PRODUCTO INVENTARIO (nuevo/editar) -->
+<div class="modal-overlay" id="modal-inv-producto">
+  <div class="modal-box" style="max-width:480px;max-height:90vh;overflow-y:auto">
+    <div class="modal-title" id="modal-inv-prod-titulo">Producto</div>
+    <div class="field" style="position:relative">
+      <label>Nombre comercial</label>
+      <input type="text" id="prod-inv-nombre" placeholder="Ej: Roundup, Dithane..." oninput="onNombreProdInvChange()" autocomplete="off">
+      <div id="prod-inv-autocomplete" style="position:absolute;z-index:10;background:var(--blanco);width:100%;box-shadow:0 8px 24px rgba(0,0,0,.15);border-radius:6px;margin-top:2px"></div>
+    </div>
+    <div class="grid-2">
+      <div class="field"><label>Categoría</label><div class="select-wrapper"><select id="prod-inv-categoria"><option>Herbicida</option><option>Fungicida</option><option>Insecticida</option><option>Foliar</option><option>Coadyuvante</option><option>Otros</option></select></div></div>
+      <div class="field"><label>Fabricante</label><input type="text" id="prod-inv-fabricante"></div>
+    </div>
+    <div class="field"><label>Ingrediente activo</label><input type="text" id="prod-inv-ingrediente"></div>
+    <div class="field"><label>Cultivos compatibles</label><input type="text" id="prod-inv-cultivos" placeholder="Ej: Trigo, maíz, soya, vid"></div>
+    <div class="grid-2">
+      <div class="field"><label>Proveedor local</label><input type="text" id="prod-inv-proveedor"></div>
+      <div class="field"><label>Precio unit. $</label><input type="number" id="prod-inv-precio"></div>
+      <div class="field"><label>Stock actual</label><input type="number" id="prod-inv-stock"></div>
+      <div class="field"><label>Unidad</label><div class="select-wrapper"><select id="prod-inv-unidad"><option>L</option><option>kg</option><option>g</option><option>mL</option><option>t</option></select></div></div>
+      <div class="field"><label>Stock mínimo</label><input type="number" id="prod-inv-minimo"></div>
+    </div>
+    <div class="field"><label>🏷 Etiqueta (URL)</label><input type="text" id="prod-inv-etiqueta" placeholder="https://..."></div>
+    <div class="field"><label>🛡 Hoja de seguridad (URL)</label><input type="text" id="prod-inv-hoja" placeholder="https://..."></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="cerrarModalInv('modal-inv-producto')">Cancelar</button>
+      <button class="btn btn-verde" style="flex:2" onclick="guardarProductoInv()">Guardar</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL DOC RÁPIDO INVENTARIO -->
+<div class="modal-overlay" id="modal-inv-doc">
+  <div class="modal-box" style="max-width:440px">
+    <div class="modal-title" id="inv-doc-modal-titulo"></div>
+    <div class="field"><label>Link (Google Drive, PDF, imagen...)</label><input type="text" id="inv-doc-url-input" placeholder="https://..."></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="cerrarModalInv('modal-inv-doc')">Cancelar</button>
+      <button class="btn btn-verde" style="flex:2" onclick="guardarDocInv()">Guardar</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL NUEVO PRODUCTO DESDE INGRESO PENDIENTE -->
+<div class="modal-overlay" id="modal-inv-nuevo-desde-ingreso">
+  <div class="modal-box" style="max-width:480px;max-height:90vh;overflow-y:auto">
+    <div class="modal-title">Registrar producto nuevo</div>
+    <div class="field"><label>Nombre comercial</label><input type="text" id="np-inv-nombre"></div>
+    <div class="grid-2">
+      <div class="field"><label>Categoría</label><div class="select-wrapper"><select id="np-inv-categoria"><option>Herbicida</option><option>Fungicida</option><option>Insecticida</option><option>Foliar</option><option>Coadyuvante</option><option>Otros</option></select></div></div>
+      <div class="field"><label>Fabricante</label><input type="text" id="np-inv-fabricante"></div>
+    </div>
+    <div class="field"><label>Ingrediente activo</label><input type="text" id="np-inv-ingrediente"></div>
+    <div class="field"><label>Cultivos compatibles</label><input type="text" id="np-inv-cultivos"></div>
+    <div class="grid-2">
+      <div class="field"><label>Proveedor</label><input type="text" id="np-inv-proveedor"></div>
+      <div class="field"><label>Precio unit. $</label><input type="number" id="np-inv-precio"></div>
+      <div class="field"><label>Stock inicial</label><input type="number" id="np-inv-stock"></div>
+      <div class="field"><label>Unidad</label><div class="select-wrapper"><select id="np-inv-unidad"><option>L</option><option>kg</option><option>g</option><option>mL</option><option>t</option></select></div></div>
+      <div class="field"><label>Stock mínimo</label><input type="number" id="np-inv-minimo" value="0"></div>
+    </div>
+    <div class="field"><label>🏷 Etiqueta (URL)</label><input type="text" id="np-inv-etiqueta" placeholder="https://..."></div>
+    <div class="field"><label>🛡 Hoja de seguridad (URL)</label><input type="text" id="np-inv-hoja" placeholder="https://..."></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="cerrarModalInv('modal-inv-nuevo-desde-ingreso')">Cancelar</button>
+      <button class="btn btn-verde" style="flex:2" onclick="guardarNuevoDesdeIngresoInv()">Agregar al inventario</button>
     </div>
   </div>
 </div>
