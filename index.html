@@ -6348,6 +6348,7 @@ const CATALOGO_INV = [
   { nombre: "Citowett", categoria: "Coadyuvante", ingredienteActivo: "Alquilarilpoliglicoléter 40%", fabricante: "BASF" },
 ];
 const UNIDADES_INV = ["L","kg","g","mL","t"];
+const BODEGAS_INV = ["Bodega Cultivos", "Bodega Frutales"];
 const estadoConfigInv = {
   ok:      { label: "Normal",     color: "var(--verde)", bg: "var(--verde-suave)", dot: "var(--verde)" },
   bajo:    { label: "Stock bajo", color: "#92400E",       bg: "var(--amarillo-suave)", dot: "var(--amarillo)" },
@@ -6383,17 +6384,33 @@ function initInventario() {
   });
 }
 
-function getEstadoInv(p) {
-  if (!p.stock || p.stock === 0) return "agotado";
-  if (p.stock <= (p.stockMinimo || 0)) return "bajo";
+// Lee el stock de un producto en una bodega específica. Compatible con
+// productos antiguos que todavía tengan `stock` como número plano (se
+// asume que ese stock legado está en la primera bodega).
+function stockInv(p, bodega) {
+  const s = p.stock;
+  if (s && typeof s === "object") return Number(s[bodega]) || 0;
+  return bodega === BODEGAS_INV[0] ? (Number(s) || 0) : 0;
+}
+function stockTotalInv(p) {
+  return BODEGAS_INV.reduce((sum, b) => sum + stockInv(p, b), 0);
+}
+function getEstadoInvBodega(p, bodega) {
+  const s = stockInv(p, bodega);
+  if (!s || s === 0) return "agotado";
+  if (s <= (p.stockMinimo || 0)) return "bajo";
   return "ok";
 }
 
 function renderStatsInv() {
   const total = productosInv.length;
-  const alertas = productosInv.filter(p => getEstadoInv(p) !== "ok").length;
-  const agotados = productosInv.filter(p => getEstadoInv(p) === "agotado").length;
-  const bajos = productosInv.filter(p => getEstadoInv(p) === "bajo").length;
+  let alertas = 0, agotados = 0, bajos = 0;
+  productosInv.forEach(p => BODEGAS_INV.forEach(b => {
+    const e = getEstadoInvBodega(p, b);
+    if (e !== "ok") alertas++;
+    if (e === "agotado") agotados++;
+    if (e === "bajo") bajos++;
+  }));
   const set = (id,v) => { const el=document.getElementById(id); if(el) el.textContent=v; };
   set("inv-stat-total", total);
   set("inv-stat-alertas", alertas);
@@ -6433,8 +6450,21 @@ function renderInventarioTabla() {
   });
   if (!data.length) { tbody.innerHTML = `<tr><td colspan="7" class="empty">No se encontraron productos</td></tr>`; return; }
 
+  const celdaBodega = (p, bodega) => {
+    const s = stockInv(p, bodega);
+    const ec = estadoConfigInv[getEstadoInvBodega(p, bodega)];
+    return `<td>
+      <div style="display:flex;align-items:center;gap:6px">
+        <div>
+          <strong style="color:${s<=(p.stockMinimo||0)?"var(--rojo)":"var(--negro)"}">${s}</strong> <span style="font-size:11px;color:var(--acero)">${p.unidad||"L"}</span>
+          <div><span class="badge" style="background:${ec.bg};color:${ec.color};font-size:10px">${ec.label}</span></div>
+        </div>
+        <button class="btn-secondary" style="padding:4px 7px" onclick="abrirAjusteInv('${p.id}','${bodega}')" title="Ajustar ${bodega}">⇅</button>
+      </div>
+    </td>`;
+  };
+
   const filaProducto = (p, indent) => {
-    const ec = estadoConfigInv[getEstadoInv(p)];
     const cc = categoriaColorInv[p.categoria] || "#6B7280";
     const hasEtiq = !!p.etiquetaUrl, hasHoja = !!p.hojaUrl;
     return `<tr>
@@ -6444,14 +6474,13 @@ function renderInventarioTabla() {
       </td>
       <td><span class="badge" style="background:${cc}22;color:${cc}">${p.categoria}</span></td>
       <td style="font-size:12px">${p.ingredienteActivo || "—"}</td>
-      <td><strong style="color:${p.stock<=(p.stockMinimo||0)?"var(--rojo)":"var(--negro)"}">${p.stock||0}</strong> <span style="font-size:11px;color:var(--acero)">${p.unidad||"L"}</span></td>
+      ${celdaBodega(p, BODEGAS_INV[0])}
+      ${celdaBodega(p, BODEGAS_INV[1])}
       <td>
         ${hasEtiq ? `<a href="${p.etiquetaUrl}" target="_blank" class="badge badge-km">🏷 Etiqueta</a>` : `<button class="btn-danger" onclick="abrirDocModalInv('${p.id}','etiqueta')">+ Etiqueta</button>`}<br>
         ${hasHoja ? `<a href="${p.hojaUrl}" target="_blank" class="badge badge-hr" style="margin-top:3px;display:inline-block">🛡 Hoja seg.</a>` : `<button class="btn-danger" onclick="abrirDocModalInv('${p.id}','hoja')">+ Hoja seg.</button>`}
       </td>
-      <td><span class="badge" style="background:${ec.bg};color:${ec.color}">${ec.label}</span></td>
       <td style="white-space:nowrap">
-        <button class="btn-secondary" style="padding:5px 9px" onclick="abrirAjusteInv('${p.id}')" title="Ajustar stock">⇅</button>
         <button class="btn-secondary" style="padding:5px 9px" onclick="abrirEditarProductoInv('${p.id}')" title="Editar">✏️</button>
         <button class="btn-danger" onclick="eliminarProductoInv('${p.id}')" title="Eliminar">🗑</button>
       </td>
@@ -6465,48 +6494,69 @@ function renderInventarioTabla() {
   const entradas = Object.entries(grupos).sort((a,b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
   tbody.innerHTML = entradas.map(([ingrediente, prods]) => {
     const esGrupo = prods.length > 1;
-    const stockTotal = prods.reduce((s,p) => s + (p.stock||0), 0);
+    const stockTotal = prods.reduce((s,p) => s + stockTotalInv(p), 0);
     const encabezado = `<tr style="background:var(--fondo)"><td colspan="7" style="font-weight:700;padding:10px 12px">${ingrediente}${esGrupo ? ` <span class="badge">${prods.length} productos · total ${stockTotal} ${prods[0].unidad||"L"}</span>` : ""}</td></tr>`;
     return encabezado + prods.map(p => filaProducto(p, true)).join("");
   }).join("");
 }
 
-// ── Alertas ────────────────────────────────────────────────
+// ── Alertas (por producto + bodega) ─────────────────────────
 function renderAlertasInv() {
-  const alertas = productosInv.filter(p => getEstadoInv(p) !== "ok");
+  const alertas = [];
+  productosInv.forEach(p => BODEGAS_INV.forEach(b => {
+    const e = getEstadoInvBodega(p, b);
+    if (e !== "ok") alertas.push({ p, bodega: b, estado: e });
+  }));
   const tabBtn = document.getElementById("tab-inv-alertas");
   if (tabBtn) tabBtn.textContent = `🔔 Alertas${alertas.length ? ` (${alertas.length})` : ""}`;
   const cont = document.getElementById("inv-alertas-container");
   if (!cont) return;
   if (!alertas.length) { cont.innerHTML = `<div class="empty"><div class="empty-icon">✅</div>Sin alertas pendientes</div>`; return; }
-  cont.innerHTML = alertas.map(p => {
-    const ec = estadoConfigInv[getEstadoInv(p)];
+  cont.innerHTML = alertas.map(({p, bodega, estado}) => {
+    const ec = estadoConfigInv[estado];
     return `<div class="panel" style="display:flex;align-items:center;gap:16px;border-left:4px solid ${ec.dot};margin-bottom:10px">
       <div style="flex:1">
         <div style="font-weight:700">${p.nombre}</div>
-        <div style="font-size:12px;color:var(--acero);margin-top:2px">${p.ingredienteActivo||""}${p.fabricante?" · "+p.fabricante:""}</div>
+        <div style="font-size:12px;color:var(--acero);margin-top:2px">${bodega}${p.ingredienteActivo?" · "+p.ingredienteActivo:""}</div>
       </div>
       <div style="text-align:right">
         <span class="badge" style="background:${ec.bg};color:${ec.color}">${ec.label}</span>
-        <div style="font-size:12px;color:var(--acero);margin-top:4px">Stock: ${p.stock||0} ${p.unidad||"L"} · Mín: ${p.stockMinimo||0}</div>
+        <div style="font-size:12px;color:var(--acero);margin-top:4px">Stock: ${stockInv(p,bodega)} ${p.unidad||"L"} · Mín: ${p.stockMinimo||0}</div>
       </div>
-      <button class="btn-add" onclick="abrirAjusteInv('${p.id}')">Ajustar stock</button>
+      <button class="btn-add" onclick="abrirAjusteInv('${p.id}','${bodega}')">Ajustar stock</button>
     </div>`;
   }).join("");
 }
 
-// ── Ajuste de stock ────────────────────────────────────────
+// ── Ajuste de stock (por bodega) ────────────────────────────
+// Devuelve el mapa completo {bodega: stock} de un producto, normalizando
+// el caso legado en que `stock` era un número plano.
+function stockMapInv(p) {
+  const mapa = {}; BODEGAS_INV.forEach(b => mapa[b] = stockInv(p, b)); return mapa;
+}
 let ajusteProductoInvId = null;
-window.abrirAjusteInv = function(id) {
+let ajusteBodegaInv = null;
+window.abrirAjusteInv = function(id, bodega) {
   const p = productosInv.find(x => x.id === id);
   if (!p) return;
   ajusteProductoInvId = id;
+  ajusteBodegaInv = bodega || BODEGAS_INV[0];
   document.getElementById("inv-ajuste-nombre").textContent = p.nombre;
-  document.getElementById("inv-ajuste-stock-actual").textContent = `Stock actual: ${p.stock||0} ${p.unidad||"L"}`;
+  document.getElementById("modal-inv-ajuste-bodega-sel").innerHTML = BODEGAS_INV.map(b => `<option value="${b}" ${b===ajusteBodegaInv?"selected":""}>${b}</option>`).join("");
+  actualizarAjusteStockActualInv();
   document.getElementById("inv-ajuste-cantidad").value = "";
   document.getElementById("inv-ajuste-tipo-entrada").classList.add("active");
   document.getElementById("inv-ajuste-tipo-salida").classList.remove("active");
   document.getElementById("modal-inv-ajuste").style.display = "flex";
+}
+window.onAjusteBodegaInvChange = function() {
+  ajusteBodegaInv = document.getElementById("modal-inv-ajuste-bodega-sel").value;
+  actualizarAjusteStockActualInv();
+}
+function actualizarAjusteStockActualInv() {
+  const p = productosInv.find(x => x.id === ajusteProductoInvId);
+  if (!p) return;
+  document.getElementById("inv-ajuste-stock-actual").textContent = `Stock actual en ${ajusteBodegaInv}: ${stockInv(p, ajusteBodegaInv)} ${p.unidad||"L"}`;
 }
 window.setTipoAjusteInv = function(tipo) {
   document.getElementById("inv-ajuste-tipo-entrada").classList.toggle("active", tipo==="entrada");
@@ -6518,11 +6568,54 @@ window.confirmarAjusteInv = async function() {
   const entrada = document.getElementById("inv-ajuste-tipo-entrada").classList.contains("active");
   const cant = Number(document.getElementById("inv-ajuste-cantidad").value);
   if (!cant) { toast("Ingresá una cantidad", false); return; }
-  const nuevoStock = entrada ? (p.stock||0) + cant : Math.max(0, (p.stock||0) - cant);
+  const actual = stockInv(p, ajusteBodegaInv);
+  const nuevoStock = entrada ? actual + cant : Math.max(0, actual - cant);
+  const nuevoMapa = stockMapInv(p); nuevoMapa[ajusteBodegaInv] = nuevoStock;
   try {
-    await updateDoc(doc(dbInv, "productos", ajusteProductoInvId), { stock: nuevoStock });
+    await updateDoc(doc(dbInv, "productos", ajusteProductoInvId), { stock: nuevoMapa });
     cerrarModalInv("modal-inv-ajuste");
-    toast(`✓ Stock actualizado: ${nuevoStock} ${p.unidad||"L"}`, true);
+    toast(`✓ ${ajusteBodegaInv}: ${nuevoStock} ${p.unidad||"L"}`, true);
+  } catch(e) { toast("Error: " + e.message, false); }
+}
+
+// ── Traspaso entre bodegas ──────────────────────────────────
+window.abrirTraspasoInv = function() {
+  if (!productosInv.length) { toast("No hay productos en el inventario todavía", false); return; }
+  const sel = document.getElementById("inv-traspaso-producto");
+  sel.innerHTML = productosInv.slice().sort((a,b)=>a.nombre.localeCompare(b.nombre)).map(p => `<option value="${p.id}">${p.nombre}</option>`).join("");
+  document.getElementById("inv-traspaso-origen").innerHTML = BODEGAS_INV.map((b,i) => `<option value="${b}" ${i===0?"selected":""}>${b}</option>`).join("");
+  document.getElementById("inv-traspaso-destino").innerHTML = BODEGAS_INV.map((b,i) => `<option value="${b}" ${i===1?"selected":""}>${b}</option>`).join("");
+  document.getElementById("inv-traspaso-cantidad").value = "";
+  onProductoTraspasoInvChange();
+  document.getElementById("modal-inv-traspaso").style.display = "flex";
+}
+window.onProductoTraspasoInvChange = function() {
+  const p = productosInv.find(x => x.id === document.getElementById("inv-traspaso-producto").value);
+  const info = document.getElementById("inv-traspaso-stock-info");
+  if (!p) { info.textContent = ""; return; }
+  info.textContent = BODEGAS_INV.map(b => `${b}: ${stockInv(p,b)} ${p.unidad||"L"}`).join(" · ");
+}
+window.confirmarTraspasoInv = async function() {
+  const p = productosInv.find(x => x.id === document.getElementById("inv-traspaso-producto").value);
+  if (!p) { toast("Elegí un producto", false); return; }
+  const origen = document.getElementById("inv-traspaso-origen").value;
+  const destino = document.getElementById("inv-traspaso-destino").value;
+  const cant = Number(document.getElementById("inv-traspaso-cantidad").value);
+  if (origen === destino) { toast("Origen y destino deben ser distintos", false); return; }
+  if (!cant || cant <= 0) { toast("Ingresá una cantidad", false); return; }
+  const stockOrigen = stockInv(p, origen);
+  if (cant > stockOrigen) { toast(`No hay suficiente stock en ${origen} (hay ${stockOrigen} ${p.unidad||"L"})`, false); return; }
+  const nuevoMapa = stockMapInv(p);
+  nuevoMapa[origen] = stockOrigen - cant;
+  nuevoMapa[destino] = stockInv(p, destino) + cant;
+  try {
+    await updateDoc(doc(dbInv, "productos", p.id), { stock: nuevoMapa });
+    await addDoc(collection(dbInv, "movimientos"), {
+      tipo: "traspaso", productoId: p.id, productoNombre: p.nombre,
+      cantidad: cant, unidad: p.unidad || "L", origen, destino, ts: Date.now(),
+    });
+    cerrarModalInv("modal-inv-traspaso");
+    toast(`✓ ${cant} ${p.unidad||"L"} traspasado de ${origen} a ${destino}`, true);
   } catch(e) { toast("Error: " + e.message, false); }
 }
 
@@ -6546,7 +6639,8 @@ window.abrirEditarProductoInv = function(id) {
   document.getElementById("prod-inv-fabricante").value = p.fabricante || "";
   document.getElementById("prod-inv-proveedor").value = p.proveedor || "";
   document.getElementById("prod-inv-cultivos").value = p.cultivosCompatibles || "";
-  document.getElementById("prod-inv-stock").value = p.stock || 0;
+  document.getElementById("prod-inv-stock-b0").value = stockInv(p, BODEGAS_INV[0]);
+  document.getElementById("prod-inv-stock-b1").value = stockInv(p, BODEGAS_INV[1]);
   document.getElementById("prod-inv-unidad").value = p.unidad || "L";
   document.getElementById("prod-inv-minimo").value = p.stockMinimo || 0;
   document.getElementById("prod-inv-precio").value = p.precio || 0;
@@ -6558,7 +6652,8 @@ function limpiarFormProdInv() {
   ["prod-inv-nombre","prod-inv-ingrediente","prod-inv-fabricante","prod-inv-proveedor","prod-inv-cultivos","prod-inv-etiqueta","prod-inv-hoja"].forEach(id => document.getElementById(id).value = "");
   document.getElementById("prod-inv-categoria").value = "Herbicida";
   document.getElementById("prod-inv-unidad").value = "L";
-  document.getElementById("prod-inv-stock").value = 0;
+  document.getElementById("prod-inv-stock-b0").value = 0;
+  document.getElementById("prod-inv-stock-b1").value = 0;
   document.getElementById("prod-inv-minimo").value = 0;
   document.getElementById("prod-inv-precio").value = 0;
 }
@@ -6592,7 +6687,10 @@ window.guardarProductoInv = async function() {
     fabricante: document.getElementById("prod-inv-fabricante").value.trim(),
     proveedor: document.getElementById("prod-inv-proveedor").value.trim(),
     cultivosCompatibles: document.getElementById("prod-inv-cultivos").value.trim(),
-    stock: Number(document.getElementById("prod-inv-stock").value) || 0,
+    stock: {
+      [BODEGAS_INV[0]]: Number(document.getElementById("prod-inv-stock-b0").value) || 0,
+      [BODEGAS_INV[1]]: Number(document.getElementById("prod-inv-stock-b1").value) || 0,
+    },
     unidad: document.getElementById("prod-inv-unidad").value,
     stockMinimo: Number(document.getElementById("prod-inv-minimo").value) || 0,
     precio: Number(document.getElementById("prod-inv-precio").value) || 0,
@@ -6691,6 +6789,7 @@ window.elegirSugerenciaItemInv = function(idx, nombre) {
 window.guardarIngresoInv = async function() {
   const proveedor = document.getElementById("inv-ingreso-proveedor").value.trim();
   const nroDocumento = document.getElementById("inv-ingreso-nrodoc").value.trim();
+  const bodegaDestino = document.getElementById("inv-ingreso-bodega").value;
   const items = itemsIngresoInv.filter(it => it.nombre && it.nombre.trim() && it.cantidad > 0);
   if (!items.length) { toast("Agregá al menos un producto con nombre y cantidad", false); return; }
   const conocidos = items.filter(it => productosInv.some(p => p.nombre.toLowerCase() === it.nombre.trim().toLowerCase()));
@@ -6698,17 +6797,19 @@ window.guardarIngresoInv = async function() {
   try {
     for (const it of conocidos) {
       const p = productosInv.find(x => x.nombre.toLowerCase() === it.nombre.trim().toLowerCase());
-      await updateDoc(doc(dbInv, "productos", p.id), { stock: (p.stock||0) + Number(it.cantidad), precio: it.precioUnitario || p.precio || 0 });
+      const nuevoMapa = stockMapInv(p);
+      nuevoMapa[bodegaDestino] = (nuevoMapa[bodegaDestino]||0) + Number(it.cantidad);
+      await updateDoc(doc(dbInv, "productos", p.id), { stock: nuevoMapa, precio: it.precioUnitario || p.precio || 0 });
     }
     await addDoc(collection(dbInv, "ingresos"), {
-      proveedor, nroDocumento, items, itemsPendientes: nuevos,
+      proveedor, nroDocumento, bodega: bodegaDestino, items, itemsPendientes: nuevos,
       fecha: new Date().toISOString(), ts: Date.now(),
     });
     itemsIngresoInv = [{nombre:'',cantidad:1,unidad:'L',precioUnitario:0}];
     document.getElementById("inv-ingreso-proveedor").value = "";
     document.getElementById("inv-ingreso-nrodoc").value = "";
     renderItemsIngresoInv();
-    toast("✓ Ingreso guardado" + (nuevos.length ? ` · ${nuevos.length} producto(s) nuevo(s) pendiente(s) de registrar` : " y stock actualizado"), true);
+    toast("✓ Ingreso guardado en " + bodegaDestino + (nuevos.length ? ` · ${nuevos.length} producto(s) nuevo(s) pendiente(s) de registrar` : " y stock actualizado"), true);
   } catch(e) { toast("Error: " + e.message, false); }
 }
 function renderIngresosInv() {
@@ -6723,7 +6824,7 @@ function renderIngresosInv() {
         pendientes.flatMap(ing => (ing.itemsPendientes||[]).map(item => `
           <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid #FDE68A">
             <div><div style="font-weight:600;font-size:13px">${item.nombre}</div><div style="font-size:11px;color:var(--acero)">${item.cantidad} ${item.unidad} · ${ing.proveedor||"Sin proveedor"}</div></div>
-            <button class="btn-add" onclick="abrirNuevoDesdeIngresoInv('${ing.id}','${item.nombre.replace(/'/g,"\\'")}',${item.cantidad},'${item.unidad}',${item.precioUnitario||0},'${(ing.proveedor||"").replace(/'/g,"\\'")}')">+ Registrar</button>
+            <button class="btn-add" onclick="abrirNuevoDesdeIngresoInv('${ing.id}','${item.nombre.replace(/'/g,"\\'")}',${item.cantidad},'${item.unidad}',${item.precioUnitario||0},'${(ing.proveedor||"").replace(/'/g,"\\'")}','${ing.bodega||BODEGAS_INV[0]}')">+ Registrar</button>
           </div>`)).join("");
     } else { panel.style.display = "none"; }
   }
@@ -6744,9 +6845,9 @@ function renderIngresosInv() {
 }
 
 // ── Modal Nuevo Producto desde Ingreso pendiente ───────────
-let npIngresoInvId = null, npNombreInv = null;
-window.abrirNuevoDesdeIngresoInv = function(ingresoId, nombre, cantidad, unidad, precio, proveedor) {
-  npIngresoInvId = ingresoId; npNombreInv = nombre;
+let npIngresoInvId = null, npNombreInv = null, npBodegaInv = null;
+window.abrirNuevoDesdeIngresoInv = function(ingresoId, nombre, cantidad, unidad, precio, proveedor, bodega) {
+  npIngresoInvId = ingresoId; npNombreInv = nombre; npBodegaInv = bodega || BODEGAS_INV[0];
   const enCatalogo = CATALOGO_INV.find(c => c.nombre.toLowerCase() === nombre.toLowerCase());
   document.getElementById("np-inv-nombre").value = nombre;
   document.getElementById("np-inv-categoria").value = enCatalogo?.categoria || "Herbicida";
@@ -6754,6 +6855,7 @@ window.abrirNuevoDesdeIngresoInv = function(ingresoId, nombre, cantidad, unidad,
   document.getElementById("np-inv-fabricante").value = enCatalogo?.fabricante || "";
   document.getElementById("np-inv-proveedor").value = proveedor || "";
   document.getElementById("np-inv-cultivos").value = "";
+  document.getElementById("np-inv-bodega-label").textContent = `Ingresará con ${cantidad} ${unidad} en ${npBodegaInv}`;
   document.getElementById("np-inv-stock").value = cantidad;
   document.getElementById("np-inv-unidad").value = unidad;
   document.getElementById("np-inv-minimo").value = 0;
@@ -6772,7 +6874,7 @@ window.guardarNuevoDesdeIngresoInv = async function() {
     fabricante: document.getElementById("np-inv-fabricante").value.trim(),
     proveedor: document.getElementById("np-inv-proveedor").value.trim(),
     cultivosCompatibles: document.getElementById("np-inv-cultivos").value.trim(),
-    stock: Number(document.getElementById("np-inv-stock").value) || 0,
+    stock: { [BODEGAS_INV[0]]: 0, [BODEGAS_INV[1]]: 0, [npBodegaInv]: Number(document.getElementById("np-inv-stock").value) || 0 },
     unidad: document.getElementById("np-inv-unidad").value,
     stockMinimo: Number(document.getElementById("np-inv-minimo").value) || 0,
     precio: Number(document.getElementById("np-inv-precio").value) || 0,
@@ -7775,6 +7877,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
           <input type="text" id="inv-input-busqueda" placeholder="Buscar por nombre o ingrediente activo..." oninput="onBusquedaInv()" style="flex:1;min-width:200px">
           <button class="btn btn-secondary" id="inv-btn-vista" onclick="toggleVistaInv()">🔬 Agrupar por ingrediente activo</button>
+          <button class="btn btn-secondary" style="width:auto" onclick="abrirTraspasoInv()">🔁 Traspaso entre bodegas</button>
           <button class="btn btn-verde" style="width:auto" onclick="abrirNuevoProductoInv()">+ Nuevo producto</button>
         </div>
         <div class="centros-selector" id="inv-chips-cat-wrap">
@@ -7788,7 +7891,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         </div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Producto</th><th>Categoría</th><th>Ingrediente activo</th><th>Stock</th><th>Documentos</th><th>Estado</th><th></th></tr></thead>
+            <thead><tr><th>Producto</th><th>Categoría</th><th>Ingrediente activo</th><th>Bodega Cultivos</th><th>Bodega Frutales</th><th>Documentos</th><th></th></tr></thead>
             <tbody id="inv-tabla-body"><tr><td colspan="7" class="empty">Cargando...</td></tr></tbody>
           </table>
         </div>
@@ -7799,6 +7902,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       <div id="inv-panel-pendientes" style="display:none;margin-bottom:16px"></div>
       <div class="panel">
         <div class="panel-title">📥 Nuevo ingreso de bodega</div>
+        <div class="field"><label>¿A qué bodega llega?</label><div class="select-wrapper"><select id="inv-ingreso-bodega"><option>Bodega Cultivos</option><option>Bodega Frutales</option></select></div></div>
         <div class="grid-2">
           <div class="field"><label>Proveedor / Razón social</label><input type="text" id="inv-ingreso-proveedor" placeholder="Nombre del proveedor"></div>
           <div class="field"><label>N° documento</label><input type="text" id="inv-ingreso-nrodoc" placeholder="Factura / guía"></div>
@@ -7877,6 +7981,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
 <div class="modal-overlay" id="modal-inv-ajuste">
   <div class="modal-box">
     <div class="modal-title">Ajustar stock · <span id="inv-ajuste-nombre"></span></div>
+    <div class="field"><label>Bodega</label><div class="select-wrapper"><select id="modal-inv-ajuste-bodega-sel" onchange="onAjusteBodegaInvChange()"></select></div></div>
     <div class="hint" id="inv-ajuste-stock-actual" style="margin-bottom:14px"></div>
     <div class="field">
       <label>Tipo de movimiento</label>
@@ -7911,9 +8016,10 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     <div class="grid-2">
       <div class="field"><label>Proveedor local</label><input type="text" id="prod-inv-proveedor"></div>
       <div class="field"><label>Precio unit. $</label><input type="number" id="prod-inv-precio"></div>
-      <div class="field"><label>Stock actual</label><input type="number" id="prod-inv-stock"></div>
+      <div class="field"><label>Stock en Bodega Cultivos</label><input type="number" id="prod-inv-stock-b0"></div>
+      <div class="field"><label>Stock en Bodega Frutales</label><input type="number" id="prod-inv-stock-b1"></div>
       <div class="field"><label>Unidad</label><div class="select-wrapper"><select id="prod-inv-unidad"><option>L</option><option>kg</option><option>g</option><option>mL</option><option>t</option></select></div></div>
-      <div class="field"><label>Stock mínimo</label><input type="number" id="prod-inv-minimo"></div>
+      <div class="field"><label>Stock mínimo (por bodega)</label><input type="number" id="prod-inv-minimo"></div>
     </div>
     <div class="field"><label>🏷 Etiqueta (URL)</label><input type="text" id="prod-inv-etiqueta" placeholder="https://..."></div>
     <div class="field"><label>🛡 Hoja de seguridad (URL)</label><input type="text" id="prod-inv-hoja" placeholder="https://..."></div>
@@ -7947,6 +8053,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     </div>
     <div class="field"><label>Ingrediente activo</label><input type="text" id="np-inv-ingrediente"></div>
     <div class="field"><label>Cultivos compatibles</label><input type="text" id="np-inv-cultivos"></div>
+    <div class="hint" id="np-inv-bodega-label" style="margin-bottom:10px"></div>
     <div class="grid-2">
       <div class="field"><label>Proveedor</label><input type="text" id="np-inv-proveedor"></div>
       <div class="field"><label>Precio unit. $</label><input type="number" id="np-inv-precio"></div>
@@ -7959,6 +8066,24 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     <div class="modal-actions">
       <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="cerrarModalInv('modal-inv-nuevo-desde-ingreso')">Cancelar</button>
       <button class="btn btn-verde" style="flex:2" onclick="guardarNuevoDesdeIngresoInv()">Agregar al inventario</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL TRASPASO ENTRE BODEGAS -->
+<div class="modal-overlay" id="modal-inv-traspaso">
+  <div class="modal-box">
+    <div class="modal-title">🔁 Traspaso entre bodegas</div>
+    <div class="field"><label>Producto</label><div class="select-wrapper"><select id="inv-traspaso-producto" onchange="onProductoTraspasoInvChange()"></select></div></div>
+    <div class="hint" id="inv-traspaso-stock-info" style="margin-bottom:14px"></div>
+    <div class="grid-2">
+      <div class="field"><label>Desde</label><div class="select-wrapper"><select id="inv-traspaso-origen"></select></div></div>
+      <div class="field"><label>Hacia</label><div class="select-wrapper"><select id="inv-traspaso-destino"></select></div></div>
+    </div>
+    <div class="field"><label>Cantidad</label><input type="number" id="inv-traspaso-cantidad" min="0"></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="cerrarModalInv('modal-inv-traspaso')">Cancelar</button>
+      <button class="btn btn-verde" style="flex:2" onclick="confirmarTraspasoInv()">Confirmar traspaso</button>
     </div>
   </div>
 </div>
