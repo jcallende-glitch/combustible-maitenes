@@ -1144,6 +1144,24 @@ async function loadConfig() {
 }
 async function saveConfig() { await setDoc(doc(db, 'config', 'datos'), config); }
 
+// Guarda cambios en la lista de potreros (incluido el perímetro/mapa) leyendo
+// primero la versión más reciente desde Firestore, en vez de partir del
+// `config` que quedó cargado en memoria al abrir la app. `config` solo se
+// carga una vez por sesión: si alguien más (u otra pestaña/dispositivo)
+// guardó algo mientras tanto, un saveConfig() normal con el objeto viejo
+// sobreescribe TODO el documento y borra esos cambios — por ejemplo, un
+// perímetro recién caminado o dibujado. mutarFn recibe la lista de potreros
+// más actual y debe devolver la lista ya modificada.
+async function guardarPotrerosConfig(mutarFn) {
+  const snap = await getDoc(doc(db, 'config', 'datos'));
+  const potrerosRemotos = snap.exists() ? (snap.data().potreros || []) : [];
+  const actualizado = mutarFn(potrerosRemotos);
+  await updateDoc(doc(db, 'config', 'datos'), { potreros: actualizado });
+  potrerosConfig = actualizado;
+  config.potreros = actualizado;
+  return actualizado;
+}
+
 async function getPines() {
   const snap = await getDoc(doc(db, 'config', 'pines'));
   if (snap.exists()) return snap.data();
@@ -1349,6 +1367,8 @@ window.logout = function() {
   if (unsubIngresosInv) { unsubIngresosInv(); unsubIngresosInv = null; }
   productosInvSubscrito = false;
   inventarioInicializado = false;
+  laboresCampoSubscrito = false;
+  camposLaborPotrerosSel = [];
   solicitudPendienteId = null;
   document.getElementById('panel-secciones').style.display = 'none';
   document.getElementById('tabs-bar').style.display = 'flex';
@@ -3881,62 +3901,74 @@ const TIPOS_LABOR_CAMPO = [
   { id: 'otro', label: '📝 Otro' }
 ];
 
-let campoPotreroActual = null;
 let camposLaborPotrerosSel = [];
 let campoLaborPotrerosDetalle = {}; // { [nombrePotrero]: { modo: 'completo'|'parcial', hectareas: number|null } }
 let campoTipoLaborSeleccionado = null;
-let laboresCampoRegistros = [];
+let laboresCampoRegistros = []; // subconjunto filtrado por los potreros elegidos ahora
+let laboresCampoTodos = []; // todas las labores, en vivo
 let unsubLaboresCampo = null;
+let laboresCampoSubscrito = false;
+let campoModoSeleccion = 'nombre'; // 'nombre' | 'mapa' | 'ambos' — cómo elegir potreros
 
+// El campo es una sola unidad: se elige uno o más potreros trabajados (por
+// nombre, en el mapa, o ambos) y todo lo demás (estado, historial, formulario
+// de labor) se basa en ese conjunto elegido.
 async function initCampo() {
   suscribirProductosInv(); // productos de Inventario, usados en el selector de producto de Fumigación
-  if (!campoPotreroActual && potrerosConfig.length) campoPotreroActual = potrerosConfig[0].nombre;
-  camposLaborPotrerosSel = campoPotreroActual ? [campoPotreroActual] : [];
-  renderSelectorPotrero();
+  suscribirLaboresCampo();
+  if (!camposLaborPotrerosSel.length && potrerosConfig.length) camposLaborPotrerosSel = [potrerosConfig[0].nombre];
   campoTipoLaborSeleccionado = null;
   document.getElementById('campo-labor-campos').innerHTML = '';
-  document.getElementById('campo-labor-form-wrap').style.display = campoPotreroActual ? 'block' : 'none';
   await cargarCultivosActualesPotreros();
-  renderMapaPotreros('campo-mapa', true);
-  if (campoPotreroActual) {
+  renderSelectorModoCampo();
+  renderCamposLaborPotrerosSelector();
+  document.getElementById('campo-labor-form-wrap').style.display = camposLaborPotrerosSel.length ? 'block' : 'none';
+  if (potrerosConfig.length) {
     const { fecha } = getNow();
     document.getElementById('campo-labor-fecha').value = fecha;
     renderTipoLaborSelector();
-    renderCamposLaborPotrerosSelector();
-    suscribirLaboresPotrero(campoPotreroActual);
+    recalcularLaboresCampoSeleccion();
   } else {
     document.getElementById('campo-estado-potrero').innerHTML = '<div class="empty"><div class="empty-icon">🌾</div>Todavía no hay potreros configurados. Pídele al admin que los agregue en "Config. Potreros".</div>';
     document.getElementById('campo-historial-container').innerHTML = '';
   }
 }
 
-function renderSelectorPotrero() {
-  const wrap = document.getElementById('campo-potrero-selector');
-  if (!wrap) return;
-  wrap.innerHTML = potrerosConfig.map(p => `<div class="cultivo-chip ${campoPotreroActual===p.nombre?'sel':''}" onclick='seleccionarPotrero(${JSON.stringify(p.nombre)})'>${p.nombre}</div>`).join('');
-}
-
-window.seleccionarPotrero = function(nombre) {
-  campoPotreroActual = nombre;
-  camposLaborPotrerosSel = [nombre];
-  campoTipoLaborSeleccionado = null;
-  renderSelectorPotrero();
-  renderTipoLaborSelector();
-  renderCamposLaborPotrerosSelector();
-  document.getElementById('campo-labor-campos').innerHTML = '';
-  document.getElementById('campo-labor-form-wrap').style.display = 'block';
-  suscribirLaboresPotrero(nombre);
-}
-
-function suscribirLaboresPotrero(nombre) {
-  if (unsubLaboresCampo) { unsubLaboresCampo(); unsubLaboresCampo = null; }
-  const q = query(collection(db, 'labores_campo'), where('potrero','==',nombre), orderBy('ts','desc'));
-  unsubLaboresCampo = onSnapshot(q, snap => {
-    laboresCampoRegistros = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    renderEstadoPotrero(nombre);
-    populateFiltroAnioCampo();
-    renderHistorialLabores();
+// Subscripción única (por sesión) a TODAS las labores de campo — se filtra
+// por los potreros elegidos en el cliente, en vez de suscribirse de nuevo
+// cada vez que cambia la selección.
+function suscribirLaboresCampo() {
+  if (laboresCampoSubscrito) return;
+  laboresCampoSubscrito = true;
+  unsubLaboresCampo = onSnapshot(query(collection(db, 'labores_campo'), orderBy('ts','desc')), snap => {
+    laboresCampoTodos = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    recalcularLaboresCampoSeleccion();
   });
+}
+
+function recalcularLaboresCampoSeleccion() {
+  laboresCampoRegistros = laboresCampoTodos.filter(l => camposLaborPotrerosSel.includes(l.potrero));
+  renderEstadoPotreros();
+  populateFiltroAnioCampo();
+  renderHistorialLabores();
+}
+
+function renderSelectorModoCampo() {
+  const wrap = document.getElementById('campo-modo-selector');
+  if (!wrap) return;
+  const modos = [['nombre','🔤 Por nombre'], ['mapa','🗺️ Por mapa'], ['ambos','🔤+🗺️ Ambos']];
+  wrap.innerHTML = modos.map(([id,label]) => `<button type="button" class="btn ${campoModoSeleccion===id?'btn-verde':'btn-secondary'}" style="flex:1;justify-content:center;padding:8px 6px;font-size:12px" onclick="setCampoModoSeleccion('${id}')">${label}</button>`).join('');
+  const wrapNombre = document.getElementById('campo-selector-nombre-wrap');
+  const wrapMapa = document.getElementById('campo-selector-mapa-wrap');
+  if (wrapNombre) wrapNombre.style.display = (campoModoSeleccion !== 'mapa') ? 'block' : 'none';
+  if (wrapMapa) {
+    wrapMapa.style.display = (campoModoSeleccion !== 'nombre') ? 'block' : 'none';
+    if (wrapMapa.style.display === 'block') renderMapaPotreros('campo-mapa', false, false, true);
+  }
+}
+window.setCampoModoSeleccion = function(modo) {
+  campoModoSeleccion = modo;
+  renderSelectorModoCampo();
 }
 
 // Formatea el texto de un registro de siembra (o asignación de cultivo),
@@ -3949,25 +3981,32 @@ function formatoSiembra(s) {
   return `${s.cultivo}${variedadStr} <span style="color:#9CA3AF">(sembrado ${s.fecha})</span>`;
 }
 
-function renderEstadoPotrero(nombre) {
+// Muestra un resumen por cada potrero elegido ahora (pueden ser varios a la vez).
+function renderEstadoPotreros() {
   const cont = document.getElementById('campo-estado-potrero');
   if (!cont) return;
-  const p = potrerosConfig.find(x => x.nombre === nombre);
-  if (!p) { cont.innerHTML = ''; return; }
-  let cultivoActual;
-  if (p.tipo === 'frutal') {
-    cultivoActual = p.cultivoPermanente || '—';
-  } else {
-    const siembras = laboresCampoRegistros.filter(l => l.tipo === 'siembra').sort((a,b) => b.ts - a.ts);
-    cultivoActual = siembras.length ? formatoSiembra(siembras[0]) : 'Sin cultivo asignado';
+  if (!camposLaborPotrerosSel.length) {
+    cont.innerHTML = '<div class="empty" style="padding:10px"><div class="empty-icon">🌱</div>Elegí uno o más potreros arriba.</div>';
+    return;
   }
-  cont.innerHTML = `
-    <div class="anterior-box">
+  cont.innerHTML = camposLaborPotrerosSel.map(nombre => {
+    const p = potrerosConfig.find(x => x.nombre === nombre);
+    if (!p) return '';
+    let cultivoActual;
+    if (p.tipo === 'frutal') {
+      cultivoActual = p.cultivoPermanente || '—';
+    } else {
+      const siembras = laboresCampoRegistros.filter(l => l.potrero === nombre && l.tipo === 'siembra').sort((a,b) => b.ts - a.ts);
+      cultivoActual = siembras.length ? formatoSiembra(siembras[0]) : 'Sin cultivo asignado';
+    }
+    return `
+    <div class="anterior-box" style="margin-bottom:8px">
       <div class="anterior-row"><span>Potrero:</span><strong>${nombre}</strong></div>
       <div class="anterior-row"><span>Hectáreas:</span><strong>${p.hectareas != null ? p.hectareas + ' ha' : '—'}</strong></div>
       <div class="anterior-row"><span>Tipo:</span><strong>${p.tipo === 'frutal' ? '🌳 Frutal' : '🌾 Anual'}</strong></div>
       <div class="anterior-row"><span>${p.tipo === 'frutal' ? 'Cultivo permanente' : 'Cultivo actual'}:</span><strong>${cultivoActual}</strong></div>
     </div>`;
+  }).join('');
 }
 
 function cultivoDeReferenciaPotrero(nombrePotrero) {
@@ -3981,9 +4020,13 @@ function cultivoDeReferenciaPotrero(nombrePotrero) {
 function renderTipoLaborSelector() {
   const wrap = document.getElementById('campo-tipo-labor-selector');
   if (!wrap) return;
-  const p = potrerosConfig.find(x => x.nombre === campoPotreroActual);
-  const esAnual = p && p.tipo !== 'frutal';
-  const cultivoRef = cultivoDeReferenciaPotrero(campoPotreroActual);
+  // Si hay potreros anuales entre los elegidos (o todavía no se elige ninguno),
+  // se muestra "Siembra" como opción — al elegirla se filtran los frutales.
+  const esAnual = !camposLaborPotrerosSel.length || camposLaborPotrerosSel.some(nombre => {
+    const p = potrerosConfig.find(x => x.nombre === nombre);
+    return p && p.tipo !== 'frutal';
+  });
+  const cultivoRef = cultivoDeReferenciaPotrero(camposLaborPotrerosSel[0]);
 
   const tiposFijos = TIPOS_LABOR_CAMPO.filter(t => !t.oculto && (!t.soloAnual || esAnual) && !tiposLaborCampoDeshabilitados.includes(t.id))
     .map(t => ({ id: t.id, label: t.label }));
@@ -4004,10 +4047,9 @@ window.seleccionarTipoLaborCampo = function(tipo) {
       const p = potrerosConfig.find(x => x.nombre === nombre);
       return p && p.tipo !== 'frutal';
     });
-    if (!camposLaborPotrerosSel.length && campoPotreroActual) {
-      const pActual = potrerosConfig.find(x => x.nombre === campoPotreroActual);
-      if (pActual && pActual.tipo !== 'frutal') camposLaborPotrerosSel = [campoPotreroActual];
-    }
+    restylarMapaPotrerosSeleccion();
+    actualizarContadorMapaFull();
+    recalcularLaboresCampoSeleccion();
   }
   renderTipoLaborSelector();
   renderCamposLaborPotrerosSelector();
@@ -4080,6 +4122,37 @@ window.toggleCampoLaborPotrero = function(nombre) {
   const i = camposLaborPotrerosSel.indexOf(nombre);
   if (i >= 0) camposLaborPotrerosSel.splice(i, 1); else camposLaborPotrerosSel.push(nombre);
   renderCamposLaborPotrerosSelector();
+  actualizarSeleccionPotrerosCampo();
+}
+
+// Se llama cada vez que cambia el conjunto de potreros elegidos (por nombre
+// o por mapa) para mantener todo lo demás sincronizado con esa selección.
+function actualizarSeleccionPotrerosCampo() {
+  const wrapForm = document.getElementById('campo-labor-form-wrap');
+  if (wrapForm) wrapForm.style.display = camposLaborPotrerosSel.length ? 'block' : 'none';
+  renderTipoLaborSelector();
+  recalcularLaboresCampoSeleccion();
+  restylarMapaPotrerosSeleccion();
+  actualizarContadorMapaFull();
+}
+
+// ─── Mapa en pantalla completa para elegir potreros tocándolos ─────
+window.abrirMapaCampoFull = function() {
+  document.getElementById('modal-campo-mapa-full').style.display = 'flex';
+  renderMapaPotreros('campo-mapa-full', false, false, true);
+  actualizarContadorMapaFull();
+}
+window.cerrarMapaCampoFull = function() {
+  document.getElementById('modal-campo-mapa-full').style.display = 'none';
+  if (mapasLeafletInstancias['campo-mapa-full']) {
+    mapasLeafletInstancias['campo-mapa-full'].remove();
+    delete mapasLeafletInstancias['campo-mapa-full'];
+  }
+  delete mapaPotrerosPoligonos['campo-mapa-full'];
+}
+function actualizarContadorMapaFull() {
+  const el = document.getElementById('campo-mapa-full-count');
+  if (el) el.textContent = camposLaborPotrerosSel.length;
 }
 
 let campoSiembraCultivoSel = null;
@@ -4399,9 +4472,9 @@ window.registrarLaborCampo = async function() {
     await batch.commit();
     document.getElementById('campo-labor-obs').value = '';
     campoTipoLaborSeleccionado = null;
-    camposLaborPotrerosSel = campoPotreroActual ? [campoPotreroActual] : [];
+    // Se mantienen los potreros elegidos: es común registrar varias labores
+    // seguidas para el mismo grupo de potreros (ej. fertilización y luego fumigación).
     renderTipoLaborSelector();
-    renderCamposLaborPotrerosSelector();
     document.getElementById('campo-labor-campos').innerHTML = '';
     toast(camposLaborPotrerosSel.length > 1 ? `✓ Labor registrada en ${camposLaborPotrerosSel.length} potreros` : '✓ Labor registrada', true);
   } catch(e) { toast('Error: ' + e.message, false); }
@@ -4597,13 +4670,14 @@ window.asignarFormaAPotrero = function(idx, nombrePotrero) {
 window.guardarAsignacionesKML = async function() {
   const asignadas = shapesImportadasKML.filter(f => f.potreroAsignado);
   if (!asignadas.length) { toast('Asigná al menos una forma a un potrero', false); return; }
-  asignadas.forEach(f => {
-    const p = potrerosConfig.find(x => x.nombre === f.potreroAsignado);
-    if (p) p.poligono = f.coords;
-  });
-  config.potreros = potrerosConfig;
   try {
-    await saveConfig();
+    await guardarPotrerosConfig(remotos => {
+      asignadas.forEach(f => {
+        const p = remotos.find(x => x.nombre === f.potreroAsignado);
+        if (p) p.poligono = f.coords;
+      });
+      return remotos;
+    });
     toast(`✓ ${asignadas.length} potrero(s) con mapa asignado`, true);
     shapesImportadasKML = [];
     renderPanelImportacionKML();
@@ -4677,12 +4751,13 @@ async function finalizarCaminataPerimetro() {
     return;
   }
   const nombrePotrero = document.getElementById('dibujo-potrero-sel')?.value || '';
-  const p = potrerosConfig.find(x => x.nombre === nombrePotrero);
-  if (!p) return;
-  p.poligono = caminataPuntos;
-  config.potreros = potrerosConfig;
+  if (!potrerosConfig.find(x => x.nombre === nombrePotrero)) return;
   try {
-    await saveConfig();
+    await guardarPotrerosConfig(remotos => {
+      const p = remotos.find(x => x.nombre === nombrePotrero);
+      if (p) p.poligono = caminataPuntos;
+      return remotos;
+    });
     toast(`✓ Mapa de "${nombrePotrero}" guardado (${caminataPuntos.length} puntos caminados)`, true);
     caminataPuntos = [];
     caminataPolyline = null;
@@ -4701,7 +4776,29 @@ function actualizarUiCaminata() {
   if (estado) estado.textContent = caminataActiva ? `Caminando... ${caminataPuntos.length} punto(s) marcados` : '';
 }
 
-function renderMapaPotreros(containerId, clickable, drawable) {
+// Referencias a los polígonos dibujados por cada contenedor de mapa, para
+// poder resaltar la selección sin tener que reconstruir todo el mapa
+// (lo que haría perder el zoom/paneo del operador).
+let mapaPotrerosPoligonos = {}; // { containerId: { nombrePotrero: { layer, color } } }
+function estiloPoligonoPotrero(color, seleccionado) {
+  return seleccionado
+    ? { color: '#FFD400', fillColor: color, fillOpacity: 0.75, weight: 4 }
+    : { color, fillColor: color, fillOpacity: 0.45, weight: 2 };
+}
+// Vuelve a pintar (sin recrear) los polígonos ya dibujados en cualquier mapa
+// abierto, para reflejar la selección actual de camposLaborPotrerosSel.
+function restylarMapaPotrerosSeleccion() {
+  Object.values(mapaPotrerosPoligonos).forEach(porNombre => {
+    Object.entries(porNombre).forEach(([nombre, info]) => {
+      info.layer.setStyle(estiloPoligonoPotrero(info.color, camposLaborPotrerosSel.includes(nombre)));
+    });
+  });
+}
+window.toggleCampoLaborPotreroDesdeMapa = function(nombre) {
+  toggleCampoLaborPotrero(nombre);
+}
+
+function renderMapaPotreros(containerId, clickable, drawable, multiSelect) {
   const el = document.getElementById(containerId);
   if (!el || typeof L === 'undefined') return;
   const conPoligono = potrerosConfig.filter(p => Array.isArray(p.poligono) && p.poligono.length >= 3);
@@ -4709,6 +4806,7 @@ function renderMapaPotreros(containerId, clickable, drawable) {
     mapasLeafletInstancias[containerId].remove();
     delete mapasLeafletInstancias[containerId];
   }
+  mapaPotrerosPoligonos[containerId] = {};
   if (!conPoligono.length && !drawable) {
     el.innerHTML = '<div style="padding:16px;text-align:center;color:#9CA3AF;font-size:13px">Todavía no hay potreros con mapa dibujado. Pídele al admin que dibuje los potreros en "Config. Potreros".</div>';
     return;
@@ -4723,9 +4821,11 @@ function renderMapaPotreros(containerId, clickable, drawable) {
   conPoligono.forEach(p => {
     const cultivo = p.tipo === 'frutal' ? p.cultivoPermanente : (cultivoActualPorPotrero[p.nombre] ? cultivoActualPorPotrero[p.nombre].cultivo : null);
     const color = colorParaCultivo(cultivo);
-    const poly = L.polygon(p.poligono, { color, fillColor: color, fillOpacity: 0.45, weight: 2 }).addTo(map);
+    const seleccionado = multiSelect && camposLaborPotrerosSel.includes(p.nombre);
+    const poly = L.polygon(p.poligono, estiloPoligonoPotrero(color, seleccionado)).addTo(map);
     poly.bindTooltip(`${p.nombre}${cultivo ? ' — ' + cultivo : ' — sin definir'}`, { sticky: true });
-    if (clickable) poly.on('click', () => seleccionarPotrero(p.nombre));
+    mapaPotrerosPoligonos[containerId][p.nombre] = { layer: poly, color };
+    if (multiSelect) poly.on('click', () => window.toggleCampoLaborPotreroDesdeMapa(p.nombre));
     p.poligono.forEach(c => bounds.push(c));
   });
   if (bounds.length) {
@@ -4751,12 +4851,13 @@ function renderMapaPotreros(containerId, clickable, drawable) {
       const nombrePotrero = document.getElementById('dibujo-potrero-sel')?.value || '';
       if (!nombrePotrero) { toast('Elegí primero a qué potrero corresponde este dibujo', false); return; }
       const latlngs = e.layer.getLatLngs()[0].map(ll => [ll.lat, ll.lng]);
-      const p = potrerosConfig.find(x => x.nombre === nombrePotrero);
-      if (!p) return;
-      p.poligono = latlngs;
-      config.potreros = potrerosConfig;
+      if (!potrerosConfig.find(x => x.nombre === nombrePotrero)) return;
       try {
-        await saveConfig();
+        await guardarPotrerosConfig(remotos => {
+          const p = remotos.find(x => x.nombre === nombrePotrero);
+          if (p) p.poligono = latlngs;
+          return remotos;
+        });
         toast(`✓ Mapa de "${nombrePotrero}" guardado`, true);
         renderListaPotreros();
         renderMapaCampoPreview();
@@ -5071,12 +5172,15 @@ window.guardarCultivoPotrero = async function(idx) {
 window.moverPotrero = async function(idx, direccion) {
   const nuevoIdx = idx + direccion;
   if (nuevoIdx < 0 || nuevoIdx >= potrerosConfig.length) return;
-  const tmp = potrerosConfig[idx];
-  potrerosConfig[idx] = potrerosConfig[nuevoIdx];
-  potrerosConfig[nuevoIdx] = tmp;
-  config.potreros = potrerosConfig;
+  const nombreA = potrerosConfig[idx].nombre;
+  const nombreB = potrerosConfig[nuevoIdx].nombre;
   try {
-    await saveConfig();
+    await guardarPotrerosConfig(remotos => {
+      const iA = remotos.findIndex(p => p.nombre === nombreA);
+      const iB = remotos.findIndex(p => p.nombre === nombreB);
+      if (iA >= 0 && iB >= 0) { const tmp = remotos[iA]; remotos[iA] = remotos[iB]; remotos[iB] = tmp; }
+      return remotos;
+    });
     renderListaPotreros();
     renderSelectorPotrero();
   } catch(e) { toast('Error: ' + e.message, false); }
@@ -5091,15 +5195,17 @@ window.agregarPotrero = async function() {
   if (!nombre) { toast('Ingresá el nombre del potrero', false); return; }
   if (potrerosConfig.some(p => p.nombre.toLowerCase() === nombre.toLowerCase())) { toast('Ya existe un potrero con ese nombre', false); return; }
   if (tipo === 'frutal' && !cultivoPermanente) { toast('Ingresá el cultivo permanente del frutal', false); return; }
-  potrerosConfig.push({
-    nombre,
-    hectareas: hectareasRaw !== '' ? parseFloat(hectareasRaw) : null,
-    tipo,
-    cultivoPermanente: tipo === 'frutal' ? cultivoPermanente : null
-  });
-  config.potreros = potrerosConfig;
   try {
-    await saveConfig();
+    await guardarPotrerosConfig(remotos => {
+      if (remotos.some(p => p.nombre.toLowerCase() === nombre.toLowerCase())) { throw new Error('Ya existe un potrero con ese nombre'); }
+      remotos.push({
+        nombre,
+        hectareas: hectareasRaw !== '' ? parseFloat(hectareasRaw) : null,
+        tipo,
+        cultivoPermanente: tipo === 'frutal' ? cultivoPermanente : null
+      });
+      return remotos;
+    });
     inpNombre.value = ''; document.getElementById('nuevo-potrero-hectareas').value = ''; document.getElementById('nuevo-potrero-cultivo-permanente').value = '';
     renderListaPotreros();
     toast('✓ Potrero agregado', true);
@@ -5108,10 +5214,9 @@ window.agregarPotrero = async function() {
 
 window.eliminarPotrero = async function(idx) {
   if (!confirm('¿Eliminar este potrero? (las labores históricas registradas no se borran)')) return;
-  potrerosConfig.splice(idx, 1);
-  config.potreros = potrerosConfig;
+  const nombre = potrerosConfig[idx].nombre;
   try {
-    await saveConfig();
+    await guardarPotrerosConfig(remotos => remotos.filter(p => p.nombre !== nombre));
     renderListaPotreros();
   } catch(e) { toast('Error: ' + e.message, false); }
 }
@@ -8088,19 +8193,24 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     <!-- CUADERNO DE CAMPO -->
     <div id="tc-campo" class="tab-content">
       <div class="panel">
-        <div class="panel-title">🌱 Potrero</div>
-        <div id="campo-mapa" style="height:280px;border-radius:8px;overflow:hidden;margin-bottom:14px;background:var(--fondo)"></div>
-        <div class="centros-selector" id="campo-potrero-selector"></div>
-        <div id="campo-estado-potrero"></div>
+        <div class="panel-title">🌱 Potreros trabajados</div>
+        <div class="hint" style="margin-bottom:10px">El campo es una sola unidad: elige uno o más potreros — por nombre, en el mapa, o ambos — y todo lo de abajo se basa en esa elección.</div>
+        <div style="display:flex;gap:6px;margin-bottom:12px" id="campo-modo-selector"></div>
+        <div id="campo-selector-nombre-wrap">
+          <div class="centros-selector" id="campo-labor-potreros-selector"></div>
+          <div id="campo-labor-potreros-lista" style="margin-top:8px"></div>
+        </div>
+        <div id="campo-selector-mapa-wrap" style="display:none">
+          <div id="campo-mapa" style="height:280px;border-radius:8px;overflow:hidden;margin:10px 0;background:var(--fondo)"></div>
+          <button type="button" class="btn btn-secondary btn-full" onclick="abrirMapaCampoFull()">🗺️ Ver mapa en pantalla completa</button>
+        </div>
+        <div id="campo-estado-potrero" style="margin-top:12px"></div>
       </div>
 
       <div class="panel" id="campo-labor-form-wrap" style="display:none">
         <div class="panel-title">Registrar labor</div>
         <div class="cultivos-label">Tipo de labor</div>
         <div class="centros-selector" id="campo-tipo-labor-selector"></div>
-        <div class="cultivos-label" style="margin-top:10px">Potreros a los que aplica (elegí uno o más)</div>
-        <div class="centros-selector" id="campo-labor-potreros-selector"></div>
-        <div id="campo-labor-potreros-lista" style="margin-bottom:10px"></div>
         <div id="campo-labor-campos"></div>
         <div class="field" style="margin-top:8px"><label>Fecha</label><input type="date" id="campo-labor-fecha"></div>
         <div class="field"><label>Observación (opcional)</label><input type="text" id="campo-labor-obs" placeholder="Detalle adicional..."></div>
@@ -8108,13 +8218,24 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       </div>
 
       <div class="panel">
-        <div class="panel-title">📋 Historial del potrero</div>
+        <div class="panel-title">📋 Historial</div>
         <div class="filtros" style="margin-bottom:12px">
           <div class="select-wrapper"><select id="campo-filtro-anio" onchange="renderHistorialLabores()"></select></div>
           <div class="cultivo-chip sel" id="campo-orden-asc" onclick="setCampoHistorialOrden('asc')">↑ Más antiguo primero</div>
           <div class="cultivo-chip" id="campo-orden-desc" onclick="setCampoHistorialOrden('desc')">↓ Más reciente primero</div>
         </div>
         <div id="campo-historial-container"></div>
+      </div>
+    </div>
+
+    <!-- MAPA EN PANTALLA COMPLETA PARA ELEGIR POTREROS (Cuaderno de Campo) -->
+    <div class="modal-overlay" id="modal-campo-mapa-full" style="padding:0">
+      <div class="modal-box" style="max-width:100%;width:100%;height:100%;border-radius:0;display:flex;flex-direction:column;padding:0">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid var(--borde);gap:10px">
+          <strong style="font-size:14px">Toca los potreros trabajados</strong>
+          <button class="btn btn-verde" style="width:auto" onclick="cerrarMapaCampoFull()">✓ Listo (<span id="campo-mapa-full-count">0</span>)</button>
+        </div>
+        <div id="campo-mapa-full" style="flex:1;min-height:0"></div>
       </div>
     </div>
 
