@@ -1153,13 +1153,19 @@ async function getPines() {
   return pines;
 }
 
+// Personas que entran con su propio PIN (no el del admin) pero operan con
+// las mismas facultades que el admin — así sus acciones quedan registradas
+// con su propio nombre en vez de "JC Allende". Por ahora: Camila Faundez.
+const ADMINS_EQUIVALENTES = ['Camila Faundez'];
+
 async function verificarPin(pin) {
   if (pin === ADMIN_PIN) return { ok: true, admin: true, supervisor: false, subadmin: false, campo: false, nombre: ADMIN_NOMBRE };
   const pines = await getPines();
   const operador = Object.entries(pines).find(([, p]) => p === pin);
   if (operador) {
-    const esSupervisor = operador[0] === SUPERVISOR_NOMBRE;
-    return { ok: true, admin: false, supervisor: esSupervisor, subadmin: false, campo: false, nombre: operador[0], pinInicial: pin === PIN_INICIAL };
+    const esAdminEquivalente = ADMINS_EQUIVALENTES.includes(operador[0]);
+    const esSupervisor = operador[0] === SUPERVISOR_NOMBRE && !esAdminEquivalente;
+    return { ok: true, admin: esAdminEquivalente, supervisor: esSupervisor, subadmin: false, campo: false, nombre: operador[0], pinInicial: pin === PIN_INICIAL };
   }
   const pinesAsis = await getPinesAsistencia();
   const subadmin = Object.entries(pinesAsis).find(([, p]) => p === pin);
@@ -1364,7 +1370,7 @@ window.guardarPin = async function() {
   if (!nuevo || nuevo.length < 4) { toast('El PIN debe tener al menos 4 dígitos', false); return; }
   if (nuevo === ADMIN_PIN) { toast('Ese PIN está reservado', false); return; }
   if (nuevo !== confirmar) { toast('Los PINs no coinciden', false); return; }
-  if (isAdmin) { toast('El admin no puede cambiar su PIN desde aquí', false); return; }
+  if (isAdmin && currentUser === ADMIN_NOMBRE) { toast('El admin no puede cambiar su PIN desde aquí', false); return; }
   if (isSubadmin) {
     const pinesAsis = await getPinesAsistencia();
     pinesAsis[currentUser] = nuevo;
@@ -6367,6 +6373,49 @@ const ALIAS_CATEGORIA_INV = {
   "acaricida": "Insecticida",
 };
 
+// Código interno (color+número) que reemplaza físicamente la etiqueta comercial
+// de algunos agroquímicos. Visibilidad restringida vía config/permisos (dbInv).
+let permisosInv = { verCodigoInterno: [] };
+let permisosInvCargados = false;
+function puedeVerCodigoInternoInv() {
+  if (currentUser === ADMIN_NOMBRE) return true;
+  return permisosInv.verCodigoInterno.includes(currentUser);
+}
+async function cargarPermisosInv() {
+  try {
+    const snap = await getDoc(doc(dbInv, "config", "permisos"));
+    permisosInv = snap.exists() ? { verCodigoInterno: snap.data().verCodigoInterno || [] } : { verCodigoInterno: [] };
+  } catch(e) { permisosInv = { verCodigoInterno: [] }; }
+  permisosInvCargados = true;
+}
+
+// ── Panel de permisos: quién puede ver el código interno (solo JC) ──────
+window.abrirPermisosCodigoInv = async function() {
+  if (currentUser !== ADMIN_NOMBRE) return;
+  if (!permisosInvCargados) await cargarPermisosInv();
+  const pines = await getPines();
+  const nombres = Object.keys(pines).filter(n => n !== ADMIN_NOMBRE).sort();
+  const cont = document.getElementById("inv-permisos-lista");
+  cont.innerHTML = nombres.map(n => `
+    <label style="display:flex;align-items:center;gap:8px;padding:8px 4px;border-bottom:1px solid var(--borde)">
+      <input type="checkbox" value="${n}" ${permisosInv.verCodigoInterno.includes(n) ? "checked" : ""}>
+      <span>${n}</span>
+    </label>`).join("") || `<div class="empty" style="padding:10px">No hay operadores registrados</div>`;
+  document.getElementById("modal-inv-permisos").style.display = "flex";
+}
+window.guardarPermisosCodigoInv = async function() {
+  const checks = document.querySelectorAll("#inv-permisos-lista input[type=checkbox]:checked");
+  const seleccionados = Array.from(checks).map(c => c.value);
+  try {
+    await setDoc(doc(dbInv, "config", "permisos"), { verCodigoInterno: seleccionados }, { merge: true });
+    permisosInv = { verCodigoInterno: seleccionados };
+    toast("✓ Permisos actualizados", true);
+    cerrarModalInv("modal-inv-permisos");
+    renderInventarioHeader();
+    renderInventarioTabla();
+  } catch(e) { toast("Error: " + e.message, false); }
+}
+
 let productosInv = [];
 let ingresosInv = [];
 let unsubProductosInv = null;
@@ -6378,8 +6427,10 @@ let inventarioInicializado = false;
 let itemsIngresoInv = [{nombre:'',cantidad:1,unidad:'L',precioUnitario:0}];
 
 function initInventario() {
+  if (!permisosInvCargados) cargarPermisosInv().then(() => { renderInventarioTabla(); renderInventarioHeader(); });
   if (inventarioInicializado) { renderInventarioTabla(); renderAlertasInv(); renderStatsInv(); renderIngresosInv(); return; }
   inventarioInicializado = true;
+  renderInventarioHeader();
   unsubProductosInv = onSnapshot(query(collection(dbInv, "productos"), orderBy("nombre")), snap => {
     productosInv = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     renderInventarioTabla();
@@ -6448,15 +6499,27 @@ window.onBusquedaInv = function() {
   renderInventarioTabla();
 }
 
+function renderInventarioHeader() {
+  const thead = document.getElementById("inv-tabla-thead");
+  if (thead) {
+    const verCod = puedeVerCodigoInternoInv();
+    thead.innerHTML = `<tr><th>Producto</th><th>Categoría</th><th>Ingrediente activo</th>${verCod ? '<th>Código interno</th>' : ''}<th>Bodega Cultivos</th><th>Bodega Frutales</th><th>Documentos</th><th></th></tr>`;
+  }
+  const btnPermisos = document.getElementById("inv-btn-permisos-cod");
+  if (btnPermisos) btnPermisos.style.display = (currentUser === ADMIN_NOMBRE) ? "" : "none";
+}
+
 function renderInventarioTabla() {
   const tbody = document.getElementById("inv-tabla-body");
   if (!tbody) return;
+  const verCod = puedeVerCodigoInternoInv();
+  const colCount = verCod ? 8 : 7;
   let data = productosInv.filter(p => {
     const catOk = filtroCategoriaInv === "Todos" || p.categoria === filtroCategoriaInv;
-    const busOk = !busquedaInv || p.nombre.toLowerCase().includes(busquedaInv) || (p.ingredienteActivo||"").toLowerCase().includes(busquedaInv);
+    const busOk = !busquedaInv || p.nombre.toLowerCase().includes(busquedaInv) || (p.ingredienteActivo||"").toLowerCase().includes(busquedaInv) || (verCod && (p.codigoInterno||"").toLowerCase().includes(busquedaInv));
     return catOk && busOk;
   });
-  if (!data.length) { tbody.innerHTML = `<tr><td colspan="7" class="empty">No se encontraron productos</td></tr>`; return; }
+  if (!data.length) { tbody.innerHTML = `<tr><td colspan="${colCount}" class="empty">No se encontraron productos</td></tr>`; return; }
 
   const celdaBodega = (p, bodega) => {
     const s = stockInv(p, bodega);
@@ -6482,6 +6545,7 @@ function renderInventarioTabla() {
       </td>
       <td><span class="badge" style="background:${cc}22;color:${cc}">${p.categoria}</span></td>
       <td style="font-size:12px">${p.ingredienteActivo || "—"}</td>
+      ${verCod ? `<td style="font-size:12px;font-weight:600">${p.codigoInterno || "—"}</td>` : ""}
       ${celdaBodega(p, BODEGAS_INV[0])}
       ${celdaBodega(p, BODEGAS_INV[1])}
       <td>
@@ -6503,7 +6567,7 @@ function renderInventarioTabla() {
   tbody.innerHTML = entradas.map(([ingrediente, prods]) => {
     const esGrupo = prods.length > 1;
     const stockTotal = prods.reduce((s,p) => s + stockTotalInv(p), 0);
-    const encabezado = `<tr style="background:var(--fondo)"><td colspan="7" style="font-weight:700;padding:10px 12px">${ingrediente}${esGrupo ? ` <span class="badge">${prods.length} productos · total ${stockTotal} ${prods[0].unidad||"L"}</span>` : ""}</td></tr>`;
+    const encabezado = `<tr style="background:var(--fondo)"><td colspan="${colCount}" style="font-weight:700;padding:10px 12px">${ingrediente}${esGrupo ? ` <span class="badge">${prods.length} productos · total ${stockTotal} ${prods[0].unidad||"L"}</span>` : ""}</td></tr>`;
     return encabezado + prods.map(p => filaProducto(p, true)).join("");
   }).join("");
 }
@@ -6640,6 +6704,8 @@ window.abrirNuevoProductoInv = function() {
   editProductoInvId = null;
   document.getElementById("modal-inv-prod-titulo").textContent = "Nuevo producto";
   limpiarFormProdInv();
+  const campoCod = document.getElementById("prod-inv-codigo-wrap");
+  if (campoCod) campoCod.style.display = puedeVerCodigoInternoInv() ? "" : "none";
   document.getElementById("modal-inv-producto").style.display = "flex";
 }
 window.abrirEditarProductoInv = function(id) {
@@ -6655,6 +6721,11 @@ window.abrirEditarProductoInv = function(id) {
   document.getElementById("prod-inv-cultivos").value = p.cultivosCompatibles || "";
   document.getElementById("prod-inv-stock-b0").value = stockInv(p, BODEGAS_INV[0]);
   document.getElementById("prod-inv-stock-b1").value = stockInv(p, BODEGAS_INV[1]);
+  const campoCod = document.getElementById("prod-inv-codigo-wrap");
+  if (campoCod) {
+    if (puedeVerCodigoInternoInv()) { campoCod.style.display = ""; document.getElementById("prod-inv-codigo").value = p.codigoInterno || ""; }
+    else { campoCod.style.display = "none"; }
+  }
   document.getElementById("prod-inv-unidad").value = p.unidad || "L";
   document.getElementById("prod-inv-minimo").value = p.stockMinimo || 0;
   document.getElementById("prod-inv-precio").value = p.precio || 0;
@@ -6670,6 +6741,8 @@ function limpiarFormProdInv() {
   document.getElementById("prod-inv-stock-b1").value = 0;
   document.getElementById("prod-inv-minimo").value = 0;
   document.getElementById("prod-inv-precio").value = 0;
+  const cod = document.getElementById("prod-inv-codigo");
+  if (cod) cod.value = "";
 }
 window.onNombreProdInvChange = function() {
   const val = document.getElementById("prod-inv-nombre").value;
@@ -6712,6 +6785,10 @@ window.guardarProductoInv = async function() {
     hojaUrl: document.getElementById("prod-inv-hoja").value.trim(),
     ts: Date.now(),
   };
+  if (puedeVerCodigoInternoInv()) {
+    const cod = document.getElementById("prod-inv-codigo");
+    if (cod) data.codigoInterno = cod.value.trim();
+  }
   try {
     if (editProductoInvId) {
       await updateDoc(doc(dbInv, "productos", editProductoInvId), data);
@@ -8006,6 +8083,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
           <button class="btn btn-secondary" id="inv-btn-vista" onclick="toggleVistaInv()">🔬 Agrupar por ingrediente activo</button>
           <button class="btn btn-secondary" style="width:auto" onclick="abrirImportarCsvInv()">📄 Importar CSV</button>
           <button class="btn btn-secondary" style="width:auto" onclick="abrirTraspasoInv()">🔁 Traspaso entre bodegas</button>
+          <button class="btn btn-secondary" id="inv-btn-permisos-cod" style="width:auto;display:none" onclick="abrirPermisosCodigoInv()">🔒 Código interno</button>
           <button class="btn btn-verde" style="width:auto" onclick="abrirNuevoProductoInv()">+ Nuevo producto</button>
         </div>
         <div class="centros-selector" id="inv-chips-cat-wrap">
@@ -8019,7 +8097,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         </div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Producto</th><th>Categoría</th><th>Ingrediente activo</th><th>Bodega Cultivos</th><th>Bodega Frutales</th><th>Documentos</th><th></th></tr></thead>
+            <thead id="inv-tabla-thead"><tr><th>Producto</th><th>Categoría</th><th>Ingrediente activo</th><th>Bodega Cultivos</th><th>Bodega Frutales</th><th>Documentos</th><th></th></tr></thead>
             <tbody id="inv-tabla-body"><tr><td colspan="7" class="empty">Cargando...</td></tr></tbody>
           </table>
         </div>
@@ -8126,6 +8204,19 @@ tbody td{padding:10px 12px;vertical-align:middle;}
   </div>
 </div>
 
+<!-- MODAL PERMISOS CÓDIGO INTERNO (solo admin) -->
+<div class="modal-overlay" id="modal-inv-permisos">
+  <div class="modal-box" style="max-width:420px">
+    <div class="modal-title">🔒 Ver código interno</div>
+    <p style="font-size:13px;color:var(--acero);margin-bottom:10px">Elige quién más, además de ti, puede ver el código interno (color+número) de los productos.</p>
+    <div id="inv-permisos-lista" style="max-height:320px;overflow-y:auto"></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="cerrarModalInv('modal-inv-permisos')">Cancelar</button>
+      <button class="btn btn-verde" style="flex:2" onclick="guardarPermisosCodigoInv()">Guardar</button>
+    </div>
+  </div>
+</div>
+
 <!-- MODAL PRODUCTO INVENTARIO (nuevo/editar) -->
 <div class="modal-overlay" id="modal-inv-producto">
   <div class="modal-box" style="max-width:480px;max-height:90vh;overflow-y:auto">
@@ -8140,6 +8231,10 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       <div class="field"><label>Fabricante</label><input type="text" id="prod-inv-fabricante"></div>
     </div>
     <div class="field"><label>Ingrediente activo</label><input type="text" id="prod-inv-ingrediente"></div>
+    <div class="field" id="prod-inv-codigo-wrap" style="display:none">
+      <label>Código interno (uso restringido)</label>
+      <input type="text" id="prod-inv-codigo" placeholder="Ej: Azul · 14">
+    </div>
     <div class="field"><label>Cultivos compatibles</label><input type="text" id="prod-inv-cultivos" placeholder="Ej: Trigo, maíz, soya, vid"></div>
     <div class="grid-2">
       <div class="field"><label>Proveedor local</label><input type="text" id="prod-inv-proveedor"></div>
