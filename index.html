@@ -6423,6 +6423,7 @@ let unsubIngresosInv = null;
 let filtroCategoriaInv = "Todos";
 let vistaAgrupadaInv = false;
 let busquedaInv = "";
+let soloConStockInv = false;
 let inventarioInicializado = false;
 let itemsIngresoInv = [{nombre:'',cantidad:1,unidad:'L',precioUnitario:0}];
 
@@ -6499,6 +6500,12 @@ window.onBusquedaInv = function() {
   renderInventarioTabla();
 }
 
+window.toggleSoloConStockInv = function() {
+  const el = document.getElementById("inv-check-con-stock");
+  soloConStockInv = el ? el.checked : false;
+  renderInventarioTabla();
+}
+
 function renderInventarioHeader() {
   const thead = document.getElementById("inv-tabla-thead");
   if (thead) {
@@ -6517,7 +6524,8 @@ function renderInventarioTabla() {
   let data = productosInv.filter(p => {
     const catOk = filtroCategoriaInv === "Todos" || p.categoria === filtroCategoriaInv;
     const busOk = !busquedaInv || p.nombre.toLowerCase().includes(busquedaInv) || (p.ingredienteActivo||"").toLowerCase().includes(busquedaInv) || (verCod && (p.codigoInterno||"").toLowerCase().includes(busquedaInv));
-    return catOk && busOk;
+    const stockOk = !soloConStockInv || stockTotalInv(p) > 0;
+    return catOk && busOk && stockOk;
   });
   if (!data.length) { tbody.innerHTML = `<tr><td colspan="${colCount}" class="empty">No se encontraron productos</td></tr>`; return; }
 
@@ -8080,6 +8088,9 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       <div class="panel">
         <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
           <input type="text" id="inv-input-busqueda" placeholder="Buscar por nombre o ingrediente activo..." oninput="onBusquedaInv()" style="flex:1;min-width:200px">
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;white-space:nowrap;cursor:pointer">
+            <input type="checkbox" id="inv-check-con-stock" onchange="toggleSoloConStockInv()"> Solo con stock
+          </label>
           <button class="btn btn-secondary" id="inv-btn-vista" onclick="toggleVistaInv()">🔬 Agrupar por ingrediente activo</button>
           <button class="btn btn-secondary" style="width:auto" onclick="abrirImportarCsvInv()">📄 Importar CSV</button>
           <button class="btn btn-secondary" style="width:auto" onclick="abrirTraspasoInv()">🔁 Traspaso entre bodegas</button>
