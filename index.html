@@ -4630,7 +4630,9 @@ window.onKmlFileSelected = function(event) {
         if (f.geometry.type === 'Polygon') anillo = f.geometry.coordinates[0];
         else if (f.geometry.type === 'MultiPolygon') anillo = f.geometry.coordinates[0][0];
         if (!anillo) return;
-        const coords = anillo.map(c => [c[1], c[0]]);
+        // Se guarda cada punto como {lat,lng}, no como [lat,lng]: Firestore
+        // no permite arrays que contengan otros arrays directamente.
+        const coords = anillo.map(c => ({ lat: c[1], lng: c[0] }));
         const nombreKML = (f.properties && f.properties.name) || 'Sin nombre';
         const coincidencia = potrerosConfig.find(p => p.nombre.toLowerCase() === nombreKML.toLowerCase());
         formas.push({ nombreKML, coords, potreroAsignado: coincidencia ? coincidencia.nombre : null });
@@ -4755,7 +4757,7 @@ async function finalizarCaminataPerimetro() {
   try {
     await guardarPotrerosConfig(remotos => {
       const p = remotos.find(x => x.nombre === nombrePotrero);
-      if (p) p.poligono = caminataPuntos;
+      if (p) p.poligono = caminataPuntos.map(([lat, lng]) => ({ lat, lng }));
       return remotos;
     });
     toast(`✓ Mapa de "${nombrePotrero}" guardado (${caminataPuntos.length} puntos caminados)`, true);
@@ -4774,6 +4776,20 @@ function actualizarUiCaminata() {
     btn.style.background = caminataActiva ? 'var(--rojo)' : 'var(--negro)';
   }
   if (estado) estado.textContent = caminataActiva ? `Caminando... ${caminataPuntos.length} punto(s) marcados` : '';
+}
+
+// Valida que un polígono sea una lista de puntos utilizables por Leaflet —
+// como {lat,lng} (formato que usamos para guardar, porque Firestore no
+// admite arrays anidados como [[lat,lng],...]) o, por compatibilidad con
+// datos antiguos, como [lat,lng]. Rechaza datos mal formados para que no
+// rompan el mapa completo al dibujarlo.
+function puntoPoligonoValido(pt) {
+  if (Array.isArray(pt)) return pt.length >= 2 && typeof pt[0] === 'number' && typeof pt[1] === 'number' && isFinite(pt[0]) && isFinite(pt[1]);
+  if (pt && typeof pt === 'object') return typeof pt.lat === 'number' && typeof pt.lng === 'number' && isFinite(pt.lat) && isFinite(pt.lng);
+  return false;
+}
+function poligonoValido(arr) {
+  return Array.isArray(arr) && arr.length >= 3 && arr.every(puntoPoligonoValido);
 }
 
 // Referencias a los polígonos dibujados por cada contenedor de mapa, para
@@ -4801,7 +4817,7 @@ window.toggleCampoLaborPotreroDesdeMapa = function(nombre) {
 function renderMapaPotreros(containerId, clickable, drawable, multiSelect) {
   const el = document.getElementById(containerId);
   if (!el || typeof L === 'undefined') return;
-  const conPoligono = potrerosConfig.filter(p => Array.isArray(p.poligono) && p.poligono.length >= 3);
+  const conPoligono = potrerosConfig.filter(p => poligonoValido(p.poligono));
   if (mapasLeafletInstancias[containerId]) {
     mapasLeafletInstancias[containerId].remove();
     delete mapasLeafletInstancias[containerId];
@@ -4819,14 +4835,18 @@ function renderMapaPotreros(containerId, clickable, drawable, multiSelect) {
   }).addTo(map);
   const bounds = [];
   conPoligono.forEach(p => {
-    const cultivo = p.tipo === 'frutal' ? p.cultivoPermanente : (cultivoActualPorPotrero[p.nombre] ? cultivoActualPorPotrero[p.nombre].cultivo : null);
-    const color = colorParaCultivo(cultivo);
-    const seleccionado = multiSelect && camposLaborPotrerosSel.includes(p.nombre);
-    const poly = L.polygon(p.poligono, estiloPoligonoPotrero(color, seleccionado)).addTo(map);
-    poly.bindTooltip(`${p.nombre}${cultivo ? ' — ' + cultivo : ' — sin definir'}`, { sticky: true });
-    mapaPotrerosPoligonos[containerId][p.nombre] = { layer: poly, color };
-    if (multiSelect) poly.on('click', () => window.toggleCampoLaborPotreroDesdeMapa(p.nombre));
-    p.poligono.forEach(c => bounds.push(c));
+    try {
+      const cultivo = p.tipo === 'frutal' ? p.cultivoPermanente : (cultivoActualPorPotrero[p.nombre] ? cultivoActualPorPotrero[p.nombre].cultivo : null);
+      const color = colorParaCultivo(cultivo);
+      const seleccionado = multiSelect && camposLaborPotrerosSel.includes(p.nombre);
+      const poly = L.polygon(p.poligono, estiloPoligonoPotrero(color, seleccionado)).addTo(map);
+      poly.bindTooltip(`${p.nombre}${cultivo ? ' — ' + cultivo : ' — sin definir'}`, { sticky: true });
+      mapaPotrerosPoligonos[containerId][p.nombre] = { layer: poly, color };
+      if (multiSelect) poly.on('click', () => window.toggleCampoLaborPotreroDesdeMapa(p.nombre));
+      p.poligono.forEach(c => bounds.push(c));
+    } catch(err) {
+      console.warn(`No se pudo dibujar el mapa de "${p.nombre}" — datos de polígono inválidos`, err);
+    }
   });
   if (bounds.length) {
     map.fitBounds(bounds);
@@ -4850,7 +4870,7 @@ function renderMapaPotreros(containerId, clickable, drawable, multiSelect) {
     map.on(L.Draw.Event.CREATED, async (e) => {
       const nombrePotrero = document.getElementById('dibujo-potrero-sel')?.value || '';
       if (!nombrePotrero) { toast('Elegí primero a qué potrero corresponde este dibujo', false); return; }
-      const latlngs = e.layer.getLatLngs()[0].map(ll => [ll.lat, ll.lng]);
+      const latlngs = e.layer.getLatLngs()[0].map(ll => ({ lat: ll.lat, lng: ll.lng }));
       if (!potrerosConfig.find(x => x.nombre === nombrePotrero)) return;
       try {
         await guardarPotrerosConfig(remotos => {
