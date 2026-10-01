@@ -1175,6 +1175,8 @@ async function getPines() {
 // las mismas facultades que el admin — así sus acciones quedan registradas
 // con su propio nombre en vez de "JC Allende". Por ahora: Camila Faundez.
 const ADMINS_EQUIVALENTES = ['Camila Faundez'];
+// JC y los administradores equivalentes (Camila) tienen exactamente los mismos permisos
+function esAdminPleno() { return currentUser === ADMIN_NOMBRE || ADMINS_EQUIVALENTES.includes(currentUser); }
 
 async function verificarPin(pin) {
   if (pin === ADMIN_PIN) return { ok: true, admin: true, supervisor: false, subadmin: false, campo: false, nombre: ADMIN_NOMBRE };
@@ -6744,7 +6746,7 @@ const ALIAS_CATEGORIA_INV = {
 let permisosInv = { verCodigoInterno: [] };
 let permisosInvCargados = false;
 function puedeVerCodigoInternoInv() {
-  if (currentUser === ADMIN_NOMBRE) return true;
+  if (esAdminPleno()) return true;
   return permisosInv.verCodigoInterno.includes(currentUser);
 }
 async function cargarPermisosInv() {
@@ -6757,10 +6759,10 @@ async function cargarPermisosInv() {
 
 // ── Panel de permisos: quién puede ver el código interno (solo JC) ──────
 window.abrirPermisosCodigoInv = async function() {
-  if (currentUser !== ADMIN_NOMBRE) return;
+  if (!esAdminPleno()) return;
   if (!permisosInvCargados) await cargarPermisosInv();
   const pines = await getPines();
-  const nombres = Object.keys(pines).filter(n => n !== ADMIN_NOMBRE).sort();
+  const nombres = Object.keys(pines).filter(n => n !== ADMIN_NOMBRE && !ADMINS_EQUIVALENTES.includes(n)).sort();
   const cont = document.getElementById("inv-permisos-lista");
   cont.innerHTML = nombres.map(n => `
     <label style="display:flex;align-items:center;gap:8px;padding:8px 4px;border-bottom:1px solid var(--borde)">
@@ -6889,7 +6891,9 @@ function renderInventarioHeader() {
     thead.innerHTML = `<tr><th>Producto</th><th>Categoría</th><th>Ingrediente activo</th>${verCod ? '<th>Código interno</th>' : ''}<th>Bodega Cultivos</th><th>Bodega Frutales</th><th>Documentos</th><th></th></tr>`;
   }
   const btnPermisos = document.getElementById("inv-btn-permisos-cod");
-  if (btnPermisos) btnPermisos.style.display = (currentUser === ADMIN_NOMBRE) ? "" : "none";
+  if (btnPermisos) btnPermisos.style.display = esAdminPleno() ? "" : "none";
+  const btnVaciar = document.getElementById("inv-btn-vaciar");
+  if (btnVaciar) btnVaciar.style.display = esAdminPleno() ? "" : "none";
 }
 
 function renderInventarioTabla() {
@@ -7566,6 +7570,58 @@ window.confirmarTodosIngRevInv = async function() {
     toast(`✓ ${items.length} confirmados`, true);
     abrirRevisarIngInv();
   } catch(e) { toast("Error: " + e.message, false); }
+}
+
+// ── Vaciar inventario (solo JC) ─────────────────────────────
+window.abrirVaciarInv = function() {
+  if (!esAdminPleno()) { toast("Solo los administradores pueden vaciar el inventario", false); return; }
+  document.getElementById("vaciar-inv-resumen").textContent = `Se eliminarán ${productosInv.length} productos con su stock.`;
+  document.getElementById("vaciar-inv-historial").checked = false;
+  document.getElementById("vaciar-inv-texto").value = "";
+  document.getElementById("modal-inv-vaciar").style.display = "flex";
+}
+async function borrarColeccionInv(nombre) {
+  const snap = await getDocs(collection(dbInv, nombre));
+  let n = 0;
+  for (let i = 0; i < snap.docs.length; i += 400) {
+    const batch = writeBatch(dbInv);
+    snap.docs.slice(i, i + 400).forEach(d => batch.delete(d.ref));
+    await batch.commit();
+    n += Math.min(400, snap.docs.length - i);
+  }
+  return n;
+}
+window.confirmarVaciarInv = async function() {
+  if (!esAdminPleno()) return;
+  if (document.getElementById("vaciar-inv-texto").value.trim().toUpperCase() !== "BORRAR") { toast('Escribe BORRAR para confirmar', false); return; }
+  const conHistorial = document.getElementById("vaciar-inv-historial").checked;
+  const btn = document.getElementById("btn-vaciar-inv");
+  btn.disabled = true; btn.textContent = "Respaldando y borrando...";
+  try {
+    // Respaldo automático en Excel antes de borrar
+    if (productosInv.length) {
+      const rows = productosInv.map(p => ({
+        'Producto': p.nombre, 'Categoría': p.categoria, 'Ingrediente activo': p.ingredienteActivo || '',
+        'Fabricante': p.fabricante || '', 'Proveedor': p.proveedor || '', 'Código interno': p.codigoInterno || '',
+        'Unidad': p.unidad || 'L', 'Stock mínimo': p.stockMinimo || 0, 'Precio': p.precio || 0,
+        [BODEGAS_INV[0]]: stockInv(p, BODEGAS_INV[0]), [BODEGAS_INV[1]]: stockInv(p, BODEGAS_INV[1]),
+        'Etiqueta': p.etiquetaUrl || '', 'Hoja seguridad': p.hojaUrl || ''
+      }));
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Inventario');
+      XLSX.writeFile(wb, `respaldo-inventario-${new Date().toISOString().slice(0,10)}.xlsx`);
+    }
+    const nProd = await borrarColeccionInv("productos");
+    let extra = "";
+    if (conHistorial) {
+      const nMov = await borrarColeccionInv("movimientos");
+      const nIng = await borrarColeccionInv("ingresos");
+      extra = ` y ${nMov + nIng} movimientos/ingresos`;
+    }
+    cerrarModalInv("modal-inv-vaciar");
+    toast(`✓ Inventario vaciado: ${nProd} productos${extra}. Respaldo descargado.`, true, 5000);
+  } catch(e) { toast("Error: " + e.message, false); }
+  btn.disabled = false; btn.textContent = "🗑 Vaciar inventario";
 }
 
 window.cerrarModalInv = function(id) { const el = document.getElementById(id); if (el) el.style.display = "none"; }
@@ -8604,6 +8660,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
           <button class="btn btn-secondary" style="width:auto" onclick="abrirImportarCsvInv()">📄 Importar CSV</button>
           <button class="btn btn-secondary" style="width:auto" onclick="abrirTraspasoInv()">🔁 Traspaso entre bodegas</button>
           <button class="btn btn-secondary" id="inv-btn-revisar-ing" style="width:auto;display:none;background:#FEF3DC;color:#92400E" onclick="abrirRevisarIngInv()">🔍 Revisar ingredientes activos</button>
+          <button class="btn btn-danger" id="inv-btn-vaciar" style="width:auto;display:none" onclick="abrirVaciarInv()">🗑 Vaciar inventario</button>
           <button class="btn btn-secondary" id="inv-btn-permisos-cod" style="width:auto;display:none" onclick="abrirPermisosCodigoInv()">🔒 Código interno</button>
           <button class="btn btn-verde" style="width:auto" onclick="abrirNuevoProductoInv()">+ Nuevo producto</button>
         </div>
@@ -8721,6 +8778,21 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     <div class="modal-actions">
       <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="cerrarModalInv('modal-inv-ajuste')">Cancelar</button>
       <button class="btn btn-verde" style="flex:2" onclick="confirmarAjusteInv()">Confirmar</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL VACIAR INVENTARIO (solo JC) -->
+<div class="modal-overlay" id="modal-inv-vaciar">
+  <div class="modal-box" style="max-width:420px">
+    <div class="modal-title">🗑 Vaciar inventario</div>
+    <p style="font-size:13px;margin-bottom:8px;color:var(--rojo);font-weight:600" id="vaciar-inv-resumen"></p>
+    <p style="font-size:12px;color:var(--acero);margin-bottom:10px">Antes de borrar se descarga un respaldo en Excel. Después puedes volver a cargar todo con "Importar CSV".</p>
+    <label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;margin-bottom:12px;cursor:pointer"><input type="checkbox" id="vaciar-inv-historial"> Borrar también el historial de movimientos e ingresos</label>
+    <div class="field"><label>Escribe BORRAR para confirmar</label><input type="text" id="vaciar-inv-texto" autocomplete="off"></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="cerrarModalInv('modal-inv-vaciar')">Cancelar</button>
+      <button class="btn btn-danger" style="flex:2;padding:10px" id="btn-vaciar-inv" onclick="confirmarVaciarInv()">🗑 Vaciar inventario</button>
     </div>
   </div>
 </div>
