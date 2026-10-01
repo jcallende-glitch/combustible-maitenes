@@ -6895,6 +6895,7 @@ function renderInventarioHeader() {
 function renderInventarioTabla() {
   const tbody = document.getElementById("inv-tabla-body");
   if (!tbody) return;
+  actualizarBotonRevisarIngInv();
   const verCod = puedeVerCodigoInternoInv();
   const colCount = verCod ? 8 : 7;
   let data = productosInv.filter(p => {
@@ -6928,7 +6929,7 @@ function renderInventarioTabla() {
         ${p.fabricante ? `<div style="font-size:11px;color:var(--acero)">${p.fabricante}</div>` : ""}
       </td>
       <td><span class="badge" style="background:${cc}22;color:${cc}">${p.categoria}</span></td>
-      <td style="font-size:12px">${p.ingredienteActivo || "—"}</td>
+      <td style="font-size:12px">${p.ingredienteActivo || '<span style="color:#92400E">⚠ sin definir</span>'}</td>
       ${verCod ? `<td style="font-size:12px;font-weight:600">${p.codigoInterno || "—"}</td>` : ""}
       ${celdaBodega(p, BODEGAS_INV[0])}
       ${celdaBodega(p, BODEGAS_INV[1])}
@@ -7480,6 +7481,91 @@ window.confirmarImportarCsvInv = async function() {
     cerrarModalInv("modal-inv-importar");
     toast(`✓ ${nuevos.length} productos importados a ${bodega}`, true);
   } catch(e) { toast("Error al importar: " + e.message, false); }
+}
+
+// ── Revisión de ingredientes activos ────────────────────────
+// Para productos sin ingrediente activo: se propone uno (por nombre comercial
+// del catálogo o por palabra clave) y JC / Camila lo confirman o corrigen.
+const CATALOGO_EXTRA_INV = [
+  { nombre: "Prowl", ingredienteActivo: "Pendimetalina 40%" },
+  { nombre: "Basagran", ingredienteActivo: "Bentazona 48%" },
+  { nombre: "Banvel", ingredienteActivo: "Dicamba 48%" },
+  { nombre: "Command", ingredienteActivo: "Clomazone 48%" },
+];
+const PALABRAS_ING_INV = [
+  ["glifosato","Glifosato"],["paraquat","Paraquat"],["mancozeb","Mancozeb"],["captan","Captan"],
+  ["imidacloprid","Imidacloprid"],["abamectina","Abamectina"],["clorpirifos","Clorpirifós"],
+  ["tebuconazol","Tebuconazol"],["propiconazol","Propiconazol"],["azoxistrobina","Azoxistrobina"],
+  ["difenoconazol","Difenoconazol"],["cletodim","Cletodim"],["metribuzin","Metribuzin"],
+  ["cobre","Cobre"],["azufre","Azufre"],["boro","Boro"],["calcio","Calcio"],["zinc","Zinc"],
+  ["2,4-d","2,4-D"],["24d","2,4-D"],["lambda","Lambda cihalotrina"],["deltametrina","Deltametrina"],
+];
+function normIng(t) { return String(t||"").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"").replace(/[^a-z0-9,]+/g," ").trim(); }
+function sugerirIngredienteInv(nombre) {
+  const n = normIng(nombre);
+  if (!n) return "";
+  let mejor = null;
+  [...CATALOGO_INV, ...CATALOGO_EXTRA_INV].forEach(c => {
+    const cn = normIng(c.nombre);
+    if (cn.length >= 4 && (n.includes(cn) || (n.length >= 4 && cn.includes(n)))) {
+      if (!mejor || cn.length > mejor.len) mejor = { len: cn.length, ing: c.ingredienteActivo };
+    }
+  });
+  if (mejor) return mejor.ing;
+  const k = PALABRAS_ING_INV.find(([w]) => n.includes(w));
+  return k ? k[1] : "";
+}
+function productosSinIngredienteInv() {
+  return productosInv.filter(p => !(p.ingredienteActivo || "").trim());
+}
+function actualizarBotonRevisarIngInv() {
+  const b = document.getElementById("inv-btn-revisar-ing");
+  if (!b) return;
+  const n = productosSinIngredienteInv().length;
+  b.style.display = (isAdmin && n > 0) ? "" : "none";
+  b.textContent = `🔍 Revisar ingredientes activos (${n})`;
+}
+window.abrirRevisarIngInv = function() {
+  const pend = productosSinIngredienteInv().sort((a,b) => a.nombre.localeCompare(b.nombre));
+  const cont = document.getElementById("inv-revisar-ing-lista");
+  if (!pend.length) { cont.innerHTML = '<div class="empty">Todos los productos tienen ingrediente activo ✅</div>'; }
+  else cont.innerHTML = pend.map(p => {
+    const sug = sugerirIngredienteInv(p.nombre);
+    return `<div class="config-item" id="rev-ing-${p.id}" style="display:block;padding:10px 12px;margin-bottom:8px">
+      <div style="font-weight:600;font-size:13px">${p.nombre} <span class="badge" style="font-size:10px">${p.categoria||""}</span></div>
+      <div style="display:flex;gap:6px;margin-top:6px;align-items:center">
+        <input type="text" id="rev-ing-input-${p.id}" value="${sug.replace(/"/g,'&quot;')}" placeholder="Escribe el ingrediente activo" style="flex:1">
+        <button class="btn btn-verde" style="width:auto;padding:8px 12px" onclick="confirmarIngRevInv('${p.id}')">✓</button>
+      </div>
+      <div style="font-size:11px;margin-top:4px;color:${sug?'#92400E':'var(--acero)'}">${sug ? '⚠ Sugerido automáticamente: confirma o corrige' : 'Sin sugerencia: escríbelo tú (mira la etiqueta del bidón)'}</div>
+    </div>`;
+  }).join("");
+  document.getElementById("modal-inv-revisar-ing").style.display = "flex";
+}
+window.confirmarIngRevInv = async function(id) {
+  const inp = document.getElementById("rev-ing-input-" + id);
+  const val = inp ? inp.value.trim() : "";
+  if (!val) { toast("Escribe el ingrediente activo", false); return; }
+  try {
+    await updateDoc(doc(dbInv, "productos", id), { ingredienteActivo: val, ingredienteConfirmadoPor: currentUser, ingredienteConfirmadoTs: Date.now() });
+    const fila = document.getElementById("rev-ing-" + id);
+    if (fila) fila.remove();
+    toast("✓ Ingrediente guardado", true);
+    if (!document.querySelector('#inv-revisar-ing-lista .config-item')) cerrarModalInv("modal-inv-revisar-ing");
+  } catch(e) { toast("Error: " + e.message, false); }
+}
+window.confirmarTodosIngRevInv = async function() {
+  const filas = [...document.querySelectorAll('#inv-revisar-ing-lista .config-item')];
+  const items = filas.map(f => ({ id: f.id.replace("rev-ing-",""), val: (f.querySelector("input").value || "").trim() })).filter(x => x.val);
+  if (!items.length) { toast("No hay ninguno con valor para confirmar", false); return; }
+  if (!confirm(`¿Confirmar ${items.length} ingredientes activos tal como aparecen? Revisa antes que estén bien.`)) return;
+  try {
+    const batch = writeBatch(dbInv);
+    items.forEach(x => batch.update(doc(dbInv, "productos", x.id), { ingredienteActivo: x.val, ingredienteConfirmadoPor: currentUser, ingredienteConfirmadoTs: Date.now() }));
+    await batch.commit();
+    toast(`✓ ${items.length} confirmados`, true);
+    abrirRevisarIngInv();
+  } catch(e) { toast("Error: " + e.message, false); }
 }
 
 window.cerrarModalInv = function(id) { const el = document.getElementById(id); if (el) el.style.display = "none"; }
@@ -8517,6 +8603,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
           <button class="btn btn-secondary" id="inv-btn-vista" onclick="toggleVistaInv()">🔬 Agrupar por ingrediente activo</button>
           <button class="btn btn-secondary" style="width:auto" onclick="abrirImportarCsvInv()">📄 Importar CSV</button>
           <button class="btn btn-secondary" style="width:auto" onclick="abrirTraspasoInv()">🔁 Traspaso entre bodegas</button>
+          <button class="btn btn-secondary" id="inv-btn-revisar-ing" style="width:auto;display:none;background:#FEF3DC;color:#92400E" onclick="abrirRevisarIngInv()">🔍 Revisar ingredientes activos</button>
           <button class="btn btn-secondary" id="inv-btn-permisos-cod" style="width:auto;display:none" onclick="abrirPermisosCodigoInv()">🔒 Código interno</button>
           <button class="btn btn-verde" style="width:auto" onclick="abrirNuevoProductoInv()">+ Nuevo producto</button>
         </div>
@@ -8634,6 +8721,19 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     <div class="modal-actions">
       <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="cerrarModalInv('modal-inv-ajuste')">Cancelar</button>
       <button class="btn btn-verde" style="flex:2" onclick="confirmarAjusteInv()">Confirmar</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL REVISAR INGREDIENTES ACTIVOS -->
+<div class="modal-overlay" id="modal-inv-revisar-ing">
+  <div class="modal-box" style="max-width:520px">
+    <div class="modal-title">🔍 Ingredientes activos por revisar</div>
+    <p style="font-size:13px;color:var(--acero);margin-bottom:10px">Estos productos no tienen ingrediente activo. Se sugiere uno cuando se reconoce el producto; confirma con ✓ o corrígelo antes.</p>
+    <div id="inv-revisar-ing-lista" style="max-height:55vh;overflow-y:auto"></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="cerrarModalInv('modal-inv-revisar-ing')">Cerrar</button>
+      <button class="btn btn-verde" style="flex:2" onclick="confirmarTodosIngRevInv()">✓ Confirmar todos los que tienen valor</button>
     </div>
   </div>
 </div>
