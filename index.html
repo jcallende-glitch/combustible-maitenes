@@ -3016,13 +3016,29 @@ function badgeRazonSocial(r) {
   return '';
 }
 
-window.renderTabla = function() {
+// Aplica los filtros del historial (equipo, cultivo y rango de fechas).
+// Lo usan tanto la tabla como la descarga a Excel, para que coincidan.
+function filtrarRegistrosHist() {
   const feq=document.getElementById('filtro-equipo')?.value||'';
   const fcc=document.getElementById('filtro-centro')?.value||'';
+  const desde=document.getElementById('filtro-desde')?.value||'';
+  const hasta=document.getElementById('filtro-hasta')?.value||'';
   let data=[...registros];
   if(!isAdmin && !isSupervisor) data=data.filter(r=>r.operador===currentUser);
   if(feq) data=data.filter(r=>r.equipo===feq);
   if(fcc) data=data.filter(r=>(r.centros||[r.centro]).includes(fcc));
+  if(desde) data=data.filter(r=>(r.fecha||'')>=desde);
+  if(hasta) data=data.filter(r=>(r.fecha||'')<=hasta);
+  return data;
+}
+window.limpiarFiltroFechasHist = function() {
+  const d=document.getElementById('filtro-desde'), h=document.getElementById('filtro-hasta');
+  if(d) d.value=''; if(h) h.value='';
+  renderTabla();
+}
+
+window.renderTabla = function() {
+  let data=filtrarRegistrosHist();
 
   const totalLt=data.reduce((s,r)=>s+(r.litros||0),0);
   const totalHr=data.filter(r=>r.medidor_tipo==='hr').reduce((s,r)=>s+(r.diff_medidor||0),0);
@@ -3222,15 +3238,16 @@ window.eliminar = async function(id,litros) {
 }
 
 window.exportarExcel = function() {
-  let data=[...registros];
-  if(!isAdmin && !isSupervisor) data=data.filter(r=>r.operador===currentUser);
-  if(!data.length){toast('No hay registros',false);return;}
+  const data=filtrarRegistrosHist();
+  if(!data.length){toast('No hay registros en ese rango de fechas',false);return;}
+  const fd=document.getElementById('filtro-desde')?.value||'', fh=document.getElementById('filtro-hasta')?.value||'';
   const rsLabel = { maitenes: 'Los Maitenes', jcar: 'JCAR', ambos: 'Ambos' };
   const rows=data.map(r=>({'Fecha':r.fecha,'Hora':r.hora,'Equipo':r.equipo_detalle?`${r.equipo}: ${r.equipo_detalle}`:r.equipo,'Operador':r.operador,'Razón social':rsLabel[r.razon_social]||'Los Maitenes','Cultivos':(r.centros||[r.centro]).join(' / ')+(r.centro_detalle?` (${r.centro_detalle})`:''),'Trabajo':r.trabajo==='Otro (especificar)'?(r.trabajo_detalle||'Otro'):(r.trabajo||''),'Apero':r.apero?(r.apero==='Otro (especificar)'?(r.apero_detalle||'Otro'):(r.apero==='LIBRE'?(r.apero_detalle||''):r.apero)):'','Litros':r.litros,'Tipo Medidor':r.medidor_tipo==='km'?'Kilómetros':'Horas','Medidor Actual':r.medidor_valor,'Trabajado':r.diff_medidor||'','Eficiencia':r.eficiencia?(r.medidor_tipo==='km'?r.eficiencia.toFixed(2)+' km/L':r.eficiencia.toFixed(2)+' L/hr'):'','Totalizador':r.totalizador||'','Alerta':r.alerta_totalizador?'SÍ':'','Dif.Totalizador':r.dif_totalizador||'','Observación':r.obs||''}));
   const ws=XLSX.utils.json_to_sheet(rows);
   const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,'Combustible');
-  XLSX.writeFile(wb,`maitenes-combustible-${new Date().toISOString().slice(0,10)}.xlsx`);
-  toast('✓ Excel exportado',true);
+  const sufijo=(fd||fh)?`${fd||'inicio'}_a_${fh||'hoy'}`:new Date().toISOString().slice(0,10);
+  XLSX.writeFile(wb,`maitenes-combustible-${sufijo}.xlsx`);
+  toast(`✓ Excel exportado (${data.length} registros)`,true);
 }
 
 // ─── ANALYTICS ────────────────────────────────────────────
@@ -7803,6 +7820,9 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         <div class="filtros">
           <div class="select-wrapper"><select id="filtro-equipo" onchange="renderTabla()"></select></div>
           <div class="select-wrapper"><select id="filtro-centro" onchange="renderTabla()"></select></div>
+          <label style="font-size:12px;color:var(--acero);display:flex;align-items:center;gap:4px">Desde <input type="date" id="filtro-desde" onchange="renderTabla()" style="width:auto"></label>
+          <label style="font-size:12px;color:var(--acero);display:flex;align-items:center;gap:4px">Hasta <input type="date" id="filtro-hasta" onchange="renderTabla()" style="width:auto"></label>
+          <button class="btn btn-secondary" onclick="limpiarFiltroFechasHist()" title="Quitar filtro de fechas">✕ Fechas</button>
           <button class="btn btn-secondary" onclick="exportarExcel()">↓ Excel</button>
         </div>
       </div>
@@ -7818,6 +7838,9 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         <div class="filtros">
           <div class="select-wrapper"><select id="filtro-equipo" onchange="renderTabla()"></select></div>
           <div class="select-wrapper"><select id="filtro-centro" onchange="renderTabla()"></select></div>
+          <label style="font-size:12px;color:var(--acero);display:flex;align-items:center;gap:4px">Desde <input type="date" id="filtro-desde" onchange="renderTabla()" style="width:auto"></label>
+          <label style="font-size:12px;color:var(--acero);display:flex;align-items:center;gap:4px">Hasta <input type="date" id="filtro-hasta" onchange="renderTabla()" style="width:auto"></label>
+          <button class="btn btn-secondary" onclick="limpiarFiltroFechasHist()" title="Quitar filtro de fechas">✕ Fechas</button>
           <button class="btn btn-secondary" onclick="exportarExcel()">↓ Excel</button>
         </div>
       </div>
