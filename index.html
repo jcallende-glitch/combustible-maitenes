@@ -1651,7 +1651,10 @@ function initRegistro() {
   if (isAdmin) {
     opField.style.display = 'block';
     populateSelect('operador-select', config.operadores, 'Seleccionar operador');
-    document.getElementById('operador-select').value = ADMIN_NOMBRE;
+    // Por defecto, quien está logueado (antes siempre quedaba JC Allende, incluso con Camila)
+    const selOp = document.getElementById('operador-select');
+    selOp.value = currentUser;
+    if (selOp.value !== currentUser) selOp.value = (currentUser === ADMIN_NOMBRE) ? ADMIN_NOMBRE : '';
   } else { opField.style.display = 'none'; }
   populateSelect('equipo', config.equipos, 'Seleccionar equipo');
   const equiposAsignados = equiposDe(currentUser);
@@ -4814,7 +4817,7 @@ window.toggleCampoLaborPotreroDesdeMapa = function(nombre) {
   toggleCampoLaborPotrero(nombre);
 }
 
-function renderMapaPotreros(containerId, clickable, drawable, multiSelect) {
+function renderMapaPotreros(containerId, clickable, drawable, multiSelect, forzarMapa) {
   const el = document.getElementById(containerId);
   if (!el || typeof L === 'undefined') return;
   const conPoligono = potrerosConfig.filter(p => poligonoValido(p.poligono));
@@ -4823,7 +4826,7 @@ function renderMapaPotreros(containerId, clickable, drawable, multiSelect) {
     delete mapasLeafletInstancias[containerId];
   }
   mapaPotrerosPoligonos[containerId] = {};
-  if (!conPoligono.length && !drawable) {
+  if (!conPoligono.length && !drawable && !forzarMapa) {
     el.innerHTML = '<div style="padding:16px;text-align:center;color:#9CA3AF;font-size:13px">Todavía no hay potreros con mapa dibujado. Pídele al admin que dibuje los potreros en "Config. Potreros".</div>';
     return;
   }
@@ -4895,6 +4898,89 @@ window.renderMapaCampoPreview = function() {
       potrerosConfig.map(p => `<option value="${p.nombre}" ${p.nombre===cur?'selected':''}>${p.nombre}${Array.isArray(p.poligono)&&p.poligono.length?' ✓':''}</option>`).join('');
   }
   renderMapaPotreros('config-mapa-preview', false, true);
+}
+
+// ─── DIBUJAR POTRERO EN PANTALLA COMPLETA ───────────────────
+// Tocar el mapa agrega una esquina; "Deshacer" quita la última; "Guardar"
+// cierra la forma. Pensado para dedos en el celular: mapa grande y
+// botones grandes, en vez de la barra chica de Leaflet.Draw.
+let dibujoFullPuntos = [];
+let dibujoFullCapa = null;
+let dibujoFullPotrero = '';
+
+window.abrirDibujoPotreroFull = function() {
+  const nombre = document.getElementById('dibujo-potrero-sel')?.value || '';
+  if (!nombre) { toast('Elige primero qué potrero vas a dibujar', false); return; }
+  dibujoFullPotrero = nombre;
+  dibujoFullPuntos = [];
+  document.getElementById('dibujo-full-titulo').textContent = `Dibujar: ${nombre}`;
+  document.getElementById('modal-dibujo-potrero-full').style.display = 'flex';
+  renderMapaPotreros('dibujo-potrero-mapa-full', false, false, false, true);
+  const map = mapasLeafletInstancias['dibujo-potrero-mapa-full'];
+  if (!map) return;
+  // Si el potrero ya tenía forma, se centra en él para redibujarlo encima.
+  const p = potrerosConfig.find(x => x.nombre === nombre);
+  if (p && poligonoValido(p.poligono)) map.fitBounds(p.poligono);
+  dibujoFullCapa = L.layerGroup().addTo(map);
+  map.on('click', e => {
+    dibujoFullPuntos.push({ lat: e.latlng.lat, lng: e.latlng.lng });
+    redibujarDibujoFull();
+  });
+  redibujarDibujoFull();
+}
+
+function redibujarDibujoFull() {
+  if (!dibujoFullCapa) return;
+  dibujoFullCapa.clearLayers();
+  const pts = dibujoFullPuntos;
+  if (pts.length >= 3) {
+    L.polygon(pts, { color: '#F5A623', weight: 3, fillOpacity: 0.25, dashArray: '6 4', interactive: false }).addTo(dibujoFullCapa);
+  } else if (pts.length === 2) {
+    L.polyline(pts, { color: '#F5A623', weight: 3, dashArray: '6 4', interactive: false }).addTo(dibujoFullCapa);
+  }
+  pts.forEach((pt, i) => {
+    L.circleMarker(pt, { radius: i === 0 ? 8 : 6, color: '#fff', weight: 2, fillColor: i === 0 ? '#2D7D46' : '#F5A623', fillOpacity: 1, interactive: false }).addTo(dibujoFullCapa);
+  });
+  const estado = document.getElementById('dibujo-full-estado');
+  if (estado) {
+    estado.textContent = pts.length === 0 ? 'Toca cada esquina del potrero sobre el mapa.'
+      : pts.length < 3 ? `${pts.length} punto(s) — faltan al menos ${3 - pts.length} más.`
+      : `${pts.length} puntos — toca "Guardar" cuando termines.`;
+  }
+}
+
+window.deshacerPuntoDibujoFull = function() {
+  if (!dibujoFullPuntos.length) return;
+  dibujoFullPuntos.pop();
+  redibujarDibujoFull();
+}
+
+window.cerrarDibujoPotreroFull = function() {
+  document.getElementById('modal-dibujo-potrero-full').style.display = 'none';
+  if (mapasLeafletInstancias['dibujo-potrero-mapa-full']) {
+    mapasLeafletInstancias['dibujo-potrero-mapa-full'].remove();
+    delete mapasLeafletInstancias['dibujo-potrero-mapa-full'];
+  }
+  delete mapaPotrerosPoligonos['dibujo-potrero-mapa-full'];
+  dibujoFullCapa = null;
+  dibujoFullPuntos = [];
+}
+
+window.guardarDibujoPotreroFull = async function() {
+  if (dibujoFullPuntos.length < 3) { toast('Marca al menos 3 esquinas para cerrar el potrero', false); return; }
+  const nombre = dibujoFullPotrero;
+  const puntos = dibujoFullPuntos.map(pt => ({ lat: pt.lat, lng: pt.lng }));
+  try {
+    await guardarPotrerosConfig(remotos => {
+      const p = remotos.find(x => x.nombre === nombre);
+      if (p) p.poligono = puntos;
+      return remotos;
+    });
+    toast(`✓ Mapa de "${nombre}" guardado (${puntos.length} puntos)`, true);
+    cerrarDibujoPotreroFull();
+    renderListaPotreros();
+    renderMapaCampoPreview();
+  } catch(e) { toast('Error: ' + e.message, false); }
 }
 
 async function renderConfigPotreros() {
@@ -8248,6 +8334,24 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       </div>
     </div>
 
+    <!-- DIBUJAR POTRERO EN PANTALLA COMPLETA (Config. Potreros) -->
+    <div class="modal-overlay" id="modal-dibujo-potrero-full" style="padding:0">
+      <div class="modal-box" style="max-width:100%;width:100%;height:100%;border-radius:0;display:flex;flex-direction:column;padding:0">
+        <div style="padding:10px 14px;border-bottom:1px solid var(--borde)">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+            <strong style="font-size:14px" id="dibujo-full-titulo">Dibujar potrero</strong>
+            <button class="btn btn-secondary" style="width:auto;padding:6px 12px" onclick="cerrarDibujoPotreroFull()">✕ Cancelar</button>
+          </div>
+          <div style="font-size:12px;color:var(--acero);margin-top:4px" id="dibujo-full-estado">Toca cada esquina del potrero sobre el mapa.</div>
+        </div>
+        <div id="dibujo-potrero-mapa-full" style="flex:1;min-height:0"></div>
+        <div style="display:flex;gap:8px;padding:10px 14px;border-top:1px solid var(--borde)">
+          <button class="btn btn-secondary" style="flex:1;justify-content:center;padding:14px" onclick="deshacerPuntoDibujoFull()">↶ Deshacer punto</button>
+          <button class="btn btn-verde" style="flex:1;justify-content:center;padding:14px" onclick="guardarDibujoPotreroFull()">✓ Guardar</button>
+        </div>
+      </div>
+    </div>
+
     <!-- MAPA EN PANTALLA COMPLETA PARA ELEGIR POTREROS (Cuaderno de Campo) -->
     <div class="modal-overlay" id="modal-campo-mapa-full" style="padding:0">
       <div class="modal-box" style="max-width:100%;width:100%;height:100%;border-radius:0;display:flex;flex-direction:column;padding:0">
@@ -8289,6 +8393,12 @@ tbody td{padding:10px 12px;vertical-align:middle;}
           <label>Potrero a marcar</label>
           <div class="select-wrapper"><select id="dibujo-potrero-sel"></select></div>
         </div>
+
+        <div class="cultivos-label">✏️ Dibujar en pantalla completa (lo más fácil desde la oficina)</div>
+        <div class="hint" style="margin-bottom:10px">
+          Elige el potrero arriba y abre el mapa grande. Toca cada esquina del potrero sobre la imagen satelital; puedes deshacer el último punto si te equivocas. Cuando termines, toca "Guardar".
+        </div>
+        <button type="button" class="btn btn-verde btn-full" style="justify-content:center;margin-bottom:16px" onclick="abrirDibujoPotreroFull()">✏️ Dibujar en pantalla completa</button>
 
         <div class="cultivos-label">📍 Caminar el perímetro (recomendado desde el celular, en terreno)</div>
         <div class="hint" style="margin-bottom:10px">
