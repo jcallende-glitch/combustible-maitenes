@@ -6950,7 +6950,7 @@ function renderInventarioTabla() {
 
   const filaProducto = (p, indent) => {
     const cc = categoriaColorInv[p.categoria] || "#6B7280";
-    const hasEtiq = !!p.etiquetaUrl, hasHoja = !!p.hojaUrl;
+    const hasEtiq = !!p.etiquetaUrl || (p.etiquetaFotos||[]).length>0, hasHoja = !!p.hojaUrl || (p.hojaFotos||[]).length>0;
     return `<tr>
       <td${indent?' style="padding-left:28px"':''}>
         <div style="font-weight:600">${p.nombre}</div>
@@ -6963,8 +6963,8 @@ function renderInventarioTabla() {
       ${celdaBodega(p, BODEGAS_INV[0])}
       ${celdaBodega(p, BODEGAS_INV[1])}
       <td>
-        ${hasEtiq ? `<a href="${p.etiquetaUrl}" target="_blank" class="badge badge-km">🏷 Etiqueta</a>` : `<button class="btn-danger" onclick="abrirDocModalInv('${p.id}','etiqueta')">+ Etiqueta</button>`}<br>
-        ${hasHoja ? `<a href="${p.hojaUrl}" target="_blank" class="badge badge-hr" style="margin-top:3px;display:inline-block">🛡 Hoja seg.</a>` : `<button class="btn-danger" onclick="abrirDocModalInv('${p.id}','hoja')">+ Hoja seg.</button>`}
+        ${hasEtiq ? `<a href="#" onclick="abrirDocModalInv('${p.id}','etiqueta');return false" class="badge badge-km">🏷 Etiqueta${(p.etiquetaFotos||[]).length?' 📷'+(p.etiquetaFotos||[]).length:''}</a>` : `<button class="btn-danger" onclick="abrirDocModalInv('${p.id}','etiqueta')">+ Etiqueta</button>`}<br>
+        ${hasHoja ? `<a href="#" onclick="abrirDocModalInv('${p.id}','hoja');return false" class="badge badge-hr" style="margin-top:3px;display:inline-block">🛡 Hoja seg.${(p.hojaFotos||[]).length?' 📷'+(p.hojaFotos||[]).length:''}</a>` : `<button class="btn-danger" onclick="abrirDocModalInv('${p.id}','hoja')">+ Hoja seg.</button>`}
       </td>
       <td style="white-space:nowrap">
         <button class="btn-secondary" style="padding:5px 9px" onclick="abrirEditarProductoInv('${p.id}')" title="Editar">✏️</button>
@@ -7220,19 +7220,103 @@ window.eliminarProductoInv = async function(id) {
   catch(e) { toast("Error: " + e.message, false); }
 }
 
-// ── Modal Doc rápido (etiqueta / hoja de seguridad) ────────
+// ── Modal Doc rápido (etiqueta / hoja de seguridad): link + fotos ──
 let docModalInvId = null, docModalInvTipo = null;
+const campoFotosDocInv = t => t === "etiqueta" ? "etiquetaFotos" : "hojaFotos";
+const campoUrlDocInv = t => t === "etiqueta" ? "etiquetaUrl" : "hojaUrl";
 window.abrirDocModalInv = function(id, tipo) {
   const p = productosInv.find(x => x.id === id);
   if (!p) return;
   docModalInvId = id; docModalInvTipo = tipo;
   document.getElementById("inv-doc-modal-titulo").textContent = tipo === "etiqueta" ? "🏷 Etiqueta · " + p.nombre : "🛡 Hoja de seguridad · " + p.nombre;
-  document.getElementById("inv-doc-url-input").value = tipo === "etiqueta" ? (p.etiquetaUrl||"") : (p.hojaUrl||"");
+  document.getElementById("inv-doc-url-input").value = p[campoUrlDocInv(tipo)] || "";
   document.getElementById("modal-inv-doc").style.display = "flex";
+  renderFotosDocInv();
+}
+function comprimirFotoInv(file, maxLado, calidad) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      let w = img.width, h = img.height;
+      const k = Math.min(1, maxLado / Math.max(w, h));
+      w = Math.round(w * k); h = Math.round(h * k);
+      const c = document.createElement("canvas"); c.width = w; c.height = h;
+      const ctx = c.getContext("2d"); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h); ctx.drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(url);
+      resolve(c.toDataURL("image/jpeg", calidad));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("No se pudo leer la imagen")); };
+    img.src = url;
+  });
+}
+async function renderFotosDocInv() {
+  const cont = document.getElementById("inv-doc-fotos");
+  const p = productosInv.find(x => x.id === docModalInvId);
+  if (!p) return;
+  const ids = p[campoFotosDocInv(docModalInvTipo)] || [];
+  const tipoAct = docModalInvTipo, idAct = docModalInvId;
+  if (!ids.length) { cont.innerHTML = '<div style="font-size:12px;color:var(--text3)">Sin fotos todavía</div>'; return; }
+  cont.innerHTML = '<div style="font-size:12px;color:var(--text3)">Cargando fotos...</div>';
+  const res = await Promise.all(ids.map(async fid => {
+    try { const d = await getDoc(doc(dbInv, "docs_fotos", fid)); return d.exists() ? { id: fid, data: d.data().data } : { id: fid, data: null }; }
+    catch(e) { return { id: fid, data: null }; }
+  }));
+  if (docModalInvId !== idAct || docModalInvTipo !== tipoAct) return;
+  cont.innerHTML = res.map(f => f.data
+    ? `<div style="position:relative;display:inline-block;margin:0 6px 6px 0"><img src="${f.data}" style="width:84px;height:84px;object-fit:cover;border-radius:8px;border:1px solid var(--border);cursor:pointer" onclick="verFotoDocInv('${f.id}')"><button onclick="borrarFotoDocInv('${f.id}')" style="position:absolute;top:-6px;right:-6px;width:22px;height:22px;border-radius:50%;border:none;background:#c0392b;color:#fff;font-size:13px;line-height:1;cursor:pointer">×</button></div>`
+    : `<div style="display:inline-block;margin:0 6px 6px 0;font-size:11px;color:var(--text3)">(foto no disponible)</div>`).join("");
+  window._fotosDocInvCache = Object.fromEntries(res.map(f => [f.id, f.data]));
+}
+window.verFotoDocInv = function(fid) {
+  const d = (window._fotosDocInvCache || {})[fid]; if (!d) return;
+  document.getElementById("inv-doc-visor-img").src = d;
+  document.getElementById("modal-inv-doc-visor").style.display = "flex";
+}
+window.subirFotosDocInv = async function(input) {
+  const files = Array.from(input.files || []); input.value = "";
+  if (!files.length) return;
+  const p = productosInv.find(x => x.id === docModalInvId); if (!p) return;
+  const campo = campoFotosDocInv(docModalInvTipo);
+  const ids = [...(p[campo] || [])];
+  const btn = document.getElementById("inv-doc-btn-foto");
+  btn.disabled = true; const txt = btn.textContent; btn.textContent = "Subiendo...";
+  try {
+    for (const f of files) {
+      let data = await comprimirFotoInv(f, 1800, 0.72);
+      if (data.length > 900000) data = await comprimirFotoInv(f, 1400, 0.6);
+      if (data.length > 950000) throw new Error("Foto demasiado pesada, intenta con otra");
+      const ref = await addDoc(collection(dbInv, "docs_fotos"), { productoId: docModalInvId, tipo: docModalInvTipo, data, ts: Date.now(), por: currentUser || "" });
+      ids.push(ref.id);
+    }
+    await updateDoc(doc(dbInv, "productos", docModalInvId), { [campo]: ids });
+    p[campo] = ids;
+    toast("✓ Foto guardada", true);
+    renderFotosDocInv();
+  } catch(e) { toast("Error: " + e.message, false); }
+  btn.disabled = false; btn.textContent = txt;
+}
+window.borrarFotoDocInv = async function(fid) {
+  if (!confirm("¿Eliminar esta foto?")) return;
+  const p = productosInv.find(x => x.id === docModalInvId); if (!p) return;
+  const campo = campoFotosDocInv(docModalInvTipo);
+  const ids = (p[campo] || []).filter(x => x !== fid);
+  try {
+    await updateDoc(doc(dbInv, "productos", docModalInvId), { [campo]: ids });
+    p[campo] = ids;
+    try { await deleteDoc(doc(dbInv, "docs_fotos", fid)); } catch(e) {}
+    renderFotosDocInv();
+  } catch(e) { toast("Error: " + e.message, false); }
+}
+window.abrirLinkDocInv = function() {
+  let u = document.getElementById("inv-doc-url-input").value.trim();
+  if (!u) return;
+  if (!/^https?:\/\//i.test(u)) u = "https://" + u;
+  window.open(u, "_blank");
 }
 window.guardarDocInv = async function() {
   const url = document.getElementById("inv-doc-url-input").value.trim();
-  const campo = docModalInvTipo === "etiqueta" ? "etiquetaUrl" : "hojaUrl";
+  const campo = campoUrlDocInv(docModalInvTipo);
   try {
     await updateDoc(doc(dbInv, "productos", docModalInvId), { [campo]: url });
     cerrarModalInv("modal-inv-doc");
@@ -9239,12 +9323,21 @@ tbody td{padding:10px 12px;vertical-align:middle;}
 <div class="modal-overlay" id="modal-inv-doc">
   <div class="modal-box" style="max-width:440px">
     <div class="modal-title" id="inv-doc-modal-titulo"></div>
-    <div class="field"><label>Link (Google Drive, PDF, imagen...)</label><input type="text" id="inv-doc-url-input" placeholder="https://..."></div>
+    <div class="field"><label>📷 Fotos (cámara o galería)</label>
+      <div id="inv-doc-fotos" style="margin-bottom:8px"></div>
+      <input type="file" id="inv-doc-file" accept="image/*" multiple style="display:none" onchange="subirFotosDocInv(this)">
+      <button type="button" class="btn btn-secondary" id="inv-doc-btn-foto" style="width:100%;justify-content:center" onclick="document.getElementById('inv-doc-file').click()">📷 Tomar / subir foto</button>
+      <div style="font-size:11px;color:var(--text3);margin-top:4px">Puedes subir varias (cada cara del envase o cada hoja). Se guardan al instante.</div>
+    </div>
+    <div class="field"><label>🔗 o Link (Google Drive, PDF, página web...)</label><div style="display:flex;gap:6px"><input type="text" id="inv-doc-url-input" placeholder="https://..." style="flex:1"><button type="button" class="btn btn-secondary" onclick="abrirLinkDocInv()">Abrir</button></div></div>
     <div class="modal-actions">
-      <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="cerrarModalInv('modal-inv-doc')">Cancelar</button>
-      <button class="btn btn-verde" style="flex:2" onclick="guardarDocInv()">Guardar</button>
+      <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="cerrarModalInv('modal-inv-doc')">Cerrar</button>
+      <button class="btn btn-verde" style="flex:2" onclick="guardarDocInv()">Guardar link</button>
     </div>
   </div>
+</div>
+<div class="modal-overlay" id="modal-inv-doc-visor" onclick="cerrarModalInv('modal-inv-doc-visor')" style="z-index:10001">
+  <div style="max-width:96vw;max-height:92vh;overflow:auto"><img id="inv-doc-visor-img" style="max-width:100%;border-radius:8px;background:#fff"></div>
 </div>
 
 <!-- MODAL NUEVO PRODUCTO DESDE INGRESO PENDIENTE -->
