@@ -390,6 +390,9 @@ const JDP_MAX_GAP_MS = 15 * 60 * 1000; // sin datos de motor, huecos > 15 min no
 const JDP_VEL_TRASLADO_KMH = 15;       // velocidad media supuesta al trasladarse entre lugares
 const JDP_FUERA = 'Fuera de potreros (caminos, patio)';
 const JDP_SINGPS = 'Sin ubicación GPS';
+const JDP_ZONA = '🏠 '; // prefijo de las zonas sin cultivo (bodegas, patio, taller)
+function jdpEsZona(n) { return typeof n === 'string' && n.startsWith(JDP_ZONA); }
+function jdpEsProductivo(n) { return n !== JDP_FUERA && n !== JDP_SINGPS && !jdpEsZona(n); }
 
 // [lat,lng] o {lat,lng} → [[lat,lng],...]
 function jdpNormPoligono(pol) {
@@ -406,6 +409,14 @@ function jdpPuntoEnPoligono(lat, lng, poly) {
 // potreros: [{nombre, poly:[[lat,lng]...]}]
 function jdpPotreroDePunto(lat, lng, potreros) {
   for (const p of potreros) if (jdpPuntoEnPoligono(lat, lng, p.poly)) return p.nombre;
+  return null;
+}
+// zonas: [{nombre, poly:[[lat,lng]...]} | {nombre, centro:[lat,lng], radioM}]
+function jdpZonaDePunto(lat, lng, zonas) {
+  for (const z of zonas || []) {
+    if (z.radioM) { if (jdpDistKm({ lat, lng }, { lat: z.centro[0], lng: z.centro[1] }) * 1000 <= z.radioM) return z.nombre; }
+    else if (z.poly && jdpPuntoEnPoligono(lat, lng, z.poly)) return z.nombre;
+  }
   return null;
 }
 function jdpDistKm(a, b) {
@@ -471,12 +482,53 @@ function jdpMotorEn(t, tramos) { return tramos.some(([s, e]) => t >= s && t <= e
 //  - antes del primer punto y después del último del tramo, al lugar de ese punto.
 // Así, aunque JDLink mande pocos puntos, el patio solo se queda con el
 // tiempo de salida/llegada y no con horas de trabajo.
-function jdpRepartir(puntos, tramos, desde, hasta, potreros) {
+// Distancia en metros desde un punto al borde de un polígono [[lat,lng]...]
+// (proyección plana local; suficiente para distancias de decenas de metros).
+function jdpDistBordeM(lat, lng, poly) {
+  const kx = 111320 * Math.cos(lat * Math.PI / 180), ky = 110540;
+  let min = Infinity;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const ax = (poly[j][1] - lng) * kx, ay = (poly[j][0] - lat) * ky;
+    const bx = (poly[i][1] - lng) * kx, by = (poly[i][0] - lat) * ky;
+    const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+    const t = l2 ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / l2)) : 0;
+    const px = ax + t * dx, py = ay + t * dy;
+    min = Math.min(min, Math.hypot(px, py));
+  }
+  return min;
+}
+// Potrero más cercano cuyo borde esté a menos de margenM metros (cabeceras).
+function jdpPotreroCercano(lat, lng, potreros, margenM) {
+  if (!(margenM > 0)) return null;
+  const dLat = margenM / 110540, dLng = margenM / (111320 * Math.cos(lat * Math.PI / 180));
+  let mejor = null, mejorD = Infinity;
+  for (const p of potreros) {
+    if (!p.bbox) {
+      const la = p.poly.map(c => c[0]), lo = p.poly.map(c => c[1]);
+      p.bbox = [Math.min(...la), Math.max(...la), Math.min(...lo), Math.max(...lo)];
+    }
+    const [a0, a1, o0, o1] = p.bbox;
+    if (lat < a0 - dLat || lat > a1 + dLat || lng < o0 - dLng || lng > o1 + dLng) continue;
+    const d = jdpDistBordeM(lat, lng, p.poly);
+    if (d <= margenM && d < mejorD) { mejor = p.nombre; mejorD = d; }
+  }
+  return mejor;
+}
+
+function jdpRepartir(puntos, tramos, desde, hasta, potreros, zonas, margenM) {
+  // Una zona sin cultivo manda sobre un potrero (si la bodega quedó dentro de un polígono).
   const pts = puntos.filter(p => p.t >= desde - 6 * 3600000 && p.t <= hasta + 6 * 3600000)
-    .map(p => ({ ...p, potrero: jdpPotreroDePunto(p.lat, p.lng, potreros) }));
+    .map(p => {
+      const zona = jdpZonaDePunto(p.lat, p.lng, zonas);
+      if (zona) return { ...p, zona, potrero: null, margen: false };
+      const dentro = jdpPotreroDePunto(p.lat, p.lng, potreros);
+      if (dentro) return { ...p, zona: null, potrero: dentro, margen: false };
+      const cerca = jdpPotreroCercano(p.lat, p.lng, potreros, margenM);
+      return { ...p, zona: null, potrero: cerca, margen: !!cerca };
+    });
   const porPotrero = {};
   const sumar = (nombre, ms) => { if (ms > 0) porPotrero[nombre] = (porPotrero[nombre] || 0) + ms; };
-  const lugar = p => p.potrero || JDP_FUERA;
+  const lugar = p => p.zona ? JDP_ZONA + p.zona : (p.potrero || JDP_FUERA);
   const conMotor = Array.isArray(tramos) && tramos.length > 0;
 
   if (conMotor) {
@@ -501,7 +553,8 @@ function jdpRepartir(puntos, tramos, desde, hasta, potreros) {
         const resto = dur - viaje;
         sumar(JDP_FUERA, viaje);
         if (a.potrero && b.potrero) { sumar(a.potrero, resto / 2); sumar(b.potrero, resto / 2); }
-        else sumar(a.potrero || b.potrero || JDP_FUERA, resto);
+        else if (a.potrero || b.potrero) sumar(a.potrero || b.potrero, resto);
+        else { sumar(lugar(a), resto / 2); sumar(lugar(b), resto / 2); }
       }
       const ult = dentro[dentro.length - 1];
       sumar(lugar(ult), clip(ult.t, e));
@@ -549,6 +602,34 @@ let jdpMaquinas = [];
 let jdpCargas = [];
 let jdpCargaSel = null;
 let jdpMapa = null;
+let jdpZonas = [];   // zonas sin cultivo guardadas (config/zonas_sin_cultivo)
+let jdpMargenM = 10; // margen de cabeceras: puntos a menos de X m del borde cuentan para ese potrero
+let jdpRaw = null;   // último resultado de Operations Center, para recalcular sin volver a consultar
+
+function jdpZonasParaCalculo() {
+  return jdpZonas.map(z => z.tipo === 'circulo'
+    ? { nombre: z.nombre, centro: [z.centro.lat, z.centro.lng], radioM: z.radio }
+    : { nombre: z.nombre, poly: jdpNormPoligono(z.poligono) });
+}
+async function jdpCargarZonas() {
+  try {
+    const s = await getDoc(doc(db, 'config', 'zonas_sin_cultivo'));
+    const d = s.exists() ? s.data() : {};
+    jdpZonas = d.zonas || [];
+    if (typeof d.margenM === 'number') jdpMargenM = d.margenM;
+  }
+  catch (e) { console.warn('zonas sin cultivo', e); }
+}
+async function jdpGuardarZonas(zonas, margenM) {
+  const m = typeof margenM === 'number' ? margenM : jdpMargenM;
+  await setDoc(doc(db, 'config', 'zonas_sin_cultivo'), { zonas, margenM: m, actualizadoPor: currentUser || '', ts: Date.now() });
+  jdpZonas = zonas; jdpMargenM = m;
+}
+window.jdpCambiarMargen = async function(v) {
+  const m = Math.max(0, Math.min(100, Math.round(Number(v) || 0)));
+  try { await jdpGuardarZonas(jdpZonas, m); } catch (e) { jdpMargenM = m; toast('No se pudo guardar el margen: ' + e.message, false); }
+  jdpRecalcular();
+}
 
 function jdpFechaInput(ms) {
   const d = new Date(ms), p = n => String(n).padStart(2, '0');
@@ -572,6 +653,7 @@ window.abrirJdPotreros = async function() {
   const eqs = [...(config.equipos || [])].sort((a, b) => (fuenteHorometroDe(b) === 'jdlink') - (fuenteHorometroDe(a) === 'jdlink') || a.localeCompare(b));
   selEq.innerHTML = eqs.map(e => `<option value="${e}">${e}${fuenteHorometroDe(e) === 'jdlink' ? ' · JDLink' : ''}</option>`).join('');
   if (!Object.keys(cultivoActualPorPotrero).length) await cargarCultivosActualesPotreros();
+  await jdpCargarZonas();
   const selM = document.getElementById('jdp-maquina');
   selM.innerHTML = '<option value="">Cargando máquinas de Operations Center...</option>';
   try {
@@ -666,40 +748,62 @@ window.consultarJdPotreros = async function() {
     const puntos = jdpExtraerPuntos(loc.valores);
     const tramos = hrs.ok ? jdpExtraerTramosMotor(hrs.valores) : [];
     const potreros = potrerosConfig.filter(p => poligonoValido(p.poligono)).map(p => ({ nombre: p.nombre, poly: jdpNormPoligono(p.poligono) }));
-    const r = jdpRepartir(puntos, tramos, desde, hasta, potreros);
+    jdpRaw = { puntos, tramos, desde, hasta, diag, potreros };
+    const r = jdpRecalcular();
     window._jdpUltimo = { diag, desde, hasta, equipo: document.getElementById('jdp-equipo').value,
       carga: jdpCargaSel ? { fecha: jdpCargaSel.fecha, hora: jdpCargaSel.hora, litros: jdpCargaSel.litros, centros: jdpCargaSel.centros || [], diff_medidor: jdpCargaSel.diff_medidor ?? null } : null,
       ubicaciones: loc.valores.map(v => ({ point: v.point || v.location || null, eventTimestamp: v.eventTimestamp || v.timestamp || null, machineState: v.machineState || null })),
       horasOperacion: hrs.valores.map(v => ({ startDate: v.startDate, endDate: v.endDate, engineState: v.engineState })),
       potreros: potreros.map(p => ({ nombre: p.nombre, cultivo: jdpCultivoDePotrero(p.nombre) })),
       reparto: Object.fromEntries(Object.entries(r.porPotrero).map(([k, v]) => [k, +(v / 3600000).toFixed(2)])) };
+    window._jdpUltimo.zonasSinCultivo = jdpZonas;
+    window._jdpUltimo.margenM = jdpMargenM;
     console.log('Prueba JDLink por potrero:', window._jdpUltimo);
-    jdpRenderResultado(r, diag, desde, hasta, potreros.length);
   } catch (e) {
     res.innerHTML = `<div style="color:#C0392B;font-size:13px;padding:10px">Error: ${e.message}</div>`;
   }
   btn.disabled = false; btn.textContent = '📡 Consultar recorrido';
 }
 
+// Recalcula y vuelve a dibujar con los datos ya traídos (p. ej. después de marcar una zona).
+function jdpRecalcular() {
+  if (!jdpRaw) return null;
+  const { puntos, tramos, desde, hasta, diag, potreros } = jdpRaw;
+  const r = jdpRepartir(puntos, tramos, desde, hasta, potreros, jdpZonasParaCalculo(), jdpMargenM);
+  jdpRenderResultado(r, diag, desde, hasta, potreros.length);
+  return r;
+}
+
 function jdpRenderResultado(r, diag, desde, hasta, nPotreros) {
   const res = document.getElementById('jdp-resultado');
   const h = ms => (ms / 3600000).toFixed(1);
   const litros = jdpCargaSel ? Number(jdpCargaSel.litros || 0) : null;
-  const esResto = n => n === JDP_FUERA || n === JDP_SINGPS;
-  const filas = Object.entries(r.porPotrero).sort((a, b) => esResto(a[0]) - esResto(b[0]) || b[1] - a[1]);
+  // Los litros se reparten SOLO entre potreros, en proporción a sus horas.
+  // El tiempo en zonas sin cultivo, caminos o sin GPS se muestra aparte y no recibe litros.
+  const todas = Object.entries(r.porPotrero);
+  const prod = todas.filter(([n]) => jdpEsProductivo(n)).sort((a, b) => b[1] - a[1]);
+  const noProd = todas.filter(([n]) => !jdpEsProductivo(n)).sort((a, b) => b[1] - a[1]);
+  const prodMs = prod.reduce((s, x) => s + x[1], 0);
   const porCultivo = {};
-  filas.forEach(([n, ms]) => { const c = n === JDP_FUERA ? 'Traslado / patio' : n === JDP_SINGPS ? 'Sin ubicación GPS' : (jdpCultivoDePotrero(n) || 'Sin cultivo definido'); porCultivo[c] = (porCultivo[c] || 0) + ms; });
+  prod.forEach(([n, ms]) => { const c = jdpCultivoDePotrero(n) || 'Sin cultivo definido'; porCultivo[c] = (porCultivo[c] || 0) + ms; });
   const td = 'style="text-align:right;padding:6px 4px;white-space:nowrap"';
   const tabla = (pares, conCultivo) => `<div style="overflow-x:auto">
     <table style="width:100%;min-width:0;font-size:13px;margin-top:6px;table-layout:auto"><thead><tr><th style="padding:6px 4px">${conCultivo ? 'Potrero' : 'Cultivo'}</th><th ${td}>Horas</th><th ${td}>%</th>${litros != null ? `<th ${td}>Litros</th>` : ''}</tr></thead><tbody>
-    ${pares.map(([n, ms]) => { const pct = r.totalMs ? ms / r.totalMs : 0; const cult = conCultivo && n !== JDP_FUERA && n !== JDP_SINGPS ? jdpCultivoDePotrero(n) : '';
+    ${pares.map(([n, ms]) => { const pct = prodMs ? ms / prodMs : 0; const cult = conCultivo ? jdpCultivoDePotrero(n) : '';
       return `<tr><td style="padding:6px 4px">${n}${cult ? `<div style="font-size:11px;color:var(--acero)">${cult}</div>` : ''}</td><td ${td}>${h(ms)}</td><td ${td}>${(pct * 100).toFixed(0)}%</td>${litros != null ? `<td ${td}><strong>${(litros * pct).toFixed(1)}</strong></td>` : ''}</tr>`; }).join('')}
-    <tr style="font-weight:700;border-top:2px solid var(--borde)"><td style="padding:6px 4px">Total</td><td ${td}>${h(r.totalMs)}</td><td ${td}>${r.totalMs ? '100%' : '—'}</td>${litros != null ? `<td ${td}>${litros.toFixed(1)}</td>` : ''}</tr>
+    <tr style="font-weight:700;border-top:2px solid var(--borde)"><td style="padding:6px 4px">Total en potreros</td><td ${td}>${h(prodMs)}</td><td ${td}>${prodMs ? '100%' : '—'}</td>${litros != null ? `<td ${td}>${prodMs ? litros.toFixed(1) : '—'}</td>` : ''}</tr>
     </tbody></table></div>`;
+  const nombreNoProd = n => jdpEsZona(n) ? n : n === JDP_FUERA ? 'Caminos y otros lugares sin dibujar' : n;
+  const tablaNoProd = noProd.length ? `<div style="overflow-x:auto"><table style="width:100%;min-width:0;font-size:13px;margin-top:6px"><thead><tr><th style="padding:6px 4px">Lugar</th><th ${td}>Horas</th><th ${td}>% del motor</th></tr></thead><tbody>
+    ${noProd.map(([n, ms]) => `<tr><td style="padding:6px 4px">${nombreNoProd(n)}</td><td ${td}>${h(ms)}</td><td ${td}>${r.totalMs ? (ms / r.totalMs * 100).toFixed(0) : 0}%</td></tr>`).join('')}
+    </tbody></table></div>` : '<div style="font-size:12px;color:var(--acero);margin-top:4px">Todo el tiempo con motor encendido fue dentro de potreros.</div>';
+  const fueraMs = r.porPotrero[JDP_FUERA] || 0;
   const avisos = [];
   if (!r.puntos.length) avisos.push('Operations Center no devolvió ubicaciones para este período. Revisa el detalle técnico de abajo.');
   if (!r.conMotor) avisos.push('No llegaron datos de motor encendido/apagado: el tiempo se estimó solo con los puntos GPS (huecos de más de 15 min no se cuentan).');
   if (!nPotreros) avisos.push('No hay potreros con polígono dibujado: todo queda "fuera de potreros".');
+  if (r.totalMs && fueraMs / r.totalMs > 0.25) avisos.push(`${h(fueraMs)} h (${(fueraMs / r.totalMs * 100).toFixed(0)}% del motor) quedaron fuera de los potreros y de las zonas sin cultivo. Mira los puntos rojos del mapa: si es la bodega o el patio, márcalos como zona sin cultivo; si es un potrero, falta dibujarlo.`);
+  if (r.totalMs && !prodMs) avisos.push('No hubo tiempo dentro de potreros: los litros de esta carga no se pueden repartir.');
   const gapProm = r.puntos.length > 1 ? (r.puntos[r.puntos.length - 1].t - r.puntos[0].t) / (r.puntos.length - 1) / 60000 : null;
   const horometro = jdpCargaSel && jdpCargaSel.medidor_tipo === 'hr' && jdpCargaSel.diff_medidor != null ? Number(jdpCargaSel.diff_medidor) : null;
   res.innerHTML = `
@@ -712,11 +816,27 @@ function jdpRenderResultado(r, diag, desde, hasta, nPotreros) {
     </div>
     ${avisos.map(a => `<div style="background:#FEF3DC;border-left:4px solid #F5A623;padding:8px 10px;border-radius:6px;margin-bottom:6px;font-size:12px">${a}</div>`).join('')}
     <div id="jdp-mapa" style="height:340px;border-radius:8px;margin:8px 0"></div>
-    <div style="font-weight:700;font-size:13px;margin-top:10px">Por potrero</div>${tabla(filas, true)}
+    <div style="font-size:11px;color:var(--acero);margin-bottom:6px">🟡 en potrero · 🟠 cabecera (dentro del margen) · 🔵 zona sin cultivo · 🔴 fuera</div>
+    <div style="display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:8px">
+      <label style="text-transform:none;letter-spacing:normal;font-family:var(--sans);font-size:12px;margin:0">Margen de cabeceras:</label>
+      <input type="number" min="0" max="100" step="1" value="${jdpMargenM}" style="width:70px;padding:4px 6px" onchange="jdpCambiarMargen(this.value)"> m
+      <span style="color:var(--acero)">(${r.puntos.filter(p => p.margen).length} puntos asignados por margen)</span>
+    </div>
+    <div style="background:var(--fondo);border-radius:8px;padding:10px 12px;font-size:12px">
+      <strong>Zonas sin cultivo</strong> (bodegas, patio, taller): su tiempo no recibe litros.
+      <div style="margin:6px 0">${jdpZonas.length ? jdpZonas.map((z, i) => `<span class="badge" style="margin:2px 4px 2px 0;display:inline-flex;gap:6px;align-items:center">🏠 ${z.nombre} <a href="#" onclick="jdpBorrarZona(${i});return false" style="color:#C0392B;text-decoration:none">✕</a></span>`).join('') : '<span style="color:var(--acero)">Ninguna todavía.</span>'}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <button class="btn btn-secondary" style="width:auto;padding:6px 10px" onclick="jdpDibujarZona('poligono')">✏️ Dibujar zona (polígono)</button>
+        <button class="btn btn-secondary" style="width:auto;padding:6px 10px" onclick="jdpDibujarZona('circulo')">⭕ Zona circular</button>
+      </div>
+    </div>
+    <div style="font-weight:700;font-size:13px;margin-top:12px">Por potrero</div>${tabla(prod, true)}
     <div style="font-weight:700;font-size:13px;margin-top:12px">Por cultivo</div>${tabla(Object.entries(porCultivo).sort((a, b) => b[1] - a[1]), false)}
+    <div style="font-weight:700;font-size:13px;margin-top:12px">Tiempo que no se reparte</div>${tablaNoProd}
+    <div style="font-size:12px;color:var(--acero);margin-top:6px">Motor encendido total: <strong>${h(r.totalMs)} h</strong> · en potreros: <strong>${h(prodMs)} h</strong>${litros != null && prodMs ? ` · los ${litros.toFixed(1)} L se reparten solo entre los potreros` : ''}</div>
     <details style="margin-top:12px;font-size:12px"><summary style="cursor:pointer">Ver los ${r.puntos.length} puntos GPS</summary>
       <div style="overflow-x:auto;max-height:260px;overflow-y:auto"><table style="width:100%;min-width:0;font-size:12px"><thead><tr><th style="padding:4px">Hora</th><th style="padding:4px">Lugar</th><th style="padding:4px">Motor</th></tr></thead><tbody>
-      ${r.puntos.map(p => `<tr><td style="padding:4px;white-space:nowrap">${new Date(p.t).toLocaleString('es-CL', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</td><td style="padding:4px">${p.potrero || 'fuera'}</td><td style="padding:4px">${p.motor == null ? '—' : p.motor ? 'encendido' : 'apagado'}</td></tr>`).join('')}
+      ${r.puntos.map(p => `<tr><td style="padding:4px;white-space:nowrap">${new Date(p.t).toLocaleString('es-CL', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</td><td style="padding:4px">${p.zona ? '🏠 ' + p.zona : p.potrero ? p.potrero + (p.margen ? ' (cabecera)' : '') : 'fuera'}</td><td style="padding:4px">${p.motor == null ? '—' : p.motor ? 'encendido' : 'apagado'}</td></tr>`).join('')}
       </tbody></table></div></details>
     <button class="btn btn-secondary btn-full" style="margin-top:10px;justify-content:center" onclick="jdpDescargarDatos()">⬇️ Descargar datos de la prueba (para mandárselos a Claude)</button>
     <details style="margin-top:12px;font-size:12px"><summary style="cursor:pointer">Detalle técnico (para revisar con Claude)</summary>
@@ -737,12 +857,17 @@ function jdpRenderMapa(r) {
     L.polygon(p.poligono, { color, fillColor: color, fillOpacity: horas ? 0.45 : 0.12, weight: horas ? 3 : 1 }).addTo(map)
       .bindTooltip(`${p.nombre}${horas ? ' · ' + (horas / 3600000).toFixed(1) + ' h' : ''}`, { sticky: true });
   });
+  jdpZonas.forEach(z => {
+    const est = { color: '#60A5FA', fillColor: '#60A5FA', fillOpacity: 0.25, weight: 2, dashArray: '6 4' };
+    const capa = z.tipo === 'circulo' ? L.circle([z.centro.lat, z.centro.lng], { ...est, radius: z.radio }) : L.polygon(z.poligono, est);
+    capa.addTo(map).bindTooltip(`🏠 ${z.nombre} (sin cultivo)`, { sticky: true });
+  });
   if (r.puntos.length) {
     const ll = r.puntos.map(p => [p.lat, p.lng]);
     L.polyline(ll, { color: '#FFFFFF', weight: 2, opacity: 0.8 }).addTo(map);
     r.puntos.forEach(p => {
-      L.circleMarker([p.lat, p.lng], { radius: 3, color: p.potrero ? '#FFD400' : '#E11D48', weight: 1, fillOpacity: 0.9 }).addTo(map)
-        .bindTooltip(`${new Date(p.t).toLocaleString('es-CL')} · ${p.potrero || 'fuera de potreros'}`);
+      L.circleMarker([p.lat, p.lng], { radius: 3, color: p.zona ? '#60A5FA' : p.margen ? '#F97316' : p.potrero ? '#FFD400' : '#E11D48', weight: 1, fillOpacity: 0.9 }).addTo(map)
+        .bindTooltip(`${new Date(p.t).toLocaleString('es-CL')} · ${p.zona ? '🏠 ' + p.zona : p.potrero ? p.potrero + (p.margen ? ' (cabecera)' : '') : 'fuera de potreros'}`);
       bounds.push([p.lat, p.lng]);
     });
   } else {
@@ -750,6 +875,34 @@ function jdpRenderMapa(r) {
   }
   if (bounds.length) map.fitBounds(bounds, { padding: [20, 20] }); else map.setView([-36.6, -72.1], 12);
   setTimeout(() => map.invalidateSize(), 150);
+  map.on('draw:created', async (e) => {
+    const nombre = (prompt('Nombre de la zona sin cultivo (ej. Bodegas, Patio, Taller):', 'Bodegas') || '').trim();
+    if (!nombre) return;
+    let zona;
+    if (e.layerType === 'circle') { const c = e.layer.getLatLng(); zona = { nombre, tipo: 'circulo', centro: { lat: c.lat, lng: c.lng }, radio: Math.round(e.layer.getRadius()) }; }
+    else zona = { nombre, tipo: 'poligono', poligono: e.layer.getLatLngs()[0].map(ll => ({ lat: ll.lat, lng: ll.lng })) };
+    try {
+      await jdpGuardarZonas([...jdpZonas, zona]);
+      toast(`✓ Zona "${nombre}" guardada`, true);
+      jdpRecalcular();
+    } catch (err) { toast('Error guardando la zona: ' + err.message, false); }
+  });
+}
+
+window.jdpDibujarZona = function(tipo) {
+  if (!jdpMapa || typeof L === 'undefined' || !L.Draw) { toast('Primero consulta un recorrido para tener el mapa', false); return; }
+  const opts = { shapeOptions: { color: '#60A5FA', dashArray: '6 4' } };
+  const h = tipo === 'circulo' ? new L.Draw.Circle(jdpMapa, opts) : new L.Draw.Polygon(jdpMapa, { ...opts, allowIntersection: false });
+  h.enable();
+  document.getElementById('jdp-mapa').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  toast(tipo === 'circulo' ? 'Toca el centro de la bodega y arrastra para dar el tamaño' : 'Toca los vértices alrededor de la bodega y cierra tocando el primer punto', true);
+}
+
+window.jdpBorrarZona = async function(i) {
+  const z = jdpZonas[i];
+  if (!z || !confirm(`¿Eliminar la zona "${z.nombre}"?`)) return;
+  try { await jdpGuardarZonas(jdpZonas.filter((_, j) => j !== i)); jdpRecalcular(); }
+  catch (err) { toast('Error: ' + err.message, false); }
 }
 
 window.jdpDescargarDatos = function() {
