@@ -380,6 +380,313 @@ window.obtenerHorasJDLink = async function() {
   if (btn) { btn.disabled = false; btn.textContent = '📡 Obtener horas desde JDLink'; }
 }
 
+// ─── PRUEBA: TIEMPO POR POTRERO DESDE EL RECORRIDO JDLINK ────────────
+// Herramienta de diagnóstico (solo admin). Para una máquina con JDLink y un
+// período (normalmente entre dos cargas de combustible), trae del Operations
+// Center las ubicaciones GPS y los tramos con motor encendido, ve en qué
+// potrero cae cada punto y reparte el tiempo (y los litros de la carga) por
+// potrero. Todavía NO guarda nada: es para validar con un tractor real.
+const JDP_MAX_GAP_MS = 15 * 60 * 1000; // sin datos de motor, huecos > 15 min no se cuentan
+const JDP_FUERA = 'Fuera de potreros (caminos, patio)';
+
+// [lat,lng] o {lat,lng} → [[lat,lng],...]
+function jdpNormPoligono(pol) {
+  return (pol || []).map(c => Array.isArray(c) ? [Number(c[0]), Number(c[1])] : [Number(c.lat), Number(c.lng)]);
+}
+function jdpPuntoEnPoligono(lat, lng, poly) {
+  let dentro = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const yi = poly[i][0], xi = poly[i][1], yj = poly[j][0], xj = poly[j][1];
+    if (((yi > lat) !== (yj > lat)) && (lng < (xj - xi) * (lat - yi) / ((yj - yi) || 1e-12) + xi)) dentro = !dentro;
+  }
+  return dentro;
+}
+// potreros: [{nombre, poly:[[lat,lng]...]}]
+function jdpPotreroDePunto(lat, lng, potreros) {
+  for (const p of potreros) if (jdpPuntoEnPoligono(lat, lng, p.poly)) return p.nombre;
+  return null;
+}
+function jdpNum(v) { const n = Number(v); return isFinite(n) ? n : null; }
+// Acepta varias formas de respuesta (locationHistory, breadcrumbs, etc.)
+function jdpExtraerPuntos(values) {
+  const out = [];
+  (values || []).forEach(v => {
+    if (!v || typeof v !== 'object') return;
+    const g = v.point || v.location || v.position || v.geoLocation || v;
+    let lat = jdpNum(g.lat ?? g.latitude), lng = jdpNum(g.lon ?? g.lng ?? g.longitude);
+    if ((lat == null || lng == null) && Array.isArray(v.geometry?.coordinates)) { lng = jdpNum(v.geometry.coordinates[0]); lat = jdpNum(v.geometry.coordinates[1]); }
+    const tRaw = v.eventTimestamp || v.gpsFixTimestamp || v.timestamp || v.time || v.dateTime || v.recordedTime || v.date;
+    const t = tRaw ? Date.parse(tRaw) : NaN;
+    if (lat == null || lng == null || !isFinite(t) || (lat === 0 && lng === 0)) return;
+    out.push({ t, lat, lng, estado: v.machineState || v.state || null });
+  });
+  out.sort((a, b) => a.t - b.t);
+  return out.filter((p, i) => i === 0 || p.t !== out[i - 1].t);
+}
+// Tramos con motor encendido: [[inicio, fin], ...] en ms
+function jdpExtraerTramosMotor(values) {
+  const out = [];
+  (values || []).forEach(v => {
+    if (!v || typeof v !== 'object') return;
+    const s = Date.parse(v.startDate || v.start || v.startTime || v.from || '');
+    const e = Date.parse(v.endDate || v.end || v.endTime || v.to || '');
+    if (!isFinite(s) || !isFinite(e) || e <= s) return;
+    const est = v.engineState ?? v.state ?? v.status ?? v.machineState;
+    if (est != null) {
+      const x = String(est).toLowerCase();
+      const on = x === 'on' || x === 'true' || x === '1' || x.includes('run') || x.includes('work') || x.includes('idle') || x.includes('transport') || x === 'engineon' || x === 'keyon';
+      if (!on) return;
+    }
+    out.push([s, e]);
+  });
+  out.sort((a, b) => a[0] - b[0]);
+  // une tramos que se traslapan
+  const unidos = [];
+  out.forEach(tr => {
+    const u = unidos[unidos.length - 1];
+    if (u && tr[0] <= u[1]) u[1] = Math.max(u[1], tr[1]); else unidos.push([tr[0], tr[1]]);
+  });
+  return unidos;
+}
+function jdpTraslape(a0, a1, tramos) {
+  let ms = 0;
+  for (const [s, e] of tramos) { const x = Math.max(a0, s), y = Math.min(a1, e); if (y > x) ms += y - x; }
+  return ms;
+}
+// Reparte el tiempo del período [desde, hasta] por potrero. Cada instante se
+// asigna al punto GPS más cercano en el tiempo. Si hay tramos de motor, solo
+// cuenta el tiempo con motor encendido; si no, solo cuenta entre puntos
+// separados por menos de JDP_MAX_GAP_MS.
+function jdpRepartir(puntos, tramos, desde, hasta, potreros) {
+  const pts = puntos.filter(p => p.t >= desde - JDP_MAX_GAP_MS && p.t <= hasta + JDP_MAX_GAP_MS)
+    .map(p => ({ ...p, potrero: jdpPotreroDePunto(p.lat, p.lng, potreros) }));
+  const porPotrero = {};
+  const sumar = (nombre, ms) => { if (ms > 0) porPotrero[nombre || JDP_FUERA] = (porPotrero[nombre || JDP_FUERA] || 0) + ms; };
+  const conMotor = Array.isArray(tramos) && tramos.length > 0;
+  const pieza = (a0, a1, potrero, gapOk) => {
+    a0 = Math.max(a0, desde); a1 = Math.min(a1, hasta);
+    if (a1 <= a0) return;
+    sumar(potrero, conMotor ? jdpTraslape(a0, a1, tramos) : (gapOk ? a1 - a0 : 0));
+  };
+  if (pts.length) {
+    pieza(desde, pts[0].t, pts[0].potrero, false);
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i], b = pts[i + 1], mid = (a.t + b.t) / 2, ok = (b.t - a.t) <= JDP_MAX_GAP_MS;
+      pieza(a.t, mid, a.potrero, ok);
+      pieza(mid, b.t, b.potrero, ok);
+    }
+    pieza(pts[pts.length - 1].t, hasta, pts[pts.length - 1].potrero, false);
+  } else if (conMotor) {
+    sumar(null, jdpTraslape(desde, hasta, tramos));
+  }
+  const totalMs = Object.values(porPotrero).reduce((s, x) => s + x, 0);
+  const motorMs = conMotor ? jdpTraslape(desde, hasta, tramos) : null;
+  return { porPotrero, totalMs, motorMs, puntos: pts, conMotor };
+}
+
+// Trae todas las páginas de un recurso JD para [desde, hasta], en tramos de
+// 24 h (algunos endpoints limitan el rango). Devuelve valores + diagnóstico.
+async function jdpTraerRango(urlBase, desde, hasta, diag, etiqueta) {
+  const valores = [];
+  const DIA = 24 * 3600 * 1000;
+  for (let ini = desde; ini < hasta; ini += DIA) {
+    const fin = Math.min(hasta, ini + DIA);
+    let url = urlBase + (urlBase.includes('?') ? '&' : '?') + `startDate=${new Date(ini).toISOString()}&endDate=${new Date(fin).toISOString()}`;
+    for (let pag = 0; url && pag < 40; pag++) {
+      const { status, data } = await callJDApi(url);
+      diag.llamadas.push(`${etiqueta}: HTTP ${status}${data && Array.isArray(data.values) ? ` · ${data.values.length} registros` : ''}`);
+      if (status !== 200 || !data) { if (!diag.errores[etiqueta]) diag.errores[etiqueta] = { status, data }; return { ok: false, status, valores }; }
+      const vals = data.values || [];
+      if (!diag.muestras[etiqueta] && vals.length) diag.muestras[etiqueta] = vals.slice(0, 2);
+      valores.push(...vals);
+      const next = (data.links || []).find(l => /nextpage/i.test(l.rel || ''));
+      url = next ? next.uri : null;
+    }
+  }
+  return { ok: true, status: 200, valores };
+}
+
+let jdpMaquinas = [];
+let jdpCargas = [];
+let jdpCargaSel = null;
+let jdpMapa = null;
+
+function jdpFechaInput(ms) {
+  const d = new Date(ms), p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+// Momento real de una carga: las cargas con bomba usan ts; las manuales, su fecha y hora.
+function jdpMomentoCarga(r) {
+  if (r.registro_manual && r.fecha && r.hora) { const t = Date.parse(`${r.fecha}T${r.hora}`); if (isFinite(t)) return t; }
+  return r.ts || Date.parse(`${r.fecha}T${r.hora || '12:00'}`);
+}
+function jdpCultivoDePotrero(nombre) {
+  const p = potrerosConfig.find(x => x.nombre === nombre);
+  if (!p) return '';
+  return p.tipo === 'frutal' ? (p.cultivoPermanente || '') : (cultivoActualPorPotrero[nombre] ? cultivoActualPorPotrero[nombre].cultivo : '');
+}
+
+window.abrirJdPotreros = async function() {
+  document.getElementById('modal-jd-potreros').style.display = 'flex';
+  document.getElementById('jdp-resultado').innerHTML = '';
+  const selEq = document.getElementById('jdp-equipo');
+  const eqs = [...(config.equipos || [])].sort((a, b) => (fuenteHorometroDe(b) === 'jdlink') - (fuenteHorometroDe(a) === 'jdlink') || a.localeCompare(b));
+  selEq.innerHTML = eqs.map(e => `<option value="${e}">${e}${fuenteHorometroDe(e) === 'jdlink' ? ' · JDLink' : ''}</option>`).join('');
+  if (!Object.keys(cultivoActualPorPotrero).length) await cargarCultivosActualesPotreros();
+  const selM = document.getElementById('jdp-maquina');
+  selM.innerHTML = '<option value="">Cargando máquinas de Operations Center...</option>';
+  try {
+    const token = await getTokenValido();
+    if (!token) { selM.innerHTML = '<option value="">Sin conexión a John Deere: conéctate arriba</option>'; }
+    else {
+      if (!jdMachinesLink) await cargarOrganizacionJD();
+      const { status, data } = await callJDApi(jdMachinesLink);
+      jdpMaquinas = status === 200 && data ? (data.values || []) : [];
+      selM.innerHTML = jdpMaquinas.length
+        ? jdpMaquinas.map((m, i) => `<option value="${i}">${m.name || m.equipmentName || m.displayName || ('Máquina ' + (i + 1))}</option>`).join('')
+        : `<option value="">No se pudo leer la flota (HTTP ${status})</option>`;
+    }
+  } catch (e) { selM.innerHTML = `<option value="">Error: ${e.message}</option>`; }
+  await jdpCambioEquipo();
+}
+
+window.jdpCambioEquipo = async function() {
+  const eq = document.getElementById('jdp-equipo').value;
+  // preselecciona la máquina JD con el mismo número
+  const num = eq.replace(/[^0-9]/g, '');
+  const idx = jdpMaquinas.findIndex(m => (m.name || m.equipmentName || m.displayName || '').replace(/[^0-9]/g, '') === num && num);
+  if (idx >= 0) document.getElementById('jdp-maquina').value = String(idx);
+  const selC = document.getElementById('jdp-carga');
+  selC.innerHTML = '<option value="">Cargando cargas...</option>';
+  try {
+    const snap = await getDocs(query(collection(db, 'registros'), where('equipo', '==', eq), orderBy('ts', 'desc'), limit(30)));
+    jdpCargas = snap.docs.map(d => ({ id: d.id, ...d.data() })).map(r => ({ ...r, _t: jdpMomentoCarga(r) })).sort((a, b) => b._t - a._t);
+  } catch (e) { jdpCargas = []; console.warn('jdp cargas', e); }
+  selC.innerHTML = '<option value="">— Elegir fechas a mano —</option>' + jdpCargas.slice(0, jdpCargas.length - 1).map((r, i) =>
+    `<option value="${r.id}" ${i === 0 ? 'selected' : ''}>${r.fecha} ${r.hora || ''} · ${Number(r.litros || 0).toFixed(1)} L${(r.centros || []).length ? ' · ' + r.centros.join(', ') : ''}</option>`).join('');
+  jdpCambioCarga();
+}
+
+window.jdpCambioCarga = function() {
+  const id = document.getElementById('jdp-carga').value;
+  jdpCargaSel = null;
+  if (!id) return;
+  const i = jdpCargas.findIndex(r => r.id === id);
+  if (i < 0 || i + 1 >= jdpCargas.length) return;
+  jdpCargaSel = jdpCargas[i];
+  document.getElementById('jdp-desde').value = jdpFechaInput(jdpCargas[i + 1]._t);
+  document.getElementById('jdp-hasta').value = jdpFechaInput(jdpCargas[i]._t);
+}
+
+window.consultarJdPotreros = async function() {
+  const res = document.getElementById('jdp-resultado');
+  const desde = Date.parse(document.getElementById('jdp-desde').value);
+  const hasta = Date.parse(document.getElementById('jdp-hasta').value);
+  if (!isFinite(desde) || !isFinite(hasta) || hasta <= desde) { toast('Revisa las fechas desde/hasta', false); return; }
+  if (hasta - desde > 10 * 24 * 3600 * 1000) { toast('Usa un período de máximo 10 días para la prueba', false); return; }
+  const m = jdpMaquinas[Number(document.getElementById('jdp-maquina').value)];
+  if (!m) { toast('Elige la máquina de Operations Center', false); return; }
+  // si las fechas se cambiaron a mano, ya no corresponden a la carga elegida
+  if (jdpCargaSel) {
+    const i = jdpCargas.indexOf(jdpCargaSel);
+    if (Math.abs(jdpCargaSel._t - hasta) > 60000 || Math.abs(jdpCargas[i + 1]._t - desde) > 60000) jdpCargaSel = null;
+  }
+  const btn = document.getElementById('jdp-btn');
+  btn.disabled = true; btn.textContent = '📡 Consultando Operations Center...';
+  res.innerHTML = '<div style="padding:12px;color:var(--acero);font-size:13px">Consultando recorrido y horas de motor...</div>';
+  const diag = { maquina: m.name || m.id, rels: (m.links || []).map(l => l.rel), llamadas: [], errores: {}, muestras: {} };
+  try {
+    const principalId = m.organizationRole?.principalId || m.principalId || m.id;
+    const link = re => (m.links || []).find(l => re.test(l.rel || ''));
+    const lLoc = link(/locationhistory/i) || link(/breadcrumb/i) || link(/location/i);
+    const lHrs = link(/hoursofoperation/i);
+    const urlLoc = lLoc ? lLoc.uri : `/machines/${principalId}/locationHistory`;
+    const urlHrs = lHrs ? lHrs.uri : `/machines/${principalId}/hoursOfOperation`;
+    const [loc, hrs] = await Promise.all([
+      jdpTraerRango(urlLoc, desde, hasta, diag, 'Ubicaciones'),
+      jdpTraerRango(urlHrs, desde, hasta, diag, 'Horas de operación'),
+    ]);
+    const puntos = jdpExtraerPuntos(loc.valores);
+    const tramos = hrs.ok ? jdpExtraerTramosMotor(hrs.valores) : [];
+    const potreros = potrerosConfig.filter(p => poligonoValido(p.poligono)).map(p => ({ nombre: p.nombre, poly: jdpNormPoligono(p.poligono) }));
+    const r = jdpRepartir(puntos, tramos, desde, hasta, potreros);
+    window._jdpUltimo = { diag, puntos, tramos, r, loc, hrs };
+    console.log('Prueba JDLink por potrero:', window._jdpUltimo);
+    jdpRenderResultado(r, diag, desde, hasta, potreros.length);
+  } catch (e) {
+    res.innerHTML = `<div style="color:#C0392B;font-size:13px;padding:10px">Error: ${e.message}</div>`;
+  }
+  btn.disabled = false; btn.textContent = '📡 Consultar recorrido';
+}
+
+function jdpRenderResultado(r, diag, desde, hasta, nPotreros) {
+  const res = document.getElementById('jdp-resultado');
+  const h = ms => (ms / 3600000).toFixed(1);
+  const litros = jdpCargaSel ? Number(jdpCargaSel.litros || 0) : null;
+  const filas = Object.entries(r.porPotrero).sort((a, b) => (a[0] === JDP_FUERA) - (b[0] === JDP_FUERA) || b[1] - a[1]);
+  const porCultivo = {};
+  filas.forEach(([n, ms]) => { const c = n === JDP_FUERA ? 'Traslado / patio' : (jdpCultivoDePotrero(n) || 'Sin cultivo definido'); porCultivo[c] = (porCultivo[c] || 0) + ms; });
+  const tabla = (pares, conCultivo) => `
+    <table style="width:100%;font-size:13px;margin-top:6px"><thead><tr><th>${conCultivo ? 'Potrero' : 'Cultivo'}</th>${conCultivo ? '<th>Cultivo</th>' : ''}<th style="text-align:right">Horas</th><th style="text-align:right">%</th>${litros != null ? '<th style="text-align:right">Litros</th>' : ''}</tr></thead><tbody>
+    ${pares.map(([n, ms]) => { const pct = r.totalMs ? ms / r.totalMs : 0; return `<tr><td>${n}</td>${conCultivo ? `<td>${n === JDP_FUERA ? '—' : (jdpCultivoDePotrero(n) || '—')}</td>` : ''}<td style="text-align:right">${h(ms)}</td><td style="text-align:right">${(pct * 100).toFixed(0)}%</td>${litros != null ? `<td style="text-align:right"><strong>${(litros * pct).toFixed(1)}</strong></td>` : ''}</tr>`; }).join('')}
+    <tr style="font-weight:700;border-top:2px solid var(--borde)"><td>Total</td>${conCultivo ? '<td></td>' : ''}<td style="text-align:right">${h(r.totalMs)}</td><td style="text-align:right">100%</td>${litros != null ? `<td style="text-align:right">${litros.toFixed(1)}</td>` : ''}</tr>
+    </tbody></table>`;
+  const avisos = [];
+  if (!r.puntos.length) avisos.push('Operations Center no devolvió ubicaciones para este período. Revisa el detalle técnico de abajo.');
+  if (!r.conMotor) avisos.push('No llegaron datos de motor encendido/apagado: el tiempo se estimó solo con los puntos GPS (huecos de más de 15 min no se cuentan).');
+  if (!nPotreros) avisos.push('No hay potreros con polígono dibujado: todo queda "fuera de potreros".');
+  const gapProm = r.puntos.length > 1 ? (r.puntos[r.puntos.length - 1].t - r.puntos[0].t) / (r.puntos.length - 1) / 60000 : null;
+  const horometro = jdpCargaSel && jdpCargaSel.medidor_tipo === 'hr' && jdpCargaSel.diff_medidor != null ? Number(jdpCargaSel.diff_medidor) : null;
+  res.innerHTML = `
+    <div style="font-size:13px;background:var(--fondo);border-radius:8px;padding:10px 12px;margin:10px 0">
+      <strong>${new Date(desde).toLocaleString('es-CL')}</strong> → <strong>${new Date(hasta).toLocaleString('es-CL')}</strong><br>
+      ${r.puntos.length} puntos GPS${gapProm != null ? ` (uno cada ~${gapProm.toFixed(1)} min en promedio)` : ''} ·
+      motor encendido: <strong>${r.motorMs != null ? h(r.motorMs) + ' h' : 'sin dato'}</strong>
+      ${horometro != null ? ` · horómetro de la carga: <strong>${horometro.toFixed(1)} h</strong>` : ''}
+      ${jdpCargaSel ? `<br>El operador marcó: <strong>${(jdpCargaSel.centros || []).join(', ') || '—'}</strong>` : ''}
+    </div>
+    ${avisos.map(a => `<div style="background:#FEF3DC;border-left:4px solid #F5A623;padding:8px 10px;border-radius:6px;margin-bottom:6px;font-size:12px">${a}</div>`).join('')}
+    <div id="jdp-mapa" style="height:340px;border-radius:8px;margin:8px 0"></div>
+    <div style="font-weight:700;font-size:13px;margin-top:10px">Por potrero</div>${tabla(filas, true)}
+    <div style="font-weight:700;font-size:13px;margin-top:12px">Por cultivo</div>${tabla(Object.entries(porCultivo).sort((a, b) => b[1] - a[1]), false)}
+    <details style="margin-top:12px;font-size:12px"><summary style="cursor:pointer">Detalle técnico (para revisar con Claude)</summary>
+      <pre style="white-space:pre-wrap;word-break:break-all;font-size:11px;background:#111;color:#ddd;padding:8px;border-radius:6px;max-height:260px;overflow:auto">${JSON.stringify(diag, null, 1).slice(0, 6000).replace(/</g, '&lt;')}</pre></details>`;
+  jdpRenderMapa(r);
+}
+
+function jdpRenderMapa(r) {
+  if (typeof L === 'undefined') return;
+  if (jdpMapa) { jdpMapa.remove(); jdpMapa = null; }
+  const map = L.map('jdp-mapa');
+  jdpMapa = map;
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { attribution: 'Tiles &copy; Esri', maxZoom: 20 }).addTo(map);
+  const bounds = [];
+  potrerosConfig.filter(p => poligonoValido(p.poligono)).forEach(p => {
+    const color = colorParaCultivo(jdpCultivoDePotrero(p.nombre));
+    const horas = r.porPotrero[p.nombre];
+    L.polygon(p.poligono, { color, fillColor: color, fillOpacity: horas ? 0.45 : 0.12, weight: horas ? 3 : 1 }).addTo(map)
+      .bindTooltip(`${p.nombre}${horas ? ' · ' + (horas / 3600000).toFixed(1) + ' h' : ''}`, { sticky: true });
+  });
+  if (r.puntos.length) {
+    const ll = r.puntos.map(p => [p.lat, p.lng]);
+    L.polyline(ll, { color: '#FFFFFF', weight: 2, opacity: 0.8 }).addTo(map);
+    r.puntos.forEach(p => {
+      L.circleMarker([p.lat, p.lng], { radius: 3, color: p.potrero ? '#FFD400' : '#E11D48', weight: 1, fillOpacity: 0.9 }).addTo(map)
+        .bindTooltip(`${new Date(p.t).toLocaleString('es-CL')} · ${p.potrero || 'fuera de potreros'}`);
+      bounds.push([p.lat, p.lng]);
+    });
+  } else {
+    potrerosConfig.filter(p => poligonoValido(p.poligono)).forEach(p => jdpNormPoligono(p.poligono).forEach(c => bounds.push(c)));
+  }
+  if (bounds.length) map.fitBounds(bounds, { padding: [20, 20] }); else map.setView([-36.6, -72.1], 12);
+  setTimeout(() => map.invalidateSize(), 150);
+}
+
+window.cerrarJdPotreros = function() {
+  document.getElementById('modal-jd-potreros').style.display = 'none';
+  if (jdpMapa) { jdpMapa.remove(); jdpMapa = null; }
+}
+
 // ─── ESP32 ─────────────────────────────────────────────────
 let unsubESP32 = null;
 let modoESP32 = false;
@@ -1639,7 +1946,8 @@ window.registrarCisterna = async function() {
 // ─── REGISTRO ─────────────────────────────────────────────
 function getNow() {
   const now = new Date();
-  return { fecha: now.toISOString().split('T')[0], hora: now.toTimeString().slice(0,5) };
+  const p = n => String(n).padStart(2, '0');
+  return { fecha: `${now.getFullYear()}-${p(now.getMonth()+1)}-${p(now.getDate())}`, hora: now.toTimeString().slice(0,5) };
 }
 
 function initRegistro() {
@@ -8709,6 +9017,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         <div id="jd-config-estado" style="font-size:13px;margin-bottom:10px">Cargando...</div>
         <button id="btn-jdlink-config" class="btn btn-secondary btn-full" onclick="iniciarLoginJD()">🔗 Conectar con John Deere</button>
         <button id="btn-jdlink-desconectar" class="btn btn-danger btn-full" style="display:none;justify-content:center;padding:10px" onclick="desconectarJD()">Desconectar</button>
+        <button class="btn btn-secondary btn-full" style="margin-top:8px;justify-content:center" onclick="abrirJdPotreros()">📍 Prueba: tiempo y litros por potrero (recorrido JDLink)</button>
       </div>
 
       <div class="panel">
@@ -9353,6 +9662,26 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="cerrarModalInv('modal-inv-producto')">Cancelar</button>
       <button class="btn btn-verde" style="flex:2" onclick="guardarProductoInv()">Guardar</button>
     </div>
+  </div>
+</div>
+
+<!-- MODAL PRUEBA JDLINK POR POTRERO -->
+<div class="modal-overlay" id="modal-jd-potreros">
+  <div class="modal-box" style="max-width:760px;width:96vw;max-height:94vh;overflow:auto">
+    <div class="modal-title">📍 Prueba: tiempo y litros por potrero</div>
+    <div style="font-size:12px;color:var(--acero);margin-bottom:10px">Usa solo el GPS y el estado del motor que manda el módem JDLink. Elige una carga: se analiza el período desde la carga anterior de esa máquina hasta esa carga, y se reparten sus litros según el tiempo en cada potrero. No guarda nada.</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px">
+      <div class="field" style="margin:0"><label>Equipo (app)</label><div class="select-wrapper"><select id="jdp-equipo" onchange="jdpCambioEquipo()"></select></div></div>
+      <div class="field" style="margin:0"><label>Máquina en Operations Center</label><div class="select-wrapper"><select id="jdp-maquina"></select></div></div>
+    </div>
+    <div class="field" style="margin-top:8px"><label>Carga de combustible</label><div class="select-wrapper"><select id="jdp-carga" onchange="jdpCambioCarga()"></select></div></div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px">
+      <div class="field" style="margin:0"><label>Desde</label><input type="datetime-local" id="jdp-desde"></div>
+      <div class="field" style="margin:0"><label>Hasta</label><input type="datetime-local" id="jdp-hasta"></div>
+    </div>
+    <button class="btn btn-verde btn-full" id="jdp-btn" style="margin-top:10px;justify-content:center" onclick="consultarJdPotreros()">📡 Consultar recorrido</button>
+    <div id="jdp-resultado"></div>
+    <div class="modal-actions"><button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="cerrarJdPotreros()">Cerrar</button></div>
   </div>
 </div>
 
