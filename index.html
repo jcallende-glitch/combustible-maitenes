@@ -392,7 +392,9 @@ const JDP_FUERA = 'Fuera de potreros (caminos, patio)';
 const JDP_SINGPS = 'Sin ubicación GPS';
 const JDP_ZONA = '🏠 ';   // prefijo de las áreas que no son potrero (bodegas, patio, taller)
 const JDP_CAMINO = '🛣️ '; // prefijo de los caminos
-function jdpEsZona(n) { return typeof n === 'string' && (n.startsWith(JDP_ZONA) || n.startsWith(JDP_CAMINO)); }
+const JDP_CARGA = '💧 ';  // prefijo de las zonas de carga de fumigadores
+function jdpEsZona(n) { return typeof n === 'string' && (n.startsWith(JDP_ZONA) || n.startsWith(JDP_CAMINO) || n.startsWith(JDP_CARGA)); }
+function jdpEsCarga(n) { return typeof n === 'string' && n.startsWith(JDP_CARGA); }
 function jdpEsProductivo(n) { return n !== JDP_FUERA && n !== JDP_SINGPS && !jdpEsZona(n); }
 
 // [lat,lng] o {lat,lng} → [[lat,lng],...]
@@ -419,8 +421,8 @@ function jdpZonaDePunto(lat, lng, zonas, clase) {
   for (const z of zonas || []) {
     if (clase === 'camino') {
       if (z.linea && z.linea.length >= 2 && jdpDistBordeM(lat, lng, z.linea, true) <= (z.anchoM || 8) / 2) return JDP_CAMINO + z.nombre;
-    } else if (z.radioM) { if (jdpDistKm({ lat, lng }, { lat: z.centro[0], lng: z.centro[1] }) * 1000 <= z.radioM) return JDP_ZONA + z.nombre; }
-    else if (z.poly && jdpPuntoEnPoligono(lat, lng, z.poly)) return JDP_ZONA + z.nombre;
+    } else if (z.radioM) { if (jdpDistKm({ lat, lng }, { lat: z.centro[0], lng: z.centro[1] }) * 1000 <= z.radioM) return (z.carga ? JDP_CARGA : JDP_ZONA) + z.nombre; }
+    else if (z.poly && jdpPuntoEnPoligono(lat, lng, z.poly)) return (z.carga ? JDP_CARGA : JDP_ZONA) + z.nombre;
   }
   return null;
 }
@@ -535,8 +537,10 @@ function jdpRepartir(puntos, tramos, desde, hasta, potreros, zonas, margenM) {
       const cerca = jdpPotreroCercano(p.lat, p.lng, potreros, margenM);
       return { ...p, zona: null, potrero: cerca, margen: !!cerca };
     });
-  const porPotrero = {};
-  const sumar = (nombre, ms) => { if (ms > 0) porPotrero[nombre] = (porPotrero[nombre] || 0) + ms; };
+  // Se guarda cada pieza de tiempo con su hora, para poder asignar después el
+  // tiempo en zonas de carga de fumigadores al potrero que se aplica.
+  const piezas = [];
+  const sumar = (nombre, ms, t) => { if (ms > 0) piezas.push({ nombre, ms, t }); };
   const lugar = p => p.zona || p.potrero || JDP_FUERA;
   const conMotor = Array.isArray(tramos) && tramos.length > 0;
 
@@ -548,25 +552,26 @@ function jdpRepartir(puntos, tramos, desde, hasta, potreros, zonas, margenM) {
       if (!dentro.length) {
         const prev = [...pts].reverse().find(p => p.t < s), next = pts.find(p => p.t > e);
         const l = prev && next ? (lugar(prev) === lugar(next) ? lugar(prev) : JDP_SINGPS) : (prev || next ? lugar(prev || next) : JDP_SINGPS);
-        sumar(l, e - s);
+        sumar(l, e - s, s);
         return;
       }
       const clip = (a, b) => Math.max(0, Math.min(b, e) - Math.max(a, s));
-      sumar(lugar(dentro[0]), clip(s, dentro[0].t));
+      sumar(lugar(dentro[0]), clip(s, dentro[0].t), s);
       for (let i = 0; i < dentro.length - 1; i++) {
         const a = dentro[i], b = dentro[i + 1];
         const dur = clip(a.t, b.t);
         if (!dur) continue;
-        if (lugar(a) === lugar(b)) { sumar(lugar(a), dur); continue; }
+        if (lugar(a) === lugar(b)) { sumar(lugar(a), dur, a.t); continue; }
         const viaje = Math.min(dur, jdpDistKm(a, b) / JDP_VEL_TRASLADO_KMH * 3600000);
         const resto = dur - viaje;
-        sumar(JDP_FUERA, viaje);
-        if (a.potrero && b.potrero) { sumar(a.potrero, resto / 2); sumar(b.potrero, resto / 2); }
-        else if (a.potrero || b.potrero) sumar(a.potrero || b.potrero, resto);
-        else { sumar(lugar(a), resto / 2); sumar(lugar(b), resto / 2); }
+        const mid = (a.t + b.t) / 2;
+        sumar(JDP_FUERA, viaje, mid);
+        if (a.potrero && b.potrero) { sumar(a.potrero, resto / 2, a.t); sumar(b.potrero, resto / 2, mid); }
+        else if (a.potrero || b.potrero) sumar(a.potrero || b.potrero, resto, a.potrero ? a.t : mid);
+        else { sumar(lugar(a), resto / 2, a.t); sumar(lugar(b), resto / 2, mid); }
       }
       const ult = dentro[dentro.length - 1];
-      sumar(lugar(ult), clip(ult.t, e));
+      sumar(lugar(ult), clip(ult.t, e), ult.t);
     });
   } else {
     // Sin datos de motor: cada instante al punto más cercano en el tiempo,
@@ -576,13 +581,26 @@ function jdpRepartir(puntos, tramos, desde, hasta, potreros, zonas, margenM) {
       const a = pv[i], b = pv[i + 1];
       if (b.t - a.t > JDP_MAX_GAP_MS) continue;
       const mid = (a.t + b.t) / 2;
-      sumar(lugar(a), mid - a.t); sumar(lugar(b), b.t - mid);
+      sumar(lugar(a), mid - a.t, a.t); sumar(lugar(b), b.t - mid, mid);
     }
   }
+  // El tiempo en una zona de carga de fumigadores se asigna al siguiente potrero
+  // trabajado (dentro de 6 h); si no hay, al anterior; si tampoco, queda aparte.
+  piezas.sort((x, y) => x.t - y.t);
+  const porPotrero = {}, cargaPorPotrero = {};
+  const add = (n, ms) => { porPotrero[n] = (porPotrero[n] || 0) + ms; };
+  piezas.forEach((pz, i) => {
+    if (!jdpEsCarga(pz.nombre)) { add(pz.nombre, pz.ms); return; }
+    let dest = null;
+    for (let j = i + 1; j < piezas.length && piezas[j].t - pz.t <= 6 * 3600000; j++) if (jdpEsProductivo(piezas[j].nombre)) { dest = piezas[j].nombre; break; }
+    if (!dest) for (let j = i - 1; j >= 0 && pz.t - piezas[j].t <= 6 * 3600000; j--) if (jdpEsProductivo(piezas[j].nombre)) { dest = piezas[j].nombre; break; }
+    if (dest) { add(dest, pz.ms); cargaPorPotrero[dest] = (cargaPorPotrero[dest] || 0) + pz.ms; }
+    else add(pz.nombre, pz.ms);
+  });
   const totalMs = Object.values(porPotrero).reduce((s, x) => s + x, 0);
   const motorMs = conMotor ? jdpTraslape(desde, hasta, tramos) : null;
   const puntosPeriodo = pts.filter(p => p.t >= desde && p.t <= hasta).map(p => ({ ...p, motor: conMotor ? jdpMotorEn(p.t, tramos) : null }));
-  return { porPotrero, totalMs, motorMs, puntos: puntosPeriodo, conMotor };
+  return { porPotrero, cargaPorPotrero, totalMs, motorMs, puntos: puntosPeriodo, conMotor };
 }
 
 // Trae todas las páginas de un recurso JD para [desde, hasta], en tramos de
@@ -619,9 +637,9 @@ let jdpRaw = null;   // último resultado de Operations Center, para recalcular 
 function jdpZonasParaCalculo() {
   return jdpZonas.map(z => z.tipo === 'circulo' ? { nombre: z.nombre, centro: [z.centro.lat, z.centro.lng], radioM: z.radio }
     : z.tipo === 'camino' ? { nombre: z.nombre, linea: jdpNormPoligono(z.linea), anchoM: jdpAnchoCaminoM }
-    : { nombre: z.nombre, poly: jdpNormPoligono(z.poligono) });
+    : { nombre: z.nombre, poly: jdpNormPoligono(z.poligono), carga: z.tipo === 'carga' });
 }
-function jdpIconoZona(z) { return z.tipo === 'camino' ? JDP_CAMINO : JDP_ZONA; }
+function jdpIconoZona(z) { return z.tipo === 'camino' ? JDP_CAMINO : z.tipo === 'carga' ? JDP_CARGA : JDP_ZONA; }
 // Dibuja áreas y caminos en un mapa Leaflet
 function jdpDibujarZonasEnMapa(map) {
   (jdpZonas || []).forEach(z => {
@@ -629,10 +647,11 @@ function jdpDibujarZonasEnMapa(map) {
       let capa;
       if (z.tipo === 'camino') capa = L.polyline(z.linea, { color: '#E5E7EB', weight: 5, opacity: 0.85, dashArray: '8 6' });
       else {
-        const est = { color: '#60A5FA', fillColor: '#60A5FA', fillOpacity: 0.2, weight: 2, dashArray: '6 4' };
+        const col = z.tipo === 'carga' ? '#14B8A6' : '#60A5FA';
+        const est = { color: col, fillColor: col, fillOpacity: 0.2, weight: 2, dashArray: '6 4' };
         capa = z.tipo === 'circulo' ? L.circle([z.centro.lat, z.centro.lng], { ...est, radius: z.radio }) : L.polygon(z.poligono, est);
       }
-      capa.addTo(map).bindTooltip(`${jdpIconoZona(z)}${z.nombre} (no es potrero)`, { sticky: true });
+      capa.addTo(map).bindTooltip(`${jdpIconoZona(z)}${z.nombre} (${z.tipo === 'carga' ? 'carga de fumigadores' : 'no es potrero'})`, { sticky: true });
     } catch (err) { console.warn('Zona sin cultivo inválida', z, err); }
   });
 }
@@ -823,7 +842,8 @@ function jdpRenderResultado(r, diag, desde, hasta, nPotreros) {
   const tabla = (pares, conCultivo) => `<div style="overflow-x:auto">
     <table style="width:100%;min-width:0;font-size:13px;margin-top:6px;table-layout:auto"><thead><tr><th style="padding:6px 4px">${conCultivo ? 'Potrero' : 'Cultivo'}</th><th ${td}>Horas</th><th ${td}>%</th>${litros != null ? `<th ${td}>Litros</th>` : ''}</tr></thead><tbody>
     ${pares.map(([n, ms]) => { const pct = prodMs ? ms / prodMs : 0; const cult = conCultivo ? jdpCultivoDePotrero(n) : '';
-      return `<tr><td style="padding:6px 4px">${n}${cult ? `<div style="font-size:11px;color:var(--acero)">${cult}</div>` : ''}</td><td ${td}>${h(ms)}</td><td ${td}>${(pct * 100).toFixed(0)}%</td>${litros != null ? `<td ${td}><strong>${(litros * pct).toFixed(1)}</strong></td>` : ''}</tr>`; }).join('')}
+      const cg = conCultivo && r.cargaPorPotrero && r.cargaPorPotrero[n] ? `<div style="font-size:11px;color:#0F766E">incl. ${h(r.cargaPorPotrero[n])} h en carga de fumigador</div>` : '';
+      return `<tr><td style="padding:6px 4px">${n}${cult ? `<div style="font-size:11px;color:var(--acero)">${cult}</div>` : ''}${cg}</td><td ${td}>${h(ms)}</td><td ${td}>${(pct * 100).toFixed(0)}%</td>${litros != null ? `<td ${td}><strong>${(litros * pct).toFixed(1)}</strong></td>` : ''}</tr>`; }).join('')}
     <tr style="font-weight:700;border-top:2px solid var(--borde)"><td style="padding:6px 4px">Total en potreros</td><td ${td}>${h(prodMs)}</td><td ${td}>${prodMs ? '100%' : '—'}</td>${litros != null ? `<td ${td}>${prodMs ? litros.toFixed(1) : '—'}</td>` : ''}</tr>
     </tbody></table></div>`;
   const nombreNoProd = n => jdpEsZona(n) ? n : n === JDP_FUERA ? 'Otros lugares sin dibujar' : n;
@@ -849,7 +869,7 @@ function jdpRenderResultado(r, diag, desde, hasta, nPotreros) {
     </div>
     ${avisos.map(a => `<div style="background:#FEF3DC;border-left:4px solid #F5A623;padding:8px 10px;border-radius:6px;margin-bottom:6px;font-size:12px">${a}</div>`).join('')}
     <div id="jdp-mapa" style="height:340px;border-radius:8px;margin:8px 0"></div>
-    <div style="font-size:11px;color:var(--acero);margin-bottom:6px">🟡 en potrero · 🟠 cabecera (dentro del margen) · 🔵 bodegas o camino · 🔴 fuera</div>
+    <div style="font-size:11px;color:var(--acero);margin-bottom:6px">🟡 en potrero · 🟠 cabecera (dentro del margen) · 🔵 bodegas, camino o carga de fumigador · 🔴 fuera</div>
     <div style="display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:8px">
       <label style="text-transform:none;letter-spacing:normal;font-family:var(--sans);font-size:12px;margin:0">Margen de cabeceras:</label>
       <input type="number" min="0" max="100" step="1" value="${jdpMargenM}" style="width:70px;padding:4px 6px" onchange="jdpCambiarMargen(this.value)"> m
@@ -857,7 +877,7 @@ function jdpRenderResultado(r, diag, desde, hasta, nPotreros) {
     </div>
     <div style="background:var(--fondo);border-radius:8px;padding:10px 12px;font-size:12px">
       <strong>Zonas que no son potrero:</strong> ${jdpZonas.length ? jdpZonas.map(z => jdpIconoZona(z) + z.nombre).join(', ') : 'ninguna todavía'}.
-      Se dibujan en <strong>Cuaderno de Campo → ⚙️ Config. Potreros</strong>; su tiempo no recibe litros.
+      Se dibujan en <strong>Cuaderno de Campo → ⚙️ Config. Potreros</strong>. Bodegas y caminos no reciben litros; el tiempo en carga de fumigadores se suma al potrero que se aplica después.
     </div>
     <div style="font-weight:700;font-size:13px;margin-top:12px">Por potrero</div>${tabla(prod, true)}
     <div style="font-weight:700;font-size:13px;margin-top:12px">Por cultivo</div>${tabla(Object.entries(porCultivo).sort((a, b) => b[1] - a[1]), false)}
@@ -5481,13 +5501,14 @@ let dibujoFullCapa = null;
 let dibujoFullPotrero = '';
 let dibujoFullModo = 'potrero';   // 'potrero' | 'zona' (zona que no es potrero: bodegas, patio...)
 let dibujoFullZonaIdx = -1;       // zona que se está redibujando (-1 = nueva)
-let dibujoFullZonaTipo = 'poligono'; // 'poligono' (bodegas, patio) | 'camino' (línea)
+let dibujoFullZonaTipo = 'poligono'; // 'poligono' (bodegas, patio) | 'camino' (línea) | 'carga' (carga de fumigadores, polígono)
 
 window.abrirDibujoPotreroFull = function() {
   const nombre = document.getElementById('dibujo-potrero-sel')?.value || '';
   if (!nombre) { toast('Elige primero qué potrero vas a dibujar', false); return; }
   dibujoFullModo = 'potrero';
   dibujoFullPotrero = nombre;
+  const btnOtro = document.getElementById('dibujo-full-btn-otro'); if (btnOtro) btnOtro.style.display = 'none';
   dibujoFullPuntos = [];
   document.getElementById('dibujo-full-titulo').textContent = `Dibujar: ${nombre}`;
   document.getElementById('modal-dibujo-potrero-full').style.display = 'flex';
@@ -5543,10 +5564,12 @@ window.cerrarDibujoPotreroFull = function() {
   }
   delete mapaPotrerosPoligonos['dibujo-potrero-mapa-full'];
   dibujoFullCapa = null;
+  dibujoFullGuardadas = null;
+  if (dibujoFullModo === 'zona') { renderListaZonasSinCultivo(); renderMapaCampoPreview(); }
   dibujoFullPuntos = [];
 }
 
-window.guardarDibujoPotreroFull = async function() {
+window.guardarDibujoPotreroFull = async function(seguir) {
   const esCaminoG = dibujoFullModo === 'zona' && dibujoFullZonaTipo === 'camino';
   if (esCaminoG && dibujoFullPuntos.length < 2) { toast('Marca al menos 2 puntos a lo largo del camino', false); return; }
   if (!esCaminoG && dibujoFullPuntos.length < 3) { toast(`Marca al menos 3 esquinas para cerrar ${dibujoFullModo === 'zona' ? 'la zona' : 'el potrero'}`, false); return; }
@@ -5556,12 +5579,29 @@ window.guardarDibujoPotreroFull = async function() {
     try {
       const idx = dibujoFullZonaIdx;
       await actualizarZonasSinCultivo(zonas => {
-        const z = esCaminoG ? { nombre, tipo: 'camino', linea: puntos } : { nombre, tipo: 'poligono', poligono: puntos };
+        const z = esCaminoG ? { nombre, tipo: 'camino', linea: puntos } : { nombre, tipo: dibujoFullZonaTipo === 'carga' ? 'carga' : 'poligono', poligono: puntos };
         const i = idx >= 0 ? zonas.findIndex(x => x.nombre === nombre) : -1;
         if (i >= 0) zonas[i] = z; else zonas.push(z);
         return zonas;
       });
-      toast(`✓ Zona "${nombre}" guardada (${puntos.length} puntos)`, true);
+      toast(`✓ "${nombre}" guardado (${puntos.length} puntos)`, true);
+      if (seguir === true) {
+        // deja dibujado lo guardado y empieza otro del mismo tipo, sin mover el mapa
+        const map = mapasLeafletInstancias['dibujo-potrero-mapa-full'];
+        if (map) {
+          if (!dibujoFullGuardadas) dibujoFullGuardadas = L.layerGroup().addTo(map);
+          const colG = dibujoFullZonaTipo === 'carga' ? '#14B8A6' : '#60A5FA';
+          (esCaminoG ? L.polyline(puntos, { color: '#E5E7EB', weight: 5, dashArray: '8 6', interactive: false })
+                     : L.polygon(puntos, { color: colG, fillColor: colG, fillOpacity: 0.2, weight: 2, dashArray: '6 4', interactive: false })).addTo(dibujoFullGuardadas);
+        }
+        dibujoFullZonaIdx = -1;
+        dibujoFullPotrero = nombreZonaUnico(nombre);
+        dibujoFullPuntos = [];
+        document.getElementById('dibujo-full-titulo').textContent = tituloDibujoZona(dibujoFullPotrero);
+        redibujarDibujoFull();
+        renderListaZonasSinCultivo();
+        return;
+      }
       cerrarDibujoPotreroFull();
       const inp = document.getElementById('nueva-zona-nombre'); if (inp) inp.value = '';
       renderListaZonasSinCultivo();
@@ -5600,28 +5640,42 @@ function renderListaZonasSinCultivo() {
   if (an) an.value = jdpAnchoCaminoM;
   cont.innerHTML = jdpZonas.length ? jdpZonas.map((z, i) => `
     <div class="config-item">
-      <span>${jdpIconoZona(z)}${z.nombre} <span style="font-size:11px;color:var(--acero)">${z.tipo === 'circulo' ? `(círculo de ${z.radio} m)` : z.tipo === 'camino' ? `(camino, ${(z.linea || []).length} puntos)` : `(área, ${(z.poligono || []).length} puntos)`}</span></span>
+      <span>${jdpIconoZona(z)}${z.nombre} <span style="font-size:11px;color:var(--acero)">${z.tipo === 'circulo' ? `(círculo de ${z.radio} m)` : z.tipo === 'camino' ? `(camino, ${(z.linea || []).length} puntos)` : z.tipo === 'carga' ? `(carga de fumigadores, ${(z.poligono || []).length} puntos)` : `(área, ${(z.poligono || []).length} puntos)`}</span></span>
       <span style="display:flex;gap:6px">
         <button class="btn-secondary" style="padding:4px 8px" title="Redibujar" onclick="abrirDibujoZonaFull(${i})">✏️</button>
         <button class="btn-danger" title="Eliminar" onclick="borrarZonaSinCultivo(${i})">🗑</button>
       </span>
     </div>`).join('') : '<div class="hint">Todavía no hay zonas marcadas.</div>';
 }
+// "Camino" → "Camino" si no existe; si ya existe → "Camino 2", "Camino 3"...
+function nombreZonaUnico(base) {
+  base = String(base || '').trim().replace(/\s+\d+$/, '') || 'Zona';
+  const existe = n => jdpZonas.some(z => z.nombre.toLowerCase() === n.toLowerCase());
+  if (!existe(base)) return base;
+  let i = 2;
+  while (existe(`${base} ${i}`)) i++;
+  return `${base} ${i}`;
+}
+let dibujoFullGuardadas = null; // capas de las zonas recién guardadas mientras se sigue dibujando
+function tituloDibujoZona(nombre) {
+  return dibujoFullZonaTipo === 'camino' ? `Camino: ${nombre}` : dibujoFullZonaTipo === 'carga' ? `Carga de fumigadores: ${nombre}` : `Zona que no es potrero: ${nombre}`;
+}
+
 window.abrirDibujoZonaFull = function(idx) {
   let nombre;
-  if (idx >= 0) { nombre = jdpZonas[idx]?.nombre; dibujoFullZonaTipo = jdpZonas[idx]?.tipo === 'camino' ? 'camino' : 'poligono'; }
+  const tipoDe = t => t === 'camino' ? 'camino' : t === 'carga' ? 'carga' : 'poligono';
+  if (idx >= 0) { nombre = jdpZonas[idx]?.nombre; dibujoFullZonaTipo = tipoDe(jdpZonas[idx]?.tipo); }
   else {
-    dibujoFullZonaTipo = document.getElementById('nueva-zona-tipo')?.value === 'camino' ? 'camino' : 'poligono';
-    nombre = (document.getElementById('nueva-zona-nombre')?.value || '').trim();
-    if (!nombre) { toast('Escribe primero el nombre de la zona (ej. Bodegas)', false); return; }
-    if (jdpZonas.some(z => z.nombre.toLowerCase() === nombre.toLowerCase())) { toast(`Ya existe una zona "${nombre}": usa ✏️ para redibujarla`, false); return; }
+    dibujoFullZonaTipo = tipoDe(document.getElementById('nueva-zona-tipo')?.value);
+    nombre = nombreZonaUnico((document.getElementById('nueva-zona-nombre')?.value || '').trim() || ({ camino: 'Camino', carga: 'Carga fumigador', poligono: 'Bodega' })[dibujoFullZonaTipo]);
   }
+  const btnOtro = document.getElementById('dibujo-full-btn-otro'); if (btnOtro) btnOtro.style.display = idx >= 0 ? 'none' : '';
   if (!nombre) return;
   dibujoFullModo = 'zona';
   dibujoFullZonaIdx = idx;
   dibujoFullPotrero = nombre;
   dibujoFullPuntos = [];
-  document.getElementById('dibujo-full-titulo').textContent = dibujoFullZonaTipo === 'camino' ? `Camino: ${nombre}` : `Zona que no es potrero: ${nombre}`;
+  document.getElementById('dibujo-full-titulo').textContent = tituloDibujoZona(nombre);
   document.getElementById('modal-dibujo-potrero-full').style.display = 'flex';
   renderMapaPotreros('dibujo-potrero-mapa-full', false, false, false, true);
   const map = mapasLeafletInstancias['dibujo-potrero-mapa-full'];
@@ -9600,6 +9654,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         <div style="display:flex;gap:8px;padding:10px 14px;border-top:1px solid var(--borde)">
           <button class="btn btn-secondary" style="flex:1;justify-content:center;padding:14px" onclick="deshacerPuntoDibujoFull()">↶ Deshacer punto</button>
           <button class="btn btn-verde" style="flex:1;justify-content:center;padding:14px" onclick="guardarDibujoPotreroFull()">✓ Guardar</button>
+          <button class="btn btn-verde" id="dibujo-full-btn-otro" style="flex:1;justify-content:center;padding:14px;display:none;background:var(--negro);color:var(--amarillo)" onclick="guardarDibujoPotreroFull(true)">✓ Guardar y dibujar otro</button>
         </div>
       </div>
     </div>
@@ -9680,14 +9735,17 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       </div>
 
       <div class="panel">
-        <div class="panel-title">🏠 Zonas que no son potrero</div>
+        <div class="panel-title">🏠 Bodegas, caminos y zonas de carga</div>
         <div class="hint" style="margin-bottom:10px">Bodegas, patio, taller, casas, lechería y caminos. El tiempo que las máquinas pasan aquí <strong>no se carga a ningún cultivo</strong> al repartir el combustible por potrero (JDLink).<br>
-          <strong>Área</strong>: se dibuja tocando sus esquinas, igual que un potrero. <strong>Camino</strong>: se dibuja tocando puntos a lo largo del camino, en orden.</div>
+          <strong>Área</strong>: se dibuja tocando sus esquinas, igual que un potrero. <strong>Camino</strong>: se dibuja tocando puntos a lo largo del camino, en orden.<br>
+          <strong>Carga de fumigadores</strong>: se dibuja como un área; el tiempo cargando se suma al potrero que se aplica después (no se pierde).<br>
+          Puedes marcar todas las que quieras. Si no pones nombre, se numeran solas (Camino, Camino 2...). Con <strong>"Guardar y dibujar otro"</strong> sigues marcando sin salir del mapa.</div>
         <div class="config-add" style="flex-wrap:wrap">
-          <input type="text" id="nueva-zona-nombre" placeholder="Ej: Bodegas, Camino principal" style="flex:1;min-width:160px">
+          <input type="text" id="nueva-zona-nombre" placeholder="Nombre (opcional): Bodegas, Camino norte..." style="flex:1;min-width:160px">
           <div class="select-wrapper" style="min-width:150px"><select id="nueva-zona-tipo">
             <option value="poligono">🏠 Área (bodegas, patio)</option>
             <option value="camino">🛣️ Camino</option>
+            <option value="carga">💧 Carga de fumigadores</option>
           </select></div>
           <button class="btn-add" onclick="abrirDibujoZonaFull(-1)">✏️ Dibujar</button>
         </div>
