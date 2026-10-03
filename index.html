@@ -6740,6 +6740,7 @@ const estadoConfigInv = {
   ok:      { label: "Normal",     color: "var(--verde)", bg: "var(--verde-suave)", dot: "var(--verde)" },
   bajo:    { label: "Stock bajo", color: "#92400E",       bg: "var(--amarillo-suave)", dot: "var(--amarillo)" },
   agotado: { label: "Agotado",    color: "var(--rojo)",   bg: "var(--rojo-suave)", dot: "var(--rojo)" },
+  otra:    { label: "En otra bodega", color: "var(--acero)", bg: "#F3F4F6", dot: "var(--acero)" },
 };
 const CATEGORIAS_INV = ["Herbicida","Fungicida","Insecticida","Foliar","Coadyuvante","Otros"];
 const categoriaColorInv = {
@@ -6803,6 +6804,7 @@ let unsubProductosInv = null;
 let unsubIngresosInv = null;
 let productosInvSubscrito = false;
 let filtroCategoriaInv = "Todos";
+let filtroBodegaInv = ""; // "" = ambas bodegas (predeterminado)
 let vistaAgrupadaInv = false;
 let busquedaInv = "";
 let soloConStockInv = false;
@@ -6847,22 +6849,32 @@ function stockInv(p, bodega) {
 function stockTotalInv(p) {
   return BODEGAS_INV.reduce((sum, b) => sum + stockInv(p, b), 0);
 }
-function getEstadoInvBodega(p, bodega) {
-  const s = stockInv(p, bodega);
-  if (!s || s === 0) return "agotado";
-  if (s <= (p.stockMinimo || 0)) return "bajo";
+// Estado del producto considerando ambas bodegas juntas: solo está
+// "agotado" si no queda nada en ninguna; si hay en una, se considera que hay.
+// El stock mínimo se compara contra el total de las dos bodegas.
+function getEstadoInv(p) {
+  const t = stockTotalInv(p);
+  if (!t || t <= 0) return "agotado";
+  if (t <= (p.stockMinimo || 0)) return "bajo";
   return "ok";
+}
+// Etiqueta de cada celda de bodega: si esa bodega está en 0 pero la otra
+// tiene stock, se muestra "En otra bodega" (no es alerta).
+function getEstadoInvBodega(p, bodega) {
+  const e = getEstadoInv(p);
+  if (e === "agotado") return "agotado";
+  return stockInv(p, bodega) > 0 ? e : "otra";
 }
 
 function renderStatsInv() {
   const total = productosInv.length;
   let alertas = 0, agotados = 0, bajos = 0;
-  productosInv.forEach(p => BODEGAS_INV.forEach(b => {
-    const e = getEstadoInvBodega(p, b);
+  productosInv.forEach(p => {
+    const e = getEstadoInv(p);
     if (e !== "ok") alertas++;
     if (e === "agotado") agotados++;
     if (e === "bajo") bajos++;
-  }));
+  });
   const set = (id,v) => { const el=document.getElementById(id); if(el) el.textContent=v; };
   set("inv-stat-total", total);
   set("inv-stat-alertas", alertas);
@@ -6878,6 +6890,15 @@ window.toggleVistaInv = function() {
   if (chips) chips.style.display = vistaAgrupadaInv ? "none" : "flex";
   renderInventarioTabla();
 }
+
+window.setFiltroBodegaInv = function(b, el) {
+  filtroBodegaInv = b;
+  document.querySelectorAll('#inv-chips-bodega-wrap .cultivo-chip').forEach(c => c.classList.remove('sel'));
+  if (el) el.classList.add('sel');
+  renderInventarioHeader();
+  renderInventarioTabla();
+}
+const bodegasVisiblesInv = () => filtroBodegaInv ? [filtroBodegaInv] : BODEGAS_INV;
 
 window.setFiltroInv = function(cat, el) {
   filtroCategoriaInv = cat;
@@ -6909,7 +6930,7 @@ function renderInventarioHeader() {
   const thead = document.getElementById("inv-tabla-thead");
   if (thead) {
     const verCod = puedeVerCodigoInternoInv();
-    thead.innerHTML = `<tr><th>Producto</th><th>Categoría</th><th>Ingrediente activo</th>${verCod ? '<th>Código interno</th>' : ''}<th>Bodega Cultivos</th><th>Bodega Frutales</th><th>Documentos</th><th></th></tr>`;
+    thead.innerHTML = `<tr><th>Producto</th><th>Categoría</th><th>Ingrediente activo</th>${verCod ? '<th>Código interno</th>' : ''}${bodegasVisiblesInv().map(b => `<th>${b}</th>`).join('')}<th>Documentos</th><th></th></tr>`;
   }
   const btnPermisos = document.getElementById("inv-btn-permisos-cod");
   if (btnPermisos) btnPermisos.style.display = esAdminPleno() ? "" : "none";
@@ -6924,11 +6945,11 @@ function renderInventarioTabla() {
   if (!tbody) return;
   actualizarBotonRevisarIngInv();
   const verCod = puedeVerCodigoInternoInv();
-  const colCount = verCod ? 8 : 7;
+  const colCount = (verCod ? 6 : 5) + bodegasVisiblesInv().length;
   let data = productosInv.filter(p => {
     const catOk = filtroCategoriaInv === "Todos" || p.categoria === filtroCategoriaInv;
     const busOk = !busquedaInv || p.nombre.toLowerCase().includes(busquedaInv) || (p.ingredienteActivo||"").toLowerCase().includes(busquedaInv) || (verCod && (p.codigoInterno||"").toLowerCase().includes(busquedaInv));
-    const stockOk = !soloConStockInv || stockTotalInv(p) > 0;
+    const stockOk = (!soloConStockInv || stockTotalInv(p) > 0) && (!filtroBodegaInv || stockInv(p, filtroBodegaInv) > 0);
     const avisOk = !soloAvisajeInv || requiereAvisajeProducto(p);
     return catOk && busOk && stockOk && avisOk;
   });
@@ -6940,7 +6961,7 @@ function renderInventarioTabla() {
     return `<td>
       <div style="display:flex;align-items:center;gap:6px">
         <div>
-          <strong style="color:${s<=(p.stockMinimo||0)?"var(--rojo)":"var(--negro)"}">${s}</strong> <span style="font-size:11px;color:var(--acero)">${p.unidad||"L"}</span>
+          <strong style="color:${getEstadoInv(p)!=="ok"?"var(--rojo)":"var(--negro)"}">${s}</strong> <span style="font-size:11px;color:var(--acero)">${p.unidad||"L"}</span>
           <div><span class="badge" style="background:${ec.bg};color:${ec.color};font-size:10px">${ec.label}</span></div>
         </div>
         <button class="btn-secondary" style="padding:4px 7px" onclick="abrirAjusteInv('${p.id}','${bodega}')" title="Ajustar ${bodega}">⇅</button>
@@ -6960,8 +6981,7 @@ function renderInventarioTabla() {
       <td><span class="badge" style="background:${cc}22;color:${cc}">${p.categoria}</span></td>
       <td style="font-size:12px">${p.ingredienteActivo || '<span style="color:#92400E">⚠ sin definir</span>'}</td>
       ${verCod ? `<td style="font-size:12px;font-weight:600">${p.codigoInterno || "—"}</td>` : ""}
-      ${celdaBodega(p, BODEGAS_INV[0])}
-      ${celdaBodega(p, BODEGAS_INV[1])}
+      ${bodegasVisiblesInv().map(b => celdaBodega(p, b)).join("")}
       <td>
         ${hasEtiq ? `<a href="#" onclick="abrirDocModalInv('${p.id}','etiqueta');return false" class="badge badge-km">🏷 Etiqueta${(p.etiquetaFotos||[]).length?' 📷'+(p.etiquetaFotos||[]).length:''}</a>` : `<button class="btn-danger" onclick="abrirDocModalInv('${p.id}','etiqueta')">+ Etiqueta</button>`}<br>
         ${hasHoja ? `<a href="#" onclick="abrirDocModalInv('${p.id}','hoja');return false" class="badge badge-hr" style="margin-top:3px;display:inline-block">🛡 Hoja seg.${(p.hojaFotos||[]).length?' 📷'+(p.hojaFotos||[]).length:''}</a>` : `<button class="btn-danger" onclick="abrirDocModalInv('${p.id}','hoja')">+ Hoja seg.</button>`}
@@ -6989,27 +7009,32 @@ function renderInventarioTabla() {
 // ── Alertas (por producto + bodega) ─────────────────────────
 function renderAlertasInv() {
   const alertas = [];
-  productosInv.forEach(p => BODEGAS_INV.forEach(b => {
-    const e = getEstadoInvBodega(p, b);
-    if (e !== "ok") alertas.push({ p, bodega: b, estado: e });
-  }));
+  productosInv.forEach(p => {
+    const e = getEstadoInv(p);
+    if (e !== "ok") alertas.push({ p, estado: e });
+  });
+  alertas.sort((a, b) => (a.estado === "agotado" ? 0 : 1) - (b.estado === "agotado" ? 0 : 1) || a.p.nombre.localeCompare(b.p.nombre));
   const tabBtn = document.getElementById("tab-inv-alertas");
   if (tabBtn) tabBtn.textContent = `🔔 Alertas${alertas.length ? ` (${alertas.length})` : ""}`;
   const cont = document.getElementById("inv-alertas-container");
   if (!cont) return;
   if (!alertas.length) { cont.innerHTML = `<div class="empty"><div class="empty-icon">✅</div>Sin alertas pendientes</div>`; return; }
-  cont.innerHTML = alertas.map(({p, bodega, estado}) => {
+  cont.innerHTML = alertas.map(({p, estado}) => {
     const ec = estadoConfigInv[estado];
-    return `<div class="panel" style="display:flex;align-items:center;gap:16px;border-left:4px solid ${ec.dot};margin-bottom:10px">
-      <div style="flex:1">
+    const u = p.unidad || "L";
+    const detalle = BODEGAS_INV.map(b => `${b.replace("Bodega ", "")}: ${stockInv(p, b)} ${u}`).join(" · ");
+    return `<div class="panel" style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;border-left:4px solid ${ec.dot};margin-bottom:10px">
+      <div style="flex:1;min-width:180px">
         <div style="font-weight:700">${p.nombre}</div>
-        <div style="font-size:12px;color:var(--acero);margin-top:2px">${bodega}${p.ingredienteActivo?" · "+p.ingredienteActivo:""}</div>
+        <div style="font-size:12px;color:var(--acero);margin-top:2px">${p.ingredienteActivo || ""}</div>
       </div>
       <div style="text-align:right">
         <span class="badge" style="background:${ec.bg};color:${ec.color}">${ec.label}</span>
-        <div style="font-size:12px;color:var(--acero);margin-top:4px">Stock: ${stockInv(p,bodega)} ${p.unidad||"L"} · Mín: ${p.stockMinimo||0}</div>
+        <div style="font-size:12px;color:var(--acero);margin-top:4px">Total: ${stockTotalInv(p)} ${u} (${detalle})${p.stockMinimo ? ` · Mín: ${p.stockMinimo}` : ""}</div>
       </div>
-      <button class="btn-add" onclick="abrirAjusteInv('${p.id}','${bodega}')">Ajustar stock</button>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        ${BODEGAS_INV.map(b => `<button class="btn-add" onclick="abrirAjusteInv('${p.id}','${b}')">Ajustar ${b.replace("Bodega ", "")}</button>`).join("")}
+      </div>
     </div>`;
   }).join("");
 }
@@ -9096,6 +9121,12 @@ tbody td{padding:10px 12px;vertical-align:middle;}
           <button class="btn btn-secondary" id="inv-btn-permisos-cod" style="width:auto;display:none" onclick="abrirPermisosCodigoInv()">🔒 Código interno</button>
           <button class="btn btn-verde" style="width:auto" onclick="abrirNuevoProductoInv()">+ Nuevo producto</button>
         </div>
+        <div class="centros-selector" id="inv-chips-bodega-wrap" style="margin-bottom:8px;align-items:center">
+          <span style="font-size:12px;font-weight:600;color:var(--acero);margin-right:4px">Bodega:</span>
+          <span class="cultivo-chip sel" onclick="setFiltroBodegaInv('', this)">Ambas</span>
+          <span class="cultivo-chip" onclick="setFiltroBodegaInv('Bodega Cultivos', this)">Cultivos</span>
+          <span class="cultivo-chip" onclick="setFiltroBodegaInv('Bodega Frutales', this)">Frutales</span>
+        </div>
         <div class="centros-selector" id="inv-chips-cat-wrap">
           <span class="cultivo-chip sel" onclick="setFiltroInv('Todos', this)">Todos</span>
           <span class="cultivo-chip" onclick="setFiltroInv('Herbicida', this)">Herbicida</span>
@@ -9314,7 +9345,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       <div class="field"><label>Stock en Bodega Cultivos</label><input type="number" id="prod-inv-stock-b0"></div>
       <div class="field"><label>Stock en Bodega Frutales</label><input type="number" id="prod-inv-stock-b1"></div>
       <div class="field"><label>Unidad</label><div class="select-wrapper"><select id="prod-inv-unidad"><option>L</option><option>kg</option><option>g</option><option>mL</option><option>t</option></select></div></div>
-      <div class="field"><label>Stock mínimo (por bodega)</label><input type="number" id="prod-inv-minimo"></div>
+      <div class="field"><label>Stock mínimo (total de ambas bodegas)</label><input type="number" id="prod-inv-minimo"></div>
     </div>
     <div class="field"><label>🏷 Etiqueta (URL)</label><input type="text" id="prod-inv-etiqueta" placeholder="https://..."></div>
     <div class="field"><label>🛡 Hoja de seguridad (URL)</label><input type="text" id="prod-inv-hoja" placeholder="https://..."></div>
@@ -9363,7 +9394,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       <div class="field"><label>Precio unit. $</label><input type="number" id="np-inv-precio"></div>
       <div class="field"><label>Stock inicial</label><input type="number" id="np-inv-stock"></div>
       <div class="field"><label>Unidad</label><div class="select-wrapper"><select id="np-inv-unidad"><option>L</option><option>kg</option><option>g</option><option>mL</option><option>t</option></select></div></div>
-      <div class="field"><label>Stock mínimo</label><input type="number" id="np-inv-minimo" value="0"></div>
+      <div class="field"><label>Stock mínimo (total ambas bodegas)</label><input type="number" id="np-inv-minimo" value="0"></div>
     </div>
     <div class="field"><label>🏷 Etiqueta (URL)</label><input type="text" id="np-inv-etiqueta" placeholder="https://..."></div>
     <div class="field"><label>🛡 Hoja de seguridad (URL)</label><input type="text" id="np-inv-hoja" placeholder="https://..."></div>
