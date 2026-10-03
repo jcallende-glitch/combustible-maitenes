@@ -390,8 +390,9 @@ const JDP_MAX_GAP_MS = 15 * 60 * 1000; // sin datos de motor, huecos > 15 min no
 const JDP_VEL_TRASLADO_KMH = 15;       // velocidad media supuesta al trasladarse entre lugares
 const JDP_FUERA = 'Fuera de potreros (caminos, patio)';
 const JDP_SINGPS = 'Sin ubicación GPS';
-const JDP_ZONA = '🏠 '; // prefijo de las zonas sin cultivo (bodegas, patio, taller)
-function jdpEsZona(n) { return typeof n === 'string' && n.startsWith(JDP_ZONA); }
+const JDP_ZONA = '🏠 ';   // prefijo de las áreas que no son potrero (bodegas, patio, taller)
+const JDP_CAMINO = '🛣️ '; // prefijo de los caminos
+function jdpEsZona(n) { return typeof n === 'string' && (n.startsWith(JDP_ZONA) || n.startsWith(JDP_CAMINO)); }
 function jdpEsProductivo(n) { return n !== JDP_FUERA && n !== JDP_SINGPS && !jdpEsZona(n); }
 
 // [lat,lng] o {lat,lng} → [[lat,lng],...]
@@ -411,11 +412,15 @@ function jdpPotreroDePunto(lat, lng, potreros) {
   for (const p of potreros) if (jdpPuntoEnPoligono(lat, lng, p.poly)) return p.nombre;
   return null;
 }
-// zonas: [{nombre, poly:[[lat,lng]...]} | {nombre, centro:[lat,lng], radioM}]
-function jdpZonaDePunto(lat, lng, zonas) {
+// zonas: [{nombre, poly:[[lat,lng]...]} | {nombre, centro:[lat,lng], radioM} | {nombre, linea:[[lat,lng]...], anchoM}]
+// clase 'area' → bodegas/patio (polígono o círculo); clase 'camino' → franja alrededor de una línea.
+// Devuelve la etiqueta con su ícono ("🏠 Bodegas", "🛣️ Camino principal") o null.
+function jdpZonaDePunto(lat, lng, zonas, clase) {
   for (const z of zonas || []) {
-    if (z.radioM) { if (jdpDistKm({ lat, lng }, { lat: z.centro[0], lng: z.centro[1] }) * 1000 <= z.radioM) return z.nombre; }
-    else if (z.poly && jdpPuntoEnPoligono(lat, lng, z.poly)) return z.nombre;
+    if (clase === 'camino') {
+      if (z.linea && z.linea.length >= 2 && jdpDistBordeM(lat, lng, z.linea, true) <= (z.anchoM || 8) / 2) return JDP_CAMINO + z.nombre;
+    } else if (z.radioM) { if (jdpDistKm({ lat, lng }, { lat: z.centro[0], lng: z.centro[1] }) * 1000 <= z.radioM) return JDP_ZONA + z.nombre; }
+    else if (z.poly && jdpPuntoEnPoligono(lat, lng, z.poly)) return JDP_ZONA + z.nombre;
   }
   return null;
 }
@@ -483,11 +488,12 @@ function jdpMotorEn(t, tramos) { return tramos.some(([s, e]) => t >= s && t <= e
 // Así, aunque JDLink mande pocos puntos, el patio solo se queda con el
 // tiempo de salida/llegada y no con horas de trabajo.
 // Distancia en metros desde un punto al borde de un polígono [[lat,lng]...]
-// (proyección plana local; suficiente para distancias de decenas de metros).
-function jdpDistBordeM(lat, lng, poly) {
+// (o a una línea abierta si abierta=true). Proyección plana local; suficiente
+// para distancias de decenas de metros.
+function jdpDistBordeM(lat, lng, poly, abierta) {
   const kx = 111320 * Math.cos(lat * Math.PI / 180), ky = 110540;
   let min = Infinity;
-  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+  for (let i = abierta ? 1 : 0, j = abierta ? 0 : poly.length - 1; i < poly.length; j = i++) {
     const ax = (poly[j][1] - lng) * kx, ay = (poly[j][0] - lat) * ky;
     const bx = (poly[i][1] - lng) * kx, by = (poly[i][0] - lat) * ky;
     const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
@@ -518,17 +524,20 @@ function jdpPotreroCercano(lat, lng, potreros, margenM) {
 function jdpRepartir(puntos, tramos, desde, hasta, potreros, zonas, margenM) {
   // Una zona sin cultivo manda sobre un potrero (si la bodega quedó dentro de un polígono).
   const pts = puntos.filter(p => p.t >= desde - 6 * 3600000 && p.t <= hasta + 6 * 3600000)
+    // Prioridad: área sin cultivo (bodegas) > dentro de un potrero > camino > cabecera (margen) > fuera
     .map(p => {
-      const zona = jdpZonaDePunto(p.lat, p.lng, zonas);
-      if (zona) return { ...p, zona, potrero: null, margen: false };
+      const area = jdpZonaDePunto(p.lat, p.lng, zonas, 'area');
+      if (area) return { ...p, zona: area, potrero: null, margen: false };
       const dentro = jdpPotreroDePunto(p.lat, p.lng, potreros);
       if (dentro) return { ...p, zona: null, potrero: dentro, margen: false };
+      const camino = jdpZonaDePunto(p.lat, p.lng, zonas, 'camino');
+      if (camino) return { ...p, zona: camino, potrero: null, margen: false };
       const cerca = jdpPotreroCercano(p.lat, p.lng, potreros, margenM);
       return { ...p, zona: null, potrero: cerca, margen: !!cerca };
     });
   const porPotrero = {};
   const sumar = (nombre, ms) => { if (ms > 0) porPotrero[nombre] = (porPotrero[nombre] || 0) + ms; };
-  const lugar = p => p.zona ? JDP_ZONA + p.zona : (p.potrero || JDP_FUERA);
+  const lugar = p => p.zona || p.potrero || JDP_FUERA;
   const conMotor = Array.isArray(tramos) && tramos.length > 0;
 
   if (conMotor) {
@@ -604,12 +613,28 @@ let jdpCargaSel = null;
 let jdpMapa = null;
 let jdpZonas = [];   // zonas sin cultivo guardadas (config/zonas_sin_cultivo)
 let jdpMargenM = 10; // margen de cabeceras: puntos a menos de X m del borde cuentan para ese potrero
+let jdpAnchoCaminoM = 8; // ancho de la franja de los caminos dibujados
 let jdpRaw = null;   // último resultado de Operations Center, para recalcular sin volver a consultar
 
 function jdpZonasParaCalculo() {
-  return jdpZonas.map(z => z.tipo === 'circulo'
-    ? { nombre: z.nombre, centro: [z.centro.lat, z.centro.lng], radioM: z.radio }
+  return jdpZonas.map(z => z.tipo === 'circulo' ? { nombre: z.nombre, centro: [z.centro.lat, z.centro.lng], radioM: z.radio }
+    : z.tipo === 'camino' ? { nombre: z.nombre, linea: jdpNormPoligono(z.linea), anchoM: jdpAnchoCaminoM }
     : { nombre: z.nombre, poly: jdpNormPoligono(z.poligono) });
+}
+function jdpIconoZona(z) { return z.tipo === 'camino' ? JDP_CAMINO : JDP_ZONA; }
+// Dibuja áreas y caminos en un mapa Leaflet
+function jdpDibujarZonasEnMapa(map) {
+  (jdpZonas || []).forEach(z => {
+    try {
+      let capa;
+      if (z.tipo === 'camino') capa = L.polyline(z.linea, { color: '#E5E7EB', weight: 5, opacity: 0.85, dashArray: '8 6' });
+      else {
+        const est = { color: '#60A5FA', fillColor: '#60A5FA', fillOpacity: 0.2, weight: 2, dashArray: '6 4' };
+        capa = z.tipo === 'circulo' ? L.circle([z.centro.lat, z.centro.lng], { ...est, radius: z.radio }) : L.polygon(z.poligono, est);
+      }
+      capa.addTo(map).bindTooltip(`${jdpIconoZona(z)}${z.nombre} (no es potrero)`, { sticky: true });
+    } catch (err) { console.warn('Zona sin cultivo inválida', z, err); }
+  });
 }
 async function jdpCargarZonas() {
   try {
@@ -617,13 +642,21 @@ async function jdpCargarZonas() {
     const d = s.exists() ? s.data() : {};
     jdpZonas = d.zonas || [];
     if (typeof d.margenM === 'number') jdpMargenM = d.margenM;
+    if (typeof d.anchoCaminoM === 'number') jdpAnchoCaminoM = d.anchoCaminoM;
   }
   catch (e) { console.warn('zonas sin cultivo', e); }
 }
-async function jdpGuardarZonas(zonas, margenM) {
+async function jdpGuardarZonas(zonas, margenM, anchoCaminoM) {
   const m = typeof margenM === 'number' ? margenM : jdpMargenM;
-  await setDoc(doc(db, 'config', 'zonas_sin_cultivo'), { zonas, margenM: m, actualizadoPor: currentUser || '', ts: Date.now() });
-  jdpZonas = zonas; jdpMargenM = m;
+  const a = typeof anchoCaminoM === 'number' ? anchoCaminoM : jdpAnchoCaminoM;
+  await setDoc(doc(db, 'config', 'zonas_sin_cultivo'), { zonas, margenM: m, anchoCaminoM: a, actualizadoPor: currentUser || '', ts: Date.now() });
+  jdpZonas = zonas; jdpMargenM = m; jdpAnchoCaminoM = a;
+}
+window.jdpCambiarAnchoCamino = async function(v) {
+  const a = Math.max(2, Math.min(40, Math.round(Number(v) || 8)));
+  try { await jdpGuardarZonas(jdpZonas, undefined, a); } catch (e) { jdpAnchoCaminoM = a; toast('No se pudo guardar el ancho: ' + e.message, false); }
+  if (typeof renderMapaCampoPreview === 'function' && document.getElementById('config-mapa-preview')) renderMapaCampoPreview();
+  jdpRecalcular();
 }
 window.jdpCambiarMargen = async function(v) {
   const m = Math.max(0, Math.min(100, Math.round(Number(v) || 0)));
@@ -793,7 +826,7 @@ function jdpRenderResultado(r, diag, desde, hasta, nPotreros) {
       return `<tr><td style="padding:6px 4px">${n}${cult ? `<div style="font-size:11px;color:var(--acero)">${cult}</div>` : ''}</td><td ${td}>${h(ms)}</td><td ${td}>${(pct * 100).toFixed(0)}%</td>${litros != null ? `<td ${td}><strong>${(litros * pct).toFixed(1)}</strong></td>` : ''}</tr>`; }).join('')}
     <tr style="font-weight:700;border-top:2px solid var(--borde)"><td style="padding:6px 4px">Total en potreros</td><td ${td}>${h(prodMs)}</td><td ${td}>${prodMs ? '100%' : '—'}</td>${litros != null ? `<td ${td}>${prodMs ? litros.toFixed(1) : '—'}</td>` : ''}</tr>
     </tbody></table></div>`;
-  const nombreNoProd = n => jdpEsZona(n) ? n : n === JDP_FUERA ? 'Caminos y otros lugares sin dibujar' : n;
+  const nombreNoProd = n => jdpEsZona(n) ? n : n === JDP_FUERA ? 'Otros lugares sin dibujar' : n;
   const tablaNoProd = noProd.length ? `<div style="overflow-x:auto"><table style="width:100%;min-width:0;font-size:13px;margin-top:6px"><thead><tr><th style="padding:6px 4px">Lugar</th><th ${td}>Horas</th><th ${td}>% del motor</th></tr></thead><tbody>
     ${noProd.map(([n, ms]) => `<tr><td style="padding:6px 4px">${nombreNoProd(n)}</td><td ${td}>${h(ms)}</td><td ${td}>${r.totalMs ? (ms / r.totalMs * 100).toFixed(0) : 0}%</td></tr>`).join('')}
     </tbody></table></div>` : '<div style="font-size:12px;color:var(--acero);margin-top:4px">Todo el tiempo con motor encendido fue dentro de potreros.</div>';
@@ -802,7 +835,7 @@ function jdpRenderResultado(r, diag, desde, hasta, nPotreros) {
   if (!r.puntos.length) avisos.push('Operations Center no devolvió ubicaciones para este período. Revisa el detalle técnico de abajo.');
   if (!r.conMotor) avisos.push('No llegaron datos de motor encendido/apagado: el tiempo se estimó solo con los puntos GPS (huecos de más de 15 min no se cuentan).');
   if (!nPotreros) avisos.push('No hay potreros con polígono dibujado: todo queda "fuera de potreros".');
-  if (r.totalMs && fueraMs / r.totalMs > 0.25) avisos.push(`${h(fueraMs)} h (${(fueraMs / r.totalMs * 100).toFixed(0)}% del motor) quedaron fuera de los potreros y de las zonas sin cultivo. Mira los puntos rojos del mapa: si es la bodega o el patio, márcalos como zona sin cultivo; si es un potrero, falta dibujarlo.`);
+  if (r.totalMs && fueraMs / r.totalMs > 0.25) avisos.push(`${h(fueraMs)} h (${(fueraMs / r.totalMs * 100).toFixed(0)}% del motor) quedaron fuera de potreros, bodegas y caminos. Mira los puntos rojos del mapa: si son bodegas, patio o caminos, márcalos en Config. Potreros; si es un potrero, falta dibujarlo.`);
   if (r.totalMs && !prodMs) avisos.push('No hubo tiempo dentro de potreros: los litros de esta carga no se pueden repartir.');
   const gapProm = r.puntos.length > 1 ? (r.puntos[r.puntos.length - 1].t - r.puntos[0].t) / (r.puntos.length - 1) / 60000 : null;
   const horometro = jdpCargaSel && jdpCargaSel.medidor_tipo === 'hr' && jdpCargaSel.diff_medidor != null ? Number(jdpCargaSel.diff_medidor) : null;
@@ -816,19 +849,15 @@ function jdpRenderResultado(r, diag, desde, hasta, nPotreros) {
     </div>
     ${avisos.map(a => `<div style="background:#FEF3DC;border-left:4px solid #F5A623;padding:8px 10px;border-radius:6px;margin-bottom:6px;font-size:12px">${a}</div>`).join('')}
     <div id="jdp-mapa" style="height:340px;border-radius:8px;margin:8px 0"></div>
-    <div style="font-size:11px;color:var(--acero);margin-bottom:6px">🟡 en potrero · 🟠 cabecera (dentro del margen) · 🔵 zona sin cultivo · 🔴 fuera</div>
+    <div style="font-size:11px;color:var(--acero);margin-bottom:6px">🟡 en potrero · 🟠 cabecera (dentro del margen) · 🔵 bodegas o camino · 🔴 fuera</div>
     <div style="display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:8px">
       <label style="text-transform:none;letter-spacing:normal;font-family:var(--sans);font-size:12px;margin:0">Margen de cabeceras:</label>
       <input type="number" min="0" max="100" step="1" value="${jdpMargenM}" style="width:70px;padding:4px 6px" onchange="jdpCambiarMargen(this.value)"> m
       <span style="color:var(--acero)">(${r.puntos.filter(p => p.margen).length} puntos asignados por margen)</span>
     </div>
     <div style="background:var(--fondo);border-radius:8px;padding:10px 12px;font-size:12px">
-      <strong>Zonas sin cultivo</strong> (bodegas, patio, taller): su tiempo no recibe litros.
-      <div style="margin:6px 0">${jdpZonas.length ? jdpZonas.map((z, i) => `<span class="badge" style="margin:2px 4px 2px 0;display:inline-flex;gap:6px;align-items:center">🏠 ${z.nombre} <a href="#" onclick="jdpBorrarZona(${i});return false" style="color:#C0392B;text-decoration:none">✕</a></span>`).join('') : '<span style="color:var(--acero)">Ninguna todavía.</span>'}</div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap">
-        <button class="btn btn-secondary" style="width:auto;padding:6px 10px" onclick="jdpDibujarZona('poligono')">✏️ Dibujar zona (polígono)</button>
-        <button class="btn btn-secondary" style="width:auto;padding:6px 10px" onclick="jdpDibujarZona('circulo')">⭕ Zona circular</button>
-      </div>
+      <strong>Zonas que no son potrero:</strong> ${jdpZonas.length ? jdpZonas.map(z => jdpIconoZona(z) + z.nombre).join(', ') : 'ninguna todavía'}.
+      Se dibujan en <strong>Cuaderno de Campo → ⚙️ Config. Potreros</strong>; su tiempo no recibe litros.
     </div>
     <div style="font-weight:700;font-size:13px;margin-top:12px">Por potrero</div>${tabla(prod, true)}
     <div style="font-weight:700;font-size:13px;margin-top:12px">Por cultivo</div>${tabla(Object.entries(porCultivo).sort((a, b) => b[1] - a[1]), false)}
@@ -836,7 +865,7 @@ function jdpRenderResultado(r, diag, desde, hasta, nPotreros) {
     <div style="font-size:12px;color:var(--acero);margin-top:6px">Motor encendido total: <strong>${h(r.totalMs)} h</strong> · en potreros: <strong>${h(prodMs)} h</strong>${litros != null && prodMs ? ` · los ${litros.toFixed(1)} L se reparten solo entre los potreros` : ''}</div>
     <details style="margin-top:12px;font-size:12px"><summary style="cursor:pointer">Ver los ${r.puntos.length} puntos GPS</summary>
       <div style="overflow-x:auto;max-height:260px;overflow-y:auto"><table style="width:100%;min-width:0;font-size:12px"><thead><tr><th style="padding:4px">Hora</th><th style="padding:4px">Lugar</th><th style="padding:4px">Motor</th></tr></thead><tbody>
-      ${r.puntos.map(p => `<tr><td style="padding:4px;white-space:nowrap">${new Date(p.t).toLocaleString('es-CL', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</td><td style="padding:4px">${p.zona ? '🏠 ' + p.zona : p.potrero ? p.potrero + (p.margen ? ' (cabecera)' : '') : 'fuera'}</td><td style="padding:4px">${p.motor == null ? '—' : p.motor ? 'encendido' : 'apagado'}</td></tr>`).join('')}
+      ${r.puntos.map(p => `<tr><td style="padding:4px;white-space:nowrap">${new Date(p.t).toLocaleString('es-CL', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</td><td style="padding:4px">${p.zona ? p.zona : p.potrero ? p.potrero + (p.margen ? ' (cabecera)' : '') : 'fuera'}</td><td style="padding:4px">${p.motor == null ? '—' : p.motor ? 'encendido' : 'apagado'}</td></tr>`).join('')}
       </tbody></table></div></details>
     <button class="btn btn-secondary btn-full" style="margin-top:10px;justify-content:center" onclick="jdpDescargarDatos()">⬇️ Descargar datos de la prueba (para mandárselos a Claude)</button>
     <details style="margin-top:12px;font-size:12px"><summary style="cursor:pointer">Detalle técnico (para revisar con Claude)</summary>
@@ -857,17 +886,13 @@ function jdpRenderMapa(r) {
     L.polygon(p.poligono, { color, fillColor: color, fillOpacity: horas ? 0.45 : 0.12, weight: horas ? 3 : 1 }).addTo(map)
       .bindTooltip(`${p.nombre}${horas ? ' · ' + (horas / 3600000).toFixed(1) + ' h' : ''}`, { sticky: true });
   });
-  jdpZonas.forEach(z => {
-    const est = { color: '#60A5FA', fillColor: '#60A5FA', fillOpacity: 0.25, weight: 2, dashArray: '6 4' };
-    const capa = z.tipo === 'circulo' ? L.circle([z.centro.lat, z.centro.lng], { ...est, radius: z.radio }) : L.polygon(z.poligono, est);
-    capa.addTo(map).bindTooltip(`🏠 ${z.nombre} (sin cultivo)`, { sticky: true });
-  });
+  jdpDibujarZonasEnMapa(map);
   if (r.puntos.length) {
     const ll = r.puntos.map(p => [p.lat, p.lng]);
     L.polyline(ll, { color: '#FFFFFF', weight: 2, opacity: 0.8 }).addTo(map);
     r.puntos.forEach(p => {
       L.circleMarker([p.lat, p.lng], { radius: 3, color: p.zona ? '#60A5FA' : p.margen ? '#F97316' : p.potrero ? '#FFD400' : '#E11D48', weight: 1, fillOpacity: 0.9 }).addTo(map)
-        .bindTooltip(`${new Date(p.t).toLocaleString('es-CL')} · ${p.zona ? '🏠 ' + p.zona : p.potrero ? p.potrero + (p.margen ? ' (cabecera)' : '') : 'fuera de potreros'}`);
+        .bindTooltip(`${new Date(p.t).toLocaleString('es-CL')} · ${p.zona ? p.zona : p.potrero ? p.potrero + (p.margen ? ' (cabecera)' : '') : 'fuera de potreros'}`);
       bounds.push([p.lat, p.lng]);
     });
   } else {
@@ -875,34 +900,6 @@ function jdpRenderMapa(r) {
   }
   if (bounds.length) map.fitBounds(bounds, { padding: [20, 20] }); else map.setView([-36.6, -72.1], 12);
   setTimeout(() => map.invalidateSize(), 150);
-  map.on('draw:created', async (e) => {
-    const nombre = (prompt('Nombre de la zona sin cultivo (ej. Bodegas, Patio, Taller):', 'Bodegas') || '').trim();
-    if (!nombre) return;
-    let zona;
-    if (e.layerType === 'circle') { const c = e.layer.getLatLng(); zona = { nombre, tipo: 'circulo', centro: { lat: c.lat, lng: c.lng }, radio: Math.round(e.layer.getRadius()) }; }
-    else zona = { nombre, tipo: 'poligono', poligono: e.layer.getLatLngs()[0].map(ll => ({ lat: ll.lat, lng: ll.lng })) };
-    try {
-      await jdpGuardarZonas([...jdpZonas, zona]);
-      toast(`✓ Zona "${nombre}" guardada`, true);
-      jdpRecalcular();
-    } catch (err) { toast('Error guardando la zona: ' + err.message, false); }
-  });
-}
-
-window.jdpDibujarZona = function(tipo) {
-  if (!jdpMapa || typeof L === 'undefined' || !L.Draw) { toast('Primero consulta un recorrido para tener el mapa', false); return; }
-  const opts = { shapeOptions: { color: '#60A5FA', dashArray: '6 4' } };
-  const h = tipo === 'circulo' ? new L.Draw.Circle(jdpMapa, opts) : new L.Draw.Polygon(jdpMapa, { ...opts, allowIntersection: false });
-  h.enable();
-  document.getElementById('jdp-mapa').scrollIntoView({ behavior: 'smooth', block: 'center' });
-  toast(tipo === 'circulo' ? 'Toca el centro de la bodega y arrastra para dar el tamaño' : 'Toca los vértices alrededor de la bodega y cierra tocando el primer punto', true);
-}
-
-window.jdpBorrarZona = async function(i) {
-  const z = jdpZonas[i];
-  if (!z || !confirm(`¿Eliminar la zona "${z.nombre}"?`)) return;
-  try { await jdpGuardarZonas(jdpZonas.filter((_, j) => j !== i)); jdpRecalcular(); }
-  catch (err) { toast('Error: ' + err.message, false); }
 }
 
 window.jdpDescargarDatos = function() {
@@ -1004,7 +1001,7 @@ function suscribirHorarioConfig() {
 window.guardarCalibracionPulsos = async function() {
   const input = document.getElementById('pulsos-por-litro-input');
   const valor = parseFloat(input.value);
-  if (isNaN(valor) || valor <= 0) { toast('Ingresá un número válido de pulsos por litro', false); return; }
+  if (isNaN(valor) || valor <= 0) { toast('Ingresa un número válido de pulsos por litro', false); return; }
   pulsosPorLitro = valor;
   try {
     await setDoc(doc(db, 'config', 'sistema'), { pulsosPorLitro: valor }, { merge: true });
@@ -1043,7 +1040,7 @@ function renderPanelTotalizadorManual() {
 window.guardarTotalizadorManual = async function() {
   const input = document.getElementById('totalizador-manual-input');
   const valor = parseFloat(input.value);
-  if (isNaN(valor) || valor < 0) { toast('Ingresá un valor válido', false); return; }
+  if (isNaN(valor) || valor < 0) { toast('Ingresa un valor válido', false); return; }
   if (!confirm(`¿Actualizar el totalizador interno a ${Math.round(valor).toLocaleString('es-CL')} L?\n\nEsto no mueve combustible real ni afecta el saldo del estanque — solo resincroniza el contador de referencia que se compara en cada carga.`)) return;
   totalizadorGlobal = valor;
   try {
@@ -1062,7 +1059,7 @@ function renderPanelSaldoManual() {
 window.guardarSaldoManual = async function() {
   const input = document.getElementById('saldo-manual-input');
   const valor = parseFloat(input.value);
-  if (isNaN(valor) || valor < 0) { toast('Ingresá un valor válido', false); return; }
+  if (isNaN(valor) || valor < 0) { toast('Ingresa un valor válido', false); return; }
   if (!confirm(`¿Ajustar el saldo del estanque a ${Math.round(valor).toLocaleString('es-CL')} L?\n\nEsto reemplaza directamente el saldo mostrado en la app — úsalo solo si el valor real (medido físicamente) no coincide con lo que calcula el sistema.\n\nEsta acción no se puede deshacer.`)) return;
   try {
     await setDoc(doc(db, 'estanque', 'saldo'), { litros: valor });
@@ -1811,7 +1808,7 @@ function showScreen(name) {
 
 window.intentarLogin = async function() {
   const pin = document.getElementById('pin-input').value.trim();
-  if (!pin) { toast('Ingresá tu PIN', false); return; }
+  if (!pin) { toast('Ingresa tu PIN', false); return; }
   const btn = document.getElementById('btn-login');
   btn.disabled = true; btn.textContent = 'Verificando...';
   const result = await verificarPin(pin);
@@ -2116,7 +2113,7 @@ window.confirmarPaso1YEncender = async function() {
   const mvRaw = document.getElementById('medidor-valor').value;
   const mv = mvRaw === '' ? null : parseFloat(mvRaw);
   if (!eq || (req.cultivo && centrosSeleccionados.length === 0) || (!esOtroEquipo && (mv === null || isNaN(mv) || mv < 0))) {
-    toast(esOtroEquipo ? 'Completá equipo y cultivo antes de encender' : (req.cultivo ? 'Completá equipo, cultivo y horómetro antes de encender' : 'Completá equipo y horómetro antes de encender'), false); return;
+    toast(esOtroEquipo ? 'Completa equipo y cultivo antes de encender' : (req.cultivo ? 'Completa equipo, cultivo y horómetro antes de encender' : 'Completa equipo y horómetro antes de encender'), false); return;
   }
   if (!esOtroEquipo && ultimoRegistroEquipo?.medidor_valor != null && mv < ultimoRegistroEquipo.medidor_valor) {
     toast(`⛔ El horómetro/odómetro (${mv}) no puede ser menor al último registrado (${ultimoRegistroEquipo.medidor_valor.toFixed(1)})`, false);
@@ -2163,7 +2160,7 @@ window.registrarCisterna = async function() {
   const lt = parseFloat(document.getElementById('litros-cisterna').value);
   const fch = document.getElementById('fecha-cisterna').value;
   const obs = document.getElementById('obs-cisterna').value.trim();
-  if (!lt || lt <= 0 || !fch) { toast('Ingresá los litros y la fecha', false); return; }
+  if (!lt || lt <= 0 || !fch) { toast('Ingresa los litros y la fecha', false); return; }
   const btn = document.getElementById('btn-cisterna');
   btn.disabled = true; btn.textContent = 'Guardando...';
   try {
@@ -2793,7 +2790,7 @@ window.aplicarCorreccionHorometro = async function() {
   const eq = document.getElementById('correccion-horometro-equipo-sel').value;
   const valor = parseFloat(document.getElementById('correccion-horometro-valor').value);
   if (!eq) { toast('Selecciona un equipo', false); return; }
-  if (isNaN(valor) || valor < 0) { toast('Ingresá un horómetro real válido', false); return; }
+  if (isNaN(valor) || valor < 0) { toast('Ingresa un horómetro real válido', false); return; }
   const docId = equipoADocIdHorometro(eq);
   try {
     await setDoc(doc(db, 'horometros', docId), { correccion: { valor, ts: Date.now() } }, { merge: true });
@@ -2934,7 +2931,7 @@ window.toggleCambioEquipo = function() {
 function limpiarPreview() {
   document.getElementById('preview-eficiencia').innerHTML = '';
   document.getElementById('cultivos-resumen').innerHTML = '';
-  document.getElementById('info-anterior').innerHTML = '<span style="color:#9CA3AF;font-size:12px">Seleccioná un equipo para ver el último registro.</span>';
+  document.getElementById('info-anterior').innerHTML = '<span style="color:#9CA3AF;font-size:12px">Selecciona un equipo para ver el último registro.</span>';
   ultimoRegistroEquipo = null;
 }
 
@@ -2958,7 +2955,7 @@ window.abrirRegistroManual = function() {
   populateSelect('manual-equipo', config.equipos, 'Seleccionar equipo');
   populateSelect('manual-operador', config.operadores, 'Seleccionar operador');
   renderManualCultivos();
-  document.getElementById('manual-info-anterior').innerHTML = '<span style="color:#9CA3AF;font-size:12px">Seleccioná un equipo para ver el último registro.</span>';
+  document.getElementById('manual-info-anterior').innerHTML = '<span style="color:#9CA3AF;font-size:12px">Selecciona un equipo para ver el último registro.</span>';
   document.getElementById('panel-registro-manual-form').style.display = 'block';
   document.getElementById('panel-registro-manual-form').scrollIntoView({ behavior: 'smooth' });
 }
@@ -3032,7 +3029,7 @@ window.registrarCargaManual = async function() {
   const obs = document.getElementById('manual-obs').value.trim();
 
   if (!eq || !operador || !fecha || !hora || isNaN(lt) || lt <= 0) {
-    toast('Completá equipo, operador, fecha, hora y litros', false); return;
+    toast('Completa equipo, operador, fecha, hora y litros', false); return;
   }
   if (!confirm(`¿Registrar esta carga como YA REALIZADA, sin controlar la bomba?\n\nEquipo: ${eq}\nLitros: ${lt} L\n\nUsa esto SOLO si la carga física ya ocurrió y quedó sin registrar por un problema con la app.`)) return;
 
@@ -3117,7 +3114,7 @@ async function registrarInterno() {
   }
 
   if (!eq || (req.cultivo && centrosSeleccionados.length===0) || isNaN(lt)||lt<=0 || (!esOtroEquipo && (mv === null || isNaN(mv) || mv < 0)) || isNaN(tot)||tot<=0) {
-    toast(req.cultivo ? 'Completá todos los campos y seleccioná al menos un cultivo' : 'Completá todos los campos', false); return;
+    toast(req.cultivo ? 'Completa todos los campos y selecciona al menos un cultivo' : 'Completa todos los campos', false); return;
   }
   if (!esOtroEquipo && ultimoRegistroEquipo?.medidor_valor != null && mv < ultimoRegistroEquipo.medidor_valor) {
     toast(`⛔ El horómetro/odómetro (${mv}) no puede ser menor al último registrado (${ultimoRegistroEquipo.medidor_valor.toFixed(1)})`, false);
@@ -3288,12 +3285,12 @@ window.limpiarEficienciaHistorica = async function() {
   let cutoffTs = null, periodoTxt = 'todo el historial';
   if (limpiezaPeriodoModo === 'dias') {
     const dias = parseFloat(document.getElementById('limpieza-dias-valor').value);
-    if (isNaN(dias) || dias <= 0) { toast('Ingresá cuántos días hacia atrás', false); return; }
+    if (isNaN(dias) || dias <= 0) { toast('Ingresa cuántos días hacia atrás', false); return; }
     cutoffTs = Date.now() - dias * 86400000;
     periodoTxt = `los últimos ${dias} días`;
   } else if (limpiezaPeriodoModo === 'fecha') {
     const fecha = document.getElementById('limpieza-fecha-valor').value;
-    if (!fecha) { toast('Elegí una fecha desde la cual limpiar', false); return; }
+    if (!fecha) { toast('Elige una fecha desde la cual limpiar', false); return; }
     cutoffTs = new Date(fecha + 'T00:00:00').getTime();
     periodoTxt = `desde el ${fecha}`;
   }
@@ -3388,11 +3385,11 @@ window.recalcularEficiencia = async function() {
   let cutoffTs = null;
   if (recalcPeriodoModo === 'dias') {
     const dias = parseFloat(document.getElementById('recalc-dias-valor').value);
-    if (isNaN(dias) || dias <= 0) { toast('Ingresá cuántos días hacia atrás', false); return; }
+    if (isNaN(dias) || dias <= 0) { toast('Ingresa cuántos días hacia atrás', false); return; }
     cutoffTs = Date.now() - dias * 86400000;
   } else if (recalcPeriodoModo === 'fecha') {
     const fecha = document.getElementById('recalc-fecha-valor').value;
-    if (!fecha) { toast('Elegí una fecha desde la cual recalcular', false); return; }
+    if (!fecha) { toast('Elige una fecha desde la cual recalcular', false); return; }
     cutoffTs = new Date(fecha + 'T00:00:00').getTime();
   }
   const btn = document.getElementById('btn-recalcular');
@@ -3742,9 +3739,9 @@ window.guardarEdicion = async function() {
   const centros = Array.from(document.getElementById('edit-cultivos').selectedOptions).map(o=>o.value).filter(Boolean);
   const obs = document.getElementById('edit-obs').value.trim();
   if (!fecha || !hora || !equipo || !operador || isNaN(litrosNuevos) || litrosNuevos <= 0) {
-    toast('Completá los campos obligatorios', false); return;
+    toast('Completa los campos obligatorios', false); return;
   }
-  if (!centros.length) { toast('Seleccioná al menos un cultivo', false); return; }
+  if (!centros.length) { toast('Selecciona al menos un cultivo', false); return; }
   const btn = document.getElementById('btn-guardar-edicion');
   btn.disabled = true; btn.textContent = 'Guardando...';
   try {
@@ -3958,7 +3955,7 @@ function renderEficienciaAnalisis() {
   if (!cont) return;
   const equipos = equiposSeleccionadosEf();
   const ap = document.getElementById('ef-apero-sel')?.value || '';
-  if (!equipos.length) { cont.innerHTML = '<div class="empty"><div class="empty-icon">🎯</div>Elegí al menos un equipo, o "Todos los equipos".</div>'; return; }
+  if (!equipos.length) { cont.innerHTML = '<div class="empty"><div class="empty-icon">🎯</div>Elige al menos un equipo, o "Todos los equipos".</div>'; return; }
 
   let cutoffTs = null;
   if (efPeriodoModo === 'dias') {
@@ -4288,7 +4285,7 @@ window.registrarAsistencia = async function() {
   const horasReg = document.getElementById('asistencia-horas-registro').value;
   const obs = document.getElementById('asistencia-obs').value.trim();
   if (!trabajador || !fecha) { toast('Selecciona trabajador y fecha', false); return; }
-  if (horasTrab === '' && horasReg === '') { toast('Ingresá al menos un valor de horas extra', false); return; }
+  if (horasTrab === '' && horasReg === '') { toast('Ingresa al menos un valor de horas extra', false); return; }
   const btn = document.getElementById('btn-registrar-asistencia');
   btn.disabled = true; btn.textContent = 'Guardando...';
   try {
@@ -4413,7 +4410,7 @@ window.cargarListaSubadmins = async function() {
 window.agregarSubadmin = async function() {
   const inp = document.getElementById('nuevo-subadmin-nombre');
   const nombre = inp.value.trim();
-  if (!nombre) { toast('Ingresá el nombre del subadministrador', false); return; }
+  if (!nombre) { toast('Ingresa el nombre del subadministrador', false); return; }
   const pines = await getPinesAsistencia();
   if (pines[nombre] != null) { toast('Ya existe un subadministrador con ese nombre', false); return; }
   pines[nombre] = PIN_INICIAL;
@@ -4551,7 +4548,7 @@ function renderEstadoPotreros() {
   const cont = document.getElementById('campo-estado-potrero');
   if (!cont) return;
   if (!camposLaborPotrerosSel.length) {
-    cont.innerHTML = '<div class="empty" style="padding:10px"><div class="empty-icon">🌱</div>Elegí uno o más potreros arriba.</div>';
+    cont.innerHTML = '<div class="empty" style="padding:10px"><div class="empty-icon">🌱</div>Elige uno o más potreros arriba.</div>';
     return;
   }
   cont.innerHTML = camposLaborPotrerosSel.map(nombre => {
@@ -4763,12 +4760,12 @@ function renderCamposLaborTipo() {
     campoAplProductosSel = [];
     cont.innerHTML = `
       <div class="field"><label>Mojamiento (L/ha)</label><input type="number" id="campo-fum-mojamiento" min="0" step="1" placeholder="Ej: 200"></div>
-      <div class="cultivos-label">Categoría (elegí una o más)</div>
+      <div class="cultivos-label">Categoría (elige una o más)</div>
       <div class="centros-selector" id="campo-fum-categoria-selector"></div>
       <div class="cultivos-label" style="margin-top:10px">Productos aplicados</div>
       <div id="campo-apl-productos-lista"></div>
       <div class="grid-2">
-        <div class="field"><label>Producto</label><div class="select-wrapper"><select id="campo-apl-producto" onchange="renderAvisoAbejasCampo()"><option value="">Elegí una categoría primero</option></select></div></div>
+        <div class="field"><label>Producto</label><div class="select-wrapper"><select id="campo-apl-producto" onchange="renderAvisoAbejasCampo()"><option value="">Elige una categoría primero</option></select></div></div>
         <div class="field"><label>Dosis</label><input type="text" id="campo-apl-dosis" placeholder="Ej: 2 L/ha..."></div>
       </div>
       <button type="button" class="btn btn-secondary" style="margin-bottom:14px" onclick="agregarCampoAplProducto()">+ Agregar producto a la lista</button>
@@ -4883,7 +4880,7 @@ function renderCampoFumProductoOpciones() {
   if (!sel) return;
   const valorPrevio = sel.value;
   if (!campoAplTiposProductoSel.length) {
-    sel.innerHTML = '<option value="">Elegí una categoría primero</option>';
+    sel.innerHTML = '<option value="">Elige una categoría primero</option>';
     return;
   }
   const categoriasInv = campoAplTiposProductoSel.map(categoriaInvParaFum);
@@ -4913,7 +4910,7 @@ window.agregarCampoAplProducto = function() {
   const inpDosis = document.getElementById('campo-apl-dosis');
   const producto = inpProd.value.trim();
   const dosis = inpDosis.value.trim();
-  if (!producto || !dosis) { toast('Completá producto y dosis antes de agregar', false); return; }
+  if (!producto || !dosis) { toast('Completa producto y dosis antes de agregar', false); return; }
   campoAplProductosSel.push({ producto, dosis });
   inpProd.value = ''; inpDosis.value = '';
   renderCampoAplProductosLista();
@@ -4958,17 +4955,17 @@ window.registrarLaborCampo = async function() {
     const dosisPendiente = document.getElementById('campo-apl-dosis').value.trim();
     const productos = [...campoAplProductosSel];
     if (prodPendiente && dosisPendiente) productos.push({ producto: prodPendiente, dosis: dosisPendiente });
-    if (!productos.length) { toast('Agregá al menos un producto con su dosis', false); return; }
+    if (!productos.length) { toast('Agrega al menos un producto con su dosis', false); return; }
     payloadBase.productos = productos;
   } else if (tipo === 'fumigacion') {
     const mojamientoRaw = document.getElementById('campo-fum-mojamiento').value;
-    if (mojamientoRaw === '') { toast('Ingresá el mojamiento (L/ha)', false); return; }
+    if (mojamientoRaw === '') { toast('Ingresa el mojamiento (L/ha)', false); return; }
     if (!campoAplTiposProductoSel.length) { toast('Selecciona al menos una categoría', false); return; }
     const prodPendiente = document.getElementById('campo-apl-producto').value.trim();
     const dosisPendiente = document.getElementById('campo-apl-dosis').value.trim();
     const productos = [...campoAplProductosSel];
     if (prodPendiente && dosisPendiente) productos.push({ producto: prodPendiente, dosis: dosisPendiente });
-    if (!productos.length) { toast('Agregá al menos un producto con su dosis', false); return; }
+    if (!productos.length) { toast('Agrega al menos un producto con su dosis', false); return; }
     payloadBase.mojamiento = parseFloat(mojamientoRaw);
     payloadBase.tiposProducto = [...campoAplTiposProductoSel];
     payloadBase.productos = productos;
@@ -4984,7 +4981,7 @@ window.registrarLaborCampo = async function() {
     const dosisPendiente = document.getElementById('campo-apl-dosis').value.trim();
     const productos = [...campoAplProductosSel];
     if (prodPendiente && dosisPendiente) productos.push({ producto: prodPendiente, dosis: dosisPendiente });
-    if (!productos.length) { toast('Agregá al menos un producto con su dosis', false); return; }
+    if (!productos.length) { toast('Agrega al menos un producto con su dosis', false); return; }
     const mojamientoRaw = document.getElementById('campo-apl-mojamiento').value;
     payloadBase.mojamiento = mojamientoRaw !== '' ? parseFloat(mojamientoRaw) : null;
     payloadBase.tiposProducto = [...campoAplTiposProductoSel];
@@ -4993,18 +4990,18 @@ window.registrarLaborCampo = async function() {
     payloadBase.equipo = document.getElementById('campo-apl-equipo').value || null;
   } else if (tipo === 'trabajo_suelo') {
     const labor = document.getElementById('campo-suelo-labor').value.trim();
-    if (!labor) { toast('Ingresá la labor realizada', false); return; }
+    if (!labor) { toast('Ingresa la labor realizada', false); return; }
     payloadBase.labor = labor;
     payloadBase.equipo = document.getElementById('campo-suelo-equipo').value || null;
   } else if (tipo === 'riego') {
     const metodo = document.getElementById('campo-riego-metodo').value.trim();
-    if (!metodo) { toast('Ingresá el método de riego', false); return; }
+    if (!metodo) { toast('Ingresa el método de riego', false); return; }
     payloadBase.metodo = metodo;
     const dur = document.getElementById('campo-riego-duracion').value;
     payloadBase.duracion = dur !== '' ? parseFloat(dur) : null;
   } else if (tipo === 'cosecha') {
     const kg = document.getElementById('campo-cosecha-kg').value;
-    if (kg === '' || isNaN(parseFloat(kg))) { toast('Ingresá los kilos cosechados', false); return; }
+    if (kg === '' || isNaN(parseFloat(kg))) { toast('Ingresa los kilos cosechados', false); return; }
     payloadBase.kg = parseFloat(kg);
     const hum = document.getElementById('campo-cosecha-humedad').value;
     payloadBase.humedad = hum !== '' ? parseFloat(hum) : null;
@@ -5020,7 +5017,7 @@ window.registrarLaborCampo = async function() {
       const dosisPendiente = document.getElementById('campo-apl-dosis').value.trim();
       const productos = [...campoAplProductosSel];
       if (prodPendiente && dosisPendiente) productos.push({ producto: prodPendiente, dosis: dosisPendiente });
-      if (!productos.length) { toast('Agregá al menos un producto con su dosis', false); return; }
+      if (!productos.length) { toast('Agrega al menos un producto con su dosis', false); return; }
       payloadBase.productos = productos;
     } else {
       const detalle = document.getElementById('campo-custom-detalle').value.trim();
@@ -5295,7 +5292,7 @@ window.toggleCaminataPerimetro = function() {
 
 function iniciarCaminataPerimetro() {
   const nombrePotrero = document.getElementById('dibujo-potrero-sel')?.value || '';
-  if (!nombrePotrero) { toast('Elegí primero a qué potrero corresponde', false); return; }
+  if (!nombrePotrero) { toast('Elige primero a qué potrero corresponde', false); return; }
   if (!navigator.geolocation) { toast('Este dispositivo no tiene GPS disponible en el navegador', false); return; }
   caminataPuntos = [];
   caminataActiva = true;
@@ -5425,6 +5422,7 @@ function renderMapaPotreros(containerId, clickable, drawable, multiSelect, forza
       console.warn(`No se pudo dibujar el mapa de "${p.nombre}" — datos de polígono inválidos`, err);
     }
   });
+  jdpDibujarZonasEnMapa(map);
   if (bounds.length) {
     map.fitBounds(bounds);
   } else {
@@ -5446,7 +5444,7 @@ function renderMapaPotreros(containerId, clickable, drawable, multiSelect, forza
     map.addControl(drawControl);
     map.on(L.Draw.Event.CREATED, async (e) => {
       const nombrePotrero = document.getElementById('dibujo-potrero-sel')?.value || '';
-      if (!nombrePotrero) { toast('Elegí primero a qué potrero corresponde este dibujo', false); return; }
+      if (!nombrePotrero) { toast('Elige primero a qué potrero corresponde este dibujo', false); return; }
       const latlngs = e.layer.getLatLngs()[0].map(ll => ({ lat: ll.lat, lng: ll.lng }));
       if (!potrerosConfig.find(x => x.nombre === nombrePotrero)) return;
       try {
@@ -5481,10 +5479,14 @@ window.renderMapaCampoPreview = function() {
 let dibujoFullPuntos = [];
 let dibujoFullCapa = null;
 let dibujoFullPotrero = '';
+let dibujoFullModo = 'potrero';   // 'potrero' | 'zona' (zona que no es potrero: bodegas, patio...)
+let dibujoFullZonaIdx = -1;       // zona que se está redibujando (-1 = nueva)
+let dibujoFullZonaTipo = 'poligono'; // 'poligono' (bodegas, patio) | 'camino' (línea)
 
 window.abrirDibujoPotreroFull = function() {
   const nombre = document.getElementById('dibujo-potrero-sel')?.value || '';
   if (!nombre) { toast('Elige primero qué potrero vas a dibujar', false); return; }
+  dibujoFullModo = 'potrero';
   dibujoFullPotrero = nombre;
   dibujoFullPuntos = [];
   document.getElementById('dibujo-full-titulo').textContent = `Dibujar: ${nombre}`;
@@ -5507,7 +5509,10 @@ function redibujarDibujoFull() {
   if (!dibujoFullCapa) return;
   dibujoFullCapa.clearLayers();
   const pts = dibujoFullPuntos;
-  if (pts.length >= 3) {
+  const esCamino = dibujoFullModo === 'zona' && dibujoFullZonaTipo === 'camino';
+  if (esCamino && pts.length >= 2) {
+    L.polyline(pts, { color: '#F5A623', weight: 5, dashArray: '8 6', interactive: false }).addTo(dibujoFullCapa);
+  } else if (pts.length >= 3) {
     L.polygon(pts, { color: '#F5A623', weight: 3, fillOpacity: 0.25, dashArray: '6 4', interactive: false }).addTo(dibujoFullCapa);
   } else if (pts.length === 2) {
     L.polyline(pts, { color: '#F5A623', weight: 3, dashArray: '6 4', interactive: false }).addTo(dibujoFullCapa);
@@ -5517,8 +5522,9 @@ function redibujarDibujoFull() {
   });
   const estado = document.getElementById('dibujo-full-estado');
   if (estado) {
-    estado.textContent = pts.length === 0 ? 'Toca cada esquina del potrero sobre el mapa.'
-      : pts.length < 3 ? `${pts.length} punto(s) — faltan al menos ${3 - pts.length} más.`
+    const minPts = esCamino ? 2 : 3;
+    estado.textContent = pts.length === 0 ? (esCamino ? 'Toca puntos a lo largo del camino, en orden, sobre el mapa.' : `Toca cada esquina ${dibujoFullModo === 'zona' ? 'de la zona' : 'del potrero'} sobre el mapa.`)
+      : pts.length < minPts ? `${pts.length} punto(s) — faltan al menos ${minPts - pts.length} más.`
       : `${pts.length} puntos — toca "Guardar" cuando termines.`;
   }
 }
@@ -5541,9 +5547,28 @@ window.cerrarDibujoPotreroFull = function() {
 }
 
 window.guardarDibujoPotreroFull = async function() {
-  if (dibujoFullPuntos.length < 3) { toast('Marca al menos 3 esquinas para cerrar el potrero', false); return; }
+  const esCaminoG = dibujoFullModo === 'zona' && dibujoFullZonaTipo === 'camino';
+  if (esCaminoG && dibujoFullPuntos.length < 2) { toast('Marca al menos 2 puntos a lo largo del camino', false); return; }
+  if (!esCaminoG && dibujoFullPuntos.length < 3) { toast(`Marca al menos 3 esquinas para cerrar ${dibujoFullModo === 'zona' ? 'la zona' : 'el potrero'}`, false); return; }
   const nombre = dibujoFullPotrero;
   const puntos = dibujoFullPuntos.map(pt => ({ lat: pt.lat, lng: pt.lng }));
+  if (dibujoFullModo === 'zona') {
+    try {
+      const idx = dibujoFullZonaIdx;
+      await actualizarZonasSinCultivo(zonas => {
+        const z = esCaminoG ? { nombre, tipo: 'camino', linea: puntos } : { nombre, tipo: 'poligono', poligono: puntos };
+        const i = idx >= 0 ? zonas.findIndex(x => x.nombre === nombre) : -1;
+        if (i >= 0) zonas[i] = z; else zonas.push(z);
+        return zonas;
+      });
+      toast(`✓ Zona "${nombre}" guardada (${puntos.length} puntos)`, true);
+      cerrarDibujoPotreroFull();
+      const inp = document.getElementById('nueva-zona-nombre'); if (inp) inp.value = '';
+      renderListaZonasSinCultivo();
+      renderMapaCampoPreview();
+    } catch(e) { toast('Error: ' + e.message, false); }
+    return;
+  }
   try {
     await guardarPotrerosConfig(remotos => {
       const p = remotos.find(x => x.nombre === nombre);
@@ -5557,8 +5582,74 @@ window.guardarDibujoPotreroFull = async function() {
   } catch(e) { toast('Error: ' + e.message, false); }
 }
 
+// ─── ZONAS QUE NO SON POTRERO (bodegas, patio, taller...) ─────
+// Se guardan en config/zonas_sin_cultivo (mismo documento que usa el reparto
+// de combustible por potrero). El tiempo de las máquinas dentro de estas zonas
+// no se carga a ningún cultivo.
+async function actualizarZonasSinCultivo(fn) {
+  await jdpCargarZonas();               // lee lo último guardado antes de modificar
+  const nuevas = fn(jdpZonas.map(z => ({ ...z })));
+  await jdpGuardarZonas(nuevas);
+}
+function renderListaZonasSinCultivo() {
+  const cont = document.getElementById('lista-zonas-sin-cultivo');
+  if (!cont) return;
+  const mg = document.getElementById('config-margen-cabeceras');
+  if (mg) mg.value = jdpMargenM;
+  const an = document.getElementById('config-ancho-camino');
+  if (an) an.value = jdpAnchoCaminoM;
+  cont.innerHTML = jdpZonas.length ? jdpZonas.map((z, i) => `
+    <div class="config-item">
+      <span>${jdpIconoZona(z)}${z.nombre} <span style="font-size:11px;color:var(--acero)">${z.tipo === 'circulo' ? `(círculo de ${z.radio} m)` : z.tipo === 'camino' ? `(camino, ${(z.linea || []).length} puntos)` : `(área, ${(z.poligono || []).length} puntos)`}</span></span>
+      <span style="display:flex;gap:6px">
+        <button class="btn-secondary" style="padding:4px 8px" title="Redibujar" onclick="abrirDibujoZonaFull(${i})">✏️</button>
+        <button class="btn-danger" title="Eliminar" onclick="borrarZonaSinCultivo(${i})">🗑</button>
+      </span>
+    </div>`).join('') : '<div class="hint">Todavía no hay zonas marcadas.</div>';
+}
+window.abrirDibujoZonaFull = function(idx) {
+  let nombre;
+  if (idx >= 0) { nombre = jdpZonas[idx]?.nombre; dibujoFullZonaTipo = jdpZonas[idx]?.tipo === 'camino' ? 'camino' : 'poligono'; }
+  else {
+    dibujoFullZonaTipo = document.getElementById('nueva-zona-tipo')?.value === 'camino' ? 'camino' : 'poligono';
+    nombre = (document.getElementById('nueva-zona-nombre')?.value || '').trim();
+    if (!nombre) { toast('Escribe primero el nombre de la zona (ej. Bodegas)', false); return; }
+    if (jdpZonas.some(z => z.nombre.toLowerCase() === nombre.toLowerCase())) { toast(`Ya existe una zona "${nombre}": usa ✏️ para redibujarla`, false); return; }
+  }
+  if (!nombre) return;
+  dibujoFullModo = 'zona';
+  dibujoFullZonaIdx = idx;
+  dibujoFullPotrero = nombre;
+  dibujoFullPuntos = [];
+  document.getElementById('dibujo-full-titulo').textContent = dibujoFullZonaTipo === 'camino' ? `Camino: ${nombre}` : `Zona que no es potrero: ${nombre}`;
+  document.getElementById('modal-dibujo-potrero-full').style.display = 'flex';
+  renderMapaPotreros('dibujo-potrero-mapa-full', false, false, false, true);
+  const map = mapasLeafletInstancias['dibujo-potrero-mapa-full'];
+  if (!map) return;
+  const z = idx >= 0 ? jdpZonas[idx] : null;
+  if (z && z.tipo === 'camino' && Array.isArray(z.linea) && z.linea.length >= 2) map.fitBounds(z.linea);
+  else if (z && z.tipo !== 'circulo' && poligonoValido(z.poligono)) map.fitBounds(z.poligono);
+  dibujoFullCapa = L.layerGroup().addTo(map);
+  map.on('click', e => {
+    dibujoFullPuntos.push({ lat: e.latlng.lat, lng: e.latlng.lng });
+    redibujarDibujoFull();
+  });
+  redibujarDibujoFull();
+}
+window.borrarZonaSinCultivo = async function(i) {
+  const z = jdpZonas[i];
+  if (!z || !confirm(`¿Eliminar la zona "${z.nombre}"?`)) return;
+  try {
+    await actualizarZonasSinCultivo(zonas => zonas.filter(x => x.nombre !== z.nombre));
+    renderListaZonasSinCultivo();
+    renderMapaCampoPreview();
+  } catch (e) { toast('Error: ' + e.message, false); }
+}
+
 async function renderConfigPotreros() {
   await cargarCultivosActualesPotreros();
+  await jdpCargarZonas();
+  renderListaZonasSinCultivo();
   renderListaPotreros();
   renderListaCultivosCampo();
   renderListaTiposProductoCampo();
@@ -5627,7 +5718,7 @@ window.agregarTipoLaborCampo = async function() {
   const inp = document.getElementById('nuevo-tipo-labor-campo');
   const nombre = inp.value.trim();
   const tieneProductos = document.getElementById('nuevo-tipo-labor-productos').checked;
-  if (!nombre) { toast('Ingresá el nombre del tipo de labor', false); return; }
+  if (!nombre) { toast('Ingresa el nombre del tipo de labor', false); return; }
   if (tiposLaborCampoConfig.some(t => t.nombre.toLowerCase() === nombre.toLowerCase())) { toast('Ya existe un tipo de labor con ese nombre', false); return; }
   tiposLaborCampoConfig.push({ nombre, cultivos: [], tieneProductos });
   config.tiposLaborCampo = tiposLaborCampoConfig;
@@ -5665,7 +5756,7 @@ function renderEditorTipoLaborCampo(idx) {
     <div style="background:var(--fondo);border:1px solid var(--borde);border-radius:6px;padding:10px;margin-top:4px">
       <div class="cultivos-label">Cultivos donde aparece (vacío = todos)</div>
       <div class="centros-selector">${cultivosCampoConfig.map(c => `<div class="cultivo-chip ${edicionTipoLaborCampoCultivos.includes(c)?'sel':''}" onclick='toggleEdicionTipoLaborCampoCultivo(${JSON.stringify(c)},${idx})'>${c}</div>`).join('')}</div>
-      ${!cultivosCampoConfig.length ? '<div class="hint">Agregá cultivos en el panel de arriba primero.</div>' : ''}
+      ${!cultivosCampoConfig.length ? '<div class="hint">Agrega cultivos en el panel de arriba primero.</div>' : ''}
       <div style="display:flex;gap:8px;margin-top:10px">
         <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="cerrarEdicionTipoLaborCampo(${idx})">Cancelar</button>
         <button class="btn btn-verde" style="flex:1" onclick="guardarEdicionTipoLaborCampo(${idx})">✓ Guardar</button>
@@ -5805,7 +5896,7 @@ function renderEditorCultivoPotrero(idx) {
   cont.innerHTML = `
     <div style="background:var(--fondo);border:1px solid var(--borde);border-radius:6px;padding:10px;margin-top:4px">
       <div class="cultivos-label">Cultivo de esta temporada</div>
-      ${cultivosCampoConfig.length ? `<div class="centros-selector">${cultivosCampoConfig.map(c => `<div class="cultivo-chip ${edicionPotreroCultivoSel===c?'sel':''}" onclick='seleccionarEdicionPotreroCultivo(${JSON.stringify(c)},${idx})'>${c}</div>`).join('')}</div>` : '<div class="hint" style="margin-bottom:8px">Agregá cultivos en el panel de arriba primero.</div>'}
+      ${cultivosCampoConfig.length ? `<div class="centros-selector">${cultivosCampoConfig.map(c => `<div class="cultivo-chip ${edicionPotreroCultivoSel===c?'sel':''}" onclick='seleccionarEdicionPotreroCultivo(${JSON.stringify(c)},${idx})'>${c}</div>`).join('')}</div>` : '<div class="hint" style="margin-bottom:8px">Agrega cultivos en el panel de arriba primero.</div>'}
       <div class="field" style="margin-top:8px">
         <label>Fecha de siembra (opcional)</label>
         <input type="date" id="potrero-cultivo-fecha-${idx}">
@@ -5872,9 +5963,9 @@ window.agregarPotrero = async function() {
   const hectareasRaw = document.getElementById('nuevo-potrero-hectareas').value;
   const tipo = document.getElementById('nuevo-potrero-tipo').value;
   const cultivoPermanente = document.getElementById('nuevo-potrero-cultivo-permanente').value.trim();
-  if (!nombre) { toast('Ingresá el nombre del potrero', false); return; }
+  if (!nombre) { toast('Ingresa el nombre del potrero', false); return; }
   if (potrerosConfig.some(p => p.nombre.toLowerCase() === nombre.toLowerCase())) { toast('Ya existe un potrero con ese nombre', false); return; }
-  if (tipo === 'frutal' && !cultivoPermanente) { toast('Ingresá el cultivo permanente del frutal', false); return; }
+  if (tipo === 'frutal' && !cultivoPermanente) { toast('Ingresa el cultivo permanente del frutal', false); return; }
   try {
     await guardarPotrerosConfig(remotos => {
       if (remotos.some(p => p.nombre.toLowerCase() === nombre.toLowerCase())) { throw new Error('Ya existe un potrero con ese nombre'); }
@@ -5948,7 +6039,7 @@ window.agregarEncargadoCampo = async function() {
   const sel = document.getElementById('nuevo-encargado-campo-select');
   const inp = document.getElementById('nuevo-encargado-campo-nombre');
   const nombre = (sel && sel.value !== '__otro__') ? sel.value : inp.value.trim();
-  if (!nombre) { toast('Selecciona o ingresá el nombre del encargado', false); return; }
+  if (!nombre) { toast('Selecciona o ingresa el nombre del encargado', false); return; }
   const pines = await getPinesCampo();
   if (pines[nombre] != null) { toast('Ya existe un encargado con ese nombre', false); return; }
   pines[nombre] = PIN_INICIAL;
@@ -6255,7 +6346,7 @@ window.toggleNuevoAperoEquipo = function(e) {
 window.agregarApero = async function() {
   const inp = document.getElementById('nuevo-apero-nombre');
   const nombre = inp.value.trim();
-  if (!nombre) { toast('Ingresá el nombre del apero', false); return; }
+  if (!nombre) { toast('Ingresa el nombre del apero', false); return; }
   if (nombre === OTRO) { toast('Ese nombre está reservado', false); return; }
   if (aperosConfig.some(a => a.nombre.toLowerCase() === nombre.toLowerCase())) { toast('Ya existe un apero con ese nombre', false); return; }
   aperosConfig.push({ nombre, trabajos: [...nuevoAperoTrabajos], equipos: [...nuevoAperoEquipos] });
@@ -6394,7 +6485,7 @@ window.habilitarOperadorPorHoras = async function() {
   const op = document.getElementById('excepcion-operador-sel').value;
   const horas = parseFloat(document.getElementById('excepcion-horas-input').value);
   if (!op) { toast('Selecciona un operador', false); return; }
-  if (isNaN(horas) || horas <= 0) { toast('Ingresá por cuántas horas habilitarlo', false); return; }
+  if (isNaN(horas) || horas <= 0) { toast('Ingresa por cuántas horas habilitarlo', false); return; }
   const hasta = Date.now() + horas * 3600000;
   excepcionesOperadorHorario[op] = { hasta };
   try {
@@ -6863,9 +6954,9 @@ window.agregarMantencionConfig = async function() {
   const intervaloInput = document.getElementById('nueva-mant-intervalo');
   const requiereIntervalo = categoria === 'horas' || categoria === 'km';
   const intervalo = requiereIntervalo ? parseFloat(intervaloInput.value) : null;
-  if (!nombre) { toast('Ingresá el nombre de la mantención', false); return; }
+  if (!nombre) { toast('Ingresa el nombre de la mantención', false); return; }
   if (requiereIntervalo && (isNaN(intervalo) || intervalo <= 0)) {
-    toast(categoria === 'km' ? 'Ingresá cada cuántos kilómetros se hace' : 'Ingresá cada cuántas horas se hace', false); return;
+    toast(categoria === 'km' ? 'Ingresa cada cuántos kilómetros se hace' : 'Ingresa cada cuántas horas se hace', false); return;
   }
   const id = 'mant_' + Date.now();
   mantencionesConfig.push({ id, nombre, categoria, intervalo, intervalosPorEquipo: {} });
@@ -6914,9 +7005,9 @@ window.guardarParametrosSistema = async function() {
   const capacidad = parseFloat(document.getElementById('param-capacidad').value);
   const alertaLitros = parseFloat(document.getElementById('param-alerta').value);
   const margenTotalizador = parseFloat(document.getElementById('param-margen').value);
-  if (isNaN(capacidad) || capacidad <= 0) { toast('Ingresá una capacidad de estanque válida', false); return; }
-  if (isNaN(alertaLitros) || alertaLitros < 0) { toast('Ingresá un valor de alerta de stock bajo válido', false); return; }
-  if (isNaN(margenTotalizador) || margenTotalizador < 0) { toast('Ingresá un margen de tolerancia válido', false); return; }
+  if (isNaN(capacidad) || capacidad <= 0) { toast('Ingresa una capacidad de estanque válida', false); return; }
+  if (isNaN(alertaLitros) || alertaLitros < 0) { toast('Ingresa un valor de alerta de stock bajo válido', false); return; }
+  if (isNaN(margenTotalizador) || margenTotalizador < 0) { toast('Ingresa un margen de tolerancia válido', false); return; }
   parametrosSistema = { capacidad, alertaLitros, margenTotalizador };
   config.parametros = parametrosSistema;
   try {
@@ -7620,7 +7711,7 @@ window.confirmarAjusteInv = async function() {
   if (!p) return;
   const entrada = document.getElementById("inv-ajuste-tipo-entrada").classList.contains("active");
   const cant = Number(document.getElementById("inv-ajuste-cantidad").value);
-  if (!cant) { toast("Ingresá una cantidad", false); return; }
+  if (!cant) { toast("Ingresa una cantidad", false); return; }
   const actual = stockInv(p, ajusteBodegaInv);
   const nuevoStock = entrada ? actual + cant : Math.max(0, actual - cant);
   const nuevoMapa = stockMapInv(p); nuevoMapa[ajusteBodegaInv] = nuevoStock;
@@ -7650,18 +7741,18 @@ window.onProductoTraspasoInvChange = function() {
 }
 window.usarTodoTraspasoInv = function() {
   const p = productosInv.find(x => x.id === document.getElementById("inv-traspaso-producto").value);
-  if (!p) { toast("Elegí un producto primero", false); return; }
+  if (!p) { toast("Elige un producto primero", false); return; }
   const origen = document.getElementById("inv-traspaso-origen").value;
   document.getElementById("inv-traspaso-cantidad").value = stockInv(p, origen);
 }
 window.confirmarTraspasoInv = async function() {
   const p = productosInv.find(x => x.id === document.getElementById("inv-traspaso-producto").value);
-  if (!p) { toast("Elegí un producto", false); return; }
+  if (!p) { toast("Elige un producto", false); return; }
   const origen = document.getElementById("inv-traspaso-origen").value;
   const destino = document.getElementById("inv-traspaso-destino").value;
   const cant = Number(document.getElementById("inv-traspaso-cantidad").value);
   if (origen === destino) { toast("Origen y destino deben ser distintos", false); return; }
-  if (!cant || cant <= 0) { toast("Ingresá una cantidad", false); return; }
+  if (!cant || cant <= 0) { toast("Ingresa una cantidad", false); return; }
   const stockOrigen = stockInv(p, origen);
   if (cant > stockOrigen) { toast(`No hay suficiente stock en ${origen} (hay ${stockOrigen} ${p.unidad||"L"})`, false); return; }
   const nuevoMapa = stockMapInv(p);
@@ -7947,7 +8038,7 @@ window.guardarIngresoInv = async function() {
   const nroDocumento = document.getElementById("inv-ingreso-nrodoc").value.trim();
   const bodegaDestino = document.getElementById("inv-ingreso-bodega").value;
   const items = itemsIngresoInv.filter(it => it.nombre && it.nombre.trim() && it.cantidad > 0);
-  if (!items.length) { toast("Agregá al menos un producto con nombre y cantidad", false); return; }
+  if (!items.length) { toast("Agrega al menos un producto con nombre y cantidad", false); return; }
   const conocidos = items.filter(it => productosInv.some(p => p.nombre.toLowerCase() === it.nombre.trim().toLowerCase()));
   const nuevos = items.filter(it => !productosInv.some(p => p.nombre.toLowerCase() === it.nombre.trim().toLowerCase()));
   try {
@@ -8770,7 +8861,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     <div class="pin-input-wrap">
       <input type="password" id="pin-input" placeholder="••••" maxlength="6" inputmode="numeric" onkeydown="if(event.key==='Enter')intentarLogin()">
     </div>
-    <div class="pin-hint">Ingresá tu PIN personal</div>
+    <div class="pin-hint">Ingresa tu PIN personal</div>
     <button class="btn btn-primary" id="btn-login" onclick="intentarLogin()">Ingresar</button>
   </div>
 </div>
@@ -8866,12 +8957,12 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         </div>
         <div style="margin-bottom:14px">
           <div style="font-size:11px;font-weight:600;color:var(--acero);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Último registro de este equipo</div>
-          <div id="info-anterior"><span style="color:#9CA3AF;font-size:12px">Seleccioná un equipo para ver el último registro.</span></div>
+          <div id="info-anterior"><span style="color:#9CA3AF;font-size:12px">Selecciona un equipo para ver el último registro.</span></div>
         </div>
 
         <!-- CULTIVOS MÚLTIPLES -->
         <div style="margin-bottom:14px" id="bloque-cultivos">
-          <div class="cultivos-label">Cultivos trabajados (seleccioná uno o más)</div>
+          <div class="cultivos-label">Cultivos trabajados (selecciona uno o más)</div>
           <div class="centros-selector" id="centros-selector"></div>
           <div id="centro-otro-wrap"></div>
           <div id="cultivos-resumen"></div>
@@ -9563,20 +9654,20 @@ tbody td{padding:10px 12px;vertical-align:middle;}
 
         <div class="cultivos-label">📍 Caminar el perímetro (recomendado desde el celular, en terreno)</div>
         <div class="hint" style="margin-bottom:10px">
-          Elegí el potrero arriba, tocá "Caminar el perímetro" y llevá el celular contigo bordeando el potrero. La app va marcando el camino solo con el GPS. Al completar la vuelta, tocá "Finalizar" para cerrar y guardar la forma.
+          Elige el potrero arriba, toca "Caminar el perímetro" y lleva el celular contigo bordeando el potrero. La app va marcando el camino solo con el GPS. Al completar la vuelta, toca "Finalizar" para cerrar y guardar la forma.
         </div>
         <button type="button" id="btn-caminata" class="btn btn-full" style="background:var(--negro);color:var(--amarillo);justify-content:center" onclick="toggleCaminataPerimetro()">📍 Caminar el perímetro</button>
         <div id="caminata-estado" style="font-size:12px;color:var(--acero);margin:6px 0 14px;text-align:center"></div>
 
         <div class="cultivos-label">✏️ O dibujar tocando la imagen satelital</div>
         <div class="hint" style="margin-bottom:10px">
-          Con el potrero elegido arriba, tocá el ícono de polígono (⬠) en el mapa, y marcá sus esquinas tocando sobre la imagen. Tocá el primer punto de nuevo (o el ✓) para cerrar la forma.
+          Con el potrero elegido arriba, toca el ícono de polígono (⬠) en el mapa, y marca sus esquinas tocando sobre la imagen. Toca el primer punto de nuevo (o el ✓) para cerrar la forma.
         </div>
         <div id="config-mapa-preview" style="height:320px;border-radius:8px;overflow:hidden;background:var(--fondo);margin-bottom:16px"></div>
 
         <div class="cultivos-label">O importar desde Google Earth (alternativa)</div>
         <div class="hint" style="margin-bottom:10px">
-          Si preferís dibujarlos en Google Earth (un polígono por potrero, nombrándolo igual que en la app si podés), exportalos como archivo <strong>.kml</strong> y subilo acá.
+          Si prefieres dibujarlos en Google Earth (un polígono por potrero, nombrándolo igual que en la app si puedes), expórtalos como archivo <strong>.kml</strong> y súbelo aquí.
         </div>
         <div class="field">
           <label>Archivo KML</label>
@@ -9585,6 +9676,31 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         <div id="kml-formas-lista"></div>
         <div id="kml-guardar-wrap" style="display:none;margin-top:10px">
           <button class="btn btn-verde btn-full" onclick="guardarAsignacionesKML()">✓ Guardar asignaciones</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">🏠 Zonas que no son potrero</div>
+        <div class="hint" style="margin-bottom:10px">Bodegas, patio, taller, casas, lechería y caminos. El tiempo que las máquinas pasan aquí <strong>no se carga a ningún cultivo</strong> al repartir el combustible por potrero (JDLink).<br>
+          <strong>Área</strong>: se dibuja tocando sus esquinas, igual que un potrero. <strong>Camino</strong>: se dibuja tocando puntos a lo largo del camino, en orden.</div>
+        <div class="config-add" style="flex-wrap:wrap">
+          <input type="text" id="nueva-zona-nombre" placeholder="Ej: Bodegas, Camino principal" style="flex:1;min-width:160px">
+          <div class="select-wrapper" style="min-width:150px"><select id="nueva-zona-tipo">
+            <option value="poligono">🏠 Área (bodegas, patio)</option>
+            <option value="camino">🛣️ Camino</option>
+          </select></div>
+          <button class="btn-add" onclick="abrirDibujoZonaFull(-1)">✏️ Dibujar</button>
+        </div>
+        <div class="config-lista" id="lista-zonas-sin-cultivo" style="margin-top:10px"></div>
+        <div class="field" style="margin-top:14px">
+          <label>Margen de cabeceras (metros)</label>
+          <input type="number" id="config-margen-cabeceras" min="0" max="100" step="1" value="10" onchange="jdpCambiarMargen(this.value)">
+          <div class="hint" style="margin-top:4px">Los puntos GPS que caen fuera de un potrero, pero a menos de esta distancia de su borde (cabeceras), se cuentan como de ese potrero. Los caminos dibujados mandan sobre el margen.</div>
+        </div>
+        <div class="field">
+          <label>Ancho de los caminos (metros)</label>
+          <input type="number" id="config-ancho-camino" min="2" max="40" step="1" value="8" onchange="jdpCambiarAnchoCamino(this.value)">
+          <div class="hint" style="margin-top:4px">Franja total alrededor de la línea dibujada (8 m = 4 m a cada lado). Si los puntos GPS de un camino quedan fuera, súbelo un poco.</div>
         </div>
       </div>
 
@@ -9615,7 +9731,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         <div class="config-lista" id="lista-tipos-labor-fijos" style="margin-bottom:16px"></div>
 
         <div class="cultivos-label">Tipos personalizados</div>
-        <div class="hint" style="margin-bottom:10px">Agregá tipos propios (ej. Poda, Deshije, Fertilización) y restringilos a cultivos específicos — si no restringís ninguno, aparece para todos.</div>
+        <div class="hint" style="margin-bottom:10px">Agrega tipos propios (ej. Poda, Deshije, Fertilización) y restringilos a cultivos específicos — si no restringís ninguno, aparece para todos.</div>
         <label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;text-transform:none;font-weight:400;font-size:13px">
           <input type="checkbox" id="nuevo-tipo-labor-productos" style="width:auto"> Usa lista de producto + dosis (como Aplicación)
         </label>
@@ -9731,7 +9847,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
 <div class="modal-overlay" id="modal-pin">
   <div class="modal-box">
     <div class="modal-title">🔑 Cambiar PIN</div>
-    <div class="alerta-pin" id="pin-forzado-msg">Por seguridad, elegí un PIN personal antes de continuar.</div>
+    <div class="alerta-pin" id="pin-forzado-msg">Por seguridad, elige un PIN personal antes de continuar.</div>
     <div class="field"><label>Nuevo PIN</label><input type="password" id="pin-nuevo" maxlength="6" inputmode="numeric"></div>
     <div class="field"><label>Confirmar PIN</label><input type="password" id="pin-confirmar" maxlength="6" inputmode="numeric"></div>
     <div class="modal-actions">
