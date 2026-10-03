@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#111111">
+<title>Modo tractor · Los Maitenes</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+  :root {
+    --fondo: #111111; --panel: #1C1C1C; --borde: #333; --texto: #F5F5F5; --gris: #A3A3A3;
+    --verde: #22C55E; --amarillo: #FACC15; --rojo: #EF4444; --azul: #60A5FA;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--fondo); color: var(--texto); font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; overflow: hidden; }
+  #app { display: flex; flex-direction: column; height: 100%; }
+  #barra { display: flex; gap: 6px; align-items: center; padding: 6px 10px; background: var(--panel); border-bottom: 1px solid var(--borde); font-size: 13px; flex-wrap: wrap; }
+  #barra .eq { font-weight: 700; font-size: 15px; margin-right: auto; }
+  .chip { padding: 3px 8px; border-radius: 999px; background: #262626; white-space: nowrap; }
+  .chip.ok { color: var(--verde); } .chip.mal { color: var(--rojo); } .chip.med { color: var(--amarillo); }
+  #mapa { flex: 1; min-height: 0; background: #1a1a1a; }
+  #pie { padding: 8px 10px calc(8px + env(safe-area-inset-bottom)); background: var(--panel); border-top: 1px solid var(--borde); }
+  #stats { font-size: 13px; color: var(--gris); margin-bottom: 6px; text-align: center; }
+  #botones { display: flex; gap: 8px; }
+  button { font: inherit; border: none; border-radius: 12px; cursor: pointer; }
+  #btn-aplicar { flex: 1; padding: 18px 10px; font-size: 20px; font-weight: 800; background: #2A2A2A; color: var(--texto); border: 3px solid #444; }
+  #btn-aplicar.on { background: var(--verde); color: #052e12; border-color: #16a34a; }
+  .btn-sec { padding: 14px 16px; font-size: 20px; background: #2A2A2A; color: var(--texto); }
+  #aviso { display: none; position: absolute; left: 10px; right: 10px; top: 56px; z-index: 1000; background: #78350F; color: #FEF3C7; padding: 10px 12px; border-radius: 10px; font-size: 14px; }
+  .capa { position: fixed; inset: 0; z-index: 2000; background: rgba(0,0,0,.85); display: none; align-items: center; justify-content: center; padding: 16px; }
+  .caja { background: var(--panel); border: 1px solid var(--borde); border-radius: 14px; padding: 18px; width: 100%; max-width: 420px; max-height: 92vh; overflow: auto; }
+  .caja h2 { margin: 0 0 12px; font-size: 18px; }
+  .caja label { display: block; font-size: 13px; color: var(--gris); margin: 12px 0 4px; }
+  .caja select, .caja input { width: 100%; padding: 12px; font-size: 16px; background: #0F0F0F; color: var(--texto); border: 1px solid var(--borde); border-radius: 10px; }
+  .caja .nota { font-size: 12px; color: var(--gris); margin-top: 6px; line-height: 1.4; }
+  .caja .acciones { display: flex; gap: 8px; margin-top: 16px; }
+  .btn-prim { flex: 1; padding: 14px; font-size: 16px; font-weight: 700; background: var(--verde); color: #052e12; }
+  .btn-gris { flex: 1; padding: 14px; font-size: 15px; background: #2A2A2A; color: var(--texto); }
+  .leaflet-container { background: #1a1a1a; }
+  .pos-icono { width: 22px; height: 22px; border-radius: 50%; background: var(--azul); border: 3px solid #fff; box-shadow: 0 0 0 2px rgba(0,0,0,.4); }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="barra">
+    <span class="eq" id="b-equipo">Modo tractor</span>
+    <span class="chip" id="b-gps">📍 GPS…</span>
+    <span class="chip" id="b-red">⚪ —</span>
+    <span class="chip" id="b-pend">⬆ 0</span>
+    <span class="chip" id="b-llave">🔋 —</span>
+  </div>
+  <div id="aviso"></div>
+  <div id="mapa"></div>
+  <div id="pie">
+    <div id="stats">Aplicado hoy: 0,0 km · ≈ 0,0 ha</div>
+    <div id="botones">
+      <button id="btn-aplicar" onclick="toggleAplicar()">▶ EMPEZAR A APLICAR</button>
+      <button class="btn-sec" title="Centrar" onclick="centrar()">🎯</button>
+      <button class="btn-sec" title="Ajustes" onclick="abrirAjustes()">⚙️</button>
+    </div>
+  </div>
+</div>
+
+<div class="capa" id="capa-ajustes">
+  <div class="caja">
+    <h2>🚜 Modo tractor</h2>
+    <label>Equipo</label>
+    <select id="aj-equipo"></select>
+    <label>Ancho de aplicación (metros)</label>
+    <input type="number" id="aj-ancho" min="1" max="60" step="0.5" value="5">
+    <div class="nota">Lo que cubre cada pasada. En frutales: distancia entre hileras × hileras que aplica por pasada.</div>
+    <div class="nota" id="aj-estado-datos" style="margin-top:12px"></div>
+    <div class="acciones">
+      <button class="btn-gris" onclick="actualizarDatosCampo(true)">🔄 Actualizar potreros</button>
+      <button class="btn-prim" onclick="guardarAjustes()">✓ Listo</button>
+    </div>
+    <div class="nota" style="margin-top:14px">Deja esta pantalla abierta y el celular conectado al cargador del tractor (al contacto). Si no hay señal, guarda todo y lo sube cuando vuelva el internet o el WiFi.</div>
+  </div>
+</div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getFirestore, doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+const app = initializeApp({
+  apiKey: "AIzaSyAVsios3N97MQVPJLC94qEOXGJNmKzK9RI",
+  authDomain: "combustible-los-maitenes.firebaseapp.com",
+  projectId: "combustible-los-maitenes",
+  storageBucket: "combustible-los-maitenes.firebasestorage.app",
+  messagingSenderId: "750216939749",
+  appId: "1:750216939749:web:978e4173eaee8235ebac0c"
+});
+const db = getFirestore(app);
+
+// ── Ajustes guardados en el equipo ──────────────────────────────
+const ls = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+};
+let ajustes = ls.get('tractor_ajustes', { equipo: '', ancho: 5 });
+let datosCampo = ls.get('tractor_datos_campo', null); // { equipos, potreros, zonas, ts }
+let dispositivo = ls.get('tractor_dispositivo', null);
+if (!dispositivo) { dispositivo = 'd' + Math.random().toString(36).slice(2, 10); ls.set('tractor_dispositivo', dispositivo); }
+let aplicando = ls.get('tractor_aplicando', false);
+
+// ── Puntos en IndexedDB (sobreviven a cortes de señal y recargas) ──
+let idb = null;
+function abrirIDB() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open('modo_tractor', 1);
+    r.onupgradeneeded = () => { const s = r.result.createObjectStore('puntos', { keyPath: 't' }); s.createIndex('enviado', 'e'); };
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+function idbTx(modo, fn) {
+  return new Promise((res, rej) => {
+    const tx = idb.transaction('puntos', modo); const st = tx.objectStore('puntos');
+    let out; Promise.resolve(fn(st)).then(v => { out = v; });
+    tx.oncomplete = () => res(out); tx.onerror = () => rej(tx.error);
+  });
+}
+const reqP = r => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+async function guardarPunto(p) { await idbTx('readwrite', st => st.put(p)); }
+async function puntosDesde(t0) { return idbTx('readonly', st => reqP(st.getAll(IDBKeyRange.lowerBound(t0)))); }
+async function pendientes(max) { return idbTx('readonly', st => reqP(st.index('enviado').getAll(0, max))); }
+async function contarPendientes() { return idbTx('readonly', st => reqP(st.index('enviado').count(0))); }
+async function marcarEnviados(ts) { await idbTx('readwrite', async st => { for (const t of ts) { const p = await reqP(st.get(t)); if (p) { p.e = 1; st.put(p); } } }); }
+async function limpiarViejos() { const lim = Date.now() - 4 * 86400000; await idbTx('readwrite', st => { st.openCursor(IDBKeyRange.upperBound(lim)).onsuccess = ev => { const c = ev.target.result; if (c) { if (c.value.e === 1) c.delete(); c.continue(); } }; }); }
+
+// ── Mapa ─────────────────────────────────────────────────────────
+const mapa = L.map('mapa', { zoomControl: false, attributionControl: true }).setView([-36.83, -72.15], 15);
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 20, maxNativeZoom: 19, crossOrigin: true, attribution: 'Tiles &copy; Esri' }).addTo(mapa);
+const capaCampo = L.layerGroup().addTo(mapa);
+const capaRecorrido = L.layerGroup().addTo(mapa);
+const capaAplicado = L.layerGroup().addTo(mapa);
+let marcador = null, circuloPrec = null, seguir = true;
+mapa.on('dragstart', () => { seguir = false; });
+
+function dibujarCampo() {
+  capaCampo.clearLayers();
+  if (!datosCampo) return;
+  const bounds = [];
+  (datosCampo.potreros || []).forEach(p => {
+    if (!Array.isArray(p.poligono) || p.poligono.length < 3) return;
+    L.polygon(p.poligono, { color: '#FACC15', weight: 2, fillOpacity: 0.06, interactive: false }).addTo(capaCampo)
+      .bindTooltip(p.nombre, { permanent: false });
+    p.poligono.forEach(c => bounds.push(Array.isArray(c) ? c : [c.lat, c.lng]));
+  });
+  (datosCampo.zonas || []).forEach(z => {
+    try {
+      if (z.tipo === 'camino') L.polyline(z.linea, { color: '#E5E7EB', weight: 3, dashArray: '8 6', interactive: false }).addTo(capaCampo);
+      else if (z.tipo === 'circulo') L.circle([z.centro.lat, z.centro.lng], { radius: z.radio, color: '#60A5FA', weight: 2, fillOpacity: 0.1, dashArray: '6 4', interactive: false }).addTo(capaCampo);
+      else L.polygon(z.poligono, { color: z.tipo === 'carga' ? '#14B8A6' : '#60A5FA', weight: 2, fillOpacity: 0.1, dashArray: '6 4', interactive: false }).addTo(capaCampo);
+    } catch (e) {}
+  });
+  if (bounds.length && !ultimaPos) mapa.fitBounds(bounds);
+}
+
+// Ancho real en metros → grosor de línea en píxeles según el zoom
+function pxPorMetros(m, lat) {
+  const mpp = 156543.03392 * Math.cos(lat * Math.PI / 180) / Math.pow(2, mapa.getZoom());
+  return Math.max(2, m / mpp);
+}
+let tramosAplicados = []; // [[ [lat,lng], ... ], ...]
+let tramoActual = null;
+function redibujarAplicado() {
+  capaAplicado.clearLayers();
+  const lat = mapa.getCenter().lat;
+  const w = pxPorMetros(Number(ajustes.ancho) || 5, lat);
+  tramosAplicados.forEach(tr => {
+    if (tr.length >= 2) L.polyline(tr, { color: '#22C55E', weight: w, opacity: 0.45, lineCap: 'butt', lineJoin: 'round', interactive: false }).addTo(capaAplicado);
+  });
+}
+mapa.on('zoomend', redibujarAplicado);
+let recorridoLinea = L.polyline([], { color: '#FFFFFF', weight: 1.5, opacity: 0.6, interactive: false }).addTo(capaRecorrido);
+
+// ── Estadísticas del día ─────────────────────────────────────────
+let kmAplicados = 0;
+function distM(a, b) {
+  const R = 6371000, rad = x => x * Math.PI / 180;
+  const dLat = rad(b[0] - a[0]), dLng = rad(b[1] - a[1]);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a[0])) * Math.cos(rad(b[0])) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+function actualizarStats() {
+  const ha = kmAplicados * 1000 * (Number(ajustes.ancho) || 0) / 10000;
+  document.getElementById('stats').textContent = `Aplicado hoy: ${kmAplicados.toFixed(1).replace('.', ',')} km · ≈ ${ha.toFixed(1).replace('.', ',')} ha (ancho ${String(ajustes.ancho).replace('.', ',')} m)`;
+}
+
+// Agrega un punto al dibujo (aplicado o solo recorrido)
+let ultimoDibujado = null;
+function dibujarPunto(p) {
+  const ll = [p.lat, p.lng];
+  recorridoLinea.addLatLng(ll);
+  const cont = ultimoDibujado && (p.t - ultimoDibujado.t) < 30000 && distM([ultimoDibujado.lat, ultimoDibujado.lng], ll) < 60;
+  if (p.a) {
+    if (!tramoActual || !cont || !ultimoDibujado.a) { tramoActual = []; tramosAplicados.push(tramoActual); if (ultimoDibujado && cont && !ultimoDibujado.a) {} }
+    if (tramoActual.length && cont) kmAplicados += distM(tramoActual[tramoActual.length - 1], ll) / 1000;
+    tramoActual.push(ll);
+  } else tramoActual = null;
+  ultimoDibujado = p;
+}
+
+// ── GPS ──────────────────────────────────────────────────────────
+let ultimaPos = null, ultimoGuardado = null, cargando = null;
+const MIN_MS = 2000, MIN_M = 3, MAX_PREC = 40;
+function onPos(pos) {
+  const c = pos.coords;
+  const p = { t: pos.timestamp || Date.now(), lat: +c.latitude.toFixed(7), lng: +c.longitude.toFixed(7), acc: Math.round(c.accuracy || 0),
+    v: c.speed != null ? +c.speed.toFixed(1) : null, h: c.heading != null && !isNaN(c.heading) ? Math.round(c.heading) : null,
+    c: cargando, a: aplicando ? 1 : 0, e: 0 };
+  ultimaPos = p;
+  const chip = document.getElementById('b-gps');
+  chip.textContent = `📍 ±${p.acc} m`;
+  chip.className = 'chip ' + (p.acc <= 8 ? 'ok' : p.acc <= 20 ? 'med' : 'mal');
+  const ll = [p.lat, p.lng];
+  if (!marcador) {
+    marcador = L.marker(ll, { icon: L.divIcon({ className: '', html: '<div class="pos-icono"></div>', iconSize: [22, 22], iconAnchor: [11, 11] }), interactive: false }).addTo(mapa);
+    circuloPrec = L.circle(ll, { radius: p.acc, color: '#60A5FA', weight: 1, fillOpacity: 0.08, interactive: false }).addTo(mapa);
+    mapa.setView(ll, 18);
+  } else { marcador.setLatLng(ll); circuloPrec.setLatLng(ll).setRadius(p.acc); }
+  if (seguir) mapa.panTo(ll, { animate: true });
+  if (p.acc > MAX_PREC) return; // punto demasiado impreciso: se muestra pero no se guarda
+  const mover = !ultimoGuardado || distM([ultimoGuardado.lat, ultimoGuardado.lng], ll) >= MIN_M;
+  const tiempo = !ultimoGuardado || p.t - ultimoGuardado.t >= MIN_MS;
+  if (!(tiempo && (mover || p.t - ultimoGuardado.t >= 15000) || (ultimoGuardado && ultimoGuardado.a !== p.a))) return;
+  ultimoGuardado = p;
+  guardarPunto(p).then(actualizarPendientes).catch(e => console.warn('No se pudo guardar el punto', e));
+  dibujarPunto(p);
+  if (p.a) { redibujarAplicado(); actualizarStats(); }
+}
+function onPosError(err) {
+  const chip = document.getElementById('b-gps');
+  chip.className = 'chip mal';
+  chip.textContent = err.code === 1 ? '📍 sin permiso' : '📍 sin señal GPS';
+  if (err.code === 1) mostrarAviso('El celular no dio permiso de ubicación. Actívalo para este sitio en los ajustes del navegador.');
+}
+let watchId = null;
+function iniciarGPS() {
+  if (!('geolocation' in navigator)) { mostrarAviso('Este equipo no tiene GPS disponible para el navegador.'); return; }
+  if (watchId != null) navigator.geolocation.clearWatch(watchId);
+  watchId = navigator.geolocation.watchPosition(onPos, onPosError, { enableHighAccuracy: true, maximumAge: 0, timeout: 30000 });
+}
+
+// ── Pantalla siempre encendida ───────────────────────────────────
+let wakeLock = null, ocultoDesde = null;
+async function pedirPantalla() {
+  try { if ('wakeLock' in navigator) { wakeLock = await navigator.wakeLock.request('screen'); } } catch (e) { console.warn('Wake lock', e); }
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    pedirPantalla(); iniciarGPS();
+    if (ocultoDesde && Date.now() - ocultoDesde > 60000) mostrarAviso(`La app estuvo cerrada o en segundo plano ${Math.round((Date.now() - ocultoDesde) / 60000)} min: ese tiempo no quedó registrado. Déjala siempre abierta.`);
+    ocultoDesde = null;
+  } else ocultoDesde = Date.now();
+});
+
+// ── Llave puesta = cargando ──────────────────────────────────────
+function pintarLlave() {
+  const ch = document.getElementById('b-llave');
+  ch.textContent = cargando === true ? '🔌 llave' : cargando === false ? '🔋 sin carga' : '🔋 —';
+  ch.className = 'chip ' + (cargando === true ? 'ok' : cargando === false ? 'med' : '');
+}
+if (navigator.getBattery) navigator.getBattery().then(b => { cargando = b.charging; pintarLlave(); b.addEventListener('chargingchange', () => { cargando = b.charging; pintarLlave(); }); }).catch(() => {});
+
+// ── Envío a la app (Firestore) ───────────────────────────────────
+const claveEquipo = eq => String(eq || '').replace(/\s+/g, '_');
+const diaLocal = t => { const d = new Date(t), p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`; };
+let subiendo = false;
+async function actualizarPendientes() {
+  try { const n = await contarPendientes(); const ch = document.getElementById('b-pend'); ch.textContent = `⬆ ${n}`; ch.className = 'chip ' + (n > 300 ? 'med' : 'ok'); } catch (e) {}
+}
+function conTimeout(prom, ms) { return Promise.race([prom, new Promise((_, rej) => setTimeout(() => rej(new Error('tiempo agotado')), ms))]); }
+async function subir() {
+  if (subiendo || !navigator.onLine || !ajustes.equipo) return;
+  subiendo = true;
+  try {
+    for (let vuelta = 0; vuelta < 20; vuelta++) {
+      const lote = (await pendientes(400)).sort((a, b) => a.t - b.t);
+      if (!lote.length) break;
+      const id = `${dispositivo}_${lote[0].t}`;
+      await conTimeout(setDoc(doc(db, 'recorridos_tractor', claveEquipo(ajustes.equipo), 'lotes', id), {
+        equipo: ajustes.equipo, dia: diaLocal(lote[0].t), desde: lote[0].t, hasta: lote[lote.length - 1].t, n: lote.length,
+        ancho: Number(ajustes.ancho) || null, dispositivo, ts: Date.now(),
+        puntos: lote.map(p => ({ t: p.t, lat: p.lat, lng: p.lng, acc: p.acc, v: p.v, h: p.h, c: p.c, a: p.a }))
+      }), 25000);
+      await marcarEnviados(lote.map(p => p.t));
+    }
+  } catch (e) { console.warn('No se pudo subir (se reintenta después)', e); }
+  subiendo = false;
+  actualizarPendientes(); pintarRed();
+}
+function pintarRed() {
+  const ch = document.getElementById('b-red');
+  ch.textContent = navigator.onLine ? '🟢 en línea' : '⚪ sin señal';
+  ch.className = 'chip ' + (navigator.onLine ? 'ok' : 'med');
+}
+window.addEventListener('online', () => { pintarRed(); subir(); actualizarDatosCampo(false); });
+window.addEventListener('offline', pintarRed);
+setInterval(subir, 30000);
+
+// ── Potreros, zonas y equipos desde la app (se guardan para usar sin señal) ──
+async function actualizarDatosCampo(manual) {
+  const est = document.getElementById('aj-estado-datos');
+  if (!navigator.onLine) { if (manual) est.textContent = 'Sin internet: se usan los potreros guardados en el celular.'; return; }
+  try {
+    if (manual) est.textContent = 'Descargando potreros…';
+    const [sd, sz] = await conTimeout(Promise.all([getDoc(doc(db, 'config', 'datos')), getDoc(doc(db, 'config', 'zonas_sin_cultivo'))]), 20000);
+    const d = sd.exists() ? sd.data() : {};
+    datosCampo = {
+      equipos: d.equipos || [],
+      potreros: (d.potreros || []).filter(p => Array.isArray(p.poligono) && p.poligono.length >= 3).map(p => ({ nombre: p.nombre, poligono: p.poligono })),
+      zonas: sz.exists() ? (sz.data().zonas || []) : [],
+      ts: Date.now()
+    };
+    ls.set('tractor_datos_campo', datosCampo);
+    dibujarCampo(); llenarEquipos(); mostrarEstadoDatos();
+    if (manual) est.textContent += ' ✓ Actualizado.';
+  } catch (e) { if (manual) est.textContent = 'No se pudo descargar: ' + e.message; }
+}
+function mostrarEstadoDatos() {
+  const est = document.getElementById('aj-estado-datos');
+  if (!datosCampo) { est.textContent = 'Todavía no hay potreros guardados en este celular. Conéctate a internet y toca "Actualizar potreros".'; return; }
+  est.textContent = `${datosCampo.potreros.length} potreros y ${datosCampo.zonas.length} zonas guardados (${new Date(datosCampo.ts).toLocaleString('es-CL')}).`;
+}
+function llenarEquipos() {
+  const sel = document.getElementById('aj-equipo');
+  const lista = (datosCampo && datosCampo.equipos.length) ? datosCampo.equipos : (ajustes.equipo ? [ajustes.equipo] : []);
+  sel.innerHTML = '<option value="">— Elegir equipo —</option>' + lista.map(e => `<option value="${e}" ${e === ajustes.equipo ? 'selected' : ''}>${e}</option>`).join('');
+}
+
+// ── Botones ──────────────────────────────────────────────────────
+function pintarBotonAplicar() {
+  const b = document.getElementById('btn-aplicar');
+  b.classList.toggle('on', aplicando);
+  b.textContent = aplicando ? '⏸ APLICANDO… (tocar para pausar)' : '▶ EMPEZAR A APLICAR';
+}
+window.toggleAplicar = function () {
+  aplicando = !aplicando; ls.set('tractor_aplicando', aplicando); pintarBotonAplicar();
+  if (navigator.vibrate) navigator.vibrate(80);
+};
+window.centrar = function () { seguir = true; if (ultimaPos) mapa.setView([ultimaPos.lat, ultimaPos.lng], Math.max(mapa.getZoom(), 17)); };
+window.abrirAjustes = function () {
+  llenarEquipos(); mostrarEstadoDatos();
+  document.getElementById('aj-ancho').value = ajustes.ancho;
+  document.getElementById('capa-ajustes').style.display = 'flex';
+};
+window.guardarAjustes = function () {
+  const eq = document.getElementById('aj-equipo').value;
+  const an = Number(document.getElementById('aj-ancho').value);
+  if (!eq) { alert('Elige el equipo'); return; }
+  if (!(an > 0)) { alert('Indica el ancho de aplicación'); return; }
+  ajustes = { equipo: eq, ancho: an }; ls.set('tractor_ajustes', ajustes);
+  document.getElementById('b-equipo').textContent = '🚜 ' + eq;
+  document.getElementById('capa-ajustes').style.display = 'none';
+  redibujarAplicado(); actualizarStats();
+  pedirPantalla(); iniciarGPS(); subir();
+};
+window.actualizarDatosCampo = actualizarDatosCampo;
+function mostrarAviso(txt) {
+  const a = document.getElementById('aviso'); a.textContent = txt; a.style.display = 'block';
+  clearTimeout(mostrarAviso._t); mostrarAviso._t = setTimeout(() => { a.style.display = 'none'; }, 12000);
+}
+document.getElementById('aviso').onclick = e => { e.target.style.display = 'none'; };
+
+// ── Inicio ───────────────────────────────────────────────────────
+(async function iniciar() {
+  try { idb = await abrirIDB(); } catch (e) { mostrarAviso('No se pudo abrir el almacenamiento del celular: los puntos no se guardarán sin señal.'); }
+  pintarRed(); pintarLlave(); pintarBotonAplicar(); dibujarCampo();
+  if (idb) {
+    try {
+      const hoy = new Date(); hoy.setHours(0, 0, 0, 0);
+      const pts = (await puntosDesde(hoy.getTime())).sort((a, b) => a.t - b.t);
+      pts.forEach(dibujarPunto);
+      if (pts.length) { ultimoGuardado = pts[pts.length - 1]; }
+      redibujarAplicado(); actualizarStats();
+      limpiarViejos(); actualizarPendientes();
+    } catch (e) { console.warn(e); }
+  }
+  if (ajustes.equipo) { document.getElementById('b-equipo').textContent = '🚜 ' + ajustes.equipo; pedirPantalla(); iniciarGPS(); }
+  else abrirAjustes();
+  actualizarDatosCampo(false);
+  subir();
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw-tractor.js', { scope: '/tractor' }).catch(e => console.warn('SW', e));
+})();
+</script>
+</body>
+</html>
