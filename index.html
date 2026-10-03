@@ -383,11 +383,13 @@ window.obtenerHorasJDLink = async function() {
 // ─── PRUEBA: TIEMPO POR POTRERO DESDE EL RECORRIDO JDLINK ────────────
 // Herramienta de diagnóstico (solo admin). Para una máquina con JDLink y un
 // período (normalmente entre dos cargas de combustible), trae del Operations
-// Center las ubicaciones GPS y los tramos con motor encendido, ve en qué
-// potrero cae cada punto y reparte el tiempo (y los litros de la carga) por
-// potrero. Todavía NO guarda nada: es para validar con un tractor real.
+// Center las ubicaciones GPS del módem y los tramos con motor encendido, ve en
+// qué potrero cae cada punto y reparte el tiempo (y los litros de la carga)
+// por potrero. Todavía NO guarda nada: es para validar con un tractor real.
 const JDP_MAX_GAP_MS = 15 * 60 * 1000; // sin datos de motor, huecos > 15 min no se cuentan
+const JDP_VEL_TRASLADO_KMH = 15;       // velocidad media supuesta al trasladarse entre lugares
 const JDP_FUERA = 'Fuera de potreros (caminos, patio)';
+const JDP_SINGPS = 'Sin ubicación GPS';
 
 // [lat,lng] o {lat,lng} → [[lat,lng],...]
 function jdpNormPoligono(pol) {
@@ -405,6 +407,12 @@ function jdpPuntoEnPoligono(lat, lng, poly) {
 function jdpPotreroDePunto(lat, lng, potreros) {
   for (const p of potreros) if (jdpPuntoEnPoligono(lat, lng, p.poly)) return p.nombre;
   return null;
+}
+function jdpDistKm(a, b) {
+  const R = 6371, rad = x => x * Math.PI / 180;
+  const dLat = rad(b.lat - a.lat), dLng = rad(b.lng - a.lng);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
 }
 function jdpNum(v) { const n = Number(v); return isFinite(n) ? n : null; }
 // Acepta varias formas de respuesta (locationHistory, breadcrumbs, etc.)
@@ -440,7 +448,6 @@ function jdpExtraerTramosMotor(values) {
     out.push([s, e]);
   });
   out.sort((a, b) => a[0] - b[0]);
-  // une tramos que se traslapan
   const unidos = [];
   out.forEach(tr => {
     const u = unidos[unidos.length - 1];
@@ -453,35 +460,67 @@ function jdpTraslape(a0, a1, tramos) {
   for (const [s, e] of tramos) { const x = Math.max(a0, s), y = Math.min(a1, e); if (y > x) ms += y - x; }
   return ms;
 }
-// Reparte el tiempo del período [desde, hasta] por potrero. Cada instante se
-// asigna al punto GPS más cercano en el tiempo. Si hay tramos de motor, solo
-// cuenta el tiempo con motor encendido; si no, solo cuenta entre puntos
-// separados por menos de JDP_MAX_GAP_MS.
+function jdpMotorEn(t, tramos) { return tramos.some(([s, e]) => t >= s && t <= e); }
+
+// Reparte el tiempo con motor encendido del período [desde, hasta] por potrero.
+// Con datos de motor (lo normal) trabaja tramo por tramo de motor encendido:
+//  - entre dos puntos en el mismo lugar, todo el tiempo va a ese lugar;
+//  - entre dos lugares distintos, se estima el traslado (distancia a 15 km/h)
+//    y el resto del tiempo va al potrero (si uno de los dos es camino/patio)
+//    o se reparte por mitades (si son dos potreros distintos);
+//  - antes del primer punto y después del último del tramo, al lugar de ese punto.
+// Así, aunque JDLink mande pocos puntos, el patio solo se queda con el
+// tiempo de salida/llegada y no con horas de trabajo.
 function jdpRepartir(puntos, tramos, desde, hasta, potreros) {
-  const pts = puntos.filter(p => p.t >= desde - JDP_MAX_GAP_MS && p.t <= hasta + JDP_MAX_GAP_MS)
+  const pts = puntos.filter(p => p.t >= desde - 6 * 3600000 && p.t <= hasta + 6 * 3600000)
     .map(p => ({ ...p, potrero: jdpPotreroDePunto(p.lat, p.lng, potreros) }));
   const porPotrero = {};
-  const sumar = (nombre, ms) => { if (ms > 0) porPotrero[nombre || JDP_FUERA] = (porPotrero[nombre || JDP_FUERA] || 0) + ms; };
+  const sumar = (nombre, ms) => { if (ms > 0) porPotrero[nombre] = (porPotrero[nombre] || 0) + ms; };
+  const lugar = p => p.potrero || JDP_FUERA;
   const conMotor = Array.isArray(tramos) && tramos.length > 0;
-  const pieza = (a0, a1, potrero, gapOk) => {
-    a0 = Math.max(a0, desde); a1 = Math.min(a1, hasta);
-    if (a1 <= a0) return;
-    sumar(potrero, conMotor ? jdpTraslape(a0, a1, tramos) : (gapOk ? a1 - a0 : 0));
-  };
-  if (pts.length) {
-    pieza(desde, pts[0].t, pts[0].potrero, false);
-    for (let i = 0; i < pts.length - 1; i++) {
-      const a = pts[i], b = pts[i + 1], mid = (a.t + b.t) / 2, ok = (b.t - a.t) <= JDP_MAX_GAP_MS;
-      pieza(a.t, mid, a.potrero, ok);
-      pieza(mid, b.t, b.potrero, ok);
+
+  if (conMotor) {
+    tramos.forEach(([s0, e0]) => {
+      const s = Math.max(s0, desde), e = Math.min(e0, hasta);
+      if (e <= s) return;
+      const dentro = pts.filter(p => p.t >= s - 5 * 60000 && p.t <= e + 5 * 60000);
+      if (!dentro.length) {
+        const prev = [...pts].reverse().find(p => p.t < s), next = pts.find(p => p.t > e);
+        const l = prev && next ? (lugar(prev) === lugar(next) ? lugar(prev) : JDP_SINGPS) : (prev || next ? lugar(prev || next) : JDP_SINGPS);
+        sumar(l, e - s);
+        return;
+      }
+      const clip = (a, b) => Math.max(0, Math.min(b, e) - Math.max(a, s));
+      sumar(lugar(dentro[0]), clip(s, dentro[0].t));
+      for (let i = 0; i < dentro.length - 1; i++) {
+        const a = dentro[i], b = dentro[i + 1];
+        const dur = clip(a.t, b.t);
+        if (!dur) continue;
+        if (lugar(a) === lugar(b)) { sumar(lugar(a), dur); continue; }
+        const viaje = Math.min(dur, jdpDistKm(a, b) / JDP_VEL_TRASLADO_KMH * 3600000);
+        const resto = dur - viaje;
+        sumar(JDP_FUERA, viaje);
+        if (a.potrero && b.potrero) { sumar(a.potrero, resto / 2); sumar(b.potrero, resto / 2); }
+        else sumar(a.potrero || b.potrero || JDP_FUERA, resto);
+      }
+      const ult = dentro[dentro.length - 1];
+      sumar(lugar(ult), clip(ult.t, e));
+    });
+  } else {
+    // Sin datos de motor: cada instante al punto más cercano en el tiempo,
+    // solo entre puntos separados por menos de 15 min.
+    const pv = pts.filter(p => p.t >= desde && p.t <= hasta);
+    for (let i = 0; i < pv.length - 1; i++) {
+      const a = pv[i], b = pv[i + 1];
+      if (b.t - a.t > JDP_MAX_GAP_MS) continue;
+      const mid = (a.t + b.t) / 2;
+      sumar(lugar(a), mid - a.t); sumar(lugar(b), b.t - mid);
     }
-    pieza(pts[pts.length - 1].t, hasta, pts[pts.length - 1].potrero, false);
-  } else if (conMotor) {
-    sumar(null, jdpTraslape(desde, hasta, tramos));
   }
   const totalMs = Object.values(porPotrero).reduce((s, x) => s + x, 0);
   const motorMs = conMotor ? jdpTraslape(desde, hasta, tramos) : null;
-  return { porPotrero, totalMs, motorMs, puntos: pts, conMotor };
+  const puntosPeriodo = pts.filter(p => p.t >= desde && p.t <= hasta).map(p => ({ ...p, motor: conMotor ? jdpMotorEn(p.t, tramos) : null }));
+  return { porPotrero, totalMs, motorMs, puntos: puntosPeriodo, conMotor };
 }
 
 // Trae todas las páginas de un recurso JD para [desde, hasta], en tramos de
@@ -594,23 +633,46 @@ window.consultarJdPotreros = async function() {
   const btn = document.getElementById('jdp-btn');
   btn.disabled = true; btn.textContent = '📡 Consultando Operations Center...';
   res.innerHTML = '<div style="padding:12px;color:var(--acero);font-size:13px">Consultando recorrido y horas de motor...</div>';
-  const diag = { maquina: m.name || m.id, rels: (m.links || []).map(l => l.rel), llamadas: [], errores: {}, muestras: {} };
+  const diag = { maquina: m.name || m.id, rels: [], fuenteGps: '', llamadas: [], errores: {}, muestras: {} };
   try {
     const principalId = m.organizationRole?.principalId || m.principalId || m.id;
-    const link = re => (m.links || []).find(l => re.test(l.rel || ''));
-    const lLoc = link(/locationhistory/i) || link(/breadcrumb/i) || link(/location/i);
+    // La lista de máquinas a veces viene sin links: se piden al recurso de la máquina.
+    let links = m.links || [];
+    if (!links.length) {
+      const r0 = await callJDApi(`/machines/${principalId}`);
+      diag.llamadas.push(`Máquina: HTTP ${r0.status}`);
+      if (r0.status === 200 && r0.data) links = r0.data.links || [];
+    }
+    diag.rels = links.map(l => l.rel);
+    const link = re => links.find(l => re.test(l.rel || ''));
     const lHrs = link(/hoursofoperation/i);
-    const urlLoc = lLoc ? lLoc.uri : `/machines/${principalId}/locationHistory`;
     const urlHrs = lHrs ? lHrs.uri : `/machines/${principalId}/hoursOfOperation`;
-    const [loc, hrs] = await Promise.all([
-      jdpTraerRango(urlLoc, desde, hasta, diag, 'Ubicaciones'),
-      jdpTraerRango(urlHrs, desde, hasta, diag, 'Horas de operación'),
-    ]);
+    const hrsProm = jdpTraerRango(urlHrs, desde, hasta, diag, 'Horas de operación');
+    // Primero se prueba "breadcrumbs" (recorrido más detallado, si la máquina lo tiene);
+    // si no entrega puntos, se usa el historial de ubicaciones normal.
+    const lBc = link(/breadcrumb/i);
+    const urlBc = lBc ? lBc.uri : `/machines/${principalId}/breadcrumbs`;
+    let loc = await jdpTraerRango(urlBc, desde, Math.min(hasta, desde + 24 * 3600000), diag, 'Breadcrumbs (prueba)');
+    if (loc.ok && jdpExtraerPuntos(loc.valores).length) {
+      diag.fuenteGps = 'breadcrumbs';
+      if (hasta - desde > 24 * 3600000) loc = await jdpTraerRango(urlBc, desde, hasta, diag, 'Breadcrumbs');
+    } else {
+      diag.fuenteGps = 'locationHistory';
+      const lLoc = link(/locationhistory/i) || link(/location/i);
+      const urlLoc = lLoc ? lLoc.uri : `/machines/${principalId}/locationHistory`;
+      loc = await jdpTraerRango(urlLoc, desde, hasta, diag, 'Ubicaciones');
+    }
+    const hrs = await hrsProm;
     const puntos = jdpExtraerPuntos(loc.valores);
     const tramos = hrs.ok ? jdpExtraerTramosMotor(hrs.valores) : [];
     const potreros = potrerosConfig.filter(p => poligonoValido(p.poligono)).map(p => ({ nombre: p.nombre, poly: jdpNormPoligono(p.poligono) }));
     const r = jdpRepartir(puntos, tramos, desde, hasta, potreros);
-    window._jdpUltimo = { diag, puntos, tramos, r, loc, hrs };
+    window._jdpUltimo = { diag, desde, hasta, equipo: document.getElementById('jdp-equipo').value,
+      carga: jdpCargaSel ? { fecha: jdpCargaSel.fecha, hora: jdpCargaSel.hora, litros: jdpCargaSel.litros, centros: jdpCargaSel.centros || [], diff_medidor: jdpCargaSel.diff_medidor ?? null } : null,
+      ubicaciones: loc.valores.map(v => ({ point: v.point || v.location || null, eventTimestamp: v.eventTimestamp || v.timestamp || null, machineState: v.machineState || null })),
+      horasOperacion: hrs.valores.map(v => ({ startDate: v.startDate, endDate: v.endDate, engineState: v.engineState })),
+      potreros: potreros.map(p => ({ nombre: p.nombre, cultivo: jdpCultivoDePotrero(p.nombre) })),
+      reparto: Object.fromEntries(Object.entries(r.porPotrero).map(([k, v]) => [k, +(v / 3600000).toFixed(2)])) };
     console.log('Prueba JDLink por potrero:', window._jdpUltimo);
     jdpRenderResultado(r, diag, desde, hasta, potreros.length);
   } catch (e) {
@@ -623,14 +685,17 @@ function jdpRenderResultado(r, diag, desde, hasta, nPotreros) {
   const res = document.getElementById('jdp-resultado');
   const h = ms => (ms / 3600000).toFixed(1);
   const litros = jdpCargaSel ? Number(jdpCargaSel.litros || 0) : null;
-  const filas = Object.entries(r.porPotrero).sort((a, b) => (a[0] === JDP_FUERA) - (b[0] === JDP_FUERA) || b[1] - a[1]);
+  const esResto = n => n === JDP_FUERA || n === JDP_SINGPS;
+  const filas = Object.entries(r.porPotrero).sort((a, b) => esResto(a[0]) - esResto(b[0]) || b[1] - a[1]);
   const porCultivo = {};
-  filas.forEach(([n, ms]) => { const c = n === JDP_FUERA ? 'Traslado / patio' : (jdpCultivoDePotrero(n) || 'Sin cultivo definido'); porCultivo[c] = (porCultivo[c] || 0) + ms; });
-  const tabla = (pares, conCultivo) => `
-    <table style="width:100%;font-size:13px;margin-top:6px"><thead><tr><th>${conCultivo ? 'Potrero' : 'Cultivo'}</th>${conCultivo ? '<th>Cultivo</th>' : ''}<th style="text-align:right">Horas</th><th style="text-align:right">%</th>${litros != null ? '<th style="text-align:right">Litros</th>' : ''}</tr></thead><tbody>
-    ${pares.map(([n, ms]) => { const pct = r.totalMs ? ms / r.totalMs : 0; return `<tr><td>${n}</td>${conCultivo ? `<td>${n === JDP_FUERA ? '—' : (jdpCultivoDePotrero(n) || '—')}</td>` : ''}<td style="text-align:right">${h(ms)}</td><td style="text-align:right">${(pct * 100).toFixed(0)}%</td>${litros != null ? `<td style="text-align:right"><strong>${(litros * pct).toFixed(1)}</strong></td>` : ''}</tr>`; }).join('')}
-    <tr style="font-weight:700;border-top:2px solid var(--borde)"><td>Total</td>${conCultivo ? '<td></td>' : ''}<td style="text-align:right">${h(r.totalMs)}</td><td style="text-align:right">100%</td>${litros != null ? `<td style="text-align:right">${litros.toFixed(1)}</td>` : ''}</tr>
-    </tbody></table>`;
+  filas.forEach(([n, ms]) => { const c = n === JDP_FUERA ? 'Traslado / patio' : n === JDP_SINGPS ? 'Sin ubicación GPS' : (jdpCultivoDePotrero(n) || 'Sin cultivo definido'); porCultivo[c] = (porCultivo[c] || 0) + ms; });
+  const td = 'style="text-align:right;padding:6px 4px;white-space:nowrap"';
+  const tabla = (pares, conCultivo) => `<div style="overflow-x:auto">
+    <table style="width:100%;min-width:0;font-size:13px;margin-top:6px;table-layout:auto"><thead><tr><th style="padding:6px 4px">${conCultivo ? 'Potrero' : 'Cultivo'}</th><th ${td}>Horas</th><th ${td}>%</th>${litros != null ? `<th ${td}>Litros</th>` : ''}</tr></thead><tbody>
+    ${pares.map(([n, ms]) => { const pct = r.totalMs ? ms / r.totalMs : 0; const cult = conCultivo && n !== JDP_FUERA && n !== JDP_SINGPS ? jdpCultivoDePotrero(n) : '';
+      return `<tr><td style="padding:6px 4px">${n}${cult ? `<div style="font-size:11px;color:var(--acero)">${cult}</div>` : ''}</td><td ${td}>${h(ms)}</td><td ${td}>${(pct * 100).toFixed(0)}%</td>${litros != null ? `<td ${td}><strong>${(litros * pct).toFixed(1)}</strong></td>` : ''}</tr>`; }).join('')}
+    <tr style="font-weight:700;border-top:2px solid var(--borde)"><td style="padding:6px 4px">Total</td><td ${td}>${h(r.totalMs)}</td><td ${td}>${r.totalMs ? '100%' : '—'}</td>${litros != null ? `<td ${td}>${litros.toFixed(1)}</td>` : ''}</tr>
+    </tbody></table></div>`;
   const avisos = [];
   if (!r.puntos.length) avisos.push('Operations Center no devolvió ubicaciones para este período. Revisa el detalle técnico de abajo.');
   if (!r.conMotor) avisos.push('No llegaron datos de motor encendido/apagado: el tiempo se estimó solo con los puntos GPS (huecos de más de 15 min no se cuentan).');
@@ -640,7 +705,7 @@ function jdpRenderResultado(r, diag, desde, hasta, nPotreros) {
   res.innerHTML = `
     <div style="font-size:13px;background:var(--fondo);border-radius:8px;padding:10px 12px;margin:10px 0">
       <strong>${new Date(desde).toLocaleString('es-CL')}</strong> → <strong>${new Date(hasta).toLocaleString('es-CL')}</strong><br>
-      ${r.puntos.length} puntos GPS${gapProm != null ? ` (uno cada ~${gapProm.toFixed(1)} min en promedio)` : ''} ·
+      ${r.puntos.length} puntos GPS (${diag.fuenteGps || '—'})${gapProm != null ? `, uno cada ~${gapProm.toFixed(0)} min en promedio` : ''} ·
       motor encendido: <strong>${r.motorMs != null ? h(r.motorMs) + ' h' : 'sin dato'}</strong>
       ${horometro != null ? ` · horómetro de la carga: <strong>${horometro.toFixed(1)} h</strong>` : ''}
       ${jdpCargaSel ? `<br>El operador marcó: <strong>${(jdpCargaSel.centros || []).join(', ') || '—'}</strong>` : ''}
@@ -649,6 +714,11 @@ function jdpRenderResultado(r, diag, desde, hasta, nPotreros) {
     <div id="jdp-mapa" style="height:340px;border-radius:8px;margin:8px 0"></div>
     <div style="font-weight:700;font-size:13px;margin-top:10px">Por potrero</div>${tabla(filas, true)}
     <div style="font-weight:700;font-size:13px;margin-top:12px">Por cultivo</div>${tabla(Object.entries(porCultivo).sort((a, b) => b[1] - a[1]), false)}
+    <details style="margin-top:12px;font-size:12px"><summary style="cursor:pointer">Ver los ${r.puntos.length} puntos GPS</summary>
+      <div style="overflow-x:auto;max-height:260px;overflow-y:auto"><table style="width:100%;min-width:0;font-size:12px"><thead><tr><th style="padding:4px">Hora</th><th style="padding:4px">Lugar</th><th style="padding:4px">Motor</th></tr></thead><tbody>
+      ${r.puntos.map(p => `<tr><td style="padding:4px;white-space:nowrap">${new Date(p.t).toLocaleString('es-CL', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</td><td style="padding:4px">${p.potrero || 'fuera'}</td><td style="padding:4px">${p.motor == null ? '—' : p.motor ? 'encendido' : 'apagado'}</td></tr>`).join('')}
+      </tbody></table></div></details>
+    <button class="btn btn-secondary btn-full" style="margin-top:10px;justify-content:center" onclick="jdpDescargarDatos()">⬇️ Descargar datos de la prueba (para mandárselos a Claude)</button>
     <details style="margin-top:12px;font-size:12px"><summary style="cursor:pointer">Detalle técnico (para revisar con Claude)</summary>
       <pre style="white-space:pre-wrap;word-break:break-all;font-size:11px;background:#111;color:#ddd;padding:8px;border-radius:6px;max-height:260px;overflow:auto">${JSON.stringify(diag, null, 1).slice(0, 6000).replace(/</g, '&lt;')}</pre></details>`;
   jdpRenderMapa(r);
@@ -680,6 +750,17 @@ function jdpRenderMapa(r) {
   }
   if (bounds.length) map.fitBounds(bounds, { padding: [20, 20] }); else map.setView([-36.6, -72.1], 12);
   setTimeout(() => map.invalidateSize(), 150);
+}
+
+window.jdpDescargarDatos = function() {
+  const d = window._jdpUltimo;
+  if (!d) return;
+  const blob = new Blob([JSON.stringify(d, null, 1)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `jdlink-${(d.equipo || 'equipo').replace(/\s+/g, '_')}-${new Date(d.hasta).toISOString().slice(0, 10)}.json`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 }
 
 window.cerrarJdPotreros = function() {
@@ -9676,8 +9757,8 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     </div>
     <div class="field" style="margin-top:8px"><label>Carga de combustible</label><div class="select-wrapper"><select id="jdp-carga" onchange="jdpCambioCarga()"></select></div></div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px">
-      <div class="field" style="margin:0"><label>Desde</label><input type="datetime-local" id="jdp-desde"></div>
-      <div class="field" style="margin:0"><label>Hasta</label><input type="datetime-local" id="jdp-hasta"></div>
+      <div class="field" style="margin:0"><label>Desde</label><input type="datetime-local" id="jdp-desde" style="width:100%;min-width:0;box-sizing:border-box"></div>
+      <div class="field" style="margin:0"><label>Hasta</label><input type="datetime-local" id="jdp-hasta" style="width:100%;min-width:0;box-sizing:border-box"></div>
     </div>
     <button class="btn btn-verde btn-full" id="jdp-btn" style="margin-top:10px;justify-content:center" onclick="consultarJdPotreros()">📡 Consultar recorrido</button>
     <div id="jdp-resultado"></div>
