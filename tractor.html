@@ -831,7 +831,27 @@ function pintarLlave() {
   ch.textContent = cargando === true ? '🔌 llave' : cargando === false ? '🔋 sin carga' : '🔋 —';
   ch.className = 'chip ' + (cargando === true ? 'ok' : cargando === false ? 'med' : '');
 }
-if (navigator.getBattery) navigator.getBattery().then(b => { cargando = b.charging; pintarLlave(); b.addEventListener('chargingchange', () => { cargando = b.charging; pintarLlave(); }); }).catch(() => {});
+let bateria = null;
+if (navigator.getBattery) navigator.getBattery().then(b => { bateria = b; cargando = b.charging; pintarLlave(); b.addEventListener('chargingchange', () => { cargando = b.charging; pintarLlave(); }); }).catch(() => {});
+
+// ── Dónde está el tractor (para el mapa "Tractores en vivo" de la app) ──
+// Un documento por equipo con la última posición; se pisa cada 20 s y al empezar/pausar.
+let ultimoInforme = 0;
+async function informarUbicacion(forzar) {
+  if (!navigator.onLine || !ajustes.equipo || !sesion || !ultimaPos) return;
+  if (!forzar && Date.now() - ultimoInforme < 18000) return;
+  ultimoInforme = Date.now();
+  const a = activa(), v = velocidadKmh();
+  try {
+    await conTimeout(setDoc(doc(db, 'ubicacion_actual', claveEquipo(ajustes.equipo)), {
+      equipo: ajustes.equipo, operador: sesion.nombre, lat: ultimaPos.lat, lng: ultimaPos.lng, acc: ultimaPos.acc,
+      t: ultimaPos.t, kmh: v != null ? +v.toFixed(1) : null, rumbo: rumbo != null ? Math.round(rumbo) : null,
+      aplicando: !!aplicando, potrero: a ? a.potrero : null, aqui: potreroEn(ultimaPos.lat, ultimaPos.lng),
+      llave: cargando, bateria: bateria ? Math.round(bateria.level * 100) : null, dispositivo, ts: Date.now()
+    }), 15000);
+  } catch (e) { ultimoInforme = 0; }
+}
+setInterval(() => informarUbicacion(false), 20000);
 
 // ── Envío a la app (Firestore) ───────────────────────────────────
 const claveEquipo = eq => String(eq || '').replace(/\s+/g, '_');
@@ -1071,6 +1091,7 @@ function pintarBotonAplicar() {
   const b = document.getElementById('btn-aplicar');
   b.classList.toggle('on', aplicando);
   b.textContent = aplicando ? '⏸ APLICANDO · tocar para pausar' : '▶ EMPEZAR A APLICAR';
+  informarUbicacion(true);
 }
 function empezarAplicar() { aplicando = true; ls.set('tractor_aplicando', true); pintarBotonAplicar(); if (navigator.vibrate) navigator.vibrate(80); }
 window.toggleAplicar = function () {
