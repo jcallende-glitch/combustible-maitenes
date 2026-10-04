@@ -603,12 +603,14 @@ async function actualizarDatosCampo(manual) {
     datosCampo = {
       equipos: d.equipos || [],
       equipoOperador: d.equipoOperador || {},
+      permisosPruebas: d.permisosPruebas || {},
       potreros: (d.potreros || []).filter(p => Array.isArray(p.poligono) && p.poligono.length >= 3).map(p => ({ nombre: p.nombre, poligono: p.poligono, cultivo: p.tipo === 'frutal' ? (p.cultivoPermanente || null) : null })),
       zonas: sz.exists() ? (sz.data().zonas || []) : [],
       anchosCultivo: sz.exists() && sz.data().anchosCultivo ? sz.data().anchosCultivo : null,
       ts: Date.now()
     };
     ls.set('tractor_datos_campo', datosCampo);
+    if (sesion && !tienePermiso(sesion)) quitarSesion('Ya no tienes acceso al modo tractor. Pídeselo al administrador.');
     dibujarCampo(); if (document.getElementById('capa-ajustes').style.display === 'flex') llenarEquipos(); mostrarEstadoDatos(); pintarAplicacion();
     if (manual) est.textContent += ' ✓ Actualizado.';
   } catch (e) { if (manual) est.textContent = 'No se pudo descargar: ' + e.message; }
@@ -628,6 +630,42 @@ function equiposDe(op) {
   return (Array.isArray(v) ? v : [v]).map(e => e === '5082 E' ? 'JD 5082E' : e);
 }
 let eqElegido = '';
+function tienePermiso(ses) {
+  if (!ses) return false;
+  if (ses.admin) return true;
+  const v = datosCampo && datosCampo.permisosPruebas ? datosCampo.permisosPruebas[ses.nombre] : null;
+  return Array.isArray(v) && v.includes('tractor');
+}
+function quitarSesion(msj) {
+  sesion = null; ls.set('tractor_sesion', null);
+  if (aplicando) { aplicando = false; ls.set('tractor_aplicando', false); pintarBotonAplicar(); }
+  cerrarCapa('capa-ajustes');
+  document.getElementById('login-msg').textContent = msj || '';
+  document.getElementById('capa-login').style.display = 'flex';
+  pintarBarraEquipo();
+}
+// Después de entrar (con PIN o desde la app): elige equipo y parte
+function entrarComo(nombre, admin) {
+  sesion = { nombre, admin, ts: Date.now() }; ls.set('tractor_sesion', sesion);
+  cerrarCapa('capa-login');
+  const mios = equiposDe(nombre);
+  eqElegido = '';
+  if (mios.length === 1 && !admin) {
+    ajustes = { ...ajustes, equipo: mios[0] }; ls.set('tractor_ajustes', ajustes);
+    pintarBarraEquipo(); redibujarAplicado(); pintarAplicacion(); pedirPantalla(); iniciarGPS(); subir();
+  } else { eqElegido = mios[0] || ''; abrirAjustes(); }
+}
+// Pase que deja la app al tocar "🚜 Tractor" (válido 10 minutos)
+async function usarPaseDeLaApp() {
+  let pase = null;
+  try { pase = JSON.parse(localStorage.getItem('maitenes_pase') || 'null'); localStorage.removeItem('maitenes_pase'); } catch (e) {}
+  if (!pase || !pase.nombre || Date.now() - pase.ts > 10 * 60000) return false;
+  if (sesion && sesion.nombre === pase.nombre) return false; // ya estaba adentro
+  await actualizarDatosCampo(false);
+  if (!tienePermiso({ nombre: pase.nombre, admin: pase.admin })) { quitarSesion('No tienes acceso al modo tractor. Pídeselo al administrador.'); return true; }
+  entrarComo(pase.nombre, !!pase.admin);
+  return true;
+}
 function llenarEquipos() {
   const op = sesion ? sesion.nombre : '';
   document.getElementById('aj-operador').textContent = op ? '👤 ' + op : '';
@@ -674,18 +712,10 @@ window.intentarLogin = async function () {
       else msg.textContent = 'PIN incorrecto.';
     }
     if (nombre) {
-      sesion = { nombre, admin, ts: Date.now() }; ls.set('tractor_sesion', sesion);
       inp.value = '';
       await actualizarDatosCampo(false);
-      cerrarCapa('capa-login');
-      const mios = equiposDe(nombre);
-      eqElegido = '';
-      if (mios.length === 1 && !admin) {           // un solo equipo: queda puesto y parte
-        ajustes = { ...ajustes, equipo: mios[0] }; ls.set('tractor_ajustes', ajustes);
-        pintarBarraEquipo(); redibujarAplicado(); pintarAplicacion(); pedirPantalla(); iniciarGPS(); subir();
-      } else {
-        eqElegido = mios[0] || ''; abrirAjustes();
-      }
+      if (!tienePermiso({ nombre, admin })) msg.textContent = 'No tienes acceso al modo tractor. Pídeselo al administrador.';
+      else entrarComo(nombre, admin);
     }
   } catch (e) { msg.textContent = 'No se pudo verificar: ' + e.message; }
   btn.disabled = false; btn.textContent = 'Ingresar';
@@ -754,9 +784,11 @@ document.getElementById('aviso').onclick = e => { e.target.style.display = 'none
   }
   pintarAplicacion();
   pintarBarraEquipo();
-  if (!sesion) document.getElementById('capa-login').style.display = 'flex';
-  else if (ajustes.equipo) { pedirPantalla(); iniciarGPS(); }
-  else abrirAjustes();
+  if (!(await usarPaseDeLaApp())) {
+    if (!sesion) document.getElementById('capa-login').style.display = 'flex';
+    else if (ajustes.equipo) { pedirPantalla(); iniciarGPS(); }
+    else abrirAjustes();
+  }
   actualizarDatosCampo(false);
   subir();
   traerAbiertasCompartidas().then(traerTrazosOtros);
