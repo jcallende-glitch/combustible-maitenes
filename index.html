@@ -4593,8 +4593,12 @@ async function cargarHistorialReintegrosJCAR() {
 // que el trabajador anotó por su cuenta) para revisión semanal.
 let unsubAsistencia = null;
 let asistenciaRegistros = [];
+let asistenciaCargada = false;
+let asistEstado = 'elegir'; // 'elegir' | 'planilla' | 'wizard'
 
 function initAsistencia() {
+  asistEstado = 'elegir';
+  renderModoAsistencia();
   populateSelect('asistencia-trabajador', trabajadoresAsistenciaConfig, 'Seleccionar trabajador');
   populateSelect('asistencia-centro', config.centros, 'Seleccionar centro de costo');
   document.getElementById('asistencia-fecha').value = getNow().fecha;
@@ -4610,6 +4614,8 @@ function cargarAsistencia() {
   const q = query(collection(db, 'asistencia'), orderBy('ts', 'desc'));
   unsubAsistencia = onSnapshot(q, snap => {
     asistenciaRegistros = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    asistenciaCargada = true;
+    if (asistEstado === 'elegir') renderModoAsistencia();
     populateFiltroAsistenciaTrabajador();
     renderTablaAsistencia();
     renderLaborAsistencia();
@@ -4622,6 +4628,166 @@ function populateFiltroAsistenciaTrabajador() {
   const cur = sel.value;
   sel.innerHTML = '<option value="">Todos los trabajadores</option>' +
     trabajadoresAsistenciaConfig.map(t => `<option value="${t}" ${t===cur?'selected':''}>${t}</option>`).join('');
+}
+
+// ═══ MODO: completar (asistente nombre por nombre) o revisar (planilla) ═══
+const DIAS_ES = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
+function fechaMasDias(f, n) { const d = new Date(f + 'T12:00:00'); d.setDate(d.getDate() + n); return d.toISOString().slice(0,10); }
+function fechaBonita(f) { const d = new Date(f + 'T12:00:00'); return DIAS_ES[d.getDay()] + ' ' + f.slice(8,10) + '-' + f.slice(5,7); }
+function ultimaFechaAsistencia() { return asistenciaRegistros.reduce((m, r) => (r.fecha && r.fecha > m ? r.fecha : m), ''); }
+
+window.renderModoAsistencia = function() {
+  const m = document.getElementById('asistencia-modo'), w = document.getElementById('asistencia-wizard'), pl = document.getElementById('asistencia-planilla');
+  if (!m) return;
+  w.style.display = asistEstado === 'wizard' ? 'block' : 'none';
+  pl.style.display = asistEstado === 'planilla' ? 'block' : 'none';
+  const btn = 'padding:14px;border-radius:10px;border:1px solid #D1D5DB;background:#fff;font-size:15px;cursor:pointer;flex:1';
+  if (asistEstado === 'elegir') {
+    const ult = ultimaFechaAsistencia();
+    m.innerHTML = `<div class="panel"><div class="panel-title">🕒 Asistencia</div>
+      <div style="font-size:13px;color:#6B7280;margin-bottom:12px">${!asistenciaCargada ? 'Cargando…' : ult ? 'Último día con registro: <b>' + fechaBonita(ult) + ' (' + ult + ')</b>' : 'Aún no hay registros.'}</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button type="button" style="${btn};background:#16A34A;color:#fff;border-color:#16A34A" onclick="iniciarCompletarAsistencia()">✍️ Completar</button>
+        <button type="button" style="${btn}" onclick="asistEstado='planilla';renderModoAsistencia()">📋 Revisar</button>
+      </div></div>`;
+  } else {
+    m.innerHTML = `<div style="display:flex;gap:8px;margin-bottom:10px">
+      <button type="button" class="btn" style="flex:1" onclick="iniciarCompletarAsistencia()">✍️ Completar</button>
+      <button type="button" class="btn" style="flex:1" onclick="asistEstado='planilla';renderModoAsistencia()">📋 Planilla</button></div>`;
+  }
+}
+
+let WZ = null; // estado del asistente
+window.iniciarCompletarAsistencia = async function(fechaForzada) {
+  asistEstado = 'wizard'; renderModoAsistencia();
+  const w = document.getElementById('asistencia-wizard');
+  w.innerHTML = '<div class="panel">Cargando…</div>';
+  for (let i = 0; i < 20 && !asistenciaCargada; i++) await new Promise(r => setTimeout(r, 250));
+  const hoy = getNow().fecha;
+  const ult = ultimaFechaAsistencia();
+  let fecha = fechaForzada || (ult ? fechaMasDias(ult, 1) : hoy);
+  if (fecha > hoy) fecha = hoy;
+  // combustible de ese día
+  const comb = {};
+  try {
+    const snap = await getDocs(query(collection(db, 'registros'), where('fecha', '==', fecha)));
+    const por = {};
+    snap.docs.map(d => d.data()).forEach(r => {
+      if (!r.operador) return;
+      const dist = (r.distribucion && r.distribucion.length) ? r.distribucion : (r.centro ? [{ centro: r.centro, litros: r.litros || 0 }] : []);
+      dist.forEach(x => { por[r.operador] = por[r.operador] || {}; por[r.operador][x.centro] = (por[r.operador][x.centro] || 0) + (x.litros || 0); });
+    });
+    Object.entries(por).forEach(([op, cs]) => {
+      const tot = Object.values(cs).reduce((a, b) => a + b, 0);
+      const lista = Object.entries(cs).map(([centro, l]) => ({ centro, pct: tot > 0 ? Math.round(l / tot * 100) : 0 })).sort((a, b) => b.pct - a.pct);
+      comb[op] = { lista, texto: lista.map(x => x.centro + ' ' + x.pct + '%').join(' · ') };
+    });
+  } catch (e) { console.warn('wizard combustible', e); }
+  const yaTienen = new Set(asistenciaRegistros.filter(r => r.fecha === fecha).map(r => r.trabajador));
+  const cola = trabajadoresAsistenciaConfig.filter(t => !yaTienen.has(t));
+  WZ = { fecha, ult, comb, cola, total: cola.length, i: 0, guardados: 0, saltados: 0, yaTienen: yaTienen.size };
+  wzCargarTrabajador();
+}
+
+function wzCargarTrabajador() {
+  if (!WZ) return;
+  if (WZ.i >= WZ.cola.length) { wzRenderFin(); return; }
+  const trab = WZ.cola[WZ.i];
+  const prev = asistenciaRegistros.filter(r => r.trabajador === trab).sort((a, b) => (b.fecha || '').localeCompare(a.fecha || '') || (b.ts || 0) - (a.ts || 0));
+  const ultLabor = prev.find(r => r.labor);
+  const ultCentro = prev.find(r => r.centro_costo && r.centro_origen !== 'combustible');
+  const c = WZ.comb[trab];
+  WZ.cur = {
+    trab,
+    labor: ultLabor ? ultLabor.labor : '', laborDe: ultLabor ? ultLabor.fecha : '', laborCambiar: !ultLabor,
+    centroModo: c ? 'comb' : (ultCentro ? 'prev' : 'manual'),
+    centro: ultCentro ? ultCentro.centro_costo : '',
+    centroCambiar: !c && !ultCentro
+  };
+  wzRender();
+}
+
+window.wzRender = function() {
+  const w = document.getElementById('asistencia-wizard');
+  if (!WZ || !w) return;
+  const cur = WZ.cur, c = WZ.comb[cur.trab];
+  const btn = 'padding:8px 12px;border-radius:8px;border:1px solid #D1D5DB;background:#fff;font-size:13px;cursor:pointer;margin:3px 4px 3px 0';
+  const hr = document.getElementById('wiz-hreg')?.value ?? '', ht = document.getElementById('wiz-htrab')?.value ?? '';
+  // labor
+  let laborHtml;
+  if (!cur.laborCambiar && cur.labor) {
+    laborHtml = `<div style="padding:10px;background:#ECFDF5;border:1px solid #6EE7B7;border-radius:8px">✓ <b>${escA(cur.labor)}</b> <span style="font-size:12px;color:#6B7280">(${cur.laborDe ? 'última: ' + cur.laborDe : ''})</span> <button type="button" style="${btn}" onclick="WZ.cur.laborCambiar=true;wzRender()">Cambiar</button></div>`;
+  } else {
+    const comunes = laboresComunesDe(cur.trab);
+    const base = TIPOS_LABOR_CAMPO.filter(t => !t.oculto && t.id !== 'otro').map(t => t.label.replace(/^[^\p{L}]+/u, '')).concat(tiposLaborCampoConfig.map(t => t.label || t.nombre || t).filter(x => typeof x === 'string'));
+    WZ.opts = comunes.length ? comunes.map(x => x[0]) : base;
+    laborHtml = `<div style="font-size:12px;color:#6B7280">${comunes.length ? 'Más comunes de ' + escA(cur.trab) : 'Sugeridas'}</div>
+      ${WZ.opts.map((l, i) => `<button type="button" style="${btn}" onclick="wzLabor(${i})">${escA(l)}${comunes[i] ? ' <span style="color:#9CA3AF">×' + comunes[i][1] + '</span>' : ''}</button>`).join('')}
+      <div style="display:flex;gap:6px;margin-top:6px"><input type="text" id="wiz-labor-otra" placeholder="Otra labor..." style="flex:1"><button type="button" style="${btn}" onclick="wzLabor(-1)">OK</button></div>`;
+  }
+  // centro
+  let centroHtml;
+  if (cur.centroModo === 'comb' && c) {
+    centroHtml = `<div style="padding:10px;background:#EFF6FF;border:1px solid #93C5FD;border-radius:8px">⛽ <b>${escA(c.texto)}</b> <span style="font-size:12px;color:#6B7280">(del combustible)</span> <button type="button" style="${btn}" onclick="WZ.cur.centroModo='manual';WZ.cur.centroCambiar=true;wzRender()">Cambiar</button></div>`;
+  } else if (cur.centroModo === 'prev' && !cur.centroCambiar) {
+    centroHtml = `<div style="padding:10px;background:#ECFDF5;border:1px solid #6EE7B7;border-radius:8px">✓ <b>${escA(cur.centro)}</b> <span style="font-size:12px;color:#6B7280">(el último que usó)</span> <button type="button" style="${btn}" onclick="WZ.cur.centroCambiar=true;wzRender()">Cambiar</button></div>`;
+  } else {
+    centroHtml = `<div class="select-wrapper"><select id="wiz-centro" onchange="WZ.cur.centro=this.value;WZ.cur.centroModo='manual'"><option value="">Seleccionar centro de costo</option>${(config.centros || []).map(x => `<option value="${escA(x)}" ${x === cur.centro ? 'selected' : ''}>${escA(x)}</option>`).join('')}</select></div>`;
+  }
+  const falta = WZ.total - WZ.i;
+  w.innerHTML = `<div class="panel">
+    <div style="font-size:12px;color:#6B7280;margin-bottom:6px">Último día con registro: <b>${WZ.ult ? fechaBonita(WZ.ult) : '—'}</b></div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+      <span style="font-size:13px">Completando:</span>
+      <input type="date" value="${WZ.fecha}" max="${getNow().fecha}" onchange="iniciarCompletarAsistencia(this.value)" style="width:auto">
+      <b>${fechaBonita(WZ.fecha)}</b>
+      <span style="margin-left:auto;font-size:13px;color:#6B7280">${WZ.i + 1} de ${WZ.total}</span>
+    </div>
+    <div style="height:6px;background:#E5E7EB;border-radius:4px;margin-bottom:14px"><div style="height:6px;width:${Math.round(WZ.i / WZ.total * 100)}%;background:#16A34A;border-radius:4px"></div></div>
+    <div style="font-size:22px;font-weight:700;margin-bottom:12px">${escA(cur.trab)}</div>
+    <div class="field"><label>Labor del día</label>${laborHtml}</div>
+    <div class="field"><label>Centro de costo</label>${centroHtml}</div>
+    <div class="grid-2">
+      <div class="field"><label>Horas extra según tu registro</label><input type="number" id="wiz-hreg" min="0" step="0.1" inputmode="decimal" placeholder="0" value="${escA(hr)}"></div>
+      <div class="field"><label>Según el trabajador (opcional)</label><input type="number" id="wiz-htrab" min="0" step="0.1" inputmode="decimal" placeholder="Pendiente" value="${escA(ht)}"></div>
+    </div>
+    <button type="button" class="btn btn-verde btn-full" onclick="wzGuardar()">✓ Guardar y siguiente</button>
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <button type="button" class="btn" style="flex:1" onclick="wzSaltar()">Saltar →</button>
+      <button type="button" class="btn" style="flex:1" onclick="wzTerminar()">Terminar</button>
+    </div></div>`;
+}
+window.wzLabor = function(i) {
+  const v = i >= 0 ? (WZ.opts[i] || '') : (document.getElementById('wiz-labor-otra')?.value || '').trim();
+  if (!v) return;
+  WZ.cur.labor = v; WZ.cur.laborDe = ''; WZ.cur.laborCambiar = false; wzRender();
+}
+window.wzGuardar = async function() {
+  const cur = WZ.cur, c = WZ.comb[cur.trab];
+  const hreg = document.getElementById('wiz-hreg').value, htrab = document.getElementById('wiz-htrab').value;
+  const usaComb = cur.centroModo === 'comb' && c;
+  const centro = usaComb ? c.texto : (cur.centro || document.getElementById('wiz-centro')?.value || '');
+  try {
+    await addDoc(collection(db, 'asistencia'), {
+      trabajador: cur.trab, fecha: WZ.fecha, centro_costo: centro || null, labor: cur.labor || null,
+      centro_origen: usaComb ? 'combustible' : null,
+      centros_dist: usaComb ? c.lista : null,
+      horas_trabajador: htrab !== '' ? parseFloat(htrab) : null,
+      horas_registro: hreg !== '' ? parseFloat(hreg) : 0,
+      obs: '', registrado_por: currentUser, ts: Date.now()
+    });
+    WZ.guardados++; WZ.i++; wzCargarTrabajador();
+  } catch (e) { toast('Error: ' + e.message, false); }
+}
+window.wzSaltar = function() { WZ.saltados++; WZ.i++; wzCargarTrabajador(); }
+window.wzTerminar = function() { WZ = null; asistEstado = 'planilla'; renderModoAsistencia(); }
+function wzRenderFin() {
+  const w = document.getElementById('asistencia-wizard');
+  const sig = fechaMasDias(WZ.fecha, 1), hoy = getNow().fecha;
+  w.innerHTML = `<div class="panel"><div class="panel-title">✅ ${fechaBonita(WZ.fecha)} completo</div>
+    <div style="font-size:14px;margin-bottom:12px">${WZ.guardados} guardados${WZ.saltados ? ', ' + WZ.saltados + ' saltados' : ''}${WZ.yaTienen ? ' · ' + WZ.yaTienen + ' ya estaban registrados' : ''}.</div>
+    ${sig <= hoy ? `<button type="button" class="btn btn-verde btn-full" onclick="iniciarCompletarAsistencia('${sig}')">➡️ Completar ${fechaBonita(sig)}</button>` : ''}
+    <button type="button" class="btn btn-full" style="margin-top:8px" onclick="wzTerminar()">📋 Ver planilla</button></div>`;
 }
 
 // ── Labor del día: pregunta si repite la del último día registrado ──
@@ -10140,6 +10306,9 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     </div>
     <!-- ASISTENCIA -->
     <div id="tc-asistencia" class="tab-content">
+      <div id="asistencia-modo"></div>
+      <div id="asistencia-wizard" style="display:none"></div>
+      <div id="asistencia-planilla" style="display:none">
       <div class="panel">
         <div class="panel-title">🕒 Registrar caso</div>
         <div class="grid-2">
@@ -10179,6 +10348,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
           </select></div>
         </div>
         <div id="asistencia-tabla-container"></div>
+      </div>
       </div>
     </div>
 
