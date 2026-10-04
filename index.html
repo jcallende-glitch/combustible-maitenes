@@ -7060,6 +7060,7 @@ function renderPanelPresetsOperador() {
           <span style="font-size:12px;color:var(--acero)">${(p.cultivos||[]).join(', ') || 'sin cultivo'} · ${p.trabajo || 'sin trabajo'} · ${p.apero || 'sin apero'}</span>
         </span>
         <span class="badge" style='font-size:11px;cursor:pointer;background:${activo?'var(--verde-suave)':'#F3F4F6'};color:${activo?'var(--verde)':'#9CA3AF'}' title="Click para activar o desactivar, sin borrar los datos guardados" onclick='togglePresetActivo(${JSON.stringify(op)})'>${activo?'✓ Activo':'✕ Inactivo'}</span>
+        <button class="btn btn-secondary" style="font-size:12px;padding:6px 10px" onclick='editarPresetOperador(${JSON.stringify(op)})'>✏️ Editar</button>
         <button class="btn btn-danger" onclick='eliminarPresetOperador(${JSON.stringify(op)})'>Eliminar</button>
       </div>`;
     }).join('') : '<div style="color:#9CA3AF;font-size:13px;padding:8px">Sin operadores con preset guardado.</div>';
@@ -7084,6 +7085,12 @@ window.togglePresetActivo = async function(op) {
   } catch(e) { toast('Error: ' + e.message, false); }
 }
 
+window.editarPresetOperador = function(op) {
+  const sel = document.getElementById('preset-operador-sel');
+  sel.value = op;
+  onPresetOperadorSelChange();
+  sel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
 window.onPresetOperadorSelChange = function() {
   const op = document.getElementById('preset-operador-sel').value;
   const cont = document.getElementById('preset-operador-editor');
