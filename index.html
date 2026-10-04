@@ -2012,7 +2012,7 @@ window.intentarLogin = async function() {
   if (!result.ok) { toast('PIN incorrecto', false); document.getElementById('pin-input').value=''; return; }
   currentUser = result.nombre; isAdmin = result.admin; isSupervisor = result.supervisor || false; isSubadmin = result.subadmin || false; isCampo = result.campo || false;
   document.getElementById('user-label').textContent = isAdmin ? `⚙ ${result.nombre}` : (isSupervisor ? `👁 ${result.nombre}` : (isSubadmin ? `🕒 ${result.nombre}` : (isCampo ? `🌱 ${result.nombre}` : result.nombre)));
-  ['tab-registro','tab-historial','tab-mantencion','tab-admin','tab-config','tab-analytics','tab-informes','tab-eficiencia','btn-cisterna-header','tab-asistencia','tab-config-trabajadores','tab-campo','tab-config-potreros','tab-config-gps'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
+  ['tab-registro','tab-historial','tab-mantencion','tab-admin','tab-config','tab-analytics','tab-informes','tab-eficiencia','btn-cisterna-header','tab-asistencia','tab-config-trabajadores','tab-campo','tab-config-potreros','tab-config-gps','btn-tractor-header','btn-reparto-header'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
   document.getElementById('pin-input').value = '';
   document.getElementById('btn-secciones-header').style.display = isAdmin ? 'inline-flex' : 'none';
   if (isSubadmin) {
@@ -2039,6 +2039,7 @@ window.intentarLogin = async function() {
     return;
   }
   ['tab-registro','tab-historial','tab-mantencion'].forEach(id => document.getElementById(id).style.display = 'block');
+  mostrarBotonesPruebas();
   if (isSupervisor) {
     ['tab-analytics','tab-informes','tab-eficiencia','tab-admin'].forEach(id => document.getElementById(id).style.display = 'block');
   }
@@ -2093,6 +2094,8 @@ window.abrirSeccion = function(seccion) {
 }
 
 window.logout = function() {
+  try { localStorage.removeItem('maitenes_pase'); } catch (e) {}
+  ['btn-tractor-header','btn-reparto-header'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
   currentUser = null; isAdmin = false; isSupervisor = false; isSubadmin = false; isCampo = false;
   if (unsubReg) { unsubReg(); unsubReg = null; }
   if (unsubSolicitud) { unsubSolicitud(); unsubSolicitud = null; }
@@ -6858,6 +6861,44 @@ window.guardarEdicionEquipoOperador = async function(idx) {
   } catch(e) { toast('Error: ' + e.message, false); }
 }
 
+// ─── ACCESO A PRUEBAS GPS (Modo tractor / Reparto por potrero) ────
+// config.permisosPruebas = { 'Operador': ['tractor', 'reparto'] }. El admin y
+// Camila siempre tienen acceso (por el menú de secciones). Al abrir una de las
+// páginas desde la app se deja un "pase" en el navegador (misma web), para que
+// no tengan que volver a poner el PIN; las páginas igual revisan el permiso.
+const PRUEBAS_GPS = [ { id: 'tractor', txt: '🚜 Modo tractor' }, { id: 'reparto', txt: '📍 Reparto por potrero' } ];
+function permisosPruebasDe(op) { const v = (config.permisosPruebas || {})[op]; return Array.isArray(v) ? v : []; }
+function mostrarBotonesPruebas() {
+  const per = isAdmin ? [] : permisosPruebasDe(currentUser);
+  document.getElementById('btn-tractor-header').style.display = per.includes('tractor') ? 'inline-flex' : 'none';
+  document.getElementById('btn-reparto-header').style.display = per.includes('reparto') ? 'inline-flex' : 'none';
+}
+window.abrirPrueba = function(cual) {
+  try { localStorage.setItem('maitenes_pase', JSON.stringify({ nombre: currentUser, admin: !!isAdmin, ts: Date.now() })); } catch (e) {}
+  if (cual === 'tractor') window.location.href = '/tractor.html';
+  else window.open('/reparto.html', '_blank');
+}
+function renderPanelPermisosPruebas() {
+  const cont = document.getElementById('lista-permisos-pruebas');
+  if (!cont) return;
+  const ops = config.operadores.filter(o => o !== 'Otros (especificar)' && o !== ADMIN_NOMBRE && !ADMINS_EQUIVALENTES.includes(o));
+  cont.innerHTML = ops.length ? ops.map(op => {
+    const per = permisosPruebasDe(op);
+    return `<div class="config-item" style="flex-direction:column;align-items:stretch;gap:6px">
+      <strong style="font-size:14px">${op}</strong>
+      <div class="centros-selector">${PRUEBAS_GPS.map(p => `<div class="cultivo-chip ${per.includes(p.id) ? 'sel' : ''}" onclick='togglePermisoPrueba(${JSON.stringify(op)},"${p.id}")'>${p.txt}</div>`).join('')}</div>
+    </div>`;
+  }).join('') : '<div style="color:#9CA3AF;font-size:13px;padding:8px">Sin operadores.</div>';
+}
+window.togglePermisoPrueba = async function(op, id) {
+  if (!config.permisosPruebas) config.permisosPruebas = {};
+  const per = permisosPruebasDe(op);
+  config.permisosPruebas[op] = per.includes(id) ? per.filter(x => x !== id) : [...per, id];
+  renderPanelPermisosPruebas();
+  try { await saveConfig(); toast('✓ Acceso actualizado', true); }
+  catch (e) { toast('Error: ' + e.message, false); }
+}
+
 // ─── PRESET DE CULTIVO/TRABAJO/APERO POR OPERADOR (Configurar) ────
 let presetEdicionOperador = null;
 let presetEdicionCultivos = [];
@@ -7001,7 +7042,7 @@ window.setTab = function(id,el) {
   document.getElementById('tc-'+id).classList.add('active');
   if(el)el.classList.add('active');
   if(['historial','admin','analytics','informes','eficiencia','config'].includes(id)) loadHistorial();
-  if(id==='config') { renderConfigListas(); renderPanelAperos(); renderPanelEquipoOperador(); renderPanelPresetsOperador(); renderPanelHorario(); renderPanelMantencionesConfig(); renderPanelParametros(); renderPanelCorreccionHorometro(); renderPanelTotalizadorManual(); renderPanelSaldoManual(); renderPanelRecalculoOpcion(); renderLimpiezaEquiposSelector(); renderRecalcEquiposSelector(); renderPanelReintegroJCAR(); cargarHistorialReintegrosJCAR(); if(isAdmin) cargarPines(); actualizarToggleESP32(); }
+  if(id==='config') { renderConfigListas(); renderPanelAperos(); renderPanelEquipoOperador(); renderPanelPermisosPruebas(); renderPanelPresetsOperador(); renderPanelHorario(); renderPanelMantencionesConfig(); renderPanelParametros(); renderPanelCorreccionHorometro(); renderPanelTotalizadorManual(); renderPanelSaldoManual(); renderPanelRecalculoOpcion(); renderLimpiezaEquiposSelector(); renderRecalcEquiposSelector(); renderPanelReintegroJCAR(); cargarHistorialReintegrosJCAR(); if(isAdmin) cargarPines(); actualizarToggleESP32(); }
   if(id==='mantencion') { initMantencion(); }
   if(id==='asistencia') { initAsistencia(); }
   if(id==='config-trabajadores') { renderConfigTrabajadores(); }
@@ -9135,6 +9176,8 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     <div class="header-right">
       <button class="btn-pin" id="btn-secciones-header" style="display:none" onclick="mostrarSelectorSecciones()">☰ Secciones</button>
       <button class="btn-cisterna-hdr" id="btn-cisterna-header" style="display:none" onclick="abrirCargaCisterna()">🚛 Cisterna</button>
+      <button class="btn-pin" id="btn-tractor-header" style="display:none" onclick="abrirPrueba('tractor')" title="Modo tractor">🚜 Tractor</button>
+      <button class="btn-pin" id="btn-reparto-header" style="display:none" onclick="abrirPrueba('reparto')" title="Reparto por potrero">📍 Reparto</button>
       <button class="btn-pin" onclick="mostrarCambioPin(false)">🔑</button>
       <span class="user-badge" id="user-label"></span>
       <button class="btn-logout" onclick="logout()">Salir</button>
@@ -9153,8 +9196,8 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       <button class="btn" style="background:var(--negro);color:var(--amarillo);justify-content:flex-start;padding:20px;font-size:16px;border-radius:10px" onclick="abrirSeccion('campo')">🌱 Cuaderno de Campo</button>
       <button class="btn" style="background:var(--negro);color:var(--amarillo);justify-content:flex-start;padding:20px;font-size:16px;border-radius:10px" onclick="abrirSeccion('inventario')">📦 Inventario Agroquímicos</button>
       <div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--acero);margin:8px 0 0;text-align:center">Pruebas</div>
-      <button class="btn" style="background:#2A2A2A;color:#E5E7EB;justify-content:flex-start;padding:16px 20px;font-size:15px;border-radius:10px" onclick="window.location.href='/tractor.html'">🚜 Modo tractor (celular)</button>
-      <button class="btn" style="background:#2A2A2A;color:#E5E7EB;justify-content:flex-start;padding:16px 20px;font-size:15px;border-radius:10px" onclick="window.open('/reparto.html','_blank')">📍 Reparto por potrero (prueba)</button>
+      <button class="btn" style="background:#2A2A2A;color:#E5E7EB;justify-content:flex-start;padding:16px 20px;font-size:15px;border-radius:10px" onclick="abrirPrueba('tractor')">🚜 Modo tractor (celular)</button>
+      <button class="btn" style="background:#2A2A2A;color:#E5E7EB;justify-content:flex-start;padding:16px 20px;font-size:15px;border-radius:10px" onclick="abrirPrueba('reparto')">📍 Reparto por potrero (prueba)</button>
     </div>
   </div>
 
@@ -9493,6 +9536,12 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       <div class="panel">
         <div class="panel-title">🚜 Equipo(s) principal(es) por operador</div>
         <div class="config-lista" id="lista-equipo-operador"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">🧪 Acceso a Modo tractor y Reparto por potrero</div>
+        <div style="font-size:12px;color:var(--acero);margin-bottom:8px">Marca qué puede abrir cada operador con su PIN. Le aparecen como botones arriba en la app y puede entrar directo en el celular del tractor.</div>
+        <div class="config-lista" id="lista-permisos-pruebas"></div>
       </div>
 
       <div class="panel">
