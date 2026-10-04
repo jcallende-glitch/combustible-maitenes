@@ -306,7 +306,7 @@ function jdpPotreroCercano(lat, lng, potreros, margenM) {
   return mejor;
 }
 
-function jdpRepartir(puntos, tramos, desde, hasta, potreros, zonas, margenM, minPuntos, maxPasoMin, velMin, velMax) {
+function jdpRepartir(puntos, tramos, desde, hasta, potreros, zonas, margenM, salidaPuntos, maxPasoMin, velMin, velMax, salidaDistM) {
   const enVentana = puntos.filter(p => p.t >= desde - 6 * 3600000 && p.t <= hasta + 6 * 3600000);
   // Velocidad de cada punto: la informada por el equipo o, si no viene, calculada
   // con los puntos vecinos (solo si están a menos de 3 min; si no, queda sin dato).
@@ -335,18 +335,50 @@ function jdpRepartir(puntos, tramos, desde, hasta, potreros, zonas, margenM, min
     const cerca = jdpPotreroCercano(p.lat, p.lng, potreros, margenM);
     return { ...base, zona: null, potrero: cerca, margen: !!cerca };
   });
-  // Pasadas cortas: si una racha de puntos seguidos en el mismo potrero tiene
-  // menos de minPuntos y el paso completo duró menos de maxPasoMin minutos, es un cruce
-  // (p. ej. por una esquina camino a otro lado): no cuenta como potrero.
-  const minP = Math.max(1, Math.round(Number(minPuntos) || 1));
-  if (minP > 1) {
+  // 1) Continuidad: una salida corta (vuelta de cabecera, potrero vecino, camino,
+  // traslape, parada breve) que vuelve al MISMO potrero se suma a ese potrero,
+  // siempre que afuera haya dejado menos de salidaPuntos puntos seguidos y estado
+  // menos que el tiempo mínimo continuo, sin alejarse más de salidaDistM metros del
+  // borde y sin ir a velocidad de traslado. Así las pasadas entre cabeceras quedan
+  // unidas en un solo bloque. Las bodegas y zonas de carga marcadas no se absorben.
+  const minContMs = (Number(maxPasoMin) || 0) * 60000;
+  const salidaN = Math.max(0, Math.round(Number(salidaPuntos) || 0));
+  if (salidaN > 0) {
+    const distMax = Number(salidaDistM) > 0 ? Number(salidaDistM) : Infinity;
+    const polyDe = Object.fromEntries(potreros.map(p => [p.nombre, p.poly]));
+    const absorbible = (p, pot) => {
+      if (p.zona && (p.zona.startsWith(JDP_ZONA) || p.zona.startsWith(JDP_CARGA) || p.zona === JDP_TRASLADO)) return false; // bodega, carga o a velocidad de traslado
+      if (distMax !== Infinity && polyDe[pot] && jdpDistBordeM(p.lat, p.lng, polyDe[pot]) > distMax) return false;             // se alejó del potrero
+      return true;
+    };
+    for (let i = 1; i < pts.length; i++) {
+      const prev = pts[i - 1];
+      if (!prev.potrero || pts[i].potrero === prev.potrero) continue;
+      let j = i;
+      while (j < pts.length && pts[j].potrero !== prev.potrero && absorbible(pts[j], prev.potrero) && (j - i) < salidaN) j++;
+      if (j >= pts.length || pts[j].potrero !== prev.potrero) continue;      // no volvió al mismo potrero
+      const afuera = (pts[j - 1].t + pts[j].t) / 2 - (prev.t + pts[i].t) / 2;
+      if (minContMs > 0 && afuera >= minContMs) continue;                    // estuvo demasiado rato afuera
+      for (let k = i; k < j; k++) { pts[k].cont = true; pts[k].zona = null; pts[k].potrero = prev.potrero; pts[k].margen = false; }
+      i = j;
+    }
+  }
+  // 2) Cruces: cada vez que la máquina entra a un potrero (ya con la continuidad
+  // aplicada), ese bloque cuenta como
+  // trabajo solo si estuvo ahí en forma continua al menos minContinuoMin minutos
+  // (sin importar cuántos puntos dejó). Si no, es un cruce (p. ej. por una esquina
+  // camino a otro lado) y no se carga a ese potrero. La permanencia se mide de la
+  // mitad entre el último punto de afuera y el primero de adentro, a la mitad entre
+  // el último de adentro y el primero de afuera (sirve igual con pocos puntos).
+  if (minContMs > 0) {
     for (let i = 0; i < pts.length;) {
       const pot = pts[i].potrero;
       let j = i;
       while (j + 1 < pts.length && pts[j + 1].potrero === pot && !pts[j + 1].zona) j++;
-      if (pot && !pts[i].zona && j - i + 1 < minP) {
-        const t0 = i > 0 ? pts[i - 1].t : pts[i].t, t1 = j + 1 < pts.length ? pts[j + 1].t : pts[j].t;
-        if (t1 - t0 <= (Number(maxPasoMin) > 0 ? Number(maxPasoMin) : 5) * 60000) for (let k = i; k <= j; k++) { pts[k].paso = pts[k].potrero; pts[k].potrero = null; pts[k].margen = false; }
+      if (pot && !pts[i].zona) {
+        const entrada = i > 0 ? (pts[i - 1].t + pts[i].t) / 2 : pts[i].t;
+        const salida = j + 1 < pts.length ? (pts[j].t + pts[j + 1].t) / 2 : pts[j].t;
+        if (salida - entrada < minContMs) for (let k = i; k <= j; k++) { pts[k].paso = pts[k].potrero; pts[k].potrero = null; pts[k].margen = false; pts[k].cont = false; }
       }
       i = j + 1;
     }
@@ -447,7 +479,9 @@ let jdpZonas = [];   // zonas sin cultivo guardadas (config/zonas_sin_cultivo)
 let jdpMargenM = 10; // margen de cabeceras: puntos a menos de X m del borde cuentan para ese potrero
 let jdpAnchoCaminoM = 8; // ancho de la franja de los caminos dibujados
 let jdpMinPuntos = 5;    // puntos seguidos mínimos dentro de un potrero para que cuente (pasos cortos no)
-let jdpMaxPasoMin = 5;   // duración máxima (min) para considerar esos pocos puntos como un paso
+let jdpMaxPasoMin = 5;   // tiempo mínimo continuo (min) en un potrero para que cuente como trabajo
+let jdpSalidaPuntos = 10; // puntos seguidos afuera para dejar un potrero (antes, la salida se suma al potrero)
+let jdpSalidaDistM = 25;  // metros: si se aleja más que esto del borde, dejó el potrero
 let jdpVelMin = 1;       // km/h: bajo esto el punto cuenta como detenido (0 = no usar)
 let jdpVelMax = 15;      // km/h: sobre esto el punto cuenta como traslado (0 = no usar)
 let jdpVelPorEquipo = {}; // { 'JD 6910': { min, max } } — si un equipo no tiene, usa los de arriba
@@ -487,6 +521,8 @@ async function jdpCargarZonas() {
     if (typeof d.anchoCaminoM === 'number') jdpAnchoCaminoM = d.anchoCaminoM;
     if (typeof d.minPuntos === 'number') jdpMinPuntos = d.minPuntos;
     if (typeof d.maxPasoMin === 'number') jdpMaxPasoMin = d.maxPasoMin;
+    if (typeof d.salidaPuntos === 'number') jdpSalidaPuntos = d.salidaPuntos;
+    if (typeof d.salidaDistM === 'number') jdpSalidaDistM = d.salidaDistM;
     if (typeof d.velMin === 'number') jdpVelMin = d.velMin;
     if (typeof d.velMax === 'number') jdpVelMax = d.velMax;
     jdpVelPorEquipo = d.velPorEquipo && typeof d.velPorEquipo === 'object' ? d.velPorEquipo : {};
@@ -496,7 +532,7 @@ async function jdpCargarZonas() {
 async function jdpGuardarZonas(zonas, margenM, anchoCaminoM) {
   const m = typeof margenM === 'number' ? margenM : jdpMargenM;
   const a = typeof anchoCaminoM === 'number' ? anchoCaminoM : jdpAnchoCaminoM;
-  await setDoc(doc(db, 'config', 'zonas_sin_cultivo'), { zonas, margenM: m, anchoCaminoM: a, minPuntos: jdpMinPuntos, maxPasoMin: jdpMaxPasoMin, velMin: jdpVelMin, velMax: jdpVelMax, velPorEquipo: jdpVelPorEquipo, actualizadoPor: currentUser || '', ts: Date.now() });
+  await setDoc(doc(db, 'config', 'zonas_sin_cultivo'), { zonas, margenM: m, anchoCaminoM: a, minPuntos: jdpMinPuntos, maxPasoMin: jdpMaxPasoMin, salidaPuntos: jdpSalidaPuntos, salidaDistM: jdpSalidaDistM, velMin: jdpVelMin, velMax: jdpVelMax, velPorEquipo: jdpVelPorEquipo, actualizadoPor: currentUser || '', ts: Date.now() });
   jdpZonas = zonas; jdpMargenM = m; jdpAnchoCaminoM = a;
 }
 // eq vacío = valores por defecto; con equipo = solo para ese equipo
@@ -518,8 +554,20 @@ window.jdpQuitarVelEquipo = async function(eq) {
   if (typeof renderVelEquipos === 'function') renderVelEquipos();
   jdpRecalcular();
 }
+window.jdpCambiarSalidaDist = async function(v) {
+  jdpSalidaDistM = Math.max(0, Math.min(500, Math.round(Number(v) || 0)));
+  try { await jdpGuardarZonas(jdpZonas); } catch (e) { toast('No se pudo guardar: ' + e.message, false); }
+  const el = document.getElementById('config-salida-dist'); if (el) el.value = jdpSalidaDistM;
+  jdpRecalcular();
+}
+window.jdpCambiarSalida = async function(v) {
+  jdpSalidaPuntos = Math.max(0, Math.min(200, Math.round(Number(v) || 0)));
+  try { await jdpGuardarZonas(jdpZonas); } catch (e) { toast('No se pudo guardar: ' + e.message, false); }
+  const el = document.getElementById('config-salida-puntos'); if (el) el.value = jdpSalidaPuntos;
+  jdpRecalcular();
+}
 window.jdpCambiarMaxPaso = async function(v) {
-  jdpMaxPasoMin = Math.max(0.5, Math.min(60, Number(v) || 5));
+  jdpMaxPasoMin = Math.max(0, Math.min(120, Number(v) || 0));
   try { await jdpGuardarZonas(jdpZonas); } catch (e) { toast('No se pudo guardar: ' + e.message, false); }
   jdpRecalcular();
 }
@@ -679,7 +727,7 @@ function jdpRecalcular() {
   if (!jdpRaw) return null;
   const velEq = jdpVelDeEquipo(document.getElementById('jdp-equipo')?.value || '');
   const { puntos, tramos, desde, hasta, diag, potreros } = jdpRaw;
-  const r = jdpRepartir(puntos, tramos, desde, hasta, potreros, jdpZonasParaCalculo(), jdpMargenM, jdpMinPuntos, jdpMaxPasoMin, velEq.min, velEq.max);
+  const r = jdpRepartir(puntos, tramos, desde, hasta, potreros, jdpZonasParaCalculo(), jdpMargenM, jdpSalidaPuntos, jdpMaxPasoMin, velEq.min, velEq.max, jdpSalidaDistM);
   jdpRenderResultado(r, diag, desde, hasta, potreros.length);
   return r;
 }
@@ -729,18 +777,22 @@ function jdpRenderResultado(r, diag, desde, hasta, nPotreros) {
     </div>
     ${avisos.map(a => `<div style="background:#FEF3DC;border-left:4px solid #F5A623;padding:8px 10px;border-radius:6px;margin-bottom:6px;font-size:12px">${a}</div>`).join('')}
     <div id="jdp-mapa" style="height:340px;border-radius:8px;margin:8px 0"></div>
-    <div style="font-size:11px;color:var(--acero);margin-bottom:6px">🟡 en potrero · 🟠 cabecera · 🔵 bodegas, camino o carga · 🟣 traslado (rápido) · ⚪ detenido · 🔴 fuera</div>
+    <div style="font-size:11px;color:var(--acero);margin-bottom:6px">🟡 en potrero · 🟠 cabecera o continuidad · 🔵 bodegas, camino o carga · 🟣 traslado (rápido) · ⚪ detenido · 🔴 fuera</div>
     <div style="display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:8px">
       <label style="text-transform:none;letter-spacing:normal;font-family:var(--sans);font-size:12px;margin:0">Margen de cabeceras:</label>
       <input type="number" min="0" max="100" step="1" value="${jdpMargenM}" style="width:70px;padding:4px 6px" onchange="jdpCambiarMargen(this.value)"> m
       <span style="color:var(--acero)">(${r.puntos.filter(p => p.margen).length} puntos asignados por margen)</span>
     </div>
     <div style="display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:8px;flex-wrap:wrap">
-      <label style="text-transform:none;letter-spacing:normal;font-family:var(--sans);font-size:12px;margin:0">Mínimo de puntos seguidos en un potrero:</label>
-      <input type="number" min="1" max="30" step="1" value="${jdpMinPuntos}" style="width:70px;padding:4px 6px" onchange="jdpCambiarMinPuntos(this.value)">
-      <label style="text-transform:none;letter-spacing:normal;font-family:var(--sans);font-size:12px;margin:0">si el paso dura menos de</label>
-      <input type="number" min="0.5" max="60" step="0.5" value="${jdpMaxPasoMin}" style="width:70px;padding:4px 6px" onchange="jdpCambiarMaxPaso(this.value)"> min
-      <span style="color:var(--acero)">(${r.puntos.filter(p => p.paso).length} puntos descartados como paso)</span>
+      <label style="text-transform:none;letter-spacing:normal;font-family:var(--sans);font-size:12px;margin:0">Cuenta como trabajo si está al menos</label>
+      <input type="number" min="0" max="120" step="0.5" value="${jdpMaxPasoMin}" style="width:70px;padding:4px 6px" onchange="jdpCambiarMaxPaso(this.value)"> min seguidos en el potrero
+      <span style="color:var(--acero)">(${r.puntos.filter(p => p.paso).length} puntos descartados como cruce)</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:8px;flex-wrap:wrap">
+      <label style="text-transform:none;letter-spacing:normal;font-family:var(--sans);font-size:12px;margin:0">Ya trabajando, sale del potrero con</label>
+      <input type="number" min="0" max="200" step="1" value="${jdpSalidaPuntos}" style="width:70px;padding:4px 6px" onchange="jdpCambiarSalida(this.value)"> puntos seguidos afuera, o si se aleja más de
+      <input type="number" min="0" max="500" step="1" value="${jdpSalidaDistM}" style="width:70px;padding:4px 6px" onchange="jdpCambiarSalidaDist(this.value)"> m, o va sobre la velocidad máxima
+      <span style="color:var(--acero)">(${r.puntos.filter(p => p.cont).length} puntos sumados por continuidad)</span>
     </div>
     <div style="display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:8px;flex-wrap:wrap">
       <label style="text-transform:none;letter-spacing:normal;font-family:var(--sans);font-size:12px;margin:0">${jdpEqAct} trabaja entre</label>
@@ -760,7 +812,7 @@ function jdpRenderResultado(r, diag, desde, hasta, nPotreros) {
     <div style="font-size:12px;color:var(--acero);margin-top:6px">Motor encendido total: <strong>${h(r.totalMs)} h</strong> · en potreros: <strong>${h(prodMs)} h</strong>${litros != null && prodMs ? ` · los ${litros.toFixed(1)} L se reparten solo entre los potreros` : ''}</div>
     <details style="margin-top:12px;font-size:12px"><summary style="cursor:pointer">Ver los ${r.puntos.length} puntos GPS</summary>
       <div style="overflow-x:auto;max-height:260px;overflow-y:auto"><table style="width:100%;min-width:0;font-size:12px"><thead><tr><th style="padding:4px">Hora</th><th style="padding:4px">Lugar</th><th style="padding:4px">km/h</th><th style="padding:4px">Motor</th></tr></thead><tbody>
-      ${r.puntos.map(p => `<tr><td style="padding:4px;white-space:nowrap">${new Date(p.t).toLocaleString('es-CL', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</td><td style="padding:4px">${p.zona ? p.zona : p.potrero ? p.potrero + (p.margen ? ' (cabecera)' : '') : p.paso ? 'de paso por ' + p.paso : 'fuera'}</td><td style="padding:4px">${p.vkmh == null ? '—' : p.vkmh + (p.vCalc ? '*' : '')}</td><td style="padding:4px">${p.motor == null ? '—' : p.motor ? 'encendido' : 'apagado'}</td></tr>`).join('')}
+      ${r.puntos.map(p => `<tr><td style="padding:4px;white-space:nowrap">${new Date(p.t).toLocaleString('es-CL', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</td><td style="padding:4px">${p.zona ? p.zona : p.potrero ? p.potrero + (p.cont ? ' (continuidad)' : p.margen ? ' (cabecera)' : '') : p.paso ? 'cruce por ' + p.paso : 'fuera'}</td><td style="padding:4px">${p.vkmh == null ? '—' : p.vkmh + (p.vCalc ? '*' : '')}</td><td style="padding:4px">${p.motor == null ? '—' : p.motor ? 'encendido' : 'apagado'}</td></tr>`).join('')}
       </tbody></table></div></details>
     <button class="btn btn-secondary btn-full" style="margin-top:10px;justify-content:center" onclick="jdpDescargarDatos()">⬇️ Descargar datos de la prueba (para mandárselos a Claude)</button>
     <details style="margin-top:12px;font-size:12px"><summary style="cursor:pointer">Detalle técnico (para revisar con Claude)</summary>
@@ -786,8 +838,8 @@ function jdpRenderMapa(r) {
     const ll = r.puntos.map(p => [p.lat, p.lng]);
     L.polyline(ll, { color: '#FFFFFF', weight: 2, opacity: 0.8 }).addTo(map);
     r.puntos.forEach(p => {
-      L.circleMarker([p.lat, p.lng], { radius: 3, color: p.zona === JDP_TRASLADO ? '#A855F7' : p.zona === JDP_DETENIDO ? '#9CA3AF' : p.zona ? '#60A5FA' : p.margen ? '#F97316' : p.potrero ? '#FFD400' : '#E11D48', weight: 1, fillOpacity: 0.9 }).addTo(map)
-        .bindTooltip(`${new Date(p.t).toLocaleString('es-CL')} · ${p.zona ? p.zona : p.potrero ? p.potrero + (p.margen ? ' (cabecera)' : '') : p.paso ? 'de paso por ' + p.paso : 'fuera de potreros'}`);
+      L.circleMarker([p.lat, p.lng], { radius: 3, color: p.zona === JDP_TRASLADO ? '#A855F7' : p.zona === JDP_DETENIDO ? '#9CA3AF' : p.zona ? '#60A5FA' : (p.margen || p.cont) ? '#F97316' : p.potrero ? '#FFD400' : '#E11D48', weight: 1, fillOpacity: 0.9 }).addTo(map)
+        .bindTooltip(`${new Date(p.t).toLocaleString('es-CL')} · ${p.zona ? p.zona : p.potrero ? p.potrero + (p.cont ? ' (continuidad)' : p.margen ? ' (cabecera)' : '') : p.paso ? 'cruce por ' + p.paso : 'fuera de potreros'}`);
       bounds.push([p.lat, p.lng]);
     });
   } else {
