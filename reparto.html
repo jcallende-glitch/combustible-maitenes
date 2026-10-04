@@ -60,6 +60,14 @@
   <div class="panel"><div id="jdp-resultado" style="font-size:13px;color:var(--acero)">Elige el equipo y una carga, y toca "Consultar recorrido".</div></div>
 </main>
 <div id="toast"></div>
+<div id="acceso" style="display:none;position:fixed;inset:0;z-index:6000;background:rgba(0,0,0,.6);align-items:center;justify-content:center;padding:16px">
+  <div class="panel" style="width:100%;max-width:380px">
+    <div style="font-weight:700;font-size:16px;margin-bottom:8px">📍 Reparto por potrero</div>
+    <div class="field"><label>Ingresa tu PIN</label><input type="password" id="acc-pin" inputmode="numeric" autocomplete="off" style="font-size:22px;text-align:center;letter-spacing:6px" onkeydown="if(event.key==='Enter')entrarReparto()"></div>
+    <div id="acc-msg" style="font-size:13px;color:#B91C1C;min-height:18px"></div>
+    <button class="btn btn-verde btn-full" id="acc-btn" onclick="entrarReparto()">Ingresar</button>
+  </div>
+</div>
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
@@ -964,10 +972,48 @@ window.jdpCambioEquipo = async function () {
 };
 
 // ── Inicio ───────────────────────────────────────────────────────
-(async function iniciar() {
+// ── Acceso: admin, Camila o un operador con permiso "reparto" (Configurar en la app) ──
+const ADMIN_PIN = '1234', ADMIN_NOMBRE = 'JC Allende', ADMINS_EQUIVALENTES = ['Camila Faundez'];
+let permisosPruebas = {};
+const puedeVer = (nombre, admin) => admin || ADMINS_EQUIVALENTES.includes(nombre) || (Array.isArray(permisosPruebas[nombre]) && permisosPruebas[nombre].includes('reparto'));
+let abrirAcceso;
+const accesoListo = new Promise(r => { abrirAcceso = r; });
+window.entrarReparto = async function () {
+  const pin = document.getElementById('acc-pin').value.trim(), msg = document.getElementById('acc-msg');
+  if (!pin) { msg.textContent = 'Ingresa tu PIN.'; return; }
+  let nombre = null, admin = false;
+  if (pin === ADMIN_PIN) { nombre = ADMIN_NOMBRE; admin = true; }
+  else if (pin === '0000') { msg.textContent = 'Primero cambia tu PIN inicial en la app.'; return; }
+  else {
+    try { const sp = await getDoc(doc(db, 'config', 'pines')); const op = sp.exists() ? Object.entries(sp.data()).find(([, p]) => p === pin) : null; if (op) nombre = op[0]; }
+    catch (e) { msg.textContent = 'No se pudo verificar: ' + e.message; return; }
+  }
+  if (!nombre) { msg.textContent = 'PIN incorrecto.'; document.getElementById('acc-pin').value = ''; return; }
+  if (!puedeVer(nombre, admin)) { msg.textContent = 'No tienes acceso al reparto por potrero. Pídeselo al administrador.'; return; }
+  try { sessionStorage.setItem('reparto_usuario', JSON.stringify({ nombre, admin })); } catch (e) {}
+  document.getElementById('acceso').style.display = 'none';
+  abrirAcceso();
+};
+function revisarAcceso() {
+  let u = null;
   try {
-    const s = await getDoc(doc(db, 'config', 'datos'));
-    const d = s.exists() ? s.data() : {};
+    const pase = JSON.parse(localStorage.getItem('maitenes_pase') || 'null');
+    if (pase && pase.nombre && Date.now() - pase.ts < 10 * 60000) { u = pase; localStorage.removeItem('maitenes_pase'); sessionStorage.setItem('reparto_usuario', JSON.stringify({ nombre: pase.nombre, admin: !!pase.admin })); }
+    else u = JSON.parse(sessionStorage.getItem('reparto_usuario') || 'null');
+  } catch (e) {}
+  if (u && puedeVer(u.nombre, u.admin)) { abrirAcceso(); return; }
+  try { sessionStorage.removeItem('reparto_usuario'); } catch (e) {}
+  document.getElementById('acceso').style.display = 'flex';
+  if (u) document.getElementById('acc-msg').textContent = 'No tienes acceso al reparto por potrero. Pídeselo al administrador.';
+}
+
+(async function iniciar() {
+  let d = {};
+  try { const s = await getDoc(doc(db, 'config', 'datos')); d = s.exists() ? s.data() : {}; } catch (e) { toast('No se pudo leer la configuración: ' + e.message, false); }
+  permisosPruebas = d.permisosPruebas || {};
+  revisarAcceso();
+  await accesoListo;
+  try {
     config = { equipos: d.equipos || [] };
     potrerosConfig = d.potreros || [];
     fuenteHorometroConfig = d.fuenteHorometro || {};
