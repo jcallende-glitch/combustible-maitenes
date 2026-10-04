@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <meta name="theme-color" content="#111111">
 <title>Modo tractor · Los Maitenes</title>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/5.2.0/maplibre-gl.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/5.2.0/maplibre-gl.js"></script>
 <style>
   :root {
     --fondo: #111111; --panel: #1C1C1C; --borde: #333; --texto: #F5F5F5; --gris: #A3A3A3;
@@ -55,8 +55,12 @@
   .eq-chips button.sel { background: var(--verde); color: #052e12; border-color: #16a34a; }
   .link-btn { background: none; color: var(--azul); padding: 10px 0; font-size: 14px; text-decoration: underline; }
   #pin-input { font-size: 28px; text-align: center; letter-spacing: 8px; }
-  .leaflet-container { background: #1a1a1a; }
+  .maplibregl-map { background: #1a1a1a; }
   .pos-icono { width: 22px; height: 22px; border-radius: 50%; background: var(--azul); border: 3px solid #fff; box-shadow: 0 0 0 2px rgba(0,0,0,.4); }
+  .pos-flecha { width: 34px; height: 34px; }
+  .seg { display: flex; gap: 6px; }
+  .seg button { flex: 1; padding: 14px 6px; font-size: 15px; font-weight: 700; background: #262626; color: var(--texto); border: 2px solid #444; }
+  .seg button.sel { background: var(--azul); color: #0b1b33; border-color: #3b82f6; }
 </style>
 </head>
 <body>
@@ -78,6 +82,7 @@
     <div id="stats"></div>
     <div id="botones">
       <button id="btn-aplicar" onclick="toggleAplicar()">▶ EMPEZAR A APLICAR</button>
+      <button class="btn-sec" title="Vista del mapa" onclick="abrirVista()">🧭</button>
       <button class="btn-sec" title="Centrar" onclick="centrar()">🎯</button>
       <button class="btn-sec" title="Ajustes" onclick="abrirAjustes()">⚙️</button>
     </div>
@@ -103,8 +108,30 @@
       <button class="btn-gris" onclick="actualizarDatosCampo(true)">🔄 Actualizar potreros</button>
       <button class="btn-prim" onclick="guardarAjustes()">✓ Listo</button>
     </div>
+    <div class="acciones"><button class="btn-gris" onclick="rehacerHileras()">↺ Volver a estimar hileras del potrero activo</button></div>
     <div class="acciones"><button class="btn-gris" onclick="cerrarSesion()">🔒 Cambiar de operador</button></div>
     <div class="nota" style="margin-top:14px">Deja esta pantalla abierta y el celular conectado al cargador del tractor (al contacto). Si no hay señal, guarda todo y lo sube cuando vuelva el internet o el WiFi.</div>
+  </div>
+</div>
+
+<div class="capa" id="capa-vista" style="align-items:flex-end;background:rgba(0,0,0,.35)">
+  <div class="caja">
+    <h2>🧭 Vista del mapa</h2>
+    <label>Inclinación</label>
+    <div class="seg" id="vista-incl">
+      <button data-v="0">⬇ Desde arriba</button><button data-v="45">45°</button><button data-v="60">60°</button>
+    </div>
+    <label>Seguimiento</label>
+    <div class="seg" id="vista-modo">
+      <button data-v="fijo">📌 Fijo</button><button data-v="norte">⬆ Norte arriba</button><button data-v="rumbo">🚜 Hacia adelante</button>
+    </div>
+    <label>Zoom</label>
+    <div class="seg" id="vista-zoom">
+      <button data-v="auto">🔍 Automático</button><button data-v="manual">✋ Manual</button>
+    </div>
+    <div class="nota">Zoom automático: se acerca cuando va lento o gira (cabeceras) y se aleja en traslado. Si haces zoom con los dedos, se respeta por 30 segundos.</div>
+    <div class="nota">Hacia adelante: el mapa gira para que el tractor siempre avance hacia arriba de la pantalla, como al mirar por el parabrisas. Fijo: el mapa no se mueve solo (se mueve con el dedo; con dos dedos se gira).</div>
+    <div class="acciones"><button class="btn-prim" onclick="cerrarCapa('capa-vista')">✓ Listo</button></div>
   </div>
 </div>
 
@@ -207,15 +234,122 @@ async function limpiarViejos() {
   await idbTx('readwrite', st => { st.openCursor(IDBKeyRange.upperBound(lim)).onsuccess = ev => { const c = ev.target.result; if (c) { if (c.value.e === 1 && !abiertas.has(c.value.ap)) c.delete(); c.continue(); } }; });
 }
 
-// ── Mapa ─────────────────────────────────────────────────────────
-const mapa = L.map('mapa', { zoomControl: false, attributionControl: true }).setView([-36.83, -72.15], 15);
-L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 20, maxNativeZoom: 19, crossOrigin: true, attribution: 'Tiles &copy; Esri' }).addTo(mapa);
-const capaCampo = L.layerGroup().addTo(mapa);
-const capaRecorrido = L.layerGroup().addTo(mapa);
-const capaOtros = L.layerGroup().addTo(mapa);     // lo aplicado por otros tractores (misma aplicación)
-const capaAplicado = L.layerGroup().addTo(mapa);
-let marcador = null, circuloPrec = null, seguir = true;
-mapa.on('dragstart', () => { seguir = false; });
+// ── Mapa (MapLibre: permite inclinar y girar la vista) ───────────
+const vacio = () => ({ type: 'FeatureCollection', features: [] });
+const aLngLat = c => [c[1], c[0]];             // [lat, lng] → [lng, lat]
+let vista = Object.assign({ incl: 0, modo: 'norte', zoom: 'auto' }, ls.get('tractor_vista', {})); // incl: 0 | 45 | 60 · modo: fijo | norte | rumbo
+let seguir = vista.modo !== 'fijo', rumbo = null, previoRumbo = null;
+const mapa = new maplibregl.Map({
+  container: 'mapa', center: [-72.15, -36.83], zoom: 15, pitch: vista.incl, maxPitch: 70,
+  attributionControl: { compact: true }, pitchWithRotate: false, fadeDuration: 0,
+  style: { version: 8, sources: { sat: { type: 'raster', tileSize: 256, maxzoom: 19, attribution: 'Tiles &copy; Esri',
+    tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'] } },
+    layers: [{ id: 'sat', type: 'raster', source: 'sat' }] }
+});
+mapa.addControl(new maplibregl.NavigationControl({ showZoom: false, visualizePitch: true }), 'top-right');
+// Grosor en metros reales: píxeles por metro a zoom 0 (k) × 2^zoom
+const anchoEnMetros = ['interpolate', ['exponential', 2], ['zoom'], 0, ['*', ['get', 'w'], ['get', 'k']], 24, ['*', ['get', 'w'], ['get', 'k'], 16777216]];
+const kLat = lat => 512 / (40075016.686 * Math.cos(lat * Math.PI / 180));
+const FUENTES = ['potreros', 'zonas', 'caminos', 'guias', 'otros', 'aplicado', 'repetido', 'recorrido', 'precision'];
+const datosFuente = {};
+let mapaListo = false;
+function setFuente(id, fc) { datosFuente[id] = fc; if (mapaListo) mapa.getSource(id).setData(fc); }
+mapa.on('load', () => {
+  FUENTES.forEach(id => mapa.addSource(id, { type: 'geojson', data: datosFuente[id] || vacio() }));
+  mapa.addLayer({ id: 'potreros-f', type: 'fill', source: 'potreros', paint: { 'fill-color': ['case', ['get', 'act'], '#22C55E', '#FACC15'], 'fill-opacity': ['case', ['get', 'act'], 0.1, 0.05] } });
+  mapa.addLayer({ id: 'potreros-l', type: 'line', source: 'potreros', paint: { 'line-color': ['case', ['get', 'act'], '#22C55E', '#FACC15'], 'line-width': ['case', ['get', 'act'], 4, 2] } });
+  mapa.addLayer({ id: 'zonas-f', type: 'fill', source: 'zonas', paint: { 'fill-color': ['get', 'col'], 'fill-opacity': 0.1 } });
+  mapa.addLayer({ id: 'zonas-l', type: 'line', source: 'zonas', paint: { 'line-color': ['get', 'col'], 'line-width': 2, 'line-dasharray': [3, 2] } });
+  mapa.addLayer({ id: 'caminos', type: 'line', source: 'caminos', paint: { 'line-color': '#E5E7EB', 'line-width': 3, 'line-dasharray': [3, 2] } });
+  mapa.addLayer({ id: 'guias', type: 'line', source: 'guias', paint: { 'line-color': ['case', ['get', 'sig'], '#FACC15', '#FFFFFF'], 'line-opacity': ['case', ['get', 'sig'], 0.9, 0.35], 'line-width': ['case', ['get', 'sig'], 4, 1], 'line-dasharray': [2, 2] } });
+  mapa.addLayer({ id: 'otros', type: 'line', source: 'otros', layout: { 'line-cap': 'butt', 'line-join': 'round' }, paint: { 'line-color': '#22D3EE', 'line-opacity': 0.4, 'line-width': anchoEnMetros } });
+  mapa.addLayer({ id: 'aplicado', type: 'line', source: 'aplicado', layout: { 'line-cap': 'butt', 'line-join': 'round' }, paint: { 'line-color': '#22C55E', 'line-opacity': 0.45, 'line-width': anchoEnMetros } });
+  mapa.addLayer({ id: 'repetido', type: 'line', source: 'repetido', layout: { 'line-cap': 'butt', 'line-join': 'round' }, paint: { 'line-color': '#EF4444', 'line-opacity': 0.7, 'line-width': anchoEnMetros } });
+  mapa.addLayer({ id: 'recorrido', type: 'line', source: 'recorrido', paint: { 'line-color': '#FFFFFF', 'line-opacity': 0.35, 'line-width': 1 } });
+  mapa.addLayer({ id: 'precision', type: 'fill', source: 'precision', paint: { 'fill-color': '#60A5FA', 'fill-opacity': 0.08 } });
+  mapaListo = true;
+  if (encuadrePendiente) { const b = encuadrePendiente; encuadrePendiente = null; encuadrar(b); }
+});
+// Tocar o arrastrar el mapa pausa el seguimiento; 🎯 lo retoma
+mapa.on('dragstart', e => { if (e.originalEvent) seguir = false; });
+mapa.on('rotatestart', e => { if (e.originalEvent && vista.modo === 'rumbo') seguir = false; });
+let encuadrePendiente = null;
+function encuadrar(b) {
+  if (!mapaListo) { encuadrePendiente = b; return; }
+  mapa.fitBounds(b, { padding: 30, duration: 0, pitch: vista.incl, bearing: 0 });
+}
+function circuloGeo(lat, lng, r, n = 32) {
+  const pts = [], dLat = r / 110540, dLng = r / (111320 * Math.cos(lat * Math.PI / 180));
+  for (let i = 0; i <= n; i++) { const a = 2 * Math.PI * i / n; pts.push([lng + dLng * Math.cos(a), lat + dLat * Math.sin(a)]); }
+  return pts;
+}
+// Marcador: punto azul sin rumbo; flecha cuando se sabe hacia dónde avanza
+const elMarcador = document.createElement('div');
+elMarcador.innerHTML = '<div class="pos-icono"></div>';
+let marcador = null;
+function pintarMarcador() {
+  elMarcador.innerHTML = rumbo == null ? '<div class="pos-icono"></div>'
+    : '<svg class="pos-flecha" viewBox="0 0 34 34"><path d="M17 2 L30 31 L17 24 L4 31 Z" fill="#60A5FA" stroke="#fff" stroke-width="3" stroke-linejoin="round"/></svg>';
+  if (marcador) marcador.setRotation(rumbo || 0);
+}
+function rumboEntre(a, b) { // grados desde el norte, de a hacia b ([lat, lng])
+  const r = x => x * Math.PI / 180, y = Math.sin(r(b[1] - a[1])) * Math.cos(r(b[0])),
+    x = Math.cos(r(a[0])) * Math.sin(r(b[0])) - Math.sin(r(a[0])) * Math.cos(r(b[0])) * Math.cos(r(b[1] - a[1]));
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+function actualizarRumbo(p) {
+  if (p.h != null && p.v != null && p.v >= 0.6) { rumbo = p.h; previoRumbo = [p.lat, p.lng]; return; }
+  if (!previoRumbo) { previoRumbo = [p.lat, p.lng]; return; }
+  if (distM(previoRumbo, [p.lat, p.lng]) >= 4) { rumbo = rumboEntre(previoRumbo, [p.lat, p.lng]); previoRumbo = [p.lat, p.lng]; }
+}
+// Zoom automático según velocidad y giro
+let zoomManualHasta = 0, histRumbo = [];
+mapa.on('zoomstart', e => { if (e.originalEvent) zoomManualHasta = Date.now() + 30000; });
+function velocidadKmh() {
+  if (!ultimaPos) return null;
+  if (ultimaPos.v != null) return ultimaPos.v * 3.6;
+  const h = histRumbo.filter(x => ultimaPos.t - x.t <= 8000);
+  if (h.length < 2) return null;
+  const a = h[0], b = h[h.length - 1];
+  return b.t > a.t ? distM([a.lat, a.lng], [b.lat, b.lng]) / ((b.t - a.t) / 1000) * 3.6 : null;
+}
+function zoomObjetivo() {
+  const v = velocidadKmh();
+  const h = histRumbo.filter(x => x.r != null && ultimaPos.t - x.t <= 6000);
+  let giro = 0; for (let i = 1; i < h.length; i++) giro += Math.abs(((h[i].r - h[i - 1].r + 540) % 360) - 180);
+  if (giro > 35) return 19.5;                     // vuelta en la cabecera
+  if (v == null || v < 3) return 19.2;
+  if (v < 7) return 18.7;
+  if (v < 12) return 18.2;
+  return 17;                                       // traslado
+}
+// Mueve la cámara según la vista elegida
+function moverCamara(inmediato) {
+  if (!ultimaPos || !seguir || vista.modo === 'fijo') return;
+  const h = mapa.getContainer().clientHeight;
+  const adelante = vista.modo === 'rumbo' || vista.incl > 0;     // tractor más abajo para ver lo que viene
+  let zoom = mapa.getZoom();
+  if (vista.zoom === 'auto' && Date.now() > zoomManualHasta) { const zt = zoomObjetivo(); if (Math.abs(zt - zoom) > 0.25) zoom = zoom + (zt - zoom) * 0.5; }
+  mapa.easeTo({ zoom, center: [ultimaPos.lng, ultimaPos.lat], bearing: vista.modo === 'rumbo' && rumbo != null ? rumbo : (vista.modo === 'norte' ? 0 : mapa.getBearing()),
+    pitch: vista.incl, padding: { top: adelante ? Math.round(h * 0.4) : 0, bottom: 0, left: 0, right: 0 }, duration: inmediato ? 0 : 900, essential: true });
+}
+function pintarVista() {
+  document.querySelectorAll('#vista-incl button').forEach(b => b.classList.toggle('sel', Number(b.dataset.v) === vista.incl));
+  document.querySelectorAll('#vista-modo button').forEach(b => b.classList.toggle('sel', b.dataset.v === vista.modo));
+  document.querySelectorAll('#vista-zoom button').forEach(b => b.classList.toggle('sel', b.dataset.v === vista.zoom));
+}
+function cambiarVista(cambio) {
+  vista = { ...vista, ...cambio }; ls.set('tractor_vista', vista);
+  seguir = vista.modo !== 'fijo';
+  pintarVista();
+  if (vista.modo === 'fijo') mapa.easeTo({ pitch: vista.incl, duration: 600 });
+  else if (vista.modo === 'norte' && !ultimaPos) mapa.easeTo({ pitch: vista.incl, bearing: 0, duration: 600 });
+  else moverCamara(false);
+}
+document.querySelectorAll('#vista-incl button').forEach(b => b.onclick = () => cambiarVista({ incl: Number(b.dataset.v) }));
+document.querySelectorAll('#vista-modo button').forEach(b => b.onclick = () => cambiarVista({ modo: b.dataset.v }));
+document.querySelectorAll('#vista-zoom button').forEach(b => b.onclick = () => { zoomManualHasta = 0; cambiarVista({ zoom: b.dataset.v }); });
+window.abrirVista = function () { pintarVista(); document.getElementById('capa-vista').style.display = 'flex'; };
 
 // Ancho de aplicación según el cultivo del potrero (se configura en la app: Config. GPS)
 const ANCHOS_POR_DEFECTO = { 'Avellanos': 5, 'Cerezos': 4.5 };
@@ -251,32 +385,29 @@ function areaHa(poly) { // área aproximada en hectáreas (proyección plana loc
 }
 
 function dibujarCampo() {
-  capaCampo.clearLayers();
   if (!datosCampo) return;
   potrerosGeo = (datosCampo.potreros || []).filter(p => Array.isArray(p.poligono) && p.poligono.length >= 3).map(p => ({ nombre: p.nombre, poly: normPoly(p.poligono) }));
   potrerosGeo.forEach(p => { p.ha = areaHa(p.poly); });
-  const bounds = [];
   const actPot = activa() ? activa().potrero : null;
-  potrerosGeo.forEach(p => {
-    const esAct = p.nombre === actPot;
-    L.polygon(p.poly, { color: esAct ? '#22C55E' : '#FACC15', weight: esAct ? 4 : 2, fillOpacity: esAct ? 0.1 : 0.05, interactive: false }).addTo(capaCampo);
-    p.poly.forEach(c => bounds.push(c));
-  });
+  const anillo = poly => { const r = poly.map(aLngLat); r.push(r[0]); return [r]; };
+  setFuente('potreros', { type: 'FeatureCollection', features: potrerosGeo.map(p => ({ type: 'Feature', properties: { act: p.nombre === actPot }, geometry: { type: 'Polygon', coordinates: anillo(p.poly) } })) });
+  const zonas = [], caminos = [];
   (datosCampo.zonas || []).forEach(z => {
     try {
-      if (z.tipo === 'camino') L.polyline(z.linea, { color: '#E5E7EB', weight: 3, dashArray: '8 6', interactive: false }).addTo(capaCampo);
-      else if (z.tipo === 'circulo') L.circle([z.centro.lat, z.centro.lng], { radius: z.radio, color: '#60A5FA', weight: 2, fillOpacity: 0.1, dashArray: '6 4', interactive: false }).addTo(capaCampo);
-      else L.polygon(z.poligono, { color: z.tipo === 'carga' ? '#14B8A6' : '#60A5FA', weight: 2, fillOpacity: 0.1, dashArray: '6 4', interactive: false }).addTo(capaCampo);
+      if (z.tipo === 'camino') caminos.push({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: normPoly(z.linea).map(aLngLat) } });
+      else if (z.tipo === 'circulo') zonas.push({ type: 'Feature', properties: { col: '#60A5FA' }, geometry: { type: 'Polygon', coordinates: [circuloGeo(Number(z.centro.lat), Number(z.centro.lng), Number(z.radio))] } });
+      else zonas.push({ type: 'Feature', properties: { col: z.tipo === 'carga' ? '#14B8A6' : '#60A5FA' }, geometry: { type: 'Polygon', coordinates: anillo(normPoly(z.poligono)) } });
     } catch (e) {}
   });
-  if (bounds.length && !ultimaPos) mapa.fitBounds(bounds);
+  setFuente('zonas', { type: 'FeatureCollection', features: zonas });
+  setFuente('caminos', { type: 'FeatureCollection', features: caminos });
+  const todos = potrerosGeo.flatMap(p => p.poly);
+  if (todos.length && !ultimaPos) {
+    const lats = todos.map(c => c[0]), lngs = todos.map(c => c[1]);
+    encuadrar([[Math.min(...lngs), Math.min(...lats)], [Math.max(...lngs), Math.max(...lats)]]);
+  }
 }
 
-// Ancho real en metros → grosor de línea en píxeles según el zoom
-function pxPorMetros(m, lat) {
-  const mpp = 156543.03392 * Math.cos(lat * Math.PI / 180) / Math.pow(2, mapa.getZoom());
-  return Math.max(2, m / mpp);
-}
 function distM(a, b) {
   const R = 6371000, rad = x => x * Math.PI / 180;
   const dLat = rad(b[0] - a[0]), dLng = rad(b[1] - a[1]);
@@ -287,7 +418,7 @@ function distM(a, b) {
 // Lo aplicado de la aplicación activa (todos sus días)
 let tramosAplicados = [], tramoActual = null, ultimoAplicado = null, kmAplicacion = 0;
 function agregarAplicado(p) {
-  const ll = [p.lat, p.lng];
+  const ll = [p.lat, p.lng, p.t];
   const cont = ultimoAplicado && (p.t - ultimoAplicado.t) < 30000 && distM([ultimoAplicado.lat, ultimoAplicado.lng], ll) < 60;
   if (!tramoActual || !cont) { tramoActual = []; tramosAplicados.push(tramoActual); }
   if (tramoActual.length && cont) kmAplicacion += distM(tramoActual[tramoActual.length - 1], ll) / 1000;
@@ -295,17 +426,209 @@ function agregarAplicado(p) {
   ultimoAplicado = p;
 }
 let trazosOtros = [], kmOtros = 0, equiposOtros = [];
-function redibujarAplicado() {
-  capaAplicado.clearLayers(); capaOtros.clearLayers();
-  const w = pxPorMetros(anchoActual(), mapa.getCenter().lat);
-  trazosOtros.forEach(tr => {
-    if (tr.length >= 2) L.polyline(tr, { color: '#22D3EE', weight: w, opacity: 0.4, lineCap: 'butt', lineJoin: 'round', interactive: false }).addTo(capaOtros);
-  });
-  tramosAplicados.forEach(tr => {
-    if (tr.length >= 2) L.polyline(tr, { color: '#22C55E', weight: w, opacity: 0.45, lineCap: 'butt', lineJoin: 'round', interactive: false }).addTo(capaAplicado);
-  });
+// ── Hileras, lo aplicado y lo repetido ───────────────────────────
+// En frutales (potrero con cultivo) el tractor pasa por entrecalles paralelas separadas
+// por el ancho del cultivo. La app estima la dirección y la posición de las entrecalles
+// con las primeras pasadas rectas (o usa las ya guardadas para ese potrero) y dibuja
+// cada pasada derecha sobre su entrecalle: así el error del GPS del celular (±3–5 m)
+// no ensucia el mapa. Lo que se vuelve a pasar por una entrecalle ya aplicada se pinta rojo.
+let hileras = ls.get('tractor_hileras', {});          // { potrero: { az, off, sp, lat0, lng0, m, fija, ts } }
+let repetidoM = 0, repitiendoAhora = false, avisoRepetir = 0;
+const MIN_M_HILERAS = 300;                            // metros rectos para dejar fija la estimación
+function proyector(g) {
+  const kx = 111320 * Math.cos(g.lat0 * Math.PI / 180), ky = 110540, az = g.az * Math.PI / 180;
+  const ux = Math.sin(az), uy = Math.cos(az), nx = Math.cos(az), ny = -Math.sin(az);
+  return {
+    sd(lat, lng) { const x = (lng - g.lng0) * kx, y = (lat - g.lat0) * ky; return [x * ux + y * uy, x * nx + y * ny]; },
+    ll(sv, d) { const x = sv * ux + d * nx, y = sv * uy + d * ny; return [g.lat0 + y / ky, g.lng0 + x / kx]; }
+  };
 }
-mapa.on('zoomend', redibujarAplicado);
+const esFrutal = nombre => { const p = (datosCampo && datosCampo.potreros || []).find(x => x.nombre === nombre); return !!(p && p.cultivo); };
+// Dirección de avance de cada punto (con los vecinos del mismo tramo, a ≥ 6 m)
+function direcciones(tr) {
+  const out = [];
+  for (let i = 0; i < tr.length; i++) {
+    let a = i, b = i;
+    while (a > 0 && distM(tr[a], tr[i]) < 6) a--;
+    while (b < tr.length - 1 && distM(tr[b], tr[i]) < 6) b++;
+    out.push(a === b || distM(tr[a], tr[b]) < 6 ? null : rumboEntre(tr[a], tr[b]));
+  }
+  return out;
+}
+const difAxial = (a, b) => { const d = Math.abs(((a - b) % 180 + 180) % 180); return Math.min(d, 180 - d); };
+// Estima la grilla de entrecalles con los tramos aplicados en el potrero
+function estimarHileras(potrero, tramos, sp) {
+  const pg = potrerosGeo.find(x => x.nombre === potrero); if (!pg) return null;
+  const segs = [];
+  tramos.forEach(tr => {
+    for (let i = 0; i + 1 < tr.length; i++) {
+      let j = i + 1; while (j < tr.length - 1 && distM(tr[i], tr[j]) < 8) j++;
+      const L = distM(tr[i], tr[j]); if (L >= 6 && L < 40) segs.push({ az: rumboEntre(tr[i], tr[j]), L, a: tr[i], b: tr[j] });
+    }
+  });
+  if (!segs.length) return null;
+  const media = lista => { let c = 0, s2 = 0; lista.forEach(x => { c += x.L * Math.cos(2 * x.az * Math.PI / 180); s2 += x.L * Math.sin(2 * x.az * Math.PI / 180); }); return ((Math.atan2(s2, c) * 90 / Math.PI) + 360) % 180; };
+  let az = media(segs);
+  let rectos = segs.filter(x => difAxial(x.az, az) < 20);
+  if (rectos.length < 3) return null;
+  az = media(rectos); rectos = segs.filter(x => difAxial(x.az, az) < 15);
+  const m = rectos.reduce((t, x) => t + x.L, 0);
+  if (m < 50) return null;                              // muy poco para estimar
+  const g = { az: +az.toFixed(2), off: 0, sp, lat0: pg.poly[0][0], lng0: pg.poly[0][1] };
+  const pr = proyector(g);
+  let c = 0, s2 = 0;
+  tramos.forEach(tr => { const dirs = direcciones(tr); tr.forEach((q, i) => { if (dirs[i] != null && difAxial(dirs[i], az) < 15) { const f = 2 * Math.PI * pr.sd(q[0], q[1])[1] / sp; c += Math.cos(f); s2 += Math.sin(f); } }); });
+  g.off = +((Math.atan2(s2, c) / (2 * Math.PI)) * sp).toFixed(2);
+  g.m = Math.round(m); g.fija = m >= MIN_M_HILERAS; g.ts = Date.now();
+  return g;
+}
+function guardarHileras(potrero, g) {
+  hileras[potrero] = g; ls.set('tractor_hileras', hileras);
+  if (g.fija && navigator.onLine) setDoc(doc(db, 'config', 'hileras'), { [potrero]: g }, { merge: true }).catch(e => console.warn('hileras', e));
+}
+window.rehacerHileras = function () {
+  const a = activa(); if (!a) return;
+  if (!confirm(`¿Volver a estimar las hileras de ${a.potrero}? Se calculan de nuevo con las próximas pasadas rectas.`)) return;
+  delete hileras[a.potrero]; ls.set('tractor_hileras', hileras);
+  if (navigator.onLine) setDoc(doc(db, 'config', 'hileras'), { [a.potrero]: null }, { merge: true }).catch(() => {});
+  cerrarCapa('capa-ajustes'); redibujarAplicado();
+};
+// Une intervalos [a,b] y devuelve las partes de [a,b] que ya estaban cubiertas
+function restar(cub, a, b) {
+  const nuevas = [], rep = [];
+  let x = a;
+  cub.filter(c => c[1] > a && c[0] < b).sort((p, q) => p[0] - q[0]).forEach(c => {
+    if (c[0] > x) nuevas.push([x, Math.min(c[0], b)]);
+    const r0 = Math.max(c[0], x), r1 = Math.min(c[1], b);
+    if (r1 > r0) rep.push([r0, r1]);
+    x = Math.max(x, c[1]);
+  });
+  if (x < b) nuevas.push([x, b]);
+  return { nuevas, rep };
+}
+function unir(cub, a, b) {
+  cub.push([a, b]); cub.sort((p, q) => p[0] - q[0]);
+  const out = [];
+  cub.forEach(c => { if (out.length && c[0] <= out[out.length - 1][1]) out[out.length - 1][1] = Math.max(out[out.length - 1][1], c[1]); else out.push([...c]); });
+  cub.length = 0; out.forEach(c => cub.push(c));
+}
+let redibujoT = null;
+function redibujarAplicado() { if (!redibujoT) redibujoT = setTimeout(() => { redibujoT = null; calcularCobertura(); }, 300); }
+function calcularCobertura() {
+  const a = activa(), w = anchoActual();
+  const linea = (coords, props) => ({ type: 'Feature', properties: { w, k: kLat(coords[0][1]), ...props }, geometry: { type: 'LineString', coordinates: coords } });
+  const verde = [], rojo = [], cian = [], guias = [];
+  repetidoM = 0; repitiendoAhora = false;
+  let g = a && esFrutal(a.potrero) ? hileras[a.potrero] : null;
+  if (a && esFrutal(a.potrero) && !(g && g.fija)) {      // estimar (o seguir afinando) las hileras
+    const est = estimarHileras(a.potrero, [...tramosAplicados, ...trazosOtros], w);
+    if (est) { g = est; guardarHileras(a.potrero, est); }
+  }
+  if (g) {
+    const pr = proyector(g), sp = g.sp || w;
+    const kDe = d => Math.round((d - g.off) / sp);
+    const cub = {};                                      // entrecalle k → intervalos ya aplicados
+    // Pasadas sobre entrecalles: puntos alineados con las hileras, agrupados por entrecalle
+    const pasadas = (trs, quien) => {
+      const out = [];
+      trs.forEach(tr => {
+        const dirs = direcciones(tr); let act = null;
+        tr.forEach((q, i) => {
+          const [sv, d] = pr.sd(q[0], q[1]);
+          const alineado = dirs[i] != null && difAxial(dirs[i], g.az) < 25;
+          if (!alineado) { if (act) { out.push(act); act = null; } return; }
+          const k = kDe(d);
+          if (act && act.k !== k && Math.abs(d - (g.off + act.k * sp)) < sp * 0.75) { act.s.push(sv); act.t1 = q[2] || 0; return; } // tolera el error del GPS
+          if (!act || act.k !== k) { if (act) out.push(act); act = { k, s: [], t0: q[2] || 0, t1: q[2] || 0, quien }; }
+          act.s.push(sv); act.t1 = q[2] || 0;
+        });
+        if (act) out.push(act);
+      });
+      return out.filter(x => x.s.length >= 2);
+    };
+    const todas = [...pasadas(trazosOtros, 'otro'), ...pasadas(tramosAplicados, 'yo')].sort((x, y) => x.t0 - y.t0);
+    const ultima = todas.filter(x => x.quien === 'yo').slice(-1)[0];
+    const segLL = (k, s0, s1) => { const d = g.off + k * sp; return [pr.ll(s0, d), pr.ll(s1, d)].map(aLngLat); };
+    todas.forEach(ps => {
+      const a0 = Math.min(...ps.s), a1 = Math.max(...ps.s);
+      const c = cub[ps.k] || (cub[ps.k] = []);
+      const { nuevas, rep } = restar(c, a0, a1);
+      nuevas.forEach(([x0, x1]) => (ps.quien === 'yo' ? verde : cian).push(linea(segLL(ps.k, x0, x1), {})));
+      rep.filter(([x0, x1]) => x1 - x0 >= 4).forEach(([x0, x1]) => {
+        (ps.quien === 'yo' ? rojo : cian).push(linea(segLL(ps.k, x0, x1), {}));
+        if (ps.quien === 'yo') { repetidoM += x1 - x0; if (ps === ultima && ultimaPos && Date.now() - ps.t1 < 20000) { const sv = pr.sd(ultimaPos.lat, ultimaPos.lng)[0]; if (sv >= x0 - 8 && sv <= x1 + 8) repitiendoAhora = true; } }
+      });
+      unir(c, a0, a1);
+    });
+    // Cabeceras y vueltas (no alineadas): se dibujan tal cual
+    const crudos = (trs, destino) => trs.forEach(tr => {
+      const dirs = direcciones(tr); let seg = [];
+      tr.forEach((q, i) => { const al = dirs[i] != null && difAxial(dirs[i], g.az) < 25; if (!al) seg.push(aLngLat(q)); else { if (seg.length >= 2) destino.push(linea(seg, {})); seg = []; } });
+      if (seg.length >= 2) destino.push(linea(seg, {}));
+    });
+    crudos(tramosAplicados, verde); crudos(trazosOtros, cian);
+    // Guías: entrecalles del potrero (las sin aplicar en blanco; la más cercana sin aplicar en amarillo)
+    const pg = potrerosGeo.find(x => x.nombre === a.potrero);
+    if (pg) {
+      const sdp = pg.poly.map(c => pr.sd(c[0], c[1]));
+      const ds = sdp.map(c => c[1]), kmin = Math.ceil((Math.min(...ds) - g.off) / sp), kmax = Math.floor((Math.max(...ds) - g.off) / sp);
+      let kAqui = null, sAqui = null;
+      if (ultimaPos) { const [sv, d] = pr.sd(ultimaPos.lat, ultimaPos.lng); kAqui = kDe(d); sAqui = sv; }
+      let mejor = null;
+      for (let k = kmin; k <= kmax && k - kmin < 2000; k++) {
+        const d = g.off + k * sp, xs = [];
+        for (let i = 0, j = sdp.length - 1; i < sdp.length; j = i++) {
+          const [s1, d1] = sdp[j], [s2, d2] = sdp[i];
+          if ((d1 > d) !== (d2 > d)) xs.push(s1 + (d - d1) * (s2 - s1) / (d2 - d1));
+        }
+        xs.sort((p, q) => p - q);
+        for (let i = 0; i + 1 < xs.length; i += 2) {
+          const { nuevas } = restar(cub[k] || [], xs[i], xs[i + 1]);
+          nuevas.filter(([x0, x1]) => x1 - x0 >= 5).forEach(([x0, x1]) => {
+            guias.push({ type: 'Feature', properties: { sig: false, k }, geometry: { type: 'LineString', coordinates: segLL(k, x0, x1) } });
+            if (kAqui != null && k !== kAqui && sAqui >= x0 - 40 && sAqui <= x1 + 40 && Math.abs(k - kAqui) <= 6 && (!mejor || Math.abs(k - kAqui) < Math.abs(mejor - kAqui))) mejor = k;
+          });
+        }
+      }
+      if (mejor != null) guias.forEach(f => { if (f.properties.k === mejor) f.properties.sig = true; });
+    }
+  } else {
+    // Sin hileras (potrero sin cultivo, o todavía sin estimar): se dibuja tal cual y se marca
+    // como repetido lo que pasa a menos de medio ancho de algo aplicado hace más de 1 minuto
+    const celda = Math.max(w, 3), idx = new Map();
+    const clave = (x, y) => Math.floor(x / celda) + ':' + Math.floor(y / celda);
+    const lat0 = ultimaPos ? ultimaPos.lat : -36.8, kx = 111320 * Math.cos(lat0 * Math.PI / 180), ky = 110540;
+    const xy = q => [q[1] * kx, q[0] * ky];
+    trazosOtros.forEach(tr => { tr.forEach(q => { const [x, y] = xy(q), c = clave(x, y); if (!idx.has(c)) idx.set(c, []); idx.get(c).push({ x, y, t: 0 }); }); if (tr.length >= 2) cian.push(linea(tr.map(aLngLat), {})); });
+    tramosAplicados.forEach(tr => {
+      let segV = [], segR = [], prev = null;
+      tr.forEach(q => {
+        const [x, y] = xy(q), t = q[2] || 0;
+        let r = false;
+        for (let dx = -1; dx <= 1 && !r; dx++) for (let dy = -1; dy <= 1 && !r; dy++) {
+          const l = idx.get((Math.floor(x / celda) + dx) + ':' + (Math.floor(y / celda) + dy)) || [];
+          r = l.some(o => t - o.t > 60000 && Math.hypot(o.x - x, o.y - y) < w * 0.5);
+        }
+        const ll = aLngLat(q);
+        if (r) { segR.push(...(segR.length || !prev ? [] : [prev]), ll); if (prev && segR.length >= 2) repetidoM += distM([q[0], q[1]], [prev[1], prev[0]]); }
+        else if (segR.length) { if (segR.length >= 2) rojo.push(linea(segR, {})); segR = []; }
+        segV.push(ll); prev = ll;
+        const c = clave(x, y); if (!idx.has(c)) idx.set(c, []); idx.get(c).push({ x, y, t });
+      });
+      if (segV.length >= 2) verde.push(linea(segV, {}));
+      if (segR.length >= 2) { rojo.push(linea(segR, {})); const u = tr[tr.length - 1]; if (Date.now() - (u[2] || 0) < 20000) repitiendoAhora = true; }
+    });
+  }
+  setFuente('otros', { type: 'FeatureCollection', features: cian });
+  setFuente('aplicado', { type: 'FeatureCollection', features: verde });
+  setFuente('repetido', { type: 'FeatureCollection', features: rojo });
+  setFuente('guias', { type: 'FeatureCollection', features: guias });
+  if (repitiendoAhora && aplicando && Date.now() - avisoRepetir > 30000) {
+    avisoRepetir = Date.now(); mostrarAviso('🔴 Estás repitiendo una hilera ya aplicada.');
+    if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+  }
+  pintarAplicacion();
+}
 async function cargarAplicadoActivo() {
   tramosAplicados = []; tramoActual = null; ultimoAplicado = null; kmAplicacion = 0;
   const a = activa();
@@ -318,7 +641,13 @@ async function cargarAplicadoActivo() {
 }
 
 // Recorrido del día (línea fina)
-let recorridoLinea = L.polyline([], { color: '#FFFFFF', weight: 1.5, opacity: 0.6, interactive: false }).addTo(capaRecorrido);
+let recorridoCoords = [];
+const recorridoLinea = { addLatLng(ll) { recorridoCoords.push(aLngLat(ll)); pintarRecorrido(); } };
+let recorridoT = null;
+function pintarRecorrido() { // como mucho una vez por segundo
+  if (recorridoT) return;
+  recorridoT = setTimeout(() => { recorridoT = null; setFuente('recorrido', { type: 'FeatureCollection', features: recorridoCoords.length >= 2 ? [{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: recorridoCoords } }] : [] }); }, 1000);
+}
 
 // ── Línea de la aplicación actual y estadísticas ─────────────────
 const fechaCorta = t => new Date(t).toLocaleDateString('es-CL', { day: '2-digit', month: '2-digit' });
@@ -337,7 +666,8 @@ function pintarAplicacion() {
     info.innerHTML = 'Sin potrero iniciado<div class="sub">Toca "Iniciar potrero" antes de aplicar</div>';
     btn.textContent = '🌾 Iniciar potrero';
   }
-  document.getElementById('stats').textContent = `Ancho ${String(ancho).replace('.', ',')} m${a && a.ancho ? ' (según cultivo)' : ''}${a ? ' · 🟩 este tractor · 🟦 otros tractores' : ''}`;
+  const g = a ? hileras[a.potrero] : null;
+  document.getElementById('stats').innerHTML = `Ancho ${String(ancho).replace('.', ',')} m${a && a.ancho ? ' (según cultivo)' : ''}${a ? ' · 🟩 aplicado · 🟦 otros' : ''}${repetidoM >= 5 ? ` · <span style="color:var(--rojo);font-weight:700">🟥 ${Math.round(repetidoM)} m repetidos</span>` : ''}${a && esFrutal(a.potrero) ? (g ? (g.fija ? ' · hileras ✓' : ' · hileras estimándose…') : ' · hileras: haz una pasada recta') : ''}`;
   a && (a.km = +kmAplicacion.toFixed(2));
 }
 
@@ -443,12 +773,19 @@ function onPos(pos) {
   chip.textContent = `📍 ±${p.acc} m`;
   chip.className = 'chip ' + (p.acc <= 8 ? 'ok' : p.acc <= 20 ? 'med' : 'mal');
   const ll = [p.lat, p.lng];
+  const habiaRumbo = rumbo != null;
+  if (p.acc <= MAX_PREC) { actualizarRumbo(p); histRumbo.push({ t: p.t, lat: p.lat, lng: p.lng, r: rumbo }); if (histRumbo.length > 30) histRumbo.shift(); }
   if (!marcador) {
-    marcador = L.marker(ll, { icon: L.divIcon({ className: '', html: '<div class="pos-icono"></div>', iconSize: [22, 22], iconAnchor: [11, 11] }), interactive: false }).addTo(mapa);
-    circuloPrec = L.circle(ll, { radius: p.acc, color: '#60A5FA', weight: 1, fillOpacity: 0.08, interactive: false }).addTo(mapa);
-    mapa.setView(ll, 18);
-  } else { marcador.setLatLng(ll); circuloPrec.setLatLng(ll).setRadius(p.acc); }
-  if (seguir) mapa.panTo(ll, { animate: true });
+    marcador = new maplibregl.Marker({ element: elMarcador, rotationAlignment: 'map', pitchAlignment: 'map' }).setLngLat([p.lng, p.lat]).addTo(mapa);
+    pintarMarcador();
+    mapa.jumpTo({ center: [p.lng, p.lat], zoom: 18 });
+    moverCamara(true);
+  } else {
+    marcador.setLngLat([p.lng, p.lat]);
+    if (habiaRumbo !== (rumbo != null)) pintarMarcador(); else marcador.setRotation(rumbo || 0);
+    moverCamara(false);
+  }
+  setFuente('precision', { type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [circuloGeo(p.lat, p.lng, Math.max(1, p.acc), 24)] } }] });
   if (p.acc > MAX_PREC) return; // punto demasiado impreciso: se muestra pero no se guarda
   p.pot = potreroEn(p.lat, p.lng);
   revisarEntradaPotrero(p);
@@ -461,6 +798,7 @@ function onPos(pos) {
   recorridoLinea.addLatLng(ll);
   if (p.a) { agregarAplicado(p); redibujarAplicado(); pintarAplicacion(); guardarAplicaciones(); }
 }
+window.__simPos = onPos; // usado solo en pruebas
 function onPosError(err) {
   const chip = document.getElementById('b-gps');
   chip.className = 'chip mal';
@@ -598,7 +936,7 @@ async function actualizarDatosCampo(manual) {
   if (!navigator.onLine) { if (manual) est.textContent = 'Sin internet: se usan los potreros guardados en el celular.'; return; }
   try {
     if (manual) est.textContent = 'Descargando potreros…';
-    const [sd, sz] = await conTimeout(Promise.all([getDoc(doc(db, 'config', 'datos')), getDoc(doc(db, 'config', 'zonas_sin_cultivo'))]), 20000);
+    const [sd, sz, sh] = await conTimeout(Promise.all([getDoc(doc(db, 'config', 'datos')), getDoc(doc(db, 'config', 'zonas_sin_cultivo')), getDoc(doc(db, 'config', 'hileras'))]), 20000);
     const d = sd.exists() ? sd.data() : {};
     datosCampo = {
       equipos: d.equipos || [],
@@ -610,6 +948,7 @@ async function actualizarDatosCampo(manual) {
       ts: Date.now()
     };
     ls.set('tractor_datos_campo', datosCampo);
+    if (sh.exists()) { const hr = sh.data(); Object.keys(hr).forEach(k => { if (hr[k] && hr[k].fija) hileras[k] = hr[k]; else if (hr[k] === null && hileras[k] && hileras[k].fija) delete hileras[k]; }); ls.set('tractor_hileras', hileras); }
     if (sesion && !tienePermiso(sesion)) quitarSesion('Ya no tienes acceso al modo tractor. Pídeselo al administrador.');
     dibujarCampo(); if (document.getElementById('capa-ajustes').style.display === 'flex') llenarEquipos(); mostrarEstadoDatos(); pintarAplicacion();
     if (manual) est.textContent += ' ✓ Actualizado.';
@@ -739,7 +1078,12 @@ window.toggleAplicar = function () {
   if (aplicando) { aplicando = false; ls.set('tractor_aplicando', false); pintarBotonAplicar(); if (navigator.vibrate) navigator.vibrate(80); }
   else empezarAplicar();
 };
-window.centrar = function () { seguir = true; if (ultimaPos) mapa.setView([ultimaPos.lat, ultimaPos.lng], Math.max(mapa.getZoom(), 17)); };
+window.centrar = function () {
+  if (!ultimaPos) return;
+  seguir = vista.modo !== 'fijo';
+  if (mapa.getZoom() < 17) mapa.setZoom(17);
+  if (seguir) moverCamara(false); else mapa.easeTo({ center: [ultimaPos.lng, ultimaPos.lat], duration: 600 });
+};
 window.abrirAjustes = function () {
   if (!sesion) { document.getElementById('capa-login').style.display = 'flex'; return; }
   eqElegido = ajustes.equipo || eqElegido; llenarEquipos(); mostrarEstadoDatos();
