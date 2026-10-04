@@ -4724,6 +4724,20 @@ window.agregarTrabajadorAsistencia = async function() {
   } catch(e) { toast('Error: ' + e.message, false); }
 }
 
+window.copiarTrabajadoresDesdeCombustible = async function() {
+  const origen = (config.operadores || []).filter(n => n && !/^otros/i.test(n.trim()));
+  const nuevos = origen.filter(n => !trabajadoresAsistenciaConfig.includes(n));
+  if (!nuevos.length) { toast('Ya están todos copiados (' + origen.length + ')', true); return; }
+  if (!confirm('Se agregarán ' + nuevos.length + ' trabajadores con el mismo nombre que en combustible:\n\n' + nuevos.join(', ') + '\n\nLos que ya existen no se duplican. ¿Continuar?')) return;
+  trabajadoresAsistenciaConfig.push(...nuevos);
+  config.trabajadoresAsistencia = trabajadoresAsistenciaConfig;
+  try {
+    await saveConfig();
+    renderListaTrabajadoresAsistencia();
+    toast('✓ ' + nuevos.length + ' trabajadores copiados', true);
+  } catch(e) { toast('Error: ' + e.message, false); }
+}
+
 window.eliminarTrabajadorAsistencia = async function(idx) {
   if (!confirm('¿Eliminar este trabajador de la lista? (los registros históricos de asistencia no se borran)')) return;
   trabajadoresAsistenciaConfig.splice(idx, 1);
@@ -10024,6 +10038,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
           <input type="text" id="nuevo-trabajador-asistencia" placeholder="Nombre del trabajador">
           <button class="btn-add" onclick="agregarTrabajadorAsistencia()">+ Agregar</button>
         </div>
+        <button class="btn" style="margin-top:8px;width:100%" onclick="copiarTrabajadoresDesdeCombustible()">📋 Copiar trabajadores del listado de combustible</button>
         <div class="config-lista" id="lista-trabajadores-asistencia" style="margin-top:10px"></div>
       </div>
 
