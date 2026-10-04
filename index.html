@@ -1653,7 +1653,7 @@ function construirAperosDesdeHardcode() {
 const DEFAULT_CONFIG = {
   equipos: ['JD 8330','JD 7205J','JD 6170J','JD 6910','JD 5082E','JD 3350 T','JD 3350','JD 2850','JD 5600','JD 5090','JD 5076','Kubota 2320','Clinton','Bobcat','Miniexcavadora LongYan','Excavadora','Toyota Hilux','Ford Ranger','Toyota JCAZ','Generador Mitsubishi','Generador John Deere','Estanque amarillo','Otro (especificar)'],
   operadores: ['José Jarpa','Víctor Rodríguez','Cristian Cádiz','Rafael Riquelme','Patricio Cádiz','Edgardo Ruíz','Matías Jarpa','Israel','Luis Alberto','Eduardo Faundez','JC Allende','Camila Faundez','Juan Uribe','JCAZ','Otros (especificar)'],
-  centros: ['Trigo','Maíz','Semillero Canola','Arveja','Achicoria','Remolacha','Avellanos','Mantención','Otros (especificar)']
+  centros: ['Trigo','Maíz','Semillero Canola','Arveja','Achicoria','Avellanos','Mantención','Otros (especificar)']
 };
 
 let currentUser = null;
@@ -1787,11 +1787,9 @@ async function loadConfig() {
     const snap = await getDoc(doc(db, 'config', 'datos'));
     if (snap.exists()) {
       config = snap.data();
-      // Asegurar que Remolacha esté en la lista (migración automática)
-      if (!config.centros.includes('Remolacha')) {
-        const idx = config.centros.indexOf('Avellanos');
-        if (idx >= 0) config.centros.splice(idx, 0, 'Remolacha');
-        else config.centros.push('Remolacha');
+      // Remolacha ya no se cultiva en Chile: se quita de la lista (los registros históricos no se tocan)
+      if (config.centros.includes('Remolacha')) {
+        config.centros = config.centros.filter(c => c !== 'Remolacha');
         await setDoc(doc(db, 'config', 'datos'), config);
       }
       // Asegurar que JCAZ esté en la lista de operadores (migración automática)
@@ -4671,16 +4669,17 @@ window.iniciarCompletarAsistencia = async function(fechaForzada) {
   const comb = {};
   try {
     const snap = await getDocs(query(collection(db, 'registros'), where('fecha', '==', fecha)));
-    const por = {};
+    const por = {}, eqs = {};
     snap.docs.map(d => d.data()).forEach(r => {
       if (!r.operador) return;
       const dist = (r.distribucion && r.distribucion.length) ? r.distribucion : (r.centro ? [{ centro: r.centro, litros: r.litros || 0 }] : []);
       dist.forEach(x => { por[r.operador] = por[r.operador] || {}; por[r.operador][x.centro] = (por[r.operador][x.centro] || 0) + (x.litros || 0); });
+      if (r.equipo) { eqs[r.operador] = eqs[r.operador] || new Set(); eqs[r.operador].add(r.equipo); }
     });
     Object.entries(por).forEach(([op, cs]) => {
       const tot = Object.values(cs).reduce((a, b) => a + b, 0);
       const lista = Object.entries(cs).map(([centro, l]) => ({ centro, pct: tot > 0 ? Math.round(l / tot * 100) : 0 })).sort((a, b) => b.pct - a.pct);
-      comb[op] = { lista, texto: lista.map(x => x.centro + ' ' + x.pct + '%').join(' · ') };
+      comb[op] = { lista, equipos: [...(eqs[op] || [])], texto: lista.map(x => x.centro + ' ' + x.pct + '%').join(' · ') };
     });
   } catch (e) { console.warn('wizard combustible', e); }
   const yaTienen = new Set(asistenciaRegistros.filter(r => r.fecha === fecha).map(r => r.trabajador));
@@ -4696,45 +4695,74 @@ function wzCargarTrabajador() {
   const prev = asistenciaRegistros.filter(r => r.trabajador === trab).sort((a, b) => (b.fecha || '').localeCompare(a.fecha || '') || (b.ts || 0) - (a.ts || 0));
   const ultLabor = prev.find(r => r.labor);
   const ultCentro = prev.find(r => r.centro_costo && r.centro_origen !== 'combustible');
+  const ultMaq = prev.find(r => r.maquinaria);
   const c = WZ.comb[trab];
+  const maqComb = c && c.equipos && c.equipos.length ? c.equipos.join(' + ') : '';
   WZ.cur = {
     trab,
-    labor: ultLabor ? ultLabor.labor : '', laborDe: ultLabor ? ultLabor.fecha : '', laborCambiar: !ultLabor,
     centroModo: c ? 'comb' : (ultCentro ? 'prev' : 'manual'),
     centro: ultCentro ? ultCentro.centro_costo : '',
-    centroCambiar: !c && !ultCentro
+    centroCambiar: !c && !ultCentro,
+    labor: ultLabor ? ultLabor.labor : '', laborDe: ultLabor ? ultLabor.fecha : '', laborCambiar: !ultLabor,
+    maq: maqComb || (ultMaq ? ultMaq.maquinaria : ''), maqModo: maqComb ? 'comb' : (ultMaq ? 'prev' : ''), maqCambiar: false
   };
   wzRender();
 }
+
+const SIN_COLOR_CENTRO = /energ|desplaz/i; // no tienen potrero: sin color
+const puntoCentro = n => SIN_COLOR_CENTRO.test(n || '') ? '' : `<span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:${colorParaCultivo(n)};border:1px solid rgba(0,0,0,.25);margin-right:6px;vertical-align:-1px"></span>`;
+const puntosTexto = txt => String(txt || '').split(' · ').map(t => puntoCentro(t.replace(/\s+\d+%$/, '')) + escA(t)).join(' · ');
+const WZ_BTN = 'display:block;width:100%;padding:11px;margin:6px 0;border-radius:8px;border:1px solid #D1D5DB;background:#fff;font-size:14px;cursor:pointer';
+const WZ_SMALL = 'padding:8px 12px;border-radius:8px;border:1px solid #D1D5DB;background:#fff;font-size:13px;cursor:pointer;margin:3px 4px 3px 0';
+const wzUnicos = arr => [...new Set(arr.filter(x => typeof x === 'string' && x.trim()))];
 
 window.wzRender = function() {
   const w = document.getElementById('asistencia-wizard');
   if (!WZ || !w) return;
   const cur = WZ.cur, c = WZ.comb[cur.trab];
-  const btn = 'padding:8px 12px;border-radius:8px;border:1px solid #D1D5DB;background:#fff;font-size:13px;cursor:pointer;margin:3px 4px 3px 0';
   const hr = document.getElementById('wiz-hreg')?.value ?? '', ht = document.getElementById('wiz-htrab')?.value ?? '';
-  // labor
+  // ── 1) CENTRO DE COSTO ──
+  let centroHtml;
+  if (cur.centroModo === 'comb' && c && !cur.centroCambiar) {
+    centroHtml = `<div style="padding:10px;background:#EFF6FF;border:1px solid #93C5FD;border-radius:8px">⛽ <b>${puntosTexto(c.texto)}</b> <span style="font-size:12px;color:#6B7280">(del combustible)</span> <button type="button" style="${WZ_SMALL}" onclick="WZ.cur.centroCambiar=true;wzRender()">Cambiar</button></div>`;
+  } else if (cur.centroModo === 'prev' && !cur.centroCambiar) {
+    centroHtml = `<div style="padding:10px;background:#ECFDF5;border:1px solid #6EE7B7;border-radius:8px">✓ <b>${puntosTexto(cur.centro)}</b> <span style="font-size:12px;color:#6B7280">(el último que usó)</span> <button type="button" style="${WZ_SMALL}" onclick="WZ.cur.centroCambiar=true;wzRender()">Cambiar</button></div>`;
+  } else if (cur.centroModo === 'manual' && cur.centro && !cur.centroCambiar) {
+    centroHtml = `<div style="padding:10px;background:#ECFDF5;border:1px solid #6EE7B7;border-radius:8px">✓ <b>${puntosTexto(cur.centro)}</b> <button type="button" style="${WZ_SMALL}" onclick="WZ.cur.centroCambiar=true;wzRender()">Cambiar</button></div>`;
+  } else {
+    WZ.optsC = (config.centros || []).filter(x => !/^otros/i.test(x));
+    centroHtml = (c ? `<button type="button" style="${WZ_BTN};background:#EFF6FF;border-color:#93C5FD" onclick="wzCentroComb()">⛽ ${puntosTexto(c.texto)}</button>` : '') +
+      WZ.optsC.map((x, i) => `<button type="button" style="${WZ_BTN}" onclick="wzCentro(${i})" ><span style="display:flex;align-items:center;justify-content:center">${puntoCentro(x)}${escA(x)}</span></button>`).join('');
+  }
+  // ── 2) LABOR ──
   let laborHtml;
   if (!cur.laborCambiar && cur.labor) {
-    laborHtml = `<div style="padding:10px;background:#ECFDF5;border:1px solid #6EE7B7;border-radius:8px">✓ <b>${escA(cur.labor)}</b> <span style="font-size:12px;color:#6B7280">(${cur.laborDe ? 'última: ' + cur.laborDe : ''})</span> <button type="button" style="${btn}" onclick="WZ.cur.laborCambiar=true;wzRender()">Cambiar</button></div>`;
+    laborHtml = `<div style="padding:10px;background:#ECFDF5;border:1px solid #6EE7B7;border-radius:8px">✓ <b>${escA(cur.labor)}</b> <span style="font-size:12px;color:#6B7280">${cur.laborDe ? '(última: ' + cur.laborDe + ')' : ''}</span> <button type="button" style="${WZ_SMALL}" onclick="WZ.cur.laborCambiar=true;wzRender()">Cambiar</button></div>`;
   } else {
     const comunes = laboresComunesDe(cur.trab);
-    const base = TIPOS_LABOR_CAMPO.filter(t => !t.oculto && t.id !== 'otro').map(t => t.label.replace(/^[^\p{L}]+/u, '')).concat(tiposLaborCampoConfig.map(t => t.label || t.nombre || t).filter(x => typeof x === 'string'));
-    WZ.opts = comunes.length ? comunes.map(x => x[0]) : base;
-    laborHtml = `<div style="font-size:12px;color:#6B7280">${comunes.length ? 'Más comunes de ' + escA(cur.trab) : 'Sugeridas'}</div>
-      ${WZ.opts.map((l, i) => `<button type="button" style="${btn}" onclick="wzLabor(${i})">${escA(l)}${comunes[i] ? ' <span style="color:#9CA3AF">×' + comunes[i][1] + '</span>' : ''}</button>`).join('')}
-      <div style="display:flex;gap:6px;margin-top:6px"><input type="text" id="wiz-labor-otra" placeholder="Otra labor..." style="flex:1"><button type="button" style="${btn}" onclick="wzLabor(-1)">OK</button></div>`;
+    const base = TIPOS_LABOR_CAMPO.filter(t => !t.oculto && t.id !== 'otro').map(t => t.label.replace(/^[^\p{L}]+/u, '')).concat(tiposLaborCampoConfig.map(t => (t && (t.label || t.nombre)) || t));
+    WZ.opts = wzUnicos([...comunes.map(x => x[0]), ...base]);
+    laborHtml = (comunes.length ? `<div style="font-size:12px;color:#6B7280">Primero las más comunes de ${escA(cur.trab)}</div>` : '') +
+      WZ.opts.map((l, i) => { const k = comunes.find(x => x[0] === l); return `<button type="button" style="${WZ_BTN}" onclick="wzLabor(${i})">${escA(l)}${k ? ' <span style="color:#9CA3AF">×' + k[1] + '</span>' : ''}</button>`; }).join('') +
+      `<div style="display:flex;gap:6px;margin-top:6px"><input type="text" id="wiz-labor-otra" placeholder="Otra labor..." style="flex:1"><button type="button" style="${WZ_SMALL}" onclick="wzLabor(-1)">OK</button></div>`;
   }
-  // centro
-  let centroHtml;
-  if (cur.centroModo === 'comb' && c) {
-    centroHtml = `<div style="padding:10px;background:#EFF6FF;border:1px solid #93C5FD;border-radius:8px">⛽ <b>${escA(c.texto)}</b> <span style="font-size:12px;color:#6B7280">(del combustible)</span> <button type="button" style="${btn}" onclick="WZ.cur.centroModo='manual';WZ.cur.centroCambiar=true;wzRender()">Cambiar</button></div>`;
-  } else if (cur.centroModo === 'prev' && !cur.centroCambiar) {
-    centroHtml = `<div style="padding:10px;background:#ECFDF5;border:1px solid #6EE7B7;border-radius:8px">✓ <b>${escA(cur.centro)}</b> <span style="font-size:12px;color:#6B7280">(el último que usó)</span> <button type="button" style="${btn}" onclick="WZ.cur.centroCambiar=true;wzRender()">Cambiar</button></div>`;
-  } else {
-    centroHtml = `<div class="select-wrapper"><select id="wiz-centro" onchange="WZ.cur.centro=this.value;WZ.cur.centroModo='manual'"><option value="">Seleccionar centro de costo</option>${(config.centros || []).map(x => `<option value="${escA(x)}" ${x === cur.centro ? 'selected' : ''}>${escA(x)}</option>`).join('')}</select></div>`;
+  // ── 3) MAQUINARIA (cuando aplica: no se pregunta en riego) ──
+  const aplicaMaq = !/riego/i.test(cur.labor || '');
+  let maqHtml = '';
+  if (aplicaMaq) {
+    let inner;
+    if (cur.maqCambiar) {
+      const propios = (config.equipoOperador && config.equipoOperador[cur.trab]) || [];
+      WZ.optsM = wzUnicos([...(c && c.equipos ? c.equipos : []), ...propios, ...(config.equipos || [])]);
+      inner = `<button type="button" style="${WZ_BTN}" onclick="wzMaq(-1)">Sin maquinaria</button>` +
+        WZ.optsM.map((x, i) => `<button type="button" style="${WZ_BTN}" onclick="wzMaq(${i})">${escA(x)}</button>`).join('');
+    } else if (cur.maq) {
+      inner = `<div style="padding:10px;background:${cur.maqModo === 'comb' ? '#EFF6FF' : '#ECFDF5'};border:1px solid ${cur.maqModo === 'comb' ? '#93C5FD' : '#6EE7B7'};border-radius:8px">${cur.maqModo === 'comb' ? '⛽' : '✓'} <b>${escA(cur.maq)}</b> <span style="font-size:12px;color:#6B7280">${cur.maqModo === 'comb' ? '(del combustible)' : '(la última que usó)'}</span> <button type="button" style="${WZ_SMALL}" onclick="WZ.cur.maqCambiar=true;wzRender()">Cambiar</button></div>`;
+    } else {
+      inner = `<div style="padding:10px;background:#F9FAFB;border:1px solid #E5E7EB;border-radius:8px;font-size:14px">Sin maquinaria <button type="button" style="${WZ_SMALL}" onclick="WZ.cur.maqCambiar=true;wzRender()">Elegir</button></div>`;
+    }
+    maqHtml = `<div class="field"><label>Maquinaria</label>${inner}</div>`;
   }
-  const falta = WZ.total - WZ.i;
   w.innerHTML = `<div class="panel">
     <div style="font-size:12px;color:#6B7280;margin-bottom:6px">Último día con registro: <b>${WZ.ult ? fechaBonita(WZ.ult) : '—'}</b></div>
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">
@@ -4745,8 +4773,9 @@ window.wzRender = function() {
     </div>
     <div style="height:6px;background:#E5E7EB;border-radius:4px;margin-bottom:14px"><div style="height:6px;width:${Math.round(WZ.i / WZ.total * 100)}%;background:#16A34A;border-radius:4px"></div></div>
     <div style="font-size:22px;font-weight:700;margin-bottom:12px">${escA(cur.trab)}</div>
-    <div class="field"><label>Labor del día</label>${laborHtml}</div>
     <div class="field"><label>Centro de costo</label>${centroHtml}</div>
+    <div class="field"><label>Labor del día</label>${laborHtml}</div>
+    ${maqHtml}
     <div class="grid-2">
       <div class="field"><label>Horas extra según tu registro</label><input type="number" id="wiz-hreg" min="0" step="0.1" inputmode="decimal" placeholder="0" value="${escA(hr)}"></div>
       <div class="field"><label>Según el trabajador (opcional)</label><input type="number" id="wiz-htrab" min="0" step="0.1" inputmode="decimal" placeholder="Pendiente" value="${escA(ht)}"></div>
@@ -4757,19 +4786,26 @@ window.wzRender = function() {
       <button type="button" class="btn" style="flex:1" onclick="wzTerminar()">Terminar</button>
     </div></div>`;
 }
+window.wzCentroComb = function() { WZ.cur.centroModo = 'comb'; WZ.cur.centroCambiar = false; wzRender(); }
+window.wzCentro = function(i) { const v = WZ.optsC[i]; if (!v) return; WZ.cur.centro = v; WZ.cur.centroModo = 'manual'; WZ.cur.centroCambiar = false; wzRender(); }
 window.wzLabor = function(i) {
   const v = i >= 0 ? (WZ.opts[i] || '') : (document.getElementById('wiz-labor-otra')?.value || '').trim();
   if (!v) return;
   WZ.cur.labor = v; WZ.cur.laborDe = ''; WZ.cur.laborCambiar = false; wzRender();
 }
+window.wzMaq = function(i) {
+  WZ.cur.maq = i >= 0 ? (WZ.optsM[i] || '') : ''; WZ.cur.maqModo = 'manual'; WZ.cur.maqCambiar = false; wzRender();
+}
 window.wzGuardar = async function() {
   const cur = WZ.cur, c = WZ.comb[cur.trab];
   const hreg = document.getElementById('wiz-hreg').value, htrab = document.getElementById('wiz-htrab').value;
   const usaComb = cur.centroModo === 'comb' && c;
-  const centro = usaComb ? c.texto : (cur.centro || document.getElementById('wiz-centro')?.value || '');
+  const centro = usaComb ? c.texto : (cur.centro || '');
+  const aplicaMaq = !/riego/i.test(cur.labor || '');
   try {
     await addDoc(collection(db, 'asistencia'), {
       trabajador: cur.trab, fecha: WZ.fecha, centro_costo: centro || null, labor: cur.labor || null,
+      maquinaria: aplicaMaq && cur.maq ? cur.maq : null,
       centro_origen: usaComb ? 'combustible' : null,
       centros_dist: usaComb ? c.lista : null,
       horas_trabajador: htrab !== '' ? parseFloat(htrab) : null,
@@ -4829,7 +4865,7 @@ window.renderCentroCombAsistencia = function() {
   const c = asistCentroComb;
   const btn = 'padding:8px 12px;border-radius:8px;border:1px solid #D1D5DB;background:#fff;font-size:13px;cursor:pointer;margin-top:6px';
   w.innerHTML = asistCentroUsaComb
-    ? `<div style="padding:10px;background:#ECFDF5;border:1px solid #6EE7B7;border-radius:8px;font-size:14px;margin-bottom:8px">⛽ <b>${escA(c.texto)}</b> <span style="color:#6B7280;font-size:12px">(del combustible)</span></div>`
+    ? `<div style="padding:10px;background:#ECFDF5;border:1px solid #6EE7B7;border-radius:8px;font-size:14px;margin-bottom:8px">⛽ <b>${puntosTexto(c.texto)}</b> <span style="color:#6B7280;font-size:12px">(del combustible)</span></div>`
     : `<div style="padding:10px;background:#EFF6FF;border:1px solid #93C5FD;border-radius:8px;font-size:14px;margin-bottom:8px">⛽ Combustible de ese día: <b>${escA(c.texto)}</b> <span style="color:#6B7280;font-size:12px">(${c.totalL.toFixed(0)} L)</span><br>
        <button type="button" style="${btn};background:#2563EB;color:#fff;border-color:#2563EB" onclick="usarCentroCombAsistencia()">✓ Usar esta proporción</button>
        <span style="font-size:12px;color:#6B7280;margin-left:6px">o elige otro abajo</span></div>`;
@@ -4874,7 +4910,7 @@ window.renderLaborAsistencia = function() {
   const comunes = laboresComunesDe(trab);
   asistLaborOpciones = comunes.map(c => c[0]);
   const base = TIPOS_LABOR_CAMPO.filter(t => !t.oculto && t.id !== 'otro').map(t => t.label.replace(/^[^\p{L}]+/u, '')).concat(tiposLaborCampoConfig.map(t => t.label || t.nombre || t).filter(x => typeof x === 'string'));
-  const extras = comunes.length ? [] : base;
+  const extras = comunes.length ? [] : [...new Set(base.filter(x => typeof x === 'string' && x.trim()))];
   if (!comunes.length) asistLaborOpciones = extras;
   const titulo = comunes.length ? 'Más comunes de ' + escA(trab) : 'Sugeridas (aún no hay historial de ' + escA(trab) + ')';
   wrap.innerHTML = `<div style="font-size:12px;color:#6B7280;margin-bottom:4px">${titulo}</div>
@@ -4964,8 +5000,8 @@ window.renderTablaAsistencia = function() {
       return `<tr ${filaAlerta?'style="background:#FFF5F5"':''}>
         <td class="td-mono">${r.fecha}</td>
         <td><strong>${r.trabajador}</strong></td>
-        <td style="font-size:12px">${r.labor ? escA(r.labor) : '—'}</td>
-        <td style="font-size:12px">${r.centro_origen === 'combustible' ? '⛽ ' : ''}${r.centro_costo || '—'}</td>
+        <td style="font-size:12px">${r.labor ? escA(r.labor) : '—'}${r.maquinaria ? '<br><span style="color:#6B7280">🚜 ' + escA(r.maquinaria) + '</span>' : ''}</td>
+        <td style="font-size:12px">${r.centro_origen === 'combustible' ? '⛽ ' : ''}${r.centro_costo ? puntosTexto(r.centro_costo) : '—'}</td>
         <td class="td-mono">${ht != null ? ht.toFixed(1)+' hr' : '<span style="color:#B45309;font-weight:600">⏳ Pendiente</span>'}</td>
         <td class="td-mono">${hr != null ? hr.toFixed(1)+' hr' : '—'}</td>
         <td class="td-mono" style="color:${filaAlerta?'var(--rojo)':'inherit'};font-weight:${filaAlerta?'600':'400'}">${difFila != null ? (filaAlerta?'⚠️ ':'')+difFila.toFixed(1)+' hr' : '—'}</td>
@@ -5850,8 +5886,22 @@ function textoCultivoActual(nombrePotrero) {
 // color de cada potrero en el mapa se calcula del nombre de su cultivo
 // actual (mismo cultivo = mismo color siempre, en toda la app).
 const PALETA_COLORES_CULTIVO = ['#2D7D46','#1D4ED8','#C0392B','#92400E','#7C3AED','#DB2777','#0D9488','#CA8A04','#4B5563','#EA580C'];
+// Colores fijos por cultivo / centro de costo (mismos en mapa, asistencia, etc.)
+const COLORES_FIJOS_CULTIVO = [
+  [/trigo/, '#FACC15'],      // amarillo
+  [/ma[ií]z/, '#16A34A'],    // verde
+  [/canola/, '#DC2626'],     // rojo
+  [/arveja/, '#F97316'],     // naranjo
+  [/achicoria/, '#2563EB'],  // azul
+  [/avellan/, '#92400E'],    // café
+  [/cerez/, '#FFFFFF'],      // blanco
+  [/mantenci/, '#6B7280'],   // gris
+  [/otros/, '#EC4899']       // rosado
+];
 function colorParaCultivo(nombreCultivo) {
   if (!nombreCultivo) return '#9CA3AF';
+  const nl = String(nombreCultivo).toLowerCase();
+  for (const [re, col] of COLORES_FIJOS_CULTIVO) if (re.test(nl)) return col;
   let hash = 0;
   for (let i = 0; i < nombreCultivo.length; i++) hash = (hash * 31 + nombreCultivo.charCodeAt(i)) >>> 0;
   return PALETA_COLORES_CULTIVO[hash % PALETA_COLORES_CULTIVO.length];
