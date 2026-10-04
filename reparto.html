@@ -292,7 +292,7 @@ function jdpPotreroCercano(lat, lng, potreros, margenM) {
   return mejor;
 }
 
-function jdpRepartir(puntos, tramos, desde, hasta, potreros, zonas, margenM, minPuntos) {
+function jdpRepartir(puntos, tramos, desde, hasta, potreros, zonas, margenM, minPuntos, maxPasoMin) {
   // Una zona sin cultivo manda sobre un potrero (si la bodega quedó dentro de un polígono).
   const pts = puntos.filter(p => p.t >= desde - 6 * 3600000 && p.t <= hasta + 6 * 3600000)
     // Prioridad: área sin cultivo (bodegas) > dentro de un potrero > camino > cabecera (margen) > fuera
@@ -307,7 +307,7 @@ function jdpRepartir(puntos, tramos, desde, hasta, potreros, zonas, margenM, min
       return { ...p, zona: null, potrero: cerca, margen: !!cerca };
     });
   // Pasadas cortas: si una racha de puntos seguidos en el mismo potrero tiene
-  // menos de minPuntos y el paso completo duró menos de 5 min, es un cruce
+  // menos de minPuntos y el paso completo duró menos de maxPasoMin minutos, es un cruce
   // (p. ej. por una esquina camino a otro lado): no cuenta como potrero.
   const minP = Math.max(1, Math.round(Number(minPuntos) || 1));
   if (minP > 1) {
@@ -317,7 +317,7 @@ function jdpRepartir(puntos, tramos, desde, hasta, potreros, zonas, margenM, min
       while (j + 1 < pts.length && pts[j + 1].potrero === pot && !pts[j + 1].zona) j++;
       if (pot && !pts[i].zona && j - i + 1 < minP) {
         const t0 = i > 0 ? pts[i - 1].t : pts[i].t, t1 = j + 1 < pts.length ? pts[j + 1].t : pts[j].t;
-        if (t1 - t0 <= 5 * 60000) for (let k = i; k <= j; k++) { pts[k].paso = pts[k].potrero; pts[k].potrero = null; pts[k].margen = false; }
+        if (t1 - t0 <= (Number(maxPasoMin) > 0 ? Number(maxPasoMin) : 5) * 60000) for (let k = i; k <= j; k++) { pts[k].paso = pts[k].potrero; pts[k].potrero = null; pts[k].margen = false; }
       }
       i = j + 1;
     }
@@ -418,6 +418,7 @@ let jdpZonas = [];   // zonas sin cultivo guardadas (config/zonas_sin_cultivo)
 let jdpMargenM = 10; // margen de cabeceras: puntos a menos de X m del borde cuentan para ese potrero
 let jdpAnchoCaminoM = 8; // ancho de la franja de los caminos dibujados
 let jdpMinPuntos = 5;    // puntos seguidos mínimos dentro de un potrero para que cuente (pasos cortos no)
+let jdpMaxPasoMin = 5;   // duración máxima (min) para considerar esos pocos puntos como un paso
 let jdpRaw = null;   // último resultado de Operations Center, para recalcular sin volver a consultar
 
 function jdpZonasParaCalculo() {
@@ -449,14 +450,20 @@ async function jdpCargarZonas() {
     if (typeof d.margenM === 'number') jdpMargenM = d.margenM;
     if (typeof d.anchoCaminoM === 'number') jdpAnchoCaminoM = d.anchoCaminoM;
     if (typeof d.minPuntos === 'number') jdpMinPuntos = d.minPuntos;
+    if (typeof d.maxPasoMin === 'number') jdpMaxPasoMin = d.maxPasoMin;
   }
   catch (e) { console.warn('zonas sin cultivo', e); }
 }
 async function jdpGuardarZonas(zonas, margenM, anchoCaminoM) {
   const m = typeof margenM === 'number' ? margenM : jdpMargenM;
   const a = typeof anchoCaminoM === 'number' ? anchoCaminoM : jdpAnchoCaminoM;
-  await setDoc(doc(db, 'config', 'zonas_sin_cultivo'), { zonas, margenM: m, anchoCaminoM: a, minPuntos: jdpMinPuntos, actualizadoPor: currentUser || '', ts: Date.now() });
+  await setDoc(doc(db, 'config', 'zonas_sin_cultivo'), { zonas, margenM: m, anchoCaminoM: a, minPuntos: jdpMinPuntos, maxPasoMin: jdpMaxPasoMin, actualizadoPor: currentUser || '', ts: Date.now() });
   jdpZonas = zonas; jdpMargenM = m; jdpAnchoCaminoM = a;
+}
+window.jdpCambiarMaxPaso = async function(v) {
+  jdpMaxPasoMin = Math.max(0.5, Math.min(60, Number(v) || 5));
+  try { await jdpGuardarZonas(jdpZonas); } catch (e) { toast('No se pudo guardar: ' + e.message, false); }
+  jdpRecalcular();
 }
 window.jdpCambiarMinPuntos = async function(v) {
   jdpMinPuntos = Math.max(1, Math.min(30, Math.round(Number(v) || 1)));
@@ -613,7 +620,7 @@ window.consultarJdPotreros = async function() {
 function jdpRecalcular() {
   if (!jdpRaw) return null;
   const { puntos, tramos, desde, hasta, diag, potreros } = jdpRaw;
-  const r = jdpRepartir(puntos, tramos, desde, hasta, potreros, jdpZonasParaCalculo(), jdpMargenM, jdpMinPuntos);
+  const r = jdpRepartir(puntos, tramos, desde, hasta, potreros, jdpZonasParaCalculo(), jdpMargenM, jdpMinPuntos, jdpMaxPasoMin);
   jdpRenderResultado(r, diag, desde, hasta, potreros.length);
   return r;
 }
@@ -670,6 +677,8 @@ function jdpRenderResultado(r, diag, desde, hasta, nPotreros) {
     <div style="display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:8px;flex-wrap:wrap">
       <label style="text-transform:none;letter-spacing:normal;font-family:var(--sans);font-size:12px;margin:0">Mínimo de puntos seguidos en un potrero:</label>
       <input type="number" min="1" max="30" step="1" value="${jdpMinPuntos}" style="width:70px;padding:4px 6px" onchange="jdpCambiarMinPuntos(this.value)">
+      <label style="text-transform:none;letter-spacing:normal;font-family:var(--sans);font-size:12px;margin:0">si el paso dura menos de</label>
+      <input type="number" min="0.5" max="60" step="0.5" value="${jdpMaxPasoMin}" style="width:70px;padding:4px 6px" onchange="jdpCambiarMaxPaso(this.value)"> min
       <span style="color:var(--acero)">(${r.puntos.filter(p => p.paso).length} puntos descartados como paso)</span>
     </div>
     <div style="background:var(--fondo);border-radius:8px;padding:10px 12px;font-size:12px">
