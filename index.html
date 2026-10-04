@@ -2012,7 +2012,7 @@ window.intentarLogin = async function() {
   if (!result.ok) { toast('PIN incorrecto', false); document.getElementById('pin-input').value=''; return; }
   currentUser = result.nombre; isAdmin = result.admin; isSupervisor = result.supervisor || false; isSubadmin = result.subadmin || false; isCampo = result.campo || false;
   document.getElementById('user-label').textContent = isAdmin ? `⚙ ${result.nombre}` : (isSupervisor ? `👁 ${result.nombre}` : (isSubadmin ? `🕒 ${result.nombre}` : (isCampo ? `🌱 ${result.nombre}` : result.nombre)));
-  ['tab-registro','tab-historial','tab-mantencion','tab-admin','tab-config','tab-analytics','tab-informes','tab-eficiencia','btn-cisterna-header','tab-asistencia','tab-config-trabajadores','tab-campo','tab-config-potreros','tab-config-gps','btn-tractor-header','btn-reparto-header'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
+  ['tab-registro','tab-historial','tab-mantencion','tab-admin','tab-config','tab-analytics','tab-informes','tab-eficiencia','btn-cisterna-header','tab-asistencia','tab-config-trabajadores','tab-campo','tab-config-potreros','tab-config-gps'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
   document.getElementById('pin-input').value = '';
   document.getElementById('btn-secciones-header').style.display = isAdmin ? 'inline-flex' : 'none';
   if (isSubadmin) {
@@ -2038,8 +2038,23 @@ window.intentarLogin = async function() {
     if (result.pinInicial) setTimeout(() => mostrarCambioPin(true), 500);
     return;
   }
+  // Operador con acceso a Modo tractor o Reparto: elige primero, igual que el admin
+  if (permisosPruebasDe(currentUser).length) {
+    document.getElementById('btn-secciones-header').style.display = 'inline-flex';
+    showScreen('app');
+    mostrarSelectorSecciones();
+  } else {
+    entrarCombustibleOperador();
+  }
+  if (result.pinInicial) setTimeout(() => mostrarCambioPin(true), 500);
+}
+
+// Combustible para operadores y supervisor (sus pestañas de siempre)
+function entrarCombustibleOperador() {
+  document.getElementById('panel-secciones').style.display = 'none';
+  document.getElementById('tabs-bar').style.display = 'flex';
+  document.getElementById('app-main').style.display = 'block';
   ['tab-registro','tab-historial','tab-mantencion'].forEach(id => document.getElementById(id).style.display = 'block');
-  mostrarBotonesPruebas();
   if (isSupervisor) {
     ['tab-analytics','tab-informes','tab-eficiencia','tab-admin'].forEach(id => document.getElementById(id).style.display = 'block');
   }
@@ -2048,8 +2063,7 @@ window.intentarLogin = async function() {
   if (unsubSolicitud) { unsubSolicitud(); unsubSolicitud = null; }
   const msgAviso = document.getElementById('estado-solicitud-msg');
   if (msgAviso) msgAviso.textContent = `⛔ Fuera de horario (${textoHorarioPermitido()})`;
-  initRegistro(); showScreen('app'); setTab('registro', document.querySelector('.tab'));
-  if (result.pinInicial) setTimeout(() => mostrarCambioPin(true), 500);
+  initRegistro(); showScreen('app'); setTab('registro', document.getElementById('tab-registro'));
 }
 
 // ─── SELECTOR DE SECCIÓN (solo admin) ───────────────────────
@@ -2061,12 +2075,18 @@ const SECCIONES_TABS = {
 };
 
 window.mostrarSelectorSecciones = function() {
+  const per = isAdmin ? ['tractor', 'reparto'] : permisosPruebasDe(currentUser);
+  ['asistencia', 'campo', 'inventario'].forEach(sec => { const b = document.getElementById('sec-btn-' + sec); if (b) b.style.display = isAdmin ? '' : 'none'; });
+  document.getElementById('sec-btn-tractor').style.display = per.includes('tractor') ? '' : 'none';
+  document.getElementById('sec-btn-reparto').style.display = per.includes('reparto') ? '' : 'none';
+  document.getElementById('sec-lbl-pruebas').style.display = per.length ? '' : 'none';
   document.getElementById('tabs-bar').style.display = 'none';
   document.getElementById('app-main').style.display = 'none';
   document.getElementById('panel-secciones').style.display = 'block';
 }
 
 window.abrirSeccion = function(seccion) {
+  if (!isAdmin) { if (seccion === 'combustible') entrarCombustibleOperador(); return; }
   Object.values(SECCIONES_TABS).flat().forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
   document.getElementById('btn-cisterna-header').style.display = 'none';
   SECCIONES_TABS[seccion].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'block'; });
@@ -2095,7 +2115,6 @@ window.abrirSeccion = function(seccion) {
 
 window.logout = function() {
   try { localStorage.removeItem('maitenes_pase'); } catch (e) {}
-  ['btn-tractor-header','btn-reparto-header'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
   currentUser = null; isAdmin = false; isSupervisor = false; isSubadmin = false; isCampo = false;
   if (unsubReg) { unsubReg(); unsubReg = null; }
   if (unsubSolicitud) { unsubSolicitud(); unsubSolicitud = null; }
@@ -6868,11 +6887,6 @@ window.guardarEdicionEquipoOperador = async function(idx) {
 // no tengan que volver a poner el PIN; las páginas igual revisan el permiso.
 const PRUEBAS_GPS = [ { id: 'tractor', txt: '🚜 Modo tractor' }, { id: 'reparto', txt: '📍 Reparto por potrero' } ];
 function permisosPruebasDe(op) { const v = (config.permisosPruebas || {})[op]; return Array.isArray(v) ? v : []; }
-function mostrarBotonesPruebas() {
-  const per = isAdmin ? [] : permisosPruebasDe(currentUser);
-  document.getElementById('btn-tractor-header').style.display = per.includes('tractor') ? 'inline-flex' : 'none';
-  document.getElementById('btn-reparto-header').style.display = per.includes('reparto') ? 'inline-flex' : 'none';
-}
 window.abrirPrueba = function(cual) {
   try { localStorage.setItem('maitenes_pase', JSON.stringify({ nombre: currentUser, admin: !!isAdmin, ts: Date.now() })); } catch (e) {}
   if (cual === 'tractor') window.location.href = '/tractor.html';
@@ -9176,8 +9190,6 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     <div class="header-right">
       <button class="btn-pin" id="btn-secciones-header" style="display:none" onclick="mostrarSelectorSecciones()">☰ Secciones</button>
       <button class="btn-cisterna-hdr" id="btn-cisterna-header" style="display:none" onclick="abrirCargaCisterna()">🚛 Cisterna</button>
-      <button class="btn-pin" id="btn-tractor-header" style="display:none" onclick="abrirPrueba('tractor')" title="Modo tractor">🚜 Tractor</button>
-      <button class="btn-pin" id="btn-reparto-header" style="display:none" onclick="abrirPrueba('reparto')" title="Reparto por potrero">📍 Reparto</button>
       <button class="btn-pin" onclick="mostrarCambioPin(false)">🔑</button>
       <span class="user-badge" id="user-label"></span>
       <button class="btn-logout" onclick="logout()">Salir</button>
@@ -9191,13 +9203,13 @@ tbody td{padding:10px 12px;vertical-align:middle;}
   <div id="panel-secciones" style="display:none;max-width:640px;margin:40px auto;padding:0 16px">
     <div style="font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--acero);margin-bottom:16px;text-align:center">¿Qué sección quieres abrir?</div>
     <div style="display:flex;flex-direction:column;gap:12px">
-      <button class="btn" style="background:var(--negro);color:var(--amarillo);justify-content:flex-start;padding:20px;font-size:16px;border-radius:10px" onclick="abrirSeccion('combustible')">⛽ Combustible</button>
-      <button class="btn" style="background:var(--negro);color:var(--amarillo);justify-content:flex-start;padding:20px;font-size:16px;border-radius:10px" onclick="abrirSeccion('asistencia')">🕒 Asistencia</button>
-      <button class="btn" style="background:var(--negro);color:var(--amarillo);justify-content:flex-start;padding:20px;font-size:16px;border-radius:10px" onclick="abrirSeccion('campo')">🌱 Cuaderno de Campo</button>
-      <button class="btn" style="background:var(--negro);color:var(--amarillo);justify-content:flex-start;padding:20px;font-size:16px;border-radius:10px" onclick="abrirSeccion('inventario')">📦 Inventario Agroquímicos</button>
-      <div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--acero);margin:8px 0 0;text-align:center">Pruebas</div>
-      <button class="btn" style="background:#2A2A2A;color:#E5E7EB;justify-content:flex-start;padding:16px 20px;font-size:15px;border-radius:10px" onclick="abrirPrueba('tractor')">🚜 Modo tractor (celular)</button>
-      <button class="btn" style="background:#2A2A2A;color:#E5E7EB;justify-content:flex-start;padding:16px 20px;font-size:15px;border-radius:10px" onclick="abrirPrueba('reparto')">📍 Reparto por potrero (prueba)</button>
+      <button class="btn" style="background:var(--negro);color:var(--amarillo);justify-content:flex-start;padding:20px;font-size:16px;border-radius:10px" id="sec-btn-combustible" onclick="abrirSeccion('combustible')">⛽ Combustible</button>
+      <button class="btn" style="background:var(--negro);color:var(--amarillo);justify-content:flex-start;padding:20px;font-size:16px;border-radius:10px" id="sec-btn-asistencia" onclick="abrirSeccion('asistencia')">🕒 Asistencia</button>
+      <button class="btn" style="background:var(--negro);color:var(--amarillo);justify-content:flex-start;padding:20px;font-size:16px;border-radius:10px" id="sec-btn-campo" onclick="abrirSeccion('campo')">🌱 Cuaderno de Campo</button>
+      <button class="btn" style="background:var(--negro);color:var(--amarillo);justify-content:flex-start;padding:20px;font-size:16px;border-radius:10px" id="sec-btn-inventario" onclick="abrirSeccion('inventario')">📦 Inventario Agroquímicos</button>
+      <div id="sec-lbl-pruebas" style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--acero);margin:8px 0 0;text-align:center">Pruebas</div>
+      <button class="btn" style="background:#2A2A2A;color:#E5E7EB;justify-content:flex-start;padding:16px 20px;font-size:15px;border-radius:10px" id="sec-btn-tractor" onclick="abrirPrueba('tractor')">🚜 Modo tractor (celular)</button>
+      <button class="btn" style="background:#2A2A2A;color:#E5E7EB;justify-content:flex-start;padding:16px 20px;font-size:15px;border-radius:10px" id="sec-btn-reparto" onclick="abrirPrueba('reparto')">📍 Reparto por potrero (prueba)</button>
     </div>
   </div>
 
@@ -9540,7 +9552,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
 
       <div class="panel">
         <div class="panel-title">🧪 Acceso a Modo tractor y Reparto por potrero</div>
-        <div style="font-size:12px;color:var(--acero);margin-bottom:8px">Marca qué puede abrir cada operador con su PIN. Le aparecen como botones arriba en la app y puede entrar directo en el celular del tractor.</div>
+        <div style="font-size:12px;color:var(--acero);margin-bottom:8px">Marca qué puede abrir cada operador con su PIN. Al entrar le aparece el menú de secciones (Combustible + lo que tenga permitido), y con "☰ Secciones" vuelve a él.</div>
         <div class="config-lista" id="lista-permisos-pruebas"></div>
       </div>
 
