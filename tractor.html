@@ -19,24 +19,42 @@
   #barra .eq { font-weight: 700; font-size: 15px; margin-right: auto; }
   .chip { padding: 3px 8px; border-radius: 999px; background: #262626; white-space: nowrap; }
   .chip.ok { color: var(--verde); } .chip.mal { color: var(--rojo); } .chip.med { color: var(--amarillo); }
-  #mapa { flex: 1; min-height: 0; background: #1a1a1a; }
+  #mapa { flex: 1; min-height: 0; background: #1a1a1a; position: relative; }
   #pie { padding: 8px 10px calc(8px + env(safe-area-inset-bottom)); background: var(--panel); border-top: 1px solid var(--borde); }
+  #ap-linea { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  #ap-info { flex: 1; font-size: 14px; line-height: 1.3; }
+  #ap-info .sub { font-size: 12px; color: var(--gris); }
   #stats { font-size: 13px; color: var(--gris); margin-bottom: 6px; text-align: center; }
   #botones { display: flex; gap: 8px; }
   button { font: inherit; border: none; border-radius: 12px; cursor: pointer; }
   #btn-aplicar { flex: 1; padding: 18px 10px; font-size: 20px; font-weight: 800; background: #2A2A2A; color: var(--texto); border: 3px solid #444; }
   #btn-aplicar.on { background: var(--verde); color: #052e12; border-color: #16a34a; }
   .btn-sec { padding: 14px 16px; font-size: 20px; background: #2A2A2A; color: var(--texto); }
+  .btn-pot { padding: 10px 12px; font-size: 14px; font-weight: 700; background: #2A2A2A; color: var(--amarillo); white-space: nowrap; }
   #aviso { display: none; position: absolute; left: 10px; right: 10px; top: 56px; z-index: 1000; background: #78350F; color: #FEF3C7; padding: 10px 12px; border-radius: 10px; font-size: 14px; }
+  #banner { display: none; position: absolute; left: 10px; right: 10px; bottom: 10px; z-index: 900; background: #1E3A8A; color: #fff; padding: 12px; border-radius: 12px; font-size: 15px; box-shadow: 0 4px 16px rgba(0,0,0,.5); }
+  #banner .acc { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  #banner button { flex: 1; padding: 12px; font-size: 15px; font-weight: 700; min-width: 110px; }
+  .b-si { background: var(--verde); color: #052e12; } .b-nueva { background: var(--amarillo); color: #3b2f00; } .b-no { background: #374151; color: #fff; }
   .capa { position: fixed; inset: 0; z-index: 2000; background: rgba(0,0,0,.85); display: none; align-items: center; justify-content: center; padding: 16px; }
-  .caja { background: var(--panel); border: 1px solid var(--borde); border-radius: 14px; padding: 18px; width: 100%; max-width: 420px; max-height: 92vh; overflow: auto; }
+  .caja { background: var(--panel); border: 1px solid var(--borde); border-radius: 14px; padding: 18px; width: 100%; max-width: 440px; max-height: 92vh; overflow: auto; }
   .caja h2 { margin: 0 0 12px; font-size: 18px; }
   .caja label { display: block; font-size: 13px; color: var(--gris); margin: 12px 0 4px; }
   .caja select, .caja input { width: 100%; padding: 12px; font-size: 16px; background: #0F0F0F; color: var(--texto); border: 1px solid var(--borde); border-radius: 10px; }
   .caja .nota { font-size: 12px; color: var(--gris); margin-top: 6px; line-height: 1.4; }
-  .caja .acciones { display: flex; gap: 8px; margin-top: 16px; }
+  .caja .acciones { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
   .btn-prim { flex: 1; padding: 14px; font-size: 16px; font-weight: 700; background: var(--verde); color: #052e12; }
+  .btn-amar { flex: 1; padding: 14px; font-size: 16px; font-weight: 700; background: var(--amarillo); color: #3b2f00; }
   .btn-gris { flex: 1; padding: 14px; font-size: 15px; background: #2A2A2A; color: var(--texto); }
+  .lista-pot { display: flex; flex-direction: column; gap: 6px; }
+  .lista-pot button { text-align: left; padding: 12px; background: #262626; color: var(--texto); font-size: 15px; }
+  .lista-pot button .sub { display: block; font-size: 12px; color: var(--gris); margin-top: 2px; }
+  .lista-pot button.aqui { border: 2px solid var(--verde); }
+  .eq-chips { display: flex; flex-direction: column; gap: 8px; }
+  .eq-chips button { padding: 16px; font-size: 18px; font-weight: 700; background: #262626; color: var(--texto); border: 2px solid #444; text-align: left; }
+  .eq-chips button.sel { background: var(--verde); color: #052e12; border-color: #16a34a; }
+  .link-btn { background: none; color: var(--azul); padding: 10px 0; font-size: 14px; text-decoration: underline; }
+  #pin-input { font-size: 28px; text-align: center; letter-spacing: 8px; }
   .leaflet-container { background: #1a1a1a; }
   .pos-icono { width: 22px; height: 22px; border-radius: 50%; background: var(--azul); border: 3px solid #fff; box-shadow: 0 0 0 2px rgba(0,0,0,.4); }
 </style>
@@ -44,16 +62,20 @@
 <body>
 <div id="app">
   <div id="barra">
-    <span class="eq" id="b-equipo">Modo tractor</span>
+    <span class="eq" id="b-equipo" onclick="abrirAjustes()" style="cursor:pointer">Modo tractor</span>
     <span class="chip" id="b-gps">📍 GPS…</span>
     <span class="chip" id="b-red">⚪ —</span>
     <span class="chip" id="b-pend">⬆ 0</span>
     <span class="chip" id="b-llave">🔋 —</span>
   </div>
   <div id="aviso"></div>
-  <div id="mapa"></div>
+  <div id="mapa"><div id="banner"></div></div>
   <div id="pie">
-    <div id="stats">Aplicado hoy: 0,0 km · ≈ 0,0 ha</div>
+    <div id="ap-linea">
+      <div id="ap-info">Sin potrero iniciado</div>
+      <button class="btn-pot" id="btn-pot" onclick="abrirPotreros()">🌾 Iniciar potrero</button>
+    </div>
+    <div id="stats"></div>
     <div id="botones">
       <button id="btn-aplicar" onclick="toggleAplicar()">▶ EMPEZAR A APLICAR</button>
       <button class="btn-sec" title="Centrar" onclick="centrar()">🎯</button>
@@ -65,23 +87,62 @@
 <div class="capa" id="capa-ajustes">
   <div class="caja">
     <h2>🚜 Modo tractor</h2>
-    <label>Equipo</label>
-    <select id="aj-equipo"></select>
-    <label>Ancho de aplicación (metros)</label>
+    <div class="nota" id="aj-operador" style="font-size:14px;color:var(--texto)"></div>
+    <label id="aj-lbl-mis">Tus equipos</label>
+    <div class="eq-chips" id="aj-mis-equipos"></div>
+    <button class="link-btn" id="aj-btn-otro" onclick="mostrarOtroEquipo()">Usar otro equipo</button>
+    <div id="aj-otro-wrap" style="display:none">
+      <label>Otro equipo</label>
+      <select id="aj-equipo"></select>
+    </div>
+    <label>Ancho de aplicación por defecto (metros)</label>
     <input type="number" id="aj-ancho" min="1" max="60" step="0.5" value="5">
-    <div class="nota">Lo que cubre cada pasada. En frutales: distancia entre hileras × hileras que aplica por pasada.</div>
+    <div class="nota">Se usa en potreros sin ancho propio. En frutales el ancho se toma del cultivo del potrero (avellanos 5 m, cerezos 4,5 m; se cambia en la app → Cuaderno de Campo → 📡 Config. GPS).</div>
     <div class="nota" id="aj-estado-datos" style="margin-top:12px"></div>
     <div class="acciones">
       <button class="btn-gris" onclick="actualizarDatosCampo(true)">🔄 Actualizar potreros</button>
       <button class="btn-prim" onclick="guardarAjustes()">✓ Listo</button>
     </div>
+    <div class="acciones"><button class="btn-gris" onclick="cerrarSesion()">🔒 Cambiar de operador</button></div>
     <div class="nota" style="margin-top:14px">Deja esta pantalla abierta y el celular conectado al cargador del tractor (al contacto). Si no hay señal, guarda todo y lo sube cuando vuelva el internet o el WiFi.</div>
+  </div>
+</div>
+
+<div class="capa" id="capa-login">
+  <div class="caja">
+    <h2>🚜 Modo tractor · Los Maitenes</h2>
+    <label>Ingresa tu PIN (el mismo de la app de combustible)</label>
+    <input type="password" id="pin-input" inputmode="numeric" autocomplete="off" maxlength="8" onkeydown="if(event.key==='Enter')intentarLogin()">
+    <div class="nota" id="login-msg"></div>
+    <div class="acciones"><button class="btn-prim" id="btn-login" onclick="intentarLogin()">Ingresar</button></div>
+  </div>
+</div>
+
+<div class="capa" id="capa-potreros">
+  <div class="caja">
+    <h2>🌾 ¿En qué potrero vas a aplicar?</h2>
+    <div class="lista-pot" id="lista-pot"></div>
+    <div class="acciones" id="acc-pot-terminar"></div>
+    <div class="acciones"><button class="btn-gris" onclick="cerrarCapa('capa-potreros')">Cancelar</button></div>
+  </div>
+</div>
+
+<div class="capa" id="capa-continuar">
+  <div class="caja">
+    <h2 id="cont-titulo">Aplicación sin terminar</h2>
+    <div id="cont-texto" style="font-size:15px;line-height:1.5"></div>
+    <div class="acciones">
+      <button class="btn-prim" id="cont-si">↪ Es continuación</button>
+      <button class="btn-amar" id="cont-nueva">✳ Nueva aplicación</button>
+    </div>
+    <div class="acciones"><button class="btn-gris" onclick="cerrarCapa('capa-continuar')">Cancelar</button></div>
+    <div class="nota">Continuación: se sigue pintando sobre lo ya aplicado, para no repetir hileras. Nueva: lo anterior se da por cerrado y se empieza de cero.</div>
   </div>
 </div>
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import { getFirestore, doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import { getFirestore, doc, getDoc, setDoc, collection, getDocs, query, where, arrayUnion } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
 const app = initializeApp({
   apiKey: "AIzaSyAVsios3N97MQVPJLC94qEOXGJNmKzK9RI",
@@ -99,17 +160,28 @@ const ls = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
 };
 let ajustes = ls.get('tractor_ajustes', { equipo: '', ancho: 5 });
+let sesion = ls.get('tractor_sesion', null); // { nombre, admin }
 let datosCampo = ls.get('tractor_datos_campo', null); // { equipos, potreros, zonas, ts }
 let dispositivo = ls.get('tractor_dispositivo', null);
 if (!dispositivo) { dispositivo = 'd' + Math.random().toString(36).slice(2, 10); ls.set('tractor_dispositivo', dispositivo); }
 let aplicando = ls.get('tractor_aplicando', false);
+// Aplicaciones por potrero: { id, potrero, inicio, fin, estado: 'abierta' | 'terminada', km }
+let aplicaciones = ls.get('tractor_aplicaciones', []);
+let activaId = ls.get('tractor_aplicacion_activa', null);
+const activa = () => aplicaciones.find(a => a.id === activaId) || null;
+const guardarAplicaciones = () => { ls.set('tractor_aplicaciones', aplicaciones); ls.set('tractor_aplicacion_activa', activaId); };
 
-// ── Puntos en IndexedDB (sobreviven a cortes de señal y recargas) ──
+// ── Puntos en IndexedDB (sobreviven a cortes de señal, recargas y días) ──
 let idb = null;
 function abrirIDB() {
   return new Promise((res, rej) => {
-    const r = indexedDB.open('modo_tractor', 1);
-    r.onupgradeneeded = () => { const s = r.result.createObjectStore('puntos', { keyPath: 't' }); s.createIndex('enviado', 'e'); };
+    const r = indexedDB.open('modo_tractor', 2);
+    r.onupgradeneeded = ev => {
+      const db = r.result;
+      const st = ev.oldVersion < 1 ? db.createObjectStore('puntos', { keyPath: 't' }) : r.transaction.objectStore('puntos');
+      if (!st.indexNames.contains('enviado')) st.createIndex('enviado', 'e');
+      if (!st.indexNames.contains('aplicacion')) st.createIndex('aplicacion', 'ap');
+    };
     r.onsuccess = () => res(r.result);
     r.onerror = () => rej(r.error);
   });
@@ -124,29 +196,71 @@ function idbTx(modo, fn) {
 const reqP = r => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
 async function guardarPunto(p) { await idbTx('readwrite', st => st.put(p)); }
 async function puntosDesde(t0) { return idbTx('readonly', st => reqP(st.getAll(IDBKeyRange.lowerBound(t0)))); }
+async function puntosDeAplicacion(id) { return idbTx('readonly', st => reqP(st.index('aplicacion').getAll(id))); }
 async function pendientes(max) { return idbTx('readonly', st => reqP(st.index('enviado').getAll(0, max))); }
 async function contarPendientes() { return idbTx('readonly', st => reqP(st.index('enviado').count(0))); }
 async function marcarEnviados(ts) { await idbTx('readwrite', async st => { for (const t of ts) { const p = await reqP(st.get(t)); if (p) { p.e = 1; st.put(p); } } }); }
-async function limpiarViejos() { const lim = Date.now() - 4 * 86400000; await idbTx('readwrite', st => { st.openCursor(IDBKeyRange.upperBound(lim)).onsuccess = ev => { const c = ev.target.result; if (c) { if (c.value.e === 1) c.delete(); c.continue(); } }; }); }
+// Borra puntos ya enviados de más de 4 días, salvo los de aplicaciones abiertas (para seguir mostrándolos)
+async function limpiarViejos() {
+  const lim = Date.now() - 4 * 86400000;
+  const abiertas = new Set(aplicaciones.filter(a => a.estado === 'abierta').map(a => a.id));
+  await idbTx('readwrite', st => { st.openCursor(IDBKeyRange.upperBound(lim)).onsuccess = ev => { const c = ev.target.result; if (c) { if (c.value.e === 1 && !abiertas.has(c.value.ap)) c.delete(); c.continue(); } }; });
+}
 
 // ── Mapa ─────────────────────────────────────────────────────────
 const mapa = L.map('mapa', { zoomControl: false, attributionControl: true }).setView([-36.83, -72.15], 15);
 L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 20, maxNativeZoom: 19, crossOrigin: true, attribution: 'Tiles &copy; Esri' }).addTo(mapa);
 const capaCampo = L.layerGroup().addTo(mapa);
 const capaRecorrido = L.layerGroup().addTo(mapa);
+const capaOtros = L.layerGroup().addTo(mapa);     // lo aplicado por otros tractores (misma aplicación)
 const capaAplicado = L.layerGroup().addTo(mapa);
 let marcador = null, circuloPrec = null, seguir = true;
 mapa.on('dragstart', () => { seguir = false; });
 
+// Ancho de aplicación según el cultivo del potrero (se configura en la app: Config. GPS)
+const ANCHOS_POR_DEFECTO = { 'Avellanos': 5, 'Cerezos': 4.5 };
+const normCult = t => String(t || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().replace(/e?s$/, '');
+function anchoDePotrero(nombre) {
+  const pot = (datosCampo && datosCampo.potreros || []).find(p => p.nombre === nombre);
+  const tabla = (datosCampo && datosCampo.anchosCultivo) || ANCHOS_POR_DEFECTO;
+  if (pot && pot.cultivo) {
+    const k = Object.keys(tabla).find(c => normCult(c) === normCult(pot.cultivo));
+    if (k && Number(tabla[k]) > 0) return Number(tabla[k]);
+  }
+  return Number(ajustes.ancho) || 5;
+}
+const anchoActual = () => (activa() && activa().ancho) || Number(ajustes.ancho) || 5;
+// Potreros normalizados para saber en cuál está el tractor
+let potrerosGeo = [];
+const normPoly = pol => (pol || []).map(c => Array.isArray(c) ? [Number(c[0]), Number(c[1])] : [Number(c.lat), Number(c.lng)]);
+function enPoligono(lat, lng, poly) {
+  let d = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const yi = poly[i][0], xi = poly[i][1], yj = poly[j][0], xj = poly[j][1];
+    if (((yi > lat) !== (yj > lat)) && (lng < (xj - xi) * (lat - yi) / ((yj - yi) || 1e-12) + xi)) d = !d;
+  }
+  return d;
+}
+function potreroEn(lat, lng) { const p = potrerosGeo.find(x => enPoligono(lat, lng, x.poly)); return p ? p.nombre : null; }
+function areaHa(poly) { // área aproximada en hectáreas (proyección plana local)
+  if (poly.length < 3) return 0;
+  const lat0 = poly[0][0] * Math.PI / 180, kx = 111320 * Math.cos(lat0), ky = 110540;
+  let a = 0;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) a += (poly[j][1] * kx) * (poly[i][0] * ky) - (poly[i][1] * kx) * (poly[j][0] * ky);
+  return Math.abs(a / 2) / 10000;
+}
+
 function dibujarCampo() {
   capaCampo.clearLayers();
   if (!datosCampo) return;
+  potrerosGeo = (datosCampo.potreros || []).filter(p => Array.isArray(p.poligono) && p.poligono.length >= 3).map(p => ({ nombre: p.nombre, poly: normPoly(p.poligono) }));
+  potrerosGeo.forEach(p => { p.ha = areaHa(p.poly); });
   const bounds = [];
-  (datosCampo.potreros || []).forEach(p => {
-    if (!Array.isArray(p.poligono) || p.poligono.length < 3) return;
-    L.polygon(p.poligono, { color: '#FACC15', weight: 2, fillOpacity: 0.06, interactive: false }).addTo(capaCampo)
-      .bindTooltip(p.nombre, { permanent: false });
-    p.poligono.forEach(c => bounds.push(Array.isArray(c) ? c : [c.lat, c.lng]));
+  const actPot = activa() ? activa().potrero : null;
+  potrerosGeo.forEach(p => {
+    const esAct = p.nombre === actPot;
+    L.polygon(p.poly, { color: esAct ? '#22C55E' : '#FACC15', weight: esAct ? 4 : 2, fillOpacity: esAct ? 0.1 : 0.05, interactive: false }).addTo(capaCampo);
+    p.poly.forEach(c => bounds.push(c));
   });
   (datosCampo.zonas || []).forEach(z => {
     try {
@@ -163,54 +277,167 @@ function pxPorMetros(m, lat) {
   const mpp = 156543.03392 * Math.cos(lat * Math.PI / 180) / Math.pow(2, mapa.getZoom());
   return Math.max(2, m / mpp);
 }
-let tramosAplicados = []; // [[ [lat,lng], ... ], ...]
-let tramoActual = null;
-function redibujarAplicado() {
-  capaAplicado.clearLayers();
-  const lat = mapa.getCenter().lat;
-  const w = pxPorMetros(Number(ajustes.ancho) || 5, lat);
-  tramosAplicados.forEach(tr => {
-    if (tr.length >= 2) L.polyline(tr, { color: '#22C55E', weight: w, opacity: 0.45, lineCap: 'butt', lineJoin: 'round', interactive: false }).addTo(capaAplicado);
-  });
-}
-mapa.on('zoomend', redibujarAplicado);
-let recorridoLinea = L.polyline([], { color: '#FFFFFF', weight: 1.5, opacity: 0.6, interactive: false }).addTo(capaRecorrido);
-
-// ── Estadísticas del día ─────────────────────────────────────────
-let kmAplicados = 0;
 function distM(a, b) {
   const R = 6371000, rad = x => x * Math.PI / 180;
   const dLat = rad(b[0] - a[0]), dLng = rad(b[1] - a[1]);
   const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a[0])) * Math.cos(rad(b[0])) * Math.sin(dLng / 2) ** 2;
   return 2 * R * Math.asin(Math.sqrt(h));
 }
-function actualizarStats() {
-  const ha = kmAplicados * 1000 * (Number(ajustes.ancho) || 0) / 10000;
-  document.getElementById('stats').textContent = `Aplicado hoy: ${kmAplicados.toFixed(1).replace('.', ',')} km · ≈ ${ha.toFixed(1).replace('.', ',')} ha (ancho ${String(ajustes.ancho).replace('.', ',')} m)`;
+
+// Lo aplicado de la aplicación activa (todos sus días)
+let tramosAplicados = [], tramoActual = null, ultimoAplicado = null, kmAplicacion = 0;
+function agregarAplicado(p) {
+  const ll = [p.lat, p.lng];
+  const cont = ultimoAplicado && (p.t - ultimoAplicado.t) < 30000 && distM([ultimoAplicado.lat, ultimoAplicado.lng], ll) < 60;
+  if (!tramoActual || !cont) { tramoActual = []; tramosAplicados.push(tramoActual); }
+  if (tramoActual.length && cont) kmAplicacion += distM(tramoActual[tramoActual.length - 1], ll) / 1000;
+  tramoActual.push(ll);
+  ultimoAplicado = p;
+}
+let trazosOtros = [], kmOtros = 0, equiposOtros = [];
+function redibujarAplicado() {
+  capaAplicado.clearLayers(); capaOtros.clearLayers();
+  const w = pxPorMetros(anchoActual(), mapa.getCenter().lat);
+  trazosOtros.forEach(tr => {
+    if (tr.length >= 2) L.polyline(tr, { color: '#22D3EE', weight: w, opacity: 0.4, lineCap: 'butt', lineJoin: 'round', interactive: false }).addTo(capaOtros);
+  });
+  tramosAplicados.forEach(tr => {
+    if (tr.length >= 2) L.polyline(tr, { color: '#22C55E', weight: w, opacity: 0.45, lineCap: 'butt', lineJoin: 'round', interactive: false }).addTo(capaAplicado);
+  });
+}
+mapa.on('zoomend', redibujarAplicado);
+async function cargarAplicadoActivo() {
+  tramosAplicados = []; tramoActual = null; ultimoAplicado = null; kmAplicacion = 0;
+  const a = activa();
+  const guardado = a ? ls.get('tractor_otros_' + a.id, null) : null;
+  trazosOtros = guardado ? guardado.trazos : []; kmOtros = guardado ? guardado.km : 0; equiposOtros = guardado ? guardado.equipos : [];
+  if (a && idb) {
+    try { (await puntosDeAplicacion(a.id)).sort((x, y) => x.t - y.t).filter(p => p.a).forEach(agregarAplicado); } catch (e) { console.warn(e); }
+  }
+  redibujarAplicado(); pintarAplicacion();
 }
 
-// Agrega un punto al dibujo (aplicado o solo recorrido)
-let ultimoDibujado = null;
-function dibujarPunto(p) {
-  const ll = [p.lat, p.lng];
-  recorridoLinea.addLatLng(ll);
-  const cont = ultimoDibujado && (p.t - ultimoDibujado.t) < 30000 && distM([ultimoDibujado.lat, ultimoDibujado.lng], ll) < 60;
-  if (p.a) {
-    if (!tramoActual || !cont || !ultimoDibujado.a) { tramoActual = []; tramosAplicados.push(tramoActual); if (ultimoDibujado && cont && !ultimoDibujado.a) {} }
-    if (tramoActual.length && cont) kmAplicados += distM(tramoActual[tramoActual.length - 1], ll) / 1000;
-    tramoActual.push(ll);
-  } else tramoActual = null;
-  ultimoDibujado = p;
+// Recorrido del día (línea fina)
+let recorridoLinea = L.polyline([], { color: '#FFFFFF', weight: 1.5, opacity: 0.6, interactive: false }).addTo(capaRecorrido);
+
+// ── Línea de la aplicación actual y estadísticas ─────────────────
+const fechaCorta = t => new Date(t).toLocaleDateString('es-CL', { day: '2-digit', month: '2-digit' });
+function pintarAplicacion() {
+  const a = activa(), info = document.getElementById('ap-info'), btn = document.getElementById('btn-pot');
+  const ancho = anchoActual();
+  const ha = kmAplicacion * 1000 * ancho / 10000;
+  if (a) {
+    const pg = potrerosGeo.find(p => p.nombre === a.potrero);
+    const pct = pg && pg.ha ? Math.min(100, ha / pg.ha * 100) : null;
+    const haOtros = kmOtros * 1000 * ancho / 10000, haTot = ha + haOtros;
+    const pctT = pg && pg.ha ? Math.min(100, haTot / pg.ha * 100) : null;
+    info.innerHTML = `🌾 <strong>${a.potrero}</strong><div class="sub">Desde ${fechaCorta(a.inicio)} · este tractor ${kmAplicacion.toFixed(1).replace('.', ',')} km${kmOtros ? ` · otros (${equiposOtros.join(', ')}) ${kmOtros.toFixed(1).replace('.', ',')} km` : ''} · ≈ ${haTot.toFixed(1).replace('.', ',')} ha${pctT != null ? ` (~${pctT.toFixed(0)}% de ${pg.ha.toFixed(1).replace('.', ',')} ha)` : ''}</div>`;
+    btn.textContent = '🌾 Cambiar / terminar';
+  } else {
+    info.innerHTML = 'Sin potrero iniciado<div class="sub">Toca "Iniciar potrero" antes de aplicar</div>';
+    btn.textContent = '🌾 Iniciar potrero';
+  }
+  document.getElementById('stats').textContent = `Ancho ${String(ancho).replace('.', ',')} m${a && a.ancho ? ' (según cultivo)' : ''}${a ? ' · 🟩 este tractor · 🟦 otros tractores' : ''}`;
+  a && (a.km = +kmAplicacion.toFixed(2));
 }
+
+// ── Elegir potrero, continuar o empezar nueva aplicación ─────────
+function cerrarCapa(id) { document.getElementById(id).style.display = 'none'; }
+window.cerrarCapa = cerrarCapa;
+let despuesDeElegir = null; // acción a ejecutar después (p. ej. empezar a aplicar)
+window.abrirPotreros = function (luego) {
+  despuesDeElegir = typeof luego === 'function' ? luego : null;
+  const aqui = ultimaPos ? potreroEn(ultimaPos.lat, ultimaPos.lng) : null;
+  const orden = [...potrerosGeo].sort((x, y) => (y.nombre === aqui) - (x.nombre === aqui) || x.nombre.localeCompare(y.nombre));
+  const abiertaDe = n => aplicaciones.find(a => a.potrero === n && a.estado === 'abierta');
+  document.getElementById('lista-pot').innerHTML = orden.length ? orden.map(p => {
+    const ab = abiertaDe(p.nombre);
+    return `<button class="${p.nombre === aqui ? 'aqui' : ''}" onclick="elegirPotrero('${p.nombre.replace(/'/g, "\\'")}')">${p.nombre === aqui ? '📍 ' : ''}${p.nombre}
+      <span class="sub">${p.nombre === aqui ? 'Estás aquí · ' : ''}${ab ? `aplicación sin terminar desde ${fechaCorta(ab.inicio)} (${(ab.km || 0).toFixed(1).replace('.', ',')} km)` : 'sin aplicación abierta'}</span></button>`;
+  }).join('') : '<div class="nota">No hay potreros guardados en este celular. Ve a ⚙️ → Actualizar potreros (con internet).</div>';
+  const a = activa();
+  document.getElementById('acc-pot-terminar').innerHTML = a ? `<button class="btn-amar" onclick="terminarPotrero()">✔ Terminar ${a.potrero}</button>` : '';
+  document.getElementById('capa-potreros').style.display = 'flex';
+};
+window.elegirPotrero = async function (nombre) {
+  cerrarCapa('capa-potreros');
+  await traerAbiertasCompartidas();
+  const ab = aplicaciones.filter(a => a.potrero === nombre && a.estado === 'abierta').sort((x, y) => y.inicio - x.inicio)[0];
+  if (ab && ab.id === activaId) { ejecutarDespues(); return; }      // ya es la activa
+  if (ab) preguntarContinuacion(ab); else nuevaAplicacion(nombre);
+};
+function preguntarContinuacion(ab) {
+  document.getElementById('cont-titulo').textContent = `🌾 ${ab.potrero}`;
+  document.getElementById('cont-texto').innerHTML = `Este potrero tiene una aplicación <strong>sin terminar</strong> desde el <strong>${fechaCorta(ab.inicio)}</strong> (${(ab.km || 0).toFixed(1).replace('.', ',')} km aplicados).<br>¿Es continuación de esa aplicación o una aplicación nueva?`;
+  document.getElementById('cont-si').onclick = () => { cerrarCapa('capa-continuar'); activarAplicacion(ab.id); };
+  document.getElementById('cont-nueva').onclick = () => { cerrarCapa('capa-continuar'); nuevaAplicacion(ab.potrero); };
+  document.getElementById('capa-continuar').style.display = 'flex';
+}
+async function activarAplicacion(id) {
+  activaId = id; guardarAplicaciones();
+  ocultarBanner(); dibujarCampo();
+  await cargarAplicadoActivo();
+  traerTrazosOtros();
+  sincronizarAplicacion(activa());
+  ejecutarDespues();
+}
+async function nuevaAplicacion(potrero) {
+  const ahora = Date.now();
+  aplicaciones.forEach(a => { if (a.potrero === potrero && a.estado === 'abierta') { a.estado = 'terminada'; a.fin = ahora; a.cerradaPor = 'nueva'; sincronizarAplicacion(a); } });
+  const a = { id: `${dispositivo}_${ahora}`, potrero, inicio: ahora, fin: null, estado: 'abierta', km: 0, equipo: ajustes.equipo, operador: sesion ? sesion.nombre : null, ancho: anchoDePotrero(potrero) };
+  aplicaciones.push(a);
+  aplicaciones = aplicaciones.filter(x => x.estado === 'abierta' || ahora - (x.fin || x.inicio) < 60 * 86400000); // historial de 60 días
+  await activarAplicacion(a.id);
+}
+window.terminarPotrero = async function () {
+  const a = activa(); if (!a) return;
+  if (!confirm(`¿Terminar la aplicación de ${a.potrero}? Lo aplicado se deja de mostrar.`)) return;
+  a.estado = 'terminada'; a.fin = Date.now(); a.km = +kmAplicacion.toFixed(2);
+  activaId = null; aplicando = false; ls.set('tractor_aplicando', false); guardarAplicaciones();
+  cerrarCapa('capa-potreros'); pintarBotonAplicar(); dibujarCampo();
+  sincronizarAplicacion(a);
+  await cargarAplicadoActivo();
+};
+function ejecutarDespues() { const f = despuesDeElegir; despuesDeElegir = null; if (f) f(); }
+
+// Aviso al entrar a un potrero distinto del activo (no bloquea la pantalla)
+let potAqui = null, potAquiDesde = 0, bannerDescartado = {};
+function ocultarBanner() { document.getElementById('banner').style.display = 'none'; }
+window.ocultarBanner = ocultarBanner;
+function revisarEntradaPotrero(p) {
+  const aqui = potreroEn(p.lat, p.lng);
+  if (aqui !== potAqui) { potAqui = aqui; potAquiDesde = p.t; ocultarBanner(); return; }
+  const a = activa();
+  if (!aqui || (a && a.potrero === aqui)) return;
+  if (p.t - potAquiDesde < 20000) return;                               // al menos 20 s dentro
+  if (bannerDescartado[aqui] && Date.now() - bannerDescartado[aqui] < 15 * 60000) return;
+  const b = document.getElementById('banner');
+  if (b.style.display === 'block') return;
+  const ab = aplicaciones.find(x => x.potrero === aqui && x.estado === 'abierta');
+  const n = aqui.replace(/'/g, "\\'");
+  b.innerHTML = ab
+    ? `Estás en <strong>${aqui}</strong>, con una aplicación sin terminar desde el ${fechaCorta(ab.inicio)}.<div class="acc">
+        <button class="b-si" onclick="activarDesdeBanner('${ab.id}')">↪ Continuar</button>
+        <button class="b-nueva" onclick="nuevaDesdeBanner('${n}')">✳ Nueva</button>
+        <button class="b-no" onclick="descartarBanner('${n}')">Ahora no</button></div>`
+    : `Estás en <strong>${aqui}</strong>.${a ? ` (Aplicación activa: ${a.potrero})` : ''}<div class="acc">
+        <button class="b-si" onclick="nuevaDesdeBanner('${n}')">🌾 Iniciar aquí</button>
+        <button class="b-no" onclick="descartarBanner('${n}')">Ahora no</button></div>`;
+  b.style.display = 'block';
+}
+window.activarDesdeBanner = id => { ocultarBanner(); activarAplicacion(id); };
+window.nuevaDesdeBanner = n => { ocultarBanner(); nuevaAplicacion(n); };
+window.descartarBanner = n => { bannerDescartado[n] = Date.now(); ocultarBanner(); };
 
 // ── GPS ──────────────────────────────────────────────────────────
 let ultimaPos = null, ultimoGuardado = null, cargando = null;
 const MIN_MS = 2000, MIN_M = 3, MAX_PREC = 40;
 function onPos(pos) {
   const c = pos.coords;
+  const a = activa();
   const p = { t: pos.timestamp || Date.now(), lat: +c.latitude.toFixed(7), lng: +c.longitude.toFixed(7), acc: Math.round(c.accuracy || 0),
     v: c.speed != null ? +c.speed.toFixed(1) : null, h: c.heading != null && !isNaN(c.heading) ? Math.round(c.heading) : null,
-    c: cargando, a: aplicando ? 1 : 0, e: 0 };
+    c: cargando, a: aplicando && a ? 1 : 0, ap: aplicando && a ? a.id : null, pot: null, e: 0 };
   ultimaPos = p;
   const chip = document.getElementById('b-gps');
   chip.textContent = `📍 ±${p.acc} m`;
@@ -223,13 +450,16 @@ function onPos(pos) {
   } else { marcador.setLatLng(ll); circuloPrec.setLatLng(ll).setRadius(p.acc); }
   if (seguir) mapa.panTo(ll, { animate: true });
   if (p.acc > MAX_PREC) return; // punto demasiado impreciso: se muestra pero no se guarda
+  p.pot = potreroEn(p.lat, p.lng);
+  revisarEntradaPotrero(p);
   const mover = !ultimoGuardado || distM([ultimoGuardado.lat, ultimoGuardado.lng], ll) >= MIN_M;
   const tiempo = !ultimoGuardado || p.t - ultimoGuardado.t >= MIN_MS;
   if (!(tiempo && (mover || p.t - ultimoGuardado.t >= 15000) || (ultimoGuardado && ultimoGuardado.a !== p.a))) return;
   ultimoGuardado = p;
+  if (!p.ap) delete p.ap; // los índices de IndexedDB no aceptan null
   guardarPunto(p).then(actualizarPendientes).catch(e => console.warn('No se pudo guardar el punto', e));
-  dibujarPunto(p);
-  if (p.a) { redibujarAplicado(); actualizarStats(); }
+  recorridoLinea.addLatLng(ll);
+  if (p.a) { agregarAplicado(p); redibujarAplicado(); pintarAplicacion(); guardarAplicaciones(); }
 }
 function onPosError(err) {
   const chip = document.getElementById('b-gps');
@@ -245,9 +475,9 @@ function iniciarGPS() {
 }
 
 // ── Pantalla siempre encendida ───────────────────────────────────
-let wakeLock = null, ocultoDesde = null;
+let ocultoDesde = null;
 async function pedirPantalla() {
-  try { if ('wakeLock' in navigator) { wakeLock = await navigator.wakeLock.request('screen'); } } catch (e) { console.warn('Wake lock', e); }
+  try { if ('wakeLock' in navigator) await navigator.wakeLock.request('screen'); } catch (e) { console.warn('Wake lock', e); }
 }
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
@@ -273,6 +503,50 @@ async function actualizarPendientes() {
   try { const n = await contarPendientes(); const ch = document.getElementById('b-pend'); ch.textContent = `⬆ ${n}`; ch.className = 'chip ' + (n > 300 ? 'med' : 'ok'); } catch (e) {}
 }
 function conTimeout(prom, ms) { return Promise.race([prom, new Promise((_, rej) => setTimeout(() => rej(new Error('tiempo agotado')), ms))]); }
+let aplicacionesPorSubir = new Set(ls.get('tractor_ap_por_subir', []));
+// Aplicaciones compartidas entre tractores: aplicaciones_campo/{id} (+ subcolección trazos)
+async function traerAbiertasCompartidas() {
+  if (!navigator.onLine) return;
+  try {
+    const s = await conTimeout(getDocs(query(collection(db, 'aplicaciones_campo'), where('estado', '==', 'abierta'))), 10000);
+    s.docs.forEach(d => {
+      const x = d.data();
+      if (!aplicaciones.some(a => a.id === d.id)) aplicaciones.push({ id: d.id, potrero: x.potrero, inicio: x.inicio, fin: null, estado: 'abierta', km: 0, ancho: x.ancho || null, compartida: true, equipo: (x.equipos || [])[0] || '' });
+    });
+    // las que otro tractor cerró
+    const abiertas = new Set(s.docs.map(d => d.id));
+    aplicaciones.forEach(a => { if (a.estado === 'abierta' && (a.compartidaSubida || a.compartida) && !abiertas.has(a.id) && !aplicacionesPorSubir.has(a.id)) { a.estado = 'terminada'; a.fin = a.fin || Date.now(); if (a.id === activaId) { mostrarAviso(`La aplicación de ${a.potrero} fue terminada (o reemplazada por una nueva) en otro tractor.`); activaId = null; aplicando = false; ls.set('tractor_aplicando', false); pintarBotonAplicar(); dibujarCampo(); cargarAplicadoActivo(); } } });
+    guardarAplicaciones();
+  } catch (e) { console.warn('aplicaciones compartidas', e); }
+}
+async function traerTrazosOtros() {
+  const a = activa();
+  if (!a || !navigator.onLine) return;
+  try {
+    const s = await conTimeout(getDocs(collection(db, 'aplicaciones_campo', a.id, 'trazos')), 15000);
+    const tr = [], eqs = new Set(); let km = 0;
+    s.docs.map(d => d.data()).filter(x => x.dispositivo !== dispositivo).forEach(x => {
+      eqs.add(x.equipo || 'otro');
+      let actual = null, ult = null;
+      (x.puntos || []).sort((p, q) => p.t - q.t).forEach(p => {
+        const ll = [p.lat, p.lng];
+        const cont = ult && p.t - ult.t < 30000 && distM([ult.lat, ult.lng], ll) < 60;
+        if (!actual || !cont) { actual = []; tr.push(actual); }
+        if (actual.length && cont) km += distM(actual[actual.length - 1], ll) / 1000;
+        actual.push(ll); ult = p;
+      });
+    });
+    if (activaId !== a.id) return;
+    trazosOtros = tr; kmOtros = km; equiposOtros = [...eqs];
+    ls.set('tractor_otros_' + a.id, { trazos: tr, km, equipos: equiposOtros });
+    redibujarAplicado(); pintarAplicacion();
+  } catch (e) { console.warn('trazos de otros tractores', e); }
+}
+function sincronizarAplicacion(a) {
+  if (!a) return;
+  aplicacionesPorSubir.add(a.id); ls.set('tractor_ap_por_subir', [...aplicacionesPorSubir]);
+  subir();
+}
 async function subir() {
   if (subiendo || !navigator.onLine || !ajustes.equipo) return;
   subiendo = true;
@@ -282,11 +556,27 @@ async function subir() {
       if (!lote.length) break;
       const id = `${dispositivo}_${lote[0].t}`;
       await conTimeout(setDoc(doc(db, 'recorridos_tractor', claveEquipo(ajustes.equipo), 'lotes', id), {
-        equipo: ajustes.equipo, dia: diaLocal(lote[0].t), desde: lote[0].t, hasta: lote[lote.length - 1].t, n: lote.length,
+        equipo: ajustes.equipo, operador: sesion ? sesion.nombre : null, dia: diaLocal(lote[0].t), desde: lote[0].t, hasta: lote[lote.length - 1].t, n: lote.length,
         ancho: Number(ajustes.ancho) || null, dispositivo, ts: Date.now(),
-        puntos: lote.map(p => ({ t: p.t, lat: p.lat, lng: p.lng, acc: p.acc, v: p.v, h: p.h, c: p.c, a: p.a }))
+        puntos: lote.map(p => ({ t: p.t, lat: p.lat, lng: p.lng, acc: p.acc, v: p.v, h: p.h, c: p.c, a: p.a, ap: p.ap || null, pot: p.pot || null }))
       }), 25000);
+      const porAp = {};
+      lote.filter(p => p.a && p.ap).forEach(p => { (porAp[p.ap] = porAp[p.ap] || []).push({ t: p.t, lat: p.lat, lng: p.lng }); });
+      for (const [ap, pts] of Object.entries(porAp)) {
+        await conTimeout(setDoc(doc(db, 'aplicaciones_campo', ap, 'trazos', `${dispositivo}_${pts[0].t}`), { equipo: ajustes.equipo, operador: sesion ? sesion.nombre : null, dispositivo, puntos: pts, ts: Date.now() }), 20000);
+      }
       await marcarEnviados(lote.map(p => p.t));
+    }
+    for (const id of [...aplicacionesPorSubir]) {
+      const a = aplicaciones.find(x => x.id === id);
+      if (a) {
+        await conTimeout(setDoc(doc(db, 'recorridos_tractor', claveEquipo(ajustes.equipo), 'aplicaciones', a.id), { ...a, km: a.km || 0, ancho: a.ancho || Number(ajustes.ancho) || null, dispositivo, ts: Date.now() }), 20000);
+        const comp = { potrero: a.potrero, inicio: a.inicio, estado: a.estado, ancho: a.ancho || null, equipos: arrayUnion(ajustes.equipo), ts: Date.now() };
+        if (a.fin) comp.fin = a.fin;
+        await conTimeout(setDoc(doc(db, 'aplicaciones_campo', a.id), comp, { merge: true }), 20000);
+        a.compartidaSubida = true;
+      }
+      aplicacionesPorSubir.delete(id); ls.set('tractor_ap_por_subir', [...aplicacionesPorSubir]); guardarAplicaciones();
     }
   } catch (e) { console.warn('No se pudo subir (se reintenta después)', e); }
   subiendo = false;
@@ -297,9 +587,10 @@ function pintarRed() {
   ch.textContent = navigator.onLine ? '🟢 en línea' : '⚪ sin señal';
   ch.className = 'chip ' + (navigator.onLine ? 'ok' : 'med');
 }
-window.addEventListener('online', () => { pintarRed(); subir(); actualizarDatosCampo(false); });
+window.addEventListener('online', () => { pintarRed(); subir(); actualizarDatosCampo(false); traerAbiertasCompartidas().then(traerTrazosOtros); });
 window.addEventListener('offline', pintarRed);
-setInterval(subir, 30000);
+setInterval(() => { if (activa()) aplicacionesPorSubir.add(activaId); subir(); }, 30000);
+setInterval(() => { traerAbiertasCompartidas(); traerTrazosOtros(); }, 60000);
 
 // ── Potreros, zonas y equipos desde la app (se guardan para usar sin señal) ──
 async function actualizarDatosCampo(manual) {
@@ -311,12 +602,14 @@ async function actualizarDatosCampo(manual) {
     const d = sd.exists() ? sd.data() : {};
     datosCampo = {
       equipos: d.equipos || [],
-      potreros: (d.potreros || []).filter(p => Array.isArray(p.poligono) && p.poligono.length >= 3).map(p => ({ nombre: p.nombre, poligono: p.poligono })),
+      equipoOperador: d.equipoOperador || {},
+      potreros: (d.potreros || []).filter(p => Array.isArray(p.poligono) && p.poligono.length >= 3).map(p => ({ nombre: p.nombre, poligono: p.poligono, cultivo: p.tipo === 'frutal' ? (p.cultivoPermanente || null) : null })),
       zonas: sz.exists() ? (sz.data().zonas || []) : [],
+      anchosCultivo: sz.exists() && sz.data().anchosCultivo ? sz.data().anchosCultivo : null,
       ts: Date.now()
     };
     ls.set('tractor_datos_campo', datosCampo);
-    dibujarCampo(); llenarEquipos(); mostrarEstadoDatos();
+    dibujarCampo(); if (document.getElementById('capa-ajustes').style.display === 'flex') llenarEquipos(); mostrarEstadoDatos(); pintarAplicacion();
     if (manual) est.textContent += ' ✓ Actualizado.';
   } catch (e) { if (manual) est.textContent = 'No se pudo descargar: ' + e.message; }
 }
@@ -325,37 +618,117 @@ function mostrarEstadoDatos() {
   if (!datosCampo) { est.textContent = 'Todavía no hay potreros guardados en este celular. Conéctate a internet y toca "Actualizar potreros".'; return; }
   est.textContent = `${datosCampo.potreros.length} potreros y ${datosCampo.zonas.length} zonas guardados (${new Date(datosCampo.ts).toLocaleString('es-CL')}).`;
 }
-function llenarEquipos() {
-  const sel = document.getElementById('aj-equipo');
-  const lista = (datosCampo && datosCampo.equipos.length) ? datosCampo.equipos : (ajustes.equipo ? [ajustes.equipo] : []);
-  sel.innerHTML = '<option value="">— Elegir equipo —</option>' + lista.map(e => `<option value="${e}" ${e === ajustes.equipo ? 'selected' : ''}>${e}</option>`).join('');
+// Equipos del operador: los mismos 1 a 3 equipos asignados en la app de combustible
+// (Configurar → equipo por operador). Puede cambiar a cualquier otro, igual que al cargar.
+const ADMIN_PIN = '1234', ADMIN_NOMBRE = 'JC Allende', PIN_INICIAL = '0000';
+const ADMINS_EQUIVALENTES = ['Camila Faundez'];
+function equiposDe(op) {
+  const v = datosCampo && datosCampo.equipoOperador ? datosCampo.equipoOperador[op] : null;
+  if (!v) return [];
+  return (Array.isArray(v) ? v : [v]).map(e => e === '5082 E' ? 'JD 5082E' : e);
 }
+let eqElegido = '';
+function llenarEquipos() {
+  const op = sesion ? sesion.nombre : '';
+  document.getElementById('aj-operador').textContent = op ? '👤 ' + op : '';
+  const todos = (datosCampo && datosCampo.equipos.length) ? datosCampo.equipos : (ajustes.equipo ? [ajustes.equipo] : []);
+  const mios = equiposDe(op);
+  if (!eqElegido) eqElegido = ajustes.equipo || mios[0] || '';
+  const chips = document.getElementById('aj-mis-equipos');
+  chips.innerHTML = mios.map(e => `<button type="button" class="${e === eqElegido ? 'sel' : ''}" data-eq="${e}">🚜 ${e}</button>`).join('');
+  chips.querySelectorAll('button').forEach(b => b.onclick = () => { eqElegido = b.dataset.eq; document.getElementById('aj-equipo').value = ''; llenarEquipos(); });
+  document.getElementById('aj-lbl-mis').style.display = mios.length ? 'block' : 'none';
+  const otros = todos.filter(e => !mios.includes(e));
+  const sel = document.getElementById('aj-equipo');
+  sel.innerHTML = '<option value="">— Elegir equipo —</option>' + otros.map(e => `<option value="${e}" ${e === eqElegido ? 'selected' : ''}>${e}</option>`).join('');
+  sel.onchange = () => { eqElegido = sel.value; chips.querySelectorAll('button').forEach(b => b.classList.remove('sel')); };
+  // Sin equipos asignados, o eligió uno que no es suyo: se muestra la lista completa
+  const verOtro = !mios.length || (eqElegido && !mios.includes(eqElegido));
+  document.getElementById('aj-otro-wrap').style.display = verOtro ? 'block' : 'none';
+  document.getElementById('aj-btn-otro').style.display = verOtro ? 'none' : 'block';
+}
+window.mostrarOtroEquipo = function () {
+  document.getElementById('aj-otro-wrap').style.display = 'block';
+  document.getElementById('aj-btn-otro').style.display = 'none';
+};
+function pintarBarraEquipo() {
+  const op = sesion ? sesion.nombre.split(' ')[0] : '';
+  document.getElementById('b-equipo').textContent = ajustes.equipo ? `🚜 ${ajustes.equipo}${op ? ' · ' + op : ''}` : 'Modo tractor';
+}
+
+// ── Ingreso con PIN (el mismo de la app) ─────────────────────────
+window.intentarLogin = async function () {
+  const inp = document.getElementById('pin-input'), msg = document.getElementById('login-msg'), btn = document.getElementById('btn-login');
+  const pin = inp.value.trim();
+  if (!pin) { msg.textContent = 'Ingresa tu PIN.'; return; }
+  if (!navigator.onLine) { msg.textContent = 'Para ingresar la primera vez necesitas internet (WiFi o datos). Después funciona sin señal.'; return; }
+  btn.disabled = true; btn.textContent = 'Verificando…'; msg.textContent = '';
+  try {
+    let nombre = null, admin = false;
+    if (pin === ADMIN_PIN) { nombre = ADMIN_NOMBRE; admin = true; }
+    else if (pin === PIN_INICIAL) { msg.textContent = 'Tu PIN todavía es el inicial (0000). Entra primero a la app de combustible y cámbialo; después úsalo aquí.'; }
+    else {
+      const sp = await conTimeout(getDoc(doc(db, 'config', 'pines')), 20000);
+      const op = sp.exists() ? Object.entries(sp.data()).find(([, p]) => p === pin) : null;
+      if (op) { nombre = op[0]; admin = ADMINS_EQUIVALENTES.includes(nombre); }
+      else msg.textContent = 'PIN incorrecto.';
+    }
+    if (nombre) {
+      sesion = { nombre, admin, ts: Date.now() }; ls.set('tractor_sesion', sesion);
+      inp.value = '';
+      await actualizarDatosCampo(false);
+      cerrarCapa('capa-login');
+      const mios = equiposDe(nombre);
+      eqElegido = '';
+      if (mios.length === 1 && !admin) {           // un solo equipo: queda puesto y parte
+        ajustes = { ...ajustes, equipo: mios[0] }; ls.set('tractor_ajustes', ajustes);
+        pintarBarraEquipo(); redibujarAplicado(); pintarAplicacion(); pedirPantalla(); iniciarGPS(); subir();
+      } else {
+        eqElegido = mios[0] || ''; abrirAjustes();
+      }
+    }
+  } catch (e) { msg.textContent = 'No se pudo verificar: ' + e.message; }
+  btn.disabled = false; btn.textContent = 'Ingresar';
+};
+window.cerrarSesion = function () {
+  if (!confirm('¿Cerrar la sesión de ' + (sesion ? sesion.nombre : '') + '? Lo que no se ha subido queda guardado en el celular.')) return;
+  sesion = null; ls.set('tractor_sesion', null);
+  cerrarCapa('capa-ajustes');
+  document.getElementById('capa-login').style.display = 'flex';
+};
 
 // ── Botones ──────────────────────────────────────────────────────
 function pintarBotonAplicar() {
   const b = document.getElementById('btn-aplicar');
   b.classList.toggle('on', aplicando);
-  b.textContent = aplicando ? '⏸ APLICANDO… (tocar para pausar)' : '▶ EMPEZAR A APLICAR';
+  b.textContent = aplicando ? '⏸ APLICANDO · tocar para pausar' : '▶ EMPEZAR A APLICAR';
 }
+function empezarAplicar() { aplicando = true; ls.set('tractor_aplicando', true); pintarBotonAplicar(); if (navigator.vibrate) navigator.vibrate(80); }
 window.toggleAplicar = function () {
-  aplicando = !aplicando; ls.set('tractor_aplicando', aplicando); pintarBotonAplicar();
-  if (navigator.vibrate) navigator.vibrate(80);
+  if (!aplicando && !activa()) { abrirPotreros(empezarAplicar); return; } // primero elegir el potrero
+  if (aplicando) { aplicando = false; ls.set('tractor_aplicando', false); pintarBotonAplicar(); if (navigator.vibrate) navigator.vibrate(80); }
+  else empezarAplicar();
 };
 window.centrar = function () { seguir = true; if (ultimaPos) mapa.setView([ultimaPos.lat, ultimaPos.lng], Math.max(mapa.getZoom(), 17)); };
 window.abrirAjustes = function () {
-  llenarEquipos(); mostrarEstadoDatos();
+  if (!sesion) { document.getElementById('capa-login').style.display = 'flex'; return; }
+  eqElegido = ajustes.equipo || eqElegido; llenarEquipos(); mostrarEstadoDatos();
   document.getElementById('aj-ancho').value = ajustes.ancho;
   document.getElementById('capa-ajustes').style.display = 'flex';
 };
 window.guardarAjustes = function () {
-  const eq = document.getElementById('aj-equipo').value;
+  const eq = eqElegido || document.getElementById('aj-equipo').value;
   const an = Number(document.getElementById('aj-ancho').value);
   if (!eq) { alert('Elige el equipo'); return; }
   if (!(an > 0)) { alert('Indica el ancho de aplicación'); return; }
+  if (ajustes.equipo && eq !== ajustes.equipo && aplicando) {
+    if (!confirm(`Estás aplicando con ${ajustes.equipo}. ¿Cambiar a ${eq}? Se pausa la aplicación.`)) return;
+    aplicando = false; ls.set('tractor_aplicando', false); pintarBotonAplicar();
+  }
   ajustes = { equipo: eq, ancho: an }; ls.set('tractor_ajustes', ajustes);
-  document.getElementById('b-equipo').textContent = '🚜 ' + eq;
-  document.getElementById('capa-ajustes').style.display = 'none';
-  redibujarAplicado(); actualizarStats();
+  pintarBarraEquipo();
+  cerrarCapa('capa-ajustes');
+  redibujarAplicado(); pintarAplicacion();
   pedirPantalla(); iniciarGPS(); subir();
 };
 window.actualizarDatosCampo = actualizarDatosCampo;
@@ -373,16 +746,20 @@ document.getElementById('aviso').onclick = e => { e.target.style.display = 'none
     try {
       const hoy = new Date(); hoy.setHours(0, 0, 0, 0);
       const pts = (await puntosDesde(hoy.getTime())).sort((a, b) => a.t - b.t);
-      pts.forEach(dibujarPunto);
-      if (pts.length) { ultimoGuardado = pts[pts.length - 1]; }
-      redibujarAplicado(); actualizarStats();
+      pts.forEach(p => recorridoLinea.addLatLng([p.lat, p.lng]));
+      if (pts.length) ultimoGuardado = pts[pts.length - 1];
+      await cargarAplicadoActivo();
       limpiarViejos(); actualizarPendientes();
     } catch (e) { console.warn(e); }
   }
-  if (ajustes.equipo) { document.getElementById('b-equipo').textContent = '🚜 ' + ajustes.equipo; pedirPantalla(); iniciarGPS(); }
+  pintarAplicacion();
+  pintarBarraEquipo();
+  if (!sesion) document.getElementById('capa-login').style.display = 'flex';
+  else if (ajustes.equipo) { pedirPantalla(); iniciarGPS(); }
   else abrirAjustes();
   actualizarDatosCampo(false);
   subir();
+  traerAbiertasCompartidas().then(traerTrazosOtros);
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw-tractor.js', { scope: '/tractor' }).catch(e => console.warn('SW', e));
 })();
 </script>
