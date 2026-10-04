@@ -446,7 +446,9 @@ function jdpExtraerPuntos(values) {
     const tRaw = v.eventTimestamp || v.gpsFixTimestamp || v.timestamp || v.time || v.dateTime || v.recordedTime || v.date;
     const t = tRaw ? Date.parse(tRaw) : NaN;
     if (lat == null || lng == null || !isFinite(t) || (lat === 0 && lng === 0)) return;
-    out.push({ t, lat, lng, estado: v.machineState || v.state || null, vkmh: jdpVelKmh(v) });
+    const ms = v.machineState;
+    const estadoJD = ms && typeof ms === 'object' ? (ms.value || null) : (typeof ms === 'string' ? ms : null);
+    out.push({ t, lat, lng, estado: estadoJD || v.state || null, estadoJD, vkmh: jdpVelKmh(v) });
   });
   out.sort((a, b) => a.t - b.t);
   return out.filter((p, i) => i === 0 || p.t !== out[i - 1].t);
@@ -459,7 +461,7 @@ function jdpVelKmh(v) {
   if (typeof s === 'object') { unidad = String(s.unit || s.unitId || '').toLowerCase(); s = s.valueAsDouble ?? s.value; }
   s = Number(s);
   if (!isFinite(s)) return null;
-  if (unidad.includes('m/s') || unidad === 'mps' || unidad === 'meterspersecond') return s * 3.6;
+  if (unidad.includes('m/s') || unidad === 'mps' || unidad === 'm1s-1' || unidad === 'meterspersecond') return s * 3.6;
   if (unidad.includes('mi')) return s * 1.609;
   return s;
 }
@@ -537,7 +539,7 @@ function jdpPotreroCercano(lat, lng, potreros, margenM) {
   return mejor;
 }
 
-function jdpRepartir(puntos, tramos, desde, hasta, potreros, zonas, margenM, salidaPuntos, maxPasoMin, velMin, velMax, salidaDistM) {
+function jdpRepartir(puntos, tramos, desde, hasta, potreros, zonas, margenM, salidaPuntos, maxPasoMin, velMin, velMax, salidaDistM, usarEstadoJD) {
   const enVentana = puntos.filter(p => p.t >= desde - 6 * 3600000 && p.t <= hasta + 6 * 3600000);
   // Velocidad de cada punto: la informada por el equipo o, si no viene, calculada
   // con los puntos vecinos (solo si están a menos de 3 min; si no, queda sin dato).
@@ -557,8 +559,14 @@ function jdpRepartir(puntos, tramos, desde, hasta, potreros, zonas, margenM, sal
     const base = { ...p, vkmh: vel.v != null ? +vel.v.toFixed(1) : null, vCalc: vel.calc };
     const area = jdpZonaDePunto(p.lat, p.lng, zonas, 'area');
     if (area) return { ...base, zona: area, potrero: null, margen: false };
-    if (vel.v != null && vMax > 0 && vel.v > vMax) return { ...base, zona: JDP_TRASLADO, potrero: null, margen: false };
-    if (vel.v != null && vMin > 0 && vel.v < vMin) return { ...base, zona: JDP_DETENIDO, potrero: null, margen: false };
+    // Estado calculado por John Deere (Working / Idle / Transport): si viene y está activado, manda sobre la velocidad
+    const ej = usarEstadoJD ? String(p.estadoJD || '').toLowerCase() : '';
+    if (ej === 'idle') return { ...base, zona: JDP_DETENIDO, potrero: null, margen: false };
+    if (ej === 'transport') return { ...base, zona: JDP_TRASLADO, potrero: null, margen: false };
+    if (ej !== 'working') {
+      if (vel.v != null && vMax > 0 && vel.v > vMax) return { ...base, zona: JDP_TRASLADO, potrero: null, margen: false };
+      if (vel.v != null && vMin > 0 && vel.v < vMin) return { ...base, zona: JDP_DETENIDO, potrero: null, margen: false };
+    }
     const dentro = jdpPotreroDePunto(p.lat, p.lng, potreros);
     if (dentro) return { ...base, zona: null, potrero: dentro, margen: false };
     const camino = jdpZonaDePunto(p.lat, p.lng, zonas, 'camino');
@@ -713,6 +721,7 @@ let jdpMinPuntos = 5;    // puntos seguidos mínimos dentro de un potrero para q
 let jdpMaxPasoMin = 5;   // tiempo mínimo continuo (min) en un potrero para que cuente como trabajo
 let jdpSalidaPuntos = 10; // puntos seguidos afuera para dejar un potrero (antes, la salida se suma al potrero)
 let jdpSalidaDistM = 25;  // metros: si se aleja más que esto del borde, dejó el potrero
+let jdpUsarEstadoJD = false; // usar Working / Idle / Transport de John Deere (apagado: su traslado/ralentí no es confiable)
 let jdpVelMin = 1;       // km/h: bajo esto el punto cuenta como detenido (0 = no usar)
 let jdpVelMax = 15;      // km/h: sobre esto el punto cuenta como traslado (0 = no usar)
 let jdpVelPorEquipo = {}; // { 'JD 6910': { min, max } } — si un equipo no tiene, usa los de arriba
@@ -754,6 +763,7 @@ async function jdpCargarZonas() {
     if (typeof d.maxPasoMin === 'number') jdpMaxPasoMin = d.maxPasoMin;
     if (typeof d.salidaPuntos === 'number') jdpSalidaPuntos = d.salidaPuntos;
     if (typeof d.salidaDistM === 'number') jdpSalidaDistM = d.salidaDistM;
+    if (typeof d.usarEstadoJD === 'boolean') jdpUsarEstadoJD = d.usarEstadoJD;
     if (typeof d.velMin === 'number') jdpVelMin = d.velMin;
     if (typeof d.velMax === 'number') jdpVelMax = d.velMax;
     jdpVelPorEquipo = d.velPorEquipo && typeof d.velPorEquipo === 'object' ? d.velPorEquipo : {};
@@ -763,7 +773,7 @@ async function jdpCargarZonas() {
 async function jdpGuardarZonas(zonas, margenM, anchoCaminoM) {
   const m = typeof margenM === 'number' ? margenM : jdpMargenM;
   const a = typeof anchoCaminoM === 'number' ? anchoCaminoM : jdpAnchoCaminoM;
-  await setDoc(doc(db, 'config', 'zonas_sin_cultivo'), { zonas, margenM: m, anchoCaminoM: a, minPuntos: jdpMinPuntos, maxPasoMin: jdpMaxPasoMin, salidaPuntos: jdpSalidaPuntos, salidaDistM: jdpSalidaDistM, velMin: jdpVelMin, velMax: jdpVelMax, velPorEquipo: jdpVelPorEquipo, actualizadoPor: currentUser || '', ts: Date.now() });
+  await setDoc(doc(db, 'config', 'zonas_sin_cultivo'), { zonas, margenM: m, anchoCaminoM: a, minPuntos: jdpMinPuntos, maxPasoMin: jdpMaxPasoMin, salidaPuntos: jdpSalidaPuntos, salidaDistM: jdpSalidaDistM, usarEstadoJD: jdpUsarEstadoJD, velMin: jdpVelMin, velMax: jdpVelMax, velPorEquipo: jdpVelPorEquipo, actualizadoPor: currentUser || '', ts: Date.now() });
   jdpZonas = zonas; jdpMargenM = m; jdpAnchoCaminoM = a;
 }
 // eq vacío = valores por defecto; con equipo = solo para ese equipo
@@ -783,6 +793,12 @@ window.jdpQuitarVelEquipo = async function(eq) {
   const c = { ...jdpVelPorEquipo }; delete c[eq]; jdpVelPorEquipo = c;
   try { await jdpGuardarZonas(jdpZonas); } catch (e) { toast('No se pudo guardar: ' + e.message, false); }
   if (typeof renderVelEquipos === 'function') renderVelEquipos();
+  jdpRecalcular();
+}
+window.jdpCambiarEstadoJD = async function(on) {
+  jdpUsarEstadoJD = !!on;
+  try { await jdpGuardarZonas(jdpZonas); } catch (e) { toast('No se pudo guardar: ' + e.message, false); }
+  const el = document.getElementById('config-estado-jd'); if (el) el.checked = jdpUsarEstadoJD;
   jdpRecalcular();
 }
 window.jdpCambiarSalidaDist = async function(v) {
@@ -907,12 +923,7 @@ window.consultarJdPotreros = async function() {
   try {
     const principalId = m.organizationRole?.principalId || m.principalId || m.id;
     // La lista de máquinas a veces viene sin links: se piden al recurso de la máquina.
-    let links = m.links || [];
-    if (!links.length) {
-      const r0 = await callJDApi(`/machines/${principalId}`);
-      diag.llamadas.push(`Máquina: HTTP ${r0.status}`);
-      if (r0.status === 200 && r0.data) links = r0.data.links || [];
-    }
+    const links = m.links || [];
     diag.rels = links.map(l => l.rel);
     const link = re => links.find(l => re.test(l.rel || ''));
     const lHrs = link(/hoursofoperation/i);
@@ -925,7 +936,10 @@ window.consultarJdPotreros = async function() {
     let loc = await jdpTraerRango(urlBc, desde, Math.min(hasta, desde + 24 * 3600000), diag, 'Breadcrumbs (prueba)');
     if (loc.ok && jdpExtraerPuntos(loc.valores).length) {
       diag.fuenteGps = 'breadcrumbs';
-      if (hasta - desde > 24 * 3600000) loc = await jdpTraerRango(urlBc, desde, hasta, diag, 'Breadcrumbs');
+      if (hasta - desde > 24 * 3600000) {
+        const resto = await jdpTraerRango(urlBc, desde + 24 * 3600000, hasta, diag, 'Breadcrumbs');
+        loc = { ...resto, valores: [...loc.valores, ...resto.valores] };
+      }
     } else {
       diag.fuenteGps = 'locationHistory';
       const lLoc = link(/locationhistory/i) || link(/location/i);
@@ -958,7 +972,7 @@ function jdpRecalcular() {
   if (!jdpRaw) return null;
   const velEq = jdpVelDeEquipo(document.getElementById('jdp-equipo')?.value || '');
   const { puntos, tramos, desde, hasta, diag, potreros } = jdpRaw;
-  const r = jdpRepartir(puntos, tramos, desde, hasta, potreros, jdpZonasParaCalculo(), jdpMargenM, jdpSalidaPuntos, jdpMaxPasoMin, velEq.min, velEq.max, jdpSalidaDistM);
+  const r = jdpRepartir(puntos, tramos, desde, hasta, potreros, jdpZonasParaCalculo(), jdpMargenM, jdpSalidaPuntos, jdpMaxPasoMin, velEq.min, velEq.max, jdpSalidaDistM, jdpUsarEstadoJD);
   jdpRenderResultado(r, diag, desde, hasta, potreros.length);
   return r;
 }
@@ -1033,6 +1047,10 @@ function jdpRenderResultado(r, diag, desde, hasta, nPotreros) {
       ${jdpVelAct.propio ? '' : '<span style="color:var(--acero)">(valores por defecto)</span>'}
       <span style="color:var(--acero)">(velocidad: ${r.puntos.filter(p => p.vkmh != null && !p.vCalc).length} informada, ${r.puntos.filter(p => p.vCalc).length} calculada, ${r.puntos.filter(p => p.vkmh == null).length} sin dato)</span>
     </div>
+    ${r.puntos.some(p => p.estadoJD) ? `<label style="display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:8px;text-transform:none;letter-spacing:normal;font-family:var(--sans);font-weight:400;cursor:pointer">
+      <input type="checkbox" ${jdpUsarEstadoJD ? 'checked' : ''} onchange="jdpCambiarEstadoJD(this.checked)" style="width:auto">
+      Usar el estado de John Deere (Working ${r.puntos.filter(p => p.estadoJD === 'Working').length} · Idle ${r.puntos.filter(p => p.estadoJD === 'Idle').length} · Transport ${r.puntos.filter(p => p.estadoJD === 'Transport').length} puntos)
+    </label>` : ''}
     <div style="background:var(--fondo);border-radius:8px;padding:10px 12px;font-size:12px">
       <strong>Zonas que no son potrero:</strong> ${jdpZonas.length ? jdpZonas.map(z => jdpIconoZona(z) + z.nombre).join(', ') : 'ninguna todavía'}.
       Se dibujan en <strong>Cuaderno de Campo → ⚙️ Config. Potreros</strong>. Bodegas y caminos no reciben litros; el tiempo en carga de fumigadores se suma al potrero que se aplica después.
@@ -1042,8 +1060,8 @@ function jdpRenderResultado(r, diag, desde, hasta, nPotreros) {
     <div style="font-weight:700;font-size:13px;margin-top:12px">Tiempo que no se reparte</div>${tablaNoProd}
     <div style="font-size:12px;color:var(--acero);margin-top:6px">Motor encendido total: <strong>${h(r.totalMs)} h</strong> · en potreros: <strong>${h(prodMs)} h</strong>${litros != null && prodMs ? ` · los ${litros.toFixed(1)} L se reparten solo entre los potreros` : ''}</div>
     <details style="margin-top:12px;font-size:12px"><summary style="cursor:pointer">Ver los ${r.puntos.length} puntos GPS</summary>
-      <div style="overflow-x:auto;max-height:260px;overflow-y:auto"><table style="width:100%;min-width:0;font-size:12px"><thead><tr><th style="padding:4px">Hora</th><th style="padding:4px">Lugar</th><th style="padding:4px">km/h</th><th style="padding:4px">Motor</th></tr></thead><tbody>
-      ${r.puntos.map(p => `<tr><td style="padding:4px;white-space:nowrap">${new Date(p.t).toLocaleString('es-CL', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</td><td style="padding:4px">${p.zona ? p.zona : p.potrero ? p.potrero + (p.cont ? ' (continuidad)' : p.margen ? ' (cabecera)' : '') : p.paso ? 'cruce por ' + p.paso : 'fuera'}</td><td style="padding:4px">${p.vkmh == null ? '—' : p.vkmh + (p.vCalc ? '*' : '')}</td><td style="padding:4px">${p.motor == null ? '—' : p.motor ? 'encendido' : 'apagado'}</td></tr>`).join('')}
+      <div style="overflow-x:auto;max-height:260px;overflow-y:auto"><table style="width:100%;min-width:0;font-size:12px"><thead><tr><th style="padding:4px">Hora</th><th style="padding:4px">Lugar</th><th style="padding:4px">km/h</th><th style="padding:4px">JD</th><th style="padding:4px">Motor</th></tr></thead><tbody>
+      ${r.puntos.map(p => `<tr><td style="padding:4px;white-space:nowrap">${new Date(p.t).toLocaleString('es-CL', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</td><td style="padding:4px">${p.zona ? p.zona : p.potrero ? p.potrero + (p.cont ? ' (continuidad)' : p.margen ? ' (cabecera)' : '') : p.paso ? 'cruce por ' + p.paso : 'fuera'}</td><td style="padding:4px">${p.vkmh == null ? '—' : p.vkmh + (p.vCalc ? '*' : '')}</td><td style="padding:4px">${p.estadoJD || '—'}</td><td style="padding:4px">${p.motor == null ? '—' : p.motor ? 'encendido' : 'apagado'}</td></tr>`).join('')}
       </tbody></table></div></details>
     <button class="btn btn-secondary btn-full" style="margin-top:10px;justify-content:center" onclick="jdpDescargarDatos()">⬇️ Descargar datos de la prueba (para mandárselos a Claude)</button>
     <details style="margin-top:12px;font-size:12px"><summary style="cursor:pointer">Detalle técnico (para revisar con Claude)</summary>
@@ -5804,6 +5822,8 @@ function renderListaZonasSinCultivo() {
   if (sp) sp.value = jdpSalidaPuntos;
   const sd = document.getElementById('config-salida-dist');
   if (sd) sd.value = jdpSalidaDistM;
+  const ejd = document.getElementById('config-estado-jd');
+  if (ejd) ejd.checked = jdpUsarEstadoJD;
   const vmn = document.getElementById('config-vel-min'), vmx = document.getElementById('config-vel-max');
   if (vmn) vmn.value = jdpVelMin; if (vmx) vmx.value = jdpVelMax;
   cont.innerHTML = jdpZonas.length ? jdpZonas.map((z, i) => `
@@ -9901,6 +9921,10 @@ tbody td{padding:10px 12px;vertical-align:middle;}
           </div>
         </div>
         <div class="hint" style="margin-top:-4px">Bajo la mínima, el tiempo cuenta como <strong>detenido con motor encendido</strong>; sobre la máxima, como <strong>traslado</strong>. Ninguno de los dos recibe litros. Con 0 se desactiva cada límite. Si el equipo no informa velocidad, se calcula con los puntos GPS cercanos.</div>
+        <label style="display:flex;align-items:center;gap:8px;margin:12px 0 4px;font-size:13px;text-transform:none;letter-spacing:normal;font-family:var(--sans);font-weight:400;cursor:pointer">
+          <input type="checkbox" id="config-estado-jd" onchange="jdpCambiarEstadoJD(this.checked)" style="width:auto"> Usar el estado de la máquina que entrega John Deere (Working / Idle / Transport) cuando venga (no recomendado)
+        </label>
+        <div class="hint" style="margin-bottom:8px">John Deere calcula si la máquina está trabajando, en ralentí o en traslado (con la carga del motor). En la práctica marca traslado a velocidades demasiado altas, por eso queda apagado y se usan las velocidades por equipo. Si se activa, manda sobre las velocidades cuando viene.</div>
         <div class="cultivos-label" style="margin-top:12px">Velocidad de trabajo por equipo (km/h)</div>
         <div class="hint" style="margin-bottom:6px">Los equipos sin valores propios usan los de por defecto.</div>
         <div id="lista-vel-equipos"></div>
