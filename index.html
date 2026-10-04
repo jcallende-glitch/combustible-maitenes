@@ -1992,6 +1992,7 @@ async function loadConfig() {
     trabajadoresAsistenciaConfig = config.trabajadoresAsistencia || [];
     potrerosConfig = config.potreros || [];
     cultivosCampoConfig = config.cultivosCampo || [];
+    cargarLotesTemporada();
     tiposProductoCampoConfig = config.tiposProductoCampo || [];
     tiposLaborCampoConfig = config.tiposLaborCampo || [];
     tiposLaborCampoDeshabilitados = config.tiposLaborCampoDeshabilitados || [];
@@ -5275,6 +5276,7 @@ function renderEstadoPotreros() {
       <div class="anterior-row"><span>Hectáreas:</span><strong>${p.hectareas != null ? p.hectareas + ' ha' : '—'}</strong></div>
       <div class="anterior-row"><span>Tipo:</span><strong>${p.tipo === 'frutal' ? '🌳 Frutal' : '🌾 Anual'}</strong></div>
       <div class="anterior-row"><span>${p.tipo === 'frutal' ? 'Cultivo permanente' : 'Cultivo actual'}:</span><strong>${cultivoActual}</strong></div>
+      ${(() => { const ls = p.tipo === 'frutal' ? null : lotesDe(nombre, new Date().getFullYear()); return ls ? '<div class="anterior-row"><span>✂️ Lotes ' + new Date().getFullYear() + ':</span><strong>' + ls.map(l => escA(l.nombre) + ' ' + escA(l.cultivo || '?') + (l.hectareas != null ? ' (' + l.hectareas.toFixed(1) + ' ha)' : '')).join(' · ') + '</strong></div>' : ''; })()}
     </div>`;
   }).join('');
 }
@@ -6135,10 +6137,22 @@ function renderMapaPotreros(containerId, clickable, drawable, multiSelect, forza
       const cultivo = p.tipo === 'frutal' ? p.cultivoPermanente : (cultivoActualPorPotrero[p.nombre] ? cultivoActualPorPotrero[p.nombre].cultivo : null);
       const color = colorParaCultivo(cultivo);
       const seleccionado = multiSelect && camposLaborPotrerosSel.includes(p.nombre);
-      const poly = L.polygon(p.poligono, estiloPoligonoPotrero(color, seleccionado)).addTo(map);
-      poly.bindTooltip(`${p.nombre}${cultivo ? ' — ' + cultivo : ' — sin definir'}`, { sticky: true });
-      mapaPotrerosPoligonos[containerId][p.nombre] = { layer: poly, color };
-      if (multiSelect) poly.on('click', () => window.toggleCampoLaborPotreroDesdeMapa(p.nombre));
+      const lotesAnio = p.tipo !== 'frutal' ? lotesDe(p.nombre, new Date().getFullYear()) : null;
+      if (lotesAnio) {
+        const caps = lotesAnio.map(l => {
+          const col = colorParaCultivo(l.cultivo);
+          const pg = L.polygon(jdpNormPoligono(l.poligono), estiloPoligonoPotrero(col, seleccionado)).addTo(map);
+          pg.bindTooltip(`${p.nombre} · ${l.nombre}${l.cultivo ? ' — ' + l.cultivo : ' — sin definir'}`, { sticky: true });
+          if (multiSelect) pg.on('click', () => window.toggleCampoLaborPotreroDesdeMapa(p.nombre));
+          return { pg, col };
+        });
+        mapaPotrerosPoligonos[containerId][p.nombre] = { color, layer: { setStyle: st => caps.forEach(c => c.pg.setStyle({ ...st, fillColor: c.col, color: st.color === '#FFD400' ? '#FFD400' : c.col })) } };
+      } else {
+        const poly = L.polygon(p.poligono, estiloPoligonoPotrero(color, seleccionado)).addTo(map);
+        poly.bindTooltip(`${p.nombre}${cultivo ? ' — ' + cultivo : ' — sin definir'}`, { sticky: true });
+        mapaPotrerosPoligonos[containerId][p.nombre] = { layer: poly, color };
+        if (multiSelect) poly.on('click', () => window.toggleCampoLaborPotreroDesdeMapa(p.nombre));
+      }
       p.poligono.forEach(c => bounds.push(c));
     } catch(err) {
       console.warn(`No se pudo dibujar el mapa de "${p.nombre}" — datos de polígono inválidos`, err);
@@ -6192,6 +6206,187 @@ window.renderMapaCampoPreview = function() {
       potrerosConfig.map(p => `<option value="${p.nombre}" ${p.nombre===cur?'selected':''}>${p.nombre}${Array.isArray(p.poligono)&&p.poligono.length?' ✓':''}</option>`).join('');
   }
   renderMapaPotreros('config-mapa-preview', false, true);
+}
+
+// ─── LOTES POR TEMPORADA (un potrero dividido en 2+ cultivos en un año) ───
+// config/lotes_temporada = { [potrero]: { [año]: [ {id, nombre, cultivo, hectareas, poligono:[{lat,lng}]} ] } }
+// Un potrero se "abre" por año: se corta con líneas y cada pedazo (lote) lleva
+// su cultivo. Un año con 0 o 1 lote = potrero entero (sin división).
+let lotesTemporada = {};
+async function cargarLotesTemporada() {
+  try {
+    const sn = await getDoc(doc(db, 'config', 'lotes_temporada'));
+    lotesTemporada = sn.exists() ? (sn.data() || {}) : {};
+  } catch (e) { console.warn('lotes_temporada', e); }
+}
+function lotesDe(potrero, anio) {
+  const a = lotesTemporada && lotesTemporada[potrero] && lotesTemporada[potrero][String(anio)];
+  return Array.isArray(a) && a.length > 1 ? a : null;
+}
+// Cultivo/lote que cubre un punto en una temporada (para trazabilidad futura)
+window.loteEnPunto = function(potrero, lat, lng, anio) {
+  const ls = lotesDe(potrero, anio || new Date().getFullYear());
+  if (!ls) return null;
+  return ls.find(l => jdpPuntoEnPoligono(lat, lng, jdpNormPoligono(l.poligono))) || null;
+};
+function areaHaPoligono(poly) { // poly [[lat,lng]]
+  if (!poly || poly.length < 3) return 0;
+  const la0 = poly[0][0], lo0 = poly[0][1], kx = 111320 * Math.cos(la0 * Math.PI / 180), ky = 110540;
+  const P = poly.map(([la, lo]) => [(lo - lo0) * kx, (la - la0) * ky]);
+  let a = 0;
+  for (let i = 0, j = P.length - 1; i < P.length; j = i++) a += P[j][0] * P[i][1] - P[i][0] * P[j][1];
+  return Math.abs(a) / 2 / 10000;
+}
+// Corta un polígono con la recta A-B (Sutherland–Hodgman contra cada semiplano)
+function cortarPoligonoConRecta(poly, A, B) {
+  const lado = P => (B[1] - A[1]) * (P[0] - A[0]) - (B[0] - A[0]) * (P[1] - A[1]);
+  const clip = sgn => {
+    const out = [], n = poly.length;
+    for (let i = 0; i < n; i++) {
+      const cur = poly[i], prev = poly[(i + n - 1) % n];
+      const dc = sgn * lado(cur), dp = sgn * lado(prev);
+      const inter = () => { const t = dp / (dp - dc); return [prev[0] + t * (cur[0] - prev[0]), prev[1] + t * (cur[1] - prev[1])]; };
+      if (dc >= 0) { if (dp < 0) out.push(inter()); out.push(cur); }
+      else if (dp >= 0) out.push(inter());
+    }
+    return out;
+  };
+  return [clip(1), clip(-1)];
+}
+
+let LT = null; // estado del editor de lotes
+window._lotesDbg = () => LT; Object.defineProperty(window, 'LT', { get: () => LT, configurable: true }); window.lotesRedibujar = () => lotesRedibujar(); window.areaHaPoligono = a => areaHaPoligono(a); window.lotesDe = (p, a) => lotesDe(p, a);
+const LT_LETRAS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+
+window.abrirLotes = async function(idx) {
+  const p = potrerosConfig[idx];
+  if (!p) return;
+  if (!poligonoValido(p.poligono)) { toast('Primero dibuja el mapa de este potrero (Config. Potreros → dibujar)', false); return; }
+  await cargarLotesTemporada();
+  const anioAct = new Date().getFullYear();
+  LT = { pot: p, poly: jdpNormPoligono(p.poligono), anio: anioAct, lotes: [], hist: [], cortando: false, pts: [], map: null, capas: [] };
+  const sel = document.getElementById('lotes-anio');
+  sel.innerHTML = [anioAct + 1, anioAct, anioAct - 1, anioAct - 2, anioAct - 3, anioAct - 4].map(a => `<option value="${a}" ${a === anioAct ? 'selected' : ''}>Temporada ${a}</option>`).join('');
+  document.getElementById('lotes-titulo').textContent = '✂️ ' + p.nombre + (p.hectareas != null ? ' · ' + p.hectareas + ' ha' : '');
+  document.getElementById('modal-lotes').style.display = 'flex';
+  lotesCargarAnio();
+  setTimeout(lotesIniciarMapa, 100);
+}
+function lotesCargarAnio() {
+  const guardados = lotesDe(LT.pot.nombre, LT.anio);
+  const cultRef = cultivoActualPorPotrero[LT.pot.nombre] ? cultivoActualPorPotrero[LT.pot.nombre].cultivo : '';
+  LT.lotes = guardados
+    ? guardados.map(l => ({ id: l.id, nombre: l.nombre, cultivo: l.cultivo || '', poligono: jdpNormPoligono(l.poligono) }))
+    : [{ id: 'L' + Date.now(), nombre: LT.pot.nombre, cultivo: String(LT.anio) === String(new Date().getFullYear()) ? cultRef : '', poligono: LT.poly.map(c => [...c]) }];
+  LT.hist = []; LT.cortando = false; LT.pts = [];
+  lotesRedibujar();
+}
+window.lotesCambiarAnio = function() { LT.anio = parseInt(document.getElementById('lotes-anio').value); lotesCargarAnio(); }
+window.cerrarLotes = function() {
+  document.getElementById('modal-lotes').style.display = 'none';
+  if (LT && LT.map) { LT.map.remove(); LT.map = null; }
+  LT = null;
+}
+function lotesIniciarMapa() {
+  if (!LT || typeof L === 'undefined') return;
+  const el = document.getElementById('lotes-mapa');
+  el.innerHTML = '';
+  LT.map = L.map('lotes-mapa');
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { attribution: 'Tiles &copy; Esri', maxZoom: 20 }).addTo(LT.map);
+  LT.map.fitBounds(LT.poly);
+  LT.map.on('click', e => lotesClickMapa(e.latlng.lat, e.latlng.lng));
+  setTimeout(() => { if (LT && LT.map) { LT.map.invalidateSize(); LT.map.fitBounds(LT.poly); } }, 150);
+  lotesRedibujar();
+}
+function colorLote(l) { return l.cultivo ? colorParaCultivo(l.cultivo) : '#9CA3AF'; }
+function lotesPintarMapa() {
+  if (!LT) return;
+  if (LT.map) {
+    LT.capas.forEach(c => LT.map.removeLayer(c)); LT.capas = [];
+    LT.lotes.forEach(l => {
+      const c = colorLote(l);
+      const pg = L.polygon(l.poligono, { color: '#fff', weight: 2, fillColor: c, fillOpacity: 0.55 }).addTo(LT.map);
+      pg.bindTooltip(l.nombre + (l.cultivo ? ' — ' + l.cultivo : ''), { permanent: true, direction: 'center', className: 'lote-tip' });
+      LT.capas.push(pg);
+    });
+    LT.capas.push(L.polygon(LT.poly, { color: '#FFD400', weight: 3, fill: false }).addTo(LT.map));
+    if (LT.pts.length) {
+      LT.pts.forEach(pt => LT.capas.push(L.circleMarker(pt, { radius: 6, color: '#fff', fillColor: '#EF4444', fillOpacity: 1 }).addTo(LT.map)));
+      if (LT.pts.length === 2) LT.capas.push(L.polyline(LT.pts, { color: '#EF4444', weight: 3, dashArray: '6 6' }).addTo(LT.map));
+    }
+  }
+}
+function lotesRedibujar() {
+  if (!LT) return;
+  lotesPintarMapa();
+  const btn = document.getElementById('lotes-btn-cortar');
+  btn.style.background = LT.cortando ? '#EF4444' : ''; btn.style.color = LT.cortando ? '#fff' : '';
+  btn.textContent = LT.cortando ? '✕ Cancelar corte' : '✂️ Cortar';
+  document.getElementById('lotes-estado').textContent = LT.cortando
+    ? (LT.pts.length === 0 ? 'Toca un punto a un lado del lote y luego otro al lado opuesto: esa línea lo divide.' : 'Toca el 2º punto, al otro lado del lote.')
+    : 'Temporada ' + LT.anio + ': ' + (LT.lotes.length > 1 ? LT.lotes.length + ' lotes' : 'potrero entero') + '. Usa ✂️ Cortar para dividirlo.';
+  const total = LT.lotes.reduce((a, l) => a + areaHaPoligono(l.poligono), 0);
+  const opts = (cultivosCampoConfig && cultivosCampoConfig.length ? cultivosCampoConfig : (config.centros || []).filter(x => !/otros|mantenci|energ|desplaz/i.test(x)));
+  document.getElementById('lotes-lista').innerHTML = LT.lotes.map((l, i) => {
+    const ha = areaHaPoligono(l.poligono);
+    return `<div style="display:flex;gap:6px;align-items:center;margin:6px 0;flex-wrap:wrap">
+      <span style="width:16px;height:16px;border-radius:4px;background:${colorLote(l)};border:1px solid rgba(0,0,0,.3);flex:none"></span>
+      <input type="text" value="${escA(l.nombre)}" oninput="LT.lotes[${i}].nombre=this.value;lotesRedibujarMapaSolo()" style="flex:1;min-width:90px">
+      <select onchange="LT.lotes[${i}].cultivo=this.value;lotesRedibujar()" style="flex:1;min-width:110px"><option value="">Cultivo…</option>${opts.map(c => `<option value="${escA(c)}" ${c === l.cultivo ? 'selected' : ''}>${escA(c)}</option>`).join('')}</select>
+      <span style="font-size:12px;color:#6B7280;white-space:nowrap">${ha.toFixed(1)} ha · ${total ? Math.round(ha / total * 100) : 0}%</span>
+    </div>`;
+  }).join('') + `<div style="font-size:12px;color:#6B7280;margin-top:4px">Total: ${total.toFixed(1)} ha${LT.pot.hectareas != null ? ' (potrero declarado: ' + LT.pot.hectareas + ' ha)' : ''}</div>`;
+}
+window.lotesRedibujarMapaSolo = function() { lotesPintarMapa(); }
+window.lotesToggleCorte = function() { LT.cortando = !LT.cortando; LT.pts = []; lotesRedibujar(); }
+window.lotesClickMapa = function(lat, lng) {
+  if (!LT || !LT.cortando) return;
+  LT.pts.push([lat, lng]);
+  if (LT.pts.length < 2) { lotesRedibujar(); return; }
+  const [A, B] = LT.pts;
+  const objetivo = LT.lotes.find(l => jdpPuntoEnPoligono(A[0], A[1], l.poligono)) || LT.lotes.find(l => jdpPuntoEnPoligono(B[0], B[1], l.poligono))
+    || LT.lotes.find(l => { const m = [(A[0] + B[0]) / 2, (A[1] + B[1]) / 2]; return jdpPuntoEnPoligono(m[0], m[1], l.poligono); });
+  if (!objetivo) { toast('La línea no pasa por ningún lote', false); LT.pts = []; lotesRedibujar(); return; }
+  const [p1, p2] = cortarPoligonoConRecta(objetivo.poligono, A, B);
+  if (p1.length < 3 || p2.length < 3 || areaHaPoligono(p1) < 0.01 || areaHaPoligono(p2) < 0.01) {
+    toast('Esa línea no divide el lote: debe atravesarlo de lado a lado', false); LT.pts = []; lotesRedibujar(); return;
+  }
+  LT.hist.push(JSON.stringify(LT.lotes));
+  const resto = LT.lotes.filter(l => l !== objetivo);
+  const usados = new Set(resto.map(l => l.nombre));
+  const nombreNuevo = () => { for (const c of LT_LETRAS) { const n = LT.pot.nombre + '-' + c; if (!usados.has(n)) { usados.add(n); return n; } } return LT.pot.nombre + '-' + (usados.size + 1); };
+  const idx = LT.lotes.indexOf(objetivo);
+  const n1 = { id: 'L' + Date.now() + 'a', nombre: nombreNuevo(), cultivo: objetivo.cultivo, poligono: p1 };
+  const n2 = { id: 'L' + Date.now() + 'b', nombre: nombreNuevo(), cultivo: '', poligono: p2 };
+  LT.lotes.splice(idx, 1, n1, n2);
+  LT.cortando = false; LT.pts = [];
+  lotesRedibujar();
+}
+window.lotesDeshacer = function() {
+  if (!LT) return;
+  if (LT.cortando && LT.pts.length) { LT.pts.pop(); lotesRedibujar(); return; }
+  if (!LT.hist.length) { toast('Nada que deshacer', false); return; }
+  LT.lotes = JSON.parse(LT.hist.pop());
+  lotesRedibujar();
+}
+window.lotesGuardar = async function() {
+  if (!LT) return;
+  const nombres = LT.lotes.map(l => l.nombre.trim());
+  if (nombres.some(n => !n) || new Set(nombres).size !== nombres.length) { toast('Cada lote necesita un nombre distinto', false); return; }
+  const sinCultivo = LT.lotes.length > 1 && LT.lotes.some(l => !l.cultivo);
+  if (sinCultivo && !confirm('Hay lotes sin cultivo. ¿Guardar igual?')) return;
+  const arr = LT.lotes.length > 1 ? LT.lotes.map(l => ({
+    id: l.id, nombre: l.nombre.trim(), cultivo: l.cultivo || null,
+    hectareas: Math.round(areaHaPoligono(l.poligono) * 100) / 100,
+    poligono: l.poligono.map(([lat, lng]) => ({ lat, lng }))
+  })) : [];
+  try {
+    await setDoc(doc(db, 'config', 'lotes_temporada'), { [LT.pot.nombre]: { [String(LT.anio)]: arr } }, { merge: true });
+    lotesTemporada[LT.pot.nombre] = { ...(lotesTemporada[LT.pot.nombre] || {}), [String(LT.anio)]: arr };
+    toast(arr.length ? '✓ ' + arr.length + ' lotes guardados (' + LT.anio + ')' : '✓ Potrero entero en ' + LT.anio, true);
+    cerrarLotes();
+    renderListaPotreros();
+  } catch (e) { toast('Error: ' + e.message, false); }
 }
 
 // ─── DIBUJAR POTRERO EN PANTALLA COMPLETA ───────────────────
@@ -6657,9 +6852,10 @@ function renderListaPotreros() {
         <span style="flex:1;min-width:140px">
           <strong>${p.nombre}</strong><br>
           <span style="font-size:12px;color:var(--acero)">${p.hectareas != null ? p.hectareas+' ha' : 'sin ha'} · ${p.tipo === 'frutal' ? '🌳 Frutal' : '🌾 Anual'}</span><br>
-          <span style="font-size:12px;color:var(--verde);font-weight:600">🌱 ${textoCultivoActual(p.nombre)}</span>
+          <span style="font-size:12px;color:var(--verde);font-weight:600">🌱 ${textoCultivoActual(p.nombre)}</span>${(() => { const ls = lotesDe(p.nombre, new Date().getFullYear()); return ls ? '<br><span style="font-size:12px;color:#92400E">✂️ ' + new Date().getFullYear() + ': ' + ls.map(l => escA(l.nombre) + ' ' + escA(l.cultivo || '?') + ' ' + (l.hectareas != null ? l.hectareas.toFixed(1) + ' ha' : '')).join(' · ') + '</span>' : ''; })()}
         </span>
         ${p.tipo !== 'frutal' ? `<button class="btn btn-secondary" style="font-size:11px;padding:6px 10px" onclick="abrirEdicionCultivoPotrero(${i})">✏️ Definir cultivo</button>` : ''}
+        ${p.tipo !== 'frutal' ? `<button class="btn btn-secondary" style="font-size:11px;padding:6px 10px" onclick="abrirLotes(${i})">✂️ Dividir por año</button>` : ''}
         <button class="btn btn-danger" onclick="eliminarPotrero(${i})">✕</button>
       </div>
       <div id="potrero-cultivo-editor-${i}"></div>
@@ -9674,6 +9870,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
 .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--negro);color:var(--blanco);padding:11px 22px;border-radius:8px;font-size:14px;font-weight:500;z-index:999;transition:transform .3s;white-space:nowrap;}
 .toast.show{transform:translateX(-50%) translateY(0);}
 .toast.success{border-left:4px solid var(--amarillo);}
+.lote-tip{background:rgba(0,0,0,.55);color:#fff;border:none;font-weight:700;font-size:12px;box-shadow:none}.lote-tip:before{display:none}
 </style>
 </head>
 <body>
@@ -10469,6 +10666,29 @@ tbody td{padding:10px 12px;vertical-align:middle;}
           <button class="btn btn-secondary" style="flex:1;justify-content:center;padding:14px" onclick="deshacerPuntoDibujoFull()">↶ Deshacer punto</button>
           <button class="btn btn-verde" style="flex:1;justify-content:center;padding:14px" onclick="guardarDibujoPotreroFull()">✓ Guardar</button>
           <button class="btn btn-verde" id="dibujo-full-btn-otro" style="flex:1;justify-content:center;padding:14px;display:none;background:var(--negro);color:var(--amarillo)" onclick="guardarDibujoPotreroFull(true)">✓ Guardar y dibujar otro</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- DIVIDIR UN POTRERO EN LOTES POR TEMPORADA -->
+    <div class="modal-overlay" id="modal-lotes" style="padding:0">
+      <div class="modal-box" style="max-width:100%;width:100%;height:100%;border-radius:0;display:flex;flex-direction:column;padding:0">
+        <div style="padding:10px 14px;border-bottom:1px solid var(--borde)">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+            <strong style="font-size:14px" id="lotes-titulo">Dividir potrero</strong>
+            <span style="display:flex;gap:8px;align-items:center">
+              <select id="lotes-anio" onchange="lotesCambiarAnio()" style="width:auto;padding:6px"></select>
+              <button class="btn btn-secondary" style="width:auto;padding:6px 12px" onclick="cerrarLotes()">✕ Cerrar</button>
+            </span>
+          </div>
+          <div style="font-size:12px;color:var(--acero);margin-top:4px" id="lotes-estado"></div>
+        </div>
+        <div id="lotes-mapa" style="flex:1;min-height:180px"></div>
+        <div id="lotes-lista" style="max-height:38%;overflow-y:auto;padding:8px 14px;border-top:1px solid var(--borde)"></div>
+        <div style="display:flex;gap:8px;padding:10px 14px;border-top:1px solid var(--borde)">
+          <button class="btn btn-secondary" id="lotes-btn-cortar" style="flex:1;justify-content:center;padding:12px" onclick="lotesToggleCorte()">✂️ Cortar</button>
+          <button class="btn btn-secondary" style="flex:1;justify-content:center;padding:12px" onclick="lotesDeshacer()">↶ Deshacer</button>
+          <button class="btn btn-verde" style="flex:1;justify-content:center;padding:12px" onclick="lotesGuardar()">✓ Guardar</button>
         </div>
       </div>
     </div>
