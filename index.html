@@ -4601,6 +4601,7 @@ function initAsistencia() {
   document.getElementById('asistencia-horas-trabajador').value = '';
   document.getElementById('asistencia-horas-registro').value = '';
   document.getElementById('asistencia-obs').value = '';
+  asistLaborSel = ''; asistLaborCambiar = false; renderLaborAsistencia(); cargarCentroCombAsistencia();
   cargarAsistencia();
 }
 
@@ -4611,6 +4612,7 @@ function cargarAsistencia() {
     asistenciaRegistros = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     populateFiltroAsistenciaTrabajador();
     renderTablaAsistencia();
+    renderLaborAsistencia();
   });
 }
 
@@ -4622,10 +4624,121 @@ function populateFiltroAsistenciaTrabajador() {
     trabajadoresAsistenciaConfig.map(t => `<option value="${t}" ${t===cur?'selected':''}>${t}</option>`).join('');
 }
 
+// ── Labor del día: pregunta si repite la del último día registrado ──
+let asistLaborSel = '';
+let asistLaborCambiar = false;
+let asistLaborOpciones = [];
+let asistLaborPrevCentro = '';
+
+window.resetLaborAsistencia = function() { asistLaborSel = ''; asistLaborCambiar = false; renderLaborAsistencia(); cargarCentroCombAsistencia(); }
+
+// ── Centro de costo: primero la proporción que salió del combustible ──
+let asistCentroComb = null;       // { texto, lista:[{centro,pct,litros}], totalL }
+let asistCentroUsaComb = false;
+let asistCombKey = '';
+window.cargarCentroCombAsistencia = async function() {
+  const trab = document.getElementById('asistencia-trabajador')?.value;
+  const fecha = document.getElementById('asistencia-fecha')?.value;
+  asistCentroUsaComb = false; asistCentroComb = null;
+  const key = trab + '|' + fecha; asistCombKey = key;
+  renderCentroCombAsistencia();
+  if (!trab || !fecha) return;
+  try {
+    const snap = await getDocs(query(collection(db, 'registros'), where('fecha', '==', fecha)));
+    if (asistCombKey !== key) return;
+    const por = {}; let total = 0;
+    snap.docs.map(d => d.data()).filter(r => r.operador === trab).forEach(r => {
+      const dist = (r.distribucion && r.distribucion.length) ? r.distribucion : (r.centro ? [{ centro: r.centro, litros: r.litros || 0 }] : []);
+      dist.forEach(x => { por[x.centro] = (por[x.centro] || 0) + (x.litros || 0); total += (x.litros || 0); });
+    });
+    const lista = Object.entries(por).map(([centro, l]) => ({ centro, litros: l, pct: total > 0 ? Math.round(l / total * 100) : 0 })).sort((a, b) => b.pct - a.pct);
+    if (lista.length) asistCentroComb = { lista, totalL: total, texto: lista.map(x => x.centro + ' ' + x.pct + '%').join(' · ') };
+  } catch (e) { console.warn('centro combustible asistencia', e); }
+  renderCentroCombAsistencia();
+}
+window.renderCentroCombAsistencia = function() {
+  const w = document.getElementById('asistencia-centro-comb');
+  if (!w) return;
+  if (!asistCentroComb) { w.innerHTML = ''; return; }
+  const c = asistCentroComb;
+  const btn = 'padding:8px 12px;border-radius:8px;border:1px solid #D1D5DB;background:#fff;font-size:13px;cursor:pointer;margin-top:6px';
+  w.innerHTML = asistCentroUsaComb
+    ? `<div style="padding:10px;background:#ECFDF5;border:1px solid #6EE7B7;border-radius:8px;font-size:14px;margin-bottom:8px">⛽ <b>${escA(c.texto)}</b> <span style="color:#6B7280;font-size:12px">(del combustible)</span></div>`
+    : `<div style="padding:10px;background:#EFF6FF;border:1px solid #93C5FD;border-radius:8px;font-size:14px;margin-bottom:8px">⛽ Combustible de ese día: <b>${escA(c.texto)}</b> <span style="color:#6B7280;font-size:12px">(${c.totalL.toFixed(0)} L)</span><br>
+       <button type="button" style="${btn};background:#2563EB;color:#fff;border-color:#2563EB" onclick="usarCentroCombAsistencia()">✓ Usar esta proporción</button>
+       <span style="font-size:12px;color:#6B7280;margin-left:6px">o elige otro abajo</span></div>`;
+}
+window.usarCentroCombAsistencia = function() {
+  asistCentroUsaComb = true;
+  const sel = document.getElementById('asistencia-centro'); if (sel) sel.value = '';
+  renderCentroCombAsistencia();
+}
+
+function laborAnteriorDe(trab, fecha) {
+  return asistenciaRegistros
+    .filter(r => r.trabajador === trab && r.labor && r.fecha < fecha)
+    .sort((a, b) => (b.fecha || '').localeCompare(a.fecha || '') || (b.ts || 0) - (a.ts || 0))[0] || null;
+}
+function laboresComunesDe(trab) {
+  const cuenta = {};
+  asistenciaRegistros.filter(r => r.trabajador === trab && r.labor).forEach(r => { cuenta[r.labor] = (cuenta[r.labor] || 0) + 1; });
+  return Object.entries(cuenta).sort((a, b) => b[1] - a[1]).slice(0, 10);
+}
+const escA = t => String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+
+window.renderLaborAsistencia = function() {
+  const wrap = document.getElementById('asistencia-labor-wrap');
+  if (!wrap) return;
+  const trab = document.getElementById('asistencia-trabajador')?.value;
+  const fecha = document.getElementById('asistencia-fecha')?.value;
+  if (!trab) { wrap.innerHTML = '<div style="font-size:12px;color:#9CA3AF">Selecciona un trabajador.</div>'; return; }
+  const prev = fecha ? laborAnteriorDe(trab, fecha) : null;
+  const btn = 'padding:8px 12px;border-radius:8px;border:1px solid #D1D5DB;background:#fff;font-size:13px;cursor:pointer;margin:3px 4px 3px 0';
+  if (asistLaborSel && !asistLaborCambiar) {
+    wrap.innerHTML = `<div style="padding:10px;background:#ECFDF5;border:1px solid #6EE7B7;border-radius:8px;font-size:14px">✓ <b>${escA(asistLaborSel)}</b> <button type="button" style="${btn}" onclick="cambiarLaborAsistencia()">Cambiar</button></div>`;
+    return;
+  }
+  if (prev && !asistLaborCambiar) {
+    wrap.innerHTML = `<div style="padding:10px;background:#FEF9C3;border:1px solid #FDE047;border-radius:8px;font-size:14px">
+      El ${prev.fecha} hizo: <b>${escA(prev.labor)}</b><br>¿Se repite hoy?<br>
+      <button type="button" style="${btn};background:#16A34A;color:#fff;border-color:#16A34A" onclick="repetirLaborAsistencia()">✓ Se repite</button>
+      <button type="button" style="${btn}" onclick="cambiarLaborAsistencia()">Cambió</button></div>`;
+    return;
+  }
+  const comunes = laboresComunesDe(trab);
+  asistLaborOpciones = comunes.map(c => c[0]);
+  const base = TIPOS_LABOR_CAMPO.filter(t => !t.oculto && t.id !== 'otro').map(t => t.label.replace(/^[^\p{L}]+/u, '')).concat(tiposLaborCampoConfig.map(t => t.label || t.nombre || t).filter(x => typeof x === 'string'));
+  const extras = comunes.length ? [] : base;
+  if (!comunes.length) asistLaborOpciones = extras;
+  const titulo = comunes.length ? 'Más comunes de ' + escA(trab) : 'Sugeridas (aún no hay historial de ' + escA(trab) + ')';
+  wrap.innerHTML = `<div style="font-size:12px;color:#6B7280;margin-bottom:4px">${titulo}</div>
+    ${asistLaborOpciones.map((l, i) => `<button type="button" style="${btn}" onclick="elegirLaborAsistencia(${i})">${escA(l)}${comunes[i] ? ' <span style="color:#9CA3AF">×' + comunes[i][1] + '</span>' : ''}</button>`).join('')}
+    <div style="display:flex;gap:6px;margin-top:6px"><input type="text" id="asistencia-labor-otra" placeholder="Otra labor..." style="flex:1">
+    <button type="button" style="${btn}" onclick="elegirLaborAsistencia(-1)">OK</button></div>`;
+}
+window.repetirLaborAsistencia = function() {
+  const trab = document.getElementById('asistencia-trabajador').value;
+  const fecha = document.getElementById('asistencia-fecha').value;
+  const prev = laborAnteriorDe(trab, fecha);
+  if (!prev) return;
+  asistLaborSel = prev.labor; asistLaborCambiar = false;
+  const c = document.getElementById('asistencia-centro');
+  if (prev.centro_costo && c && !c.value) c.value = prev.centro_costo;
+  renderLaborAsistencia();
+}
+window.cambiarLaborAsistencia = function() { asistLaborCambiar = true; asistLaborSel = ''; renderLaborAsistencia(); }
+window.elegirLaborAsistencia = function(i) {
+  let v = '';
+  if (i >= 0) v = asistLaborOpciones[i] || '';
+  else v = (document.getElementById('asistencia-labor-otra')?.value || '').trim();
+  if (!v) return;
+  asistLaborSel = v; asistLaborCambiar = false; renderLaborAsistencia();
+}
+
 window.registrarAsistencia = async function() {
   const trabajador = document.getElementById('asistencia-trabajador').value;
   const fecha = document.getElementById('asistencia-fecha').value;
-  const centro = document.getElementById('asistencia-centro').value;
+  const centro = (asistCentroUsaComb && asistCentroComb) ? asistCentroComb.texto : document.getElementById('asistencia-centro').value;
   const horasTrab = document.getElementById('asistencia-horas-trabajador').value;
   const horasReg = document.getElementById('asistencia-horas-registro').value;
   const obs = document.getElementById('asistencia-obs').value.trim();
@@ -4635,7 +4748,9 @@ window.registrarAsistencia = async function() {
   btn.disabled = true; btn.textContent = 'Guardando...';
   try {
     await addDoc(collection(db, 'asistencia'), {
-      trabajador, fecha, centro_costo: centro || null,
+      trabajador, fecha, centro_costo: centro || null, labor: asistLaborSel || null,
+      centro_origen: (asistCentroUsaComb && asistCentroComb) ? 'combustible' : null,
+      centros_dist: (asistCentroUsaComb && asistCentroComb) ? asistCentroComb.lista.map(x => ({ centro: x.centro, pct: x.pct })) : null,
       horas_trabajador: horasTrab !== '' ? parseFloat(horasTrab) : null,
       horas_registro: horasReg !== '' ? parseFloat(horasReg) : null,
       obs, registrado_por: currentUser, ts: Date.now()
@@ -4643,6 +4758,7 @@ window.registrarAsistencia = async function() {
     document.getElementById('asistencia-horas-trabajador').value = '';
     document.getElementById('asistencia-horas-registro').value = '';
     document.getElementById('asistencia-obs').value = '';
+    asistLaborSel = ''; asistLaborCambiar = false; renderLaborAsistencia(); cargarCentroCombAsistencia();
     toast('✓ Registro de asistencia guardado', true);
   } catch(e) { toast('Error: ' + e.message, false); }
   btn.disabled = false; btn.textContent = '✓ Guardar registro';
@@ -4656,20 +4772,25 @@ window.renderTablaAsistencia = function() {
   let data = [...asistenciaRegistros].filter(r => r.ts >= corte);
   if (fTrab) data = data.filter(r => r.trabajador === fTrab);
 
-  let sumaTrab = 0, sumaReg = 0;
-  data.forEach(r => { sumaTrab += r.horas_trabajador || 0; sumaReg += r.horas_registro || 0; });
-  const dif = Math.abs(sumaTrab - sumaReg);
+  let sumaTrab = 0, sumaReg = 0, pendientes = 0, sumaTrabC = 0, sumaRegC = 0;
+  data.forEach(r => {
+    sumaTrab += r.horas_trabajador || 0; sumaReg += r.horas_registro || 0;
+    if (r.horas_trabajador == null) pendientes++;
+    else { sumaTrabC += r.horas_trabajador || 0; sumaRegC += r.horas_registro || 0; }
+  });
+  const dif = Math.abs(sumaTrabC - sumaRegC);
 
   document.getElementById('asistencia-stats').innerHTML = `
     <div class="stat-card"><div class="stat-label">Horas extra (trabajador)</div><div class="stat-value">${sumaTrab.toFixed(1)}<span>hr</span></div></div>
     <div class="stat-card"><div class="stat-label">Horas extra (registro)</div><div class="stat-value">${sumaReg.toFixed(1)}<span>hr</span></div></div>
-    <div class="stat-card"><div class="stat-label">Diferencia</div><div class="stat-value" style="color:${dif>0.5?'var(--rojo)':'var(--verde)'}">${dif.toFixed(1)}<span>hr</span></div></div>`;
+    <div class="stat-card"><div class="stat-label">Diferencia${pendientes?' (sin pendientes)':''}</div><div class="stat-value" style="color:${dif>0.5?'var(--rojo)':'var(--verde)'}">${dif.toFixed(1)}<span>hr</span></div></div>
+    ${pendientes?`<div class="stat-card"><div class="stat-label">Pendientes del trabajador</div><div class="stat-value" style="color:#B45309">${pendientes}</div></div>`:''}`;
 
   const cont = document.getElementById('asistencia-tabla-container');
   if (!data.length) { cont.innerHTML = '<div class="empty"><div class="empty-icon">📋</div>Sin registros.</div>'; return; }
 
   cont.innerHTML = `<div class="table-wrap"><table>
-    <thead><tr><th>Fecha</th><th>Trabajador</th><th>Centro</th><th>Hrs. trabajador</th><th>Hrs. registro</th><th>Dif.</th><th>Obs.</th><th>Registró</th>${isAdmin?'<th></th>':''}</tr></thead>
+    <thead><tr><th>Fecha</th><th>Trabajador</th><th>Labor</th><th>Centro</th><th>Hrs. trabajador</th><th>Hrs. registro</th><th>Dif.</th><th>Obs.</th><th>Registró</th><th></th></tr></thead>
     <tbody>${data.map(r => {
       const ht = r.horas_trabajador, hr = r.horas_registro;
       const difFila = (ht != null && hr != null) ? Math.abs(ht - hr) : null;
@@ -4677,16 +4798,42 @@ window.renderTablaAsistencia = function() {
       return `<tr ${filaAlerta?'style="background:#FFF5F5"':''}>
         <td class="td-mono">${r.fecha}</td>
         <td><strong>${r.trabajador}</strong></td>
-        <td style="font-size:12px">${r.centro_costo || '—'}</td>
-        <td class="td-mono">${ht != null ? ht.toFixed(1)+' hr' : '—'}</td>
+        <td style="font-size:12px">${r.labor ? escA(r.labor) : '—'}</td>
+        <td style="font-size:12px">${r.centro_origen === 'combustible' ? '⛽ ' : ''}${r.centro_costo || '—'}</td>
+        <td class="td-mono">${ht != null ? ht.toFixed(1)+' hr' : '<span style="color:#B45309;font-weight:600">⏳ Pendiente</span>'}</td>
         <td class="td-mono">${hr != null ? hr.toFixed(1)+' hr' : '—'}</td>
         <td class="td-mono" style="color:${filaAlerta?'var(--rojo)':'inherit'};font-weight:${filaAlerta?'600':'400'}">${difFila != null ? (filaAlerta?'⚠️ ':'')+difFila.toFixed(1)+' hr' : '—'}</td>
         <td style="font-size:12px;color:#6B7280">${r.obs || '—'}</td>
         <td style="font-size:12px">${r.registrado_por}</td>
-        ${isAdmin?`<td><button class="btn btn-danger" onclick="eliminarAsistencia('${r.id}')">✕</button></td>`:''}
+        <td style="white-space:nowrap"><button class="btn" onclick="editarAsistencia('${r.id}')">✏️</button>${isAdmin?` <button class="btn btn-danger" onclick="eliminarAsistencia('${r.id}')">✕</button>`:''}</td>
       </tr>`;
     }).join('')}</tbody>
   </table></div>`;
+}
+
+window.editarAsistencia = async function(id) {
+  const r = asistenciaRegistros.find(x => x.id === id);
+  if (!r) return;
+  const pedir = (txt, actual) => {
+    const v = prompt(txt + '\n(déjalo vacío si aún no lo tienes)', actual != null ? actual : '');
+    if (v === null) return undefined;
+    const t = v.trim().replace(',', '.');
+    if (t === '') return null;
+    const n = parseFloat(t);
+    return isNaN(n) || n < 0 ? undefined : n;
+  };
+  const ht = pedir('Horas extra según el TRABAJADOR — ' + r.trabajador + ' · ' + r.fecha, r.horas_trabajador);
+  if (ht === undefined) return;
+  const hr = pedir('Horas extra según tu REGISTRO', r.horas_registro);
+  if (hr === undefined) return;
+  const labor = prompt('Labor del día', r.labor || '');
+  if (labor === null) return;
+  const obs = prompt('Observación', r.obs || '');
+  if (obs === null) return;
+  try {
+    await updateDoc(doc(db, 'asistencia', id), { horas_trabajador: ht, horas_registro: hr, labor: labor.trim() || null, obs: obs.trim(), editado_por: currentUser, editado_ts: Date.now() });
+    toast('✓ Registro actualizado', true);
+  } catch(e) { toast('Error: ' + e.message, false); }
 }
 
 window.eliminarAsistencia = async function(id) {
@@ -9996,18 +10143,23 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       <div class="panel">
         <div class="panel-title">🕒 Registrar caso</div>
         <div class="grid-2">
-          <div class="field"><label>Fecha</label><input type="date" id="asistencia-fecha"></div>
+          <div class="field"><label>Fecha</label><input type="date" id="asistencia-fecha" onchange="resetLaborAsistencia()"></div>
           <div class="field">
             <label>Trabajador</label>
-            <div class="select-wrapper"><select id="asistencia-trabajador"></select></div>
+            <div class="select-wrapper"><select id="asistencia-trabajador" onchange="resetLaborAsistencia()"></select></div>
           </div>
         </div>
         <div class="field">
+          <label>Labor del día</label>
+          <div id="asistencia-labor-wrap"></div>
+        </div>
+        <div class="field">
           <label>Centro de costo</label>
-          <div class="select-wrapper"><select id="asistencia-centro"></select></div>
+          <div id="asistencia-centro-comb"></div>
+          <div class="select-wrapper"><select id="asistencia-centro" onchange="asistCentroUsaComb=false;renderCentroCombAsistencia()"></select></div>
         </div>
         <div class="grid-2">
-          <div class="field"><label>Horas extra según el trabajador</label><input type="number" id="asistencia-horas-trabajador" min="0" step="0.1" placeholder="Ej: 2"></div>
+          <div class="field"><label>Horas extra según el trabajador (puede quedar pendiente)</label><input type="number" id="asistencia-horas-trabajador" min="0" step="0.1" placeholder="Vacío = pendiente"></div>
           <div class="field"><label>Horas extra según tu registro</label><input type="number" id="asistencia-horas-registro" min="0" step="0.1" placeholder="Ej: 1.5"></div>
         </div>
         <div class="field"><label>Observación (opcional)</label><input type="text" id="asistencia-obs" placeholder="Detalle, motivo de la diferencia, etc."></div>
