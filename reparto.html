@@ -39,6 +39,15 @@
   <div>Solo lectura: junta cargas de combustible, horómetros, potreros y zonas con el recorrido de JDLink o del celular. No modifica Combustible ni Cuaderno de Campo.</div>
 </header>
 <main>
+  <div class="panel" id="acum-panel">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+      <div style="font-weight:700;font-size:15px">📊 Acumulado en curso · todos los equipos</div>
+      <button class="btn btn-secondary" id="acum-btn" onclick="acumCorrer(true)">↻ Actualizar</button>
+    </div>
+    <div id="acum-estado" style="font-size:12px;color:var(--acero);margin:4px 0 8px">Calculando…</div>
+    <div id="acum-cont"></div>
+  </div>
+  <div style="font-weight:700;font-size:13px;color:var(--acero);margin:14px 4px 6px">DETALLE DE UN EQUIPO</div>
   <div class="panel">
     <div class="field"><label>Fuente del recorrido</label>
       <select id="jdp-fuente" onchange="jdpCambioFuente()">
@@ -105,7 +114,8 @@ function puntoPoligonoValido(pt) {
 }
 function poligonoValido(arr) { return Array.isArray(arr) && arr.length >= 3 && arr.every(puntoPoligonoValido); }
 const PALETA_COLORES_CULTIVO = ['#2D7D46','#1D4ED8','#C0392B','#92400E','#7C3AED','#DB2777','#0D9488','#CA8A04','#4B5563','#EA580C'];
-function colorParaCultivo(n) { if (!n) return '#9CA3AF'; let h = 0; for (let i = 0; i < n.length; i++) h = (h * 31 + n.charCodeAt(i)) >>> 0; return PALETA_COLORES_CULTIVO[h % PALETA_COLORES_CULTIVO.length]; }
+const COLORES_FIJOS_CULTIVO = [[/trigo/, '#FACC15'], [/ma[ií]z/, '#16A34A'], [/canola/, '#DC2626'], [/arveja/, '#F97316'], [/achicoria/, '#2563EB'], [/avellan/, '#92400E'], [/cerez/, '#FFFFFF'], [/mantenci/, '#6B7280'], [/otros/, '#EC4899']];
+function colorParaCultivo(n) { if (!n) return '#9CA3AF'; const nl = String(n).toLowerCase(); for (const [re, c] of COLORES_FIJOS_CULTIVO) if (re.test(nl)) return c; let h = 0; for (let i = 0; i < n.length; i++) h = (h * 31 + n.charCodeAt(i)) >>> 0; return PALETA_COLORES_CULTIVO[h % PALETA_COLORES_CULTIVO.length]; }
 async function cargarCultivosActualesPotreros() {
   try {
     const snap = await getDocs(query(collection(db, 'labores_campo'), where('tipo', '==', 'siembra')));
@@ -490,6 +500,8 @@ async function jdpTraerRango(urlBase, desde, hasta, diag, etiqueta) {
 let jdpMaquinas = [];
 let jdpCargas = [];
 let jdpCargaSel = null;
+let jdpEnCurso = false;      // 'En curso': desde la última carga hasta ahora, se actualiza solo
+let jdpTimerCurso = null, jdpConsultando = false, jdpTickN = 0, jdpUltimaAct = 0;
 let jdpMapa = null;
 let jdpZonas = [];   // zonas sin cultivo guardadas (config/zonas_sin_cultivo)
 let jdpMargenM = 10; // margen de cabeceras: puntos a menos de X m del borde cuentan para ese potrero
@@ -664,14 +676,23 @@ window.jdpCambioEquipo = async function() {
     const snap = await getDocs(query(collection(db, 'registros'), where('equipo', '==', eq), orderBy('ts', 'desc'), limit(30)));
     jdpCargas = snap.docs.map(d => ({ id: d.id, ...d.data() })).map(r => ({ ...r, _t: jdpMomentoCarga(r) })).sort((a, b) => b._t - a._t);
   } catch (e) { jdpCargas = []; console.warn('jdp cargas', e); }
-  selC.innerHTML = '<option value="">— Elegir fechas a mano —</option>' + jdpCargas.slice(0, jdpCargas.length - 1).map((r, i) =>
-    `<option value="${r.id}" ${i === 0 ? 'selected' : ''}>${r.fecha} ${r.hora || ''} · ${Number(r.litros || 0).toFixed(1)} L${(r.centros || []).length ? ' · ' + r.centros.join(', ') : ''}</option>`).join('');
+  const hayCurso = jdpCargas.length >= 1;
+  selC.innerHTML = '<option value="">— Elegir fechas a mano —</option>' + (hayCurso ? '<option value="__curso__" selected>🔴 En curso: desde la última carga hasta ahora (se actualiza solo)</option>' : '') + jdpCargas.slice(0, jdpCargas.length - 1).map((r, i) =>
+    `<option value="${r.id}" ${(!hayCurso && i === 0) ? 'selected' : ''}>${r.fecha} ${r.hora || ''} · ${Number(r.litros || 0).toFixed(1)} L${(r.centros || []).length ? ' · ' + r.centros.join(', ') : ''}</option>`).join('');
   jdpCambioCarga();
 }
 
 window.jdpCambioCarga = function() {
   const id = document.getElementById('jdp-carga').value;
   jdpCargaSel = null;
+  jdpEnCurso = id === '__curso__';
+  jdpProgramarCurso();
+  if (jdpEnCurso) {
+    if (!jdpCargas.length) { jdpEnCurso = false; return; }
+    document.getElementById('jdp-desde').value = jdpFechaInput(jdpCargas[0]._t);
+    document.getElementById('jdp-hasta').value = jdpFechaInput(Date.now());
+    return;
+  }
   if (!id) return;
   const i = jdpCargas.findIndex(r => r.id === id);
   if (i < 0 || i + 1 >= jdpCargas.length) return;
@@ -680,7 +701,31 @@ window.jdpCambioCarga = function() {
   document.getElementById('jdp-hasta').value = jdpFechaInput(jdpCargas[i]._t);
 }
 
-window.consultarJdPotreros = async function() {
+// 'En curso': el "hasta" siempre es ahora, y se vuelve a calcular solo cada minuto
+function jdpActualizarHastaCurso() {
+  if (!jdpEnCurso || !jdpCargas.length) return;
+  document.getElementById('jdp-desde').value = jdpFechaInput(jdpCargas[0]._t);
+  document.getElementById('jdp-hasta').value = jdpFechaInput(Date.now());
+}
+function jdpProgramarCurso() {
+  if (jdpTimerCurso) { clearInterval(jdpTimerCurso); jdpTimerCurso = null; }
+  if (!jdpEnCurso) return;
+  jdpTimerCurso = setInterval(async () => {
+    if (!jdpEnCurso || jdpConsultando || document.visibilityState === 'hidden') return;
+    const modal = document.getElementById('modal-jd-potreros');
+    if (modal && modal.style.display === 'none') return;
+    const celular = document.getElementById('jdp-fuente') && document.getElementById('jdp-fuente').value === 'celular';
+    jdpTickN++;
+    if (!celular && jdpTickN % 5 !== 0) return; // JDLink: cada 5 min (consulta a John Deere)
+    if (!jdpRaw) return; // solo se actualiza después de la primera consulta
+    jdpConsultando = true;
+    try { await window.consultarJdPotreros(true); } catch (e) {}
+    jdpConsultando = false;
+  }, 60000);
+}
+
+window.consultarJdPotreros = async function(silencioso) {
+  jdpActualizarHastaCurso();
   const res = document.getElementById('jdp-resultado');
   const desde = Date.parse(document.getElementById('jdp-desde').value);
   const hasta = Date.parse(document.getElementById('jdp-hasta').value);
@@ -695,7 +740,7 @@ window.consultarJdPotreros = async function() {
   }
   const btn = document.getElementById('jdp-btn');
   btn.disabled = true; btn.textContent = '📡 Consultando Operations Center...';
-  res.innerHTML = '<div style="padding:12px;color:var(--acero);font-size:13px">Consultando recorrido y horas de motor...</div>';
+  if (!silencioso) res.innerHTML = '<div style="padding:12px;color:var(--acero);font-size:13px">Consultando recorrido y horas de motor...</div>';
   const diag = { maquina: m.name || m.id, rels: [], fuenteGps: '', llamadas: [], errores: {}, muestras: {} };
   try {
     const principalId = m.organizationRole?.principalId || m.principalId || m.id;
@@ -789,7 +834,9 @@ function jdpRenderResultado(r, diag, desde, hasta, nPotreros) {
   if (r.totalMs && !prodMs) avisos.push('No hubo tiempo dentro de potreros: los litros de esta carga no se pueden repartir.');
   const gapProm = r.puntos.length > 1 ? (r.puntos[r.puntos.length - 1].t - r.puntos[0].t) / (r.puntos.length - 1) / 60000 : null;
   const horometro = jdpCargaSel && jdpCargaSel.medidor_tipo === 'hr' && jdpCargaSel.diff_medidor != null ? Number(jdpCargaSel.diff_medidor) : null;
-  res.innerHTML = `
+  jdpUltimaAct = Date.now();
+  const bannerCurso = jdpEnCurso ? `<div style="background:#FEE2E2;border-left:4px solid #DC2626;padding:8px 10px;border-radius:6px;margin:10px 0;font-size:12px">🔴 <strong>En curso</strong> desde la última carga (${jdpCargas[0] ? new Date(jdpCargas[0]._t).toLocaleString('es-CL', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—'}). Se actualiza solo cada minuto · última actualización ${new Date(jdpUltimaAct).toLocaleTimeString('es-CL')}.<br>Las horas ya se asignan a cada potrero; los litros se reparten automáticamente cuando se registre la próxima carga.</div>` : '';
+  res.innerHTML = `${bannerCurso}
     <div style="font-size:13px;background:var(--fondo);border-radius:8px;padding:10px 12px;margin:10px 0">
       <strong>${new Date(desde).toLocaleString('es-CL')}</strong> → <strong>${new Date(hasta).toLocaleString('es-CL')}</strong><br>
       ${r.puntos.length} puntos GPS (${diag.fuenteGps || '—'})${gapProm != null ? `, uno cada ~${gapProm.toFixed(0)} min en promedio` : ''} ·
@@ -929,8 +976,9 @@ window.jdpCambioFuente = function () {
 
 // Reemplaza la consulta para soportar las dos fuentes
 const consultarSoloJD = window.consultarJdPotreros;
-window.consultarJdPotreros = async function () {
-  if (document.getElementById('jdp-fuente').value !== 'celular') return consultarSoloJD();
+window.consultarJdPotreros = async function (silencioso) {
+  jdpActualizarHastaCurso();
+  if (document.getElementById('jdp-fuente').value !== 'celular') return consultarSoloJD(silencioso);
   const res = document.getElementById('jdp-resultado');
   const desde = Date.parse(document.getElementById('jdp-desde').value);
   const hasta = Date.parse(document.getElementById('jdp-hasta').value);
@@ -970,6 +1018,139 @@ window.jdpCambioEquipo = async function () {
   } catch (e) {}
   return cambioEquipoBase();
 };
+
+// ── ACUMULADO DE TODOS LOS EQUIPOS (modo tractor + JDLink integrados) ──
+// Para cada equipo: desde su última carga hasta ahora. Usa el celular (modo
+// tractor) si subió recorrido; si no, JDLink si la máquina está en Operations
+// Center. Junta todo por potrero y por cultivo. Se actualiza solo.
+let acumDatos = {};
+let acumTimer = null, acumCorriendo = false, acumUlt = 0;
+const ACUM_MAX_DIAS = 10, ACUM_CADA_MS = 2 * 60000, ACUM_JD_CADA_MS = 5 * 60000;
+const nomMaq = m => (m.name || m.equipmentName || m.displayName || '');
+function maquinaJDDe(eq) {
+  const e = eq.trim().toLowerCase();
+  let m = jdpMaquinas.find(x => nomMaq(x).trim().toLowerCase() === e);
+  if (m) return m;
+  const num = eq.replace(/[^0-9]/g, '');
+  if (!num) return null;
+  if ((config.equipos || []).filter(x => x.replace(/[^0-9]/g, '') === num).length > 1) return null; // ej. dos 3350: no adivinar
+  const cand = jdpMaquinas.filter(x => nomMaq(x).replace(/[^0-9]/g, '') === num);
+  return cand.length === 1 ? cand[0] : null;
+}
+async function jdpTraerJDMaquina(m, desde, hasta, diag) {
+  const principalId = m.organizationRole?.principalId || m.principalId || m.id;
+  const links = m.links || [];
+  const link = re => links.find(l => re.test(l.rel || ''));
+  const lHrs = link(/hoursofoperation/i);
+  const hrsProm = jdpTraerRango(lHrs ? lHrs.uri : `/machines/${principalId}/hoursOfOperation`, desde, hasta, diag, 'Horas de operación');
+  const lBc = link(/breadcrumb/i);
+  const urlBc = lBc ? lBc.uri : `/machines/${principalId}/breadcrumbs`;
+  let loc = await jdpTraerRango(urlBc, desde, Math.min(hasta, desde + 24 * 3600000), diag, 'Breadcrumbs (prueba)');
+  if (loc.ok && jdpExtraerPuntos(loc.valores).length) {
+    if (hasta - desde > 24 * 3600000) { const resto = await jdpTraerRango(urlBc, desde + 24 * 3600000, hasta, diag, 'Breadcrumbs'); loc = { ...resto, valores: [...loc.valores, ...resto.valores] }; }
+  } else {
+    const lLoc = link(/locationhistory/i) || link(/location/i);
+    loc = await jdpTraerRango(lLoc ? lLoc.uri : `/machines/${principalId}/locationHistory`, desde, hasta, diag, 'Ubicaciones');
+  }
+  const hrs = await hrsProm;
+  return { puntos: jdpExtraerPuntos(loc.valores), tramos: hrs.ok ? jdpExtraerTramosMotor(hrs.valores) : [] };
+}
+async function ultimaCargaDe(eq) {
+  try {
+    const snap = await getDocs(query(collection(db, 'registros'), where('equipo', '==', eq), orderBy('ts', 'desc'), limit(5)));
+    const cs = snap.docs.map(d => d.data()).map(r => ({ ...r, _t: jdpMomentoCarga(r) })).filter(r => isFinite(r._t)).sort((a, b) => b._t - a._t);
+    return cs[0] || null;
+  } catch (e) { return null; }
+}
+async function acumCalcularEquipo(eq, forzar) {
+  const prev = acumDatos[eq];
+  const c = await ultimaCargaDe(eq);
+  if (!c) return { eq, sinCarga: true };
+  const hasta = Date.now();
+  const desde = Math.max(c._t, hasta - ACUM_MAX_DIAS * 86400000);
+  const diag = { llamadas: [], errores: {}, muestras: {}, rels: [] };
+  let fuente = null, puntos = [], tramos = [];
+  try {
+    const cel = await jdpTraerCelular(eq, desde, hasta, diag);
+    if (cel.puntos.length) { fuente = 'celular'; puntos = cel.puntos; tramos = cel.tramos; }
+  } catch (e) { console.warn('acum celular', eq, e); }
+  if (!fuente) {
+    const m = jdpMaquinas.length ? maquinaJDDe(eq) : null;
+    if (m) {
+      if (!forzar && prev && prev.fuente === 'jdlink' && prev.cargaT === c._t && hasta - prev.tsJD < ACUM_JD_CADA_MS && prev._raw) {
+        ({ puntos, tramos } = prev._raw); fuente = 'jdlink';
+      } else {
+        try { const jd = await jdpTraerJDMaquina(m, desde, hasta, diag); puntos = jd.puntos; tramos = jd.tramos; fuente = 'jdlink'; }
+        catch (e) { return { eq, carga: c, error: 'JDLink: ' + e.message }; }
+      }
+    }
+  }
+  if (!fuente || !puntos.length) return { eq, carga: c, cargaT: c._t, sinDatos: true, fuente: fuente || (maquinaJDDe(eq) ? 'jdlink' : null) };
+  const vel = jdpVelDeEquipo(eq);
+  const pots = potrerosConfig.filter(p => poligonoValido(p.poligono)).map(p => ({ nombre: p.nombre, poly: jdpNormPoligono(p.poligono) }));
+  const r = jdpRepartir(puntos, tramos, desde, hasta, pots, jdpZonasParaCalculo(), jdpMargenM, jdpSalidaPuntos, jdpMaxPasoMin, vel.min, vel.max, jdpSalidaDistM, jdpUsarEstadoJD);
+  const prod = Object.entries(r.porPotrero).filter(([n]) => jdpEsProductivo(n)).sort((a, b) => b[1] - a[1]);
+  return { eq, carga: c, cargaT: c._t, fuente, desde, hasta, totalMs: r.totalMs, motorMs: r.motorMs, prod, prodMs: prod.reduce((a, x) => a + x[1], 0),
+    ultPunto: puntos.length ? puntos[puntos.length - 1].t : null, tsJD: fuente === 'jdlink' ? (prev && prev._raw && !forzar && prev.cargaT === c._t && hasta - prev.tsJD < ACUM_JD_CADA_MS ? prev.tsJD : hasta) : null, _raw: fuente === 'jdlink' ? { puntos, tramos } : null };
+}
+window.acumCorrer = async function(forzar) {
+  if (acumCorriendo) return;
+  acumCorriendo = true;
+  const btn = document.getElementById('acum-btn'); btn.disabled = true;
+  const eqs = [...(config.equipos || [])];
+  let i = 0;
+  for (const eq of eqs) {
+    i++;
+    document.getElementById('acum-estado').textContent = `Revisando ${eq} (${i} de ${eqs.length})…`;
+    try { acumDatos[eq] = await acumCalcularEquipo(eq, forzar); } catch (e) { acumDatos[eq] = { eq, error: e.message }; }
+  }
+  acumUlt = Date.now();
+  acumRender();
+  btn.disabled = false; acumCorriendo = false;
+};
+const hh = ms => (ms / 3600000).toFixed(1);
+const fCorta = t => new Date(t).toLocaleString('es-CL', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+const punto = c => `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${colorParaCultivo(c)};border:1px solid rgba(0,0,0,.3);margin-right:5px"></span>`;
+function acumRender() {
+  const lista = Object.values(acumDatos);
+  const con = lista.filter(d => d.prod && d.prodMs > 0 || (d.totalMs > 0));
+  const sin = lista.filter(d => !(d.prod && d.prodMs > 0 || d.totalMs > 0));
+  const porPot = {}, porCult = {};
+  let totProd = 0;
+  con.forEach(d => (d.prod || []).forEach(([n, ms]) => { porPot[n] = (porPot[n] || 0) + ms; const c = jdpCultivoDePotrero(n) || 'Sin cultivo definido'; porCult[c] = (porCult[c] || 0) + ms; totProd += ms; }));
+  const ic = f => f === 'celular' ? '📱' : f === 'jdlink' ? '📡' : '·';
+  const nCel = con.filter(d => d.fuente === 'celular').length, nJD = con.filter(d => d.fuente === 'jdlink').length;
+  document.getElementById('acum-estado').innerHTML = `Actualizado ${new Date(acumUlt).toLocaleTimeString('es-CL')} · se actualiza solo cada 2 min · ${con.length} equipos con recorrido (📱 ${nCel} modo tractor · 📡 ${nJD} JDLink)${!jdpMaquinas.length ? ' · <span style="color:#B45309">sin conexión a John Deere: solo modo tractor</span>' : ''}`;
+  const td = 'style="text-align:right;padding:6px 4px;white-space:nowrap"';
+  const filaEq = d => `<tr style="cursor:pointer" onclick="acumVerDetalle('${d.eq.replace(/'/g, "\\'")}')">
+      <td style="padding:6px 4px"><strong>${ic(d.fuente)} ${d.eq}</strong><div style="font-size:11px;color:var(--acero)">desde ${fCorta(d.cargaT)}${d.ultPunto ? ' · último dato ' + fCorta(d.ultPunto) : ''}</div>
+        <div style="font-size:11px">${(d.prod || []).slice(0, 3).map(([n, ms]) => punto(jdpCultivoDePotrero(n)) + n + ' ' + hh(ms) + ' h').join(' · ')}</div></td>
+      <td ${td}>${d.motorMs != null ? hh(d.motorMs) : hh(d.totalMs || 0)}</td><td ${td}><strong>${hh(d.prodMs || 0)}</strong></td></tr>`;
+  const tabla = (pares, titulo, conCult) => `<div style="overflow-x:auto"><table style="margin-top:6px"><thead><tr><th>${titulo}</th><th ${td}>Horas</th><th ${td}>%</th></tr></thead><tbody>
+    ${pares.map(([n, ms]) => `<tr><td style="padding:6px 4px">${punto(conCult ? jdpCultivoDePotrero(n) : n)}${n}${conCult && jdpCultivoDePotrero(n) ? `<span style="font-size:11px;color:var(--acero)"> · ${jdpCultivoDePotrero(n)}</span>` : ''}</td><td ${td}>${hh(ms)}</td><td ${td}>${totProd ? (ms / totProd * 100).toFixed(0) : 0}%</td></tr>`).join('')}
+    <tr style="font-weight:700;border-top:2px solid var(--borde)"><td style="padding:6px 4px">Total</td><td ${td}>${hh(totProd)}</td><td ${td}>${totProd ? '100%' : '—'}</td></tr></tbody></table></div>`;
+  document.getElementById('acum-cont').innerHTML = !con.length
+    ? '<div style="font-size:13px;color:var(--acero)">Ningún equipo tiene recorrido desde su última carga todavía.</div>'
+    : `<div style="overflow-x:auto"><table><thead><tr><th>Equipo</th><th ${td}>Motor h</th><th ${td}>En potreros h</th></tr></thead><tbody>${con.sort((a, b) => (b.prodMs || 0) - (a.prodMs || 0)).map(filaEq).join('')}</tbody></table></div>
+      <div style="font-size:11px;color:var(--acero);margin-top:4px">Toca un equipo para ver su recorrido en el mapa abajo.</div>
+      <div style="font-weight:700;font-size:13px;margin-top:12px">Por potrero (todos los equipos)</div>${tabla(Object.entries(porPot).sort((a, b) => b[1] - a[1]), 'Potrero', true)}
+      <div style="font-weight:700;font-size:13px;margin-top:12px">Por cultivo (todos los equipos)</div>${tabla(Object.entries(porCult).sort((a, b) => b[1] - a[1]), 'Cultivo', false)}`
+    + (sin.length ? `<details style="margin-top:10px;font-size:12px"><summary style="cursor:pointer;color:var(--acero)">${sin.length} equipos sin recorrido desde su última carga</summary><div style="margin-top:4px">${sin.map(d => `${ic(d.fuente)} ${d.eq}${d.sinCarga ? ' (sin cargas)' : d.error ? ' (error: ' + d.error + ')' : d.fuente ? '' : ' (sin celular ni JDLink)'}`).join('<br>')}</div></details>` : '')
+    + '<div style="font-size:11px;color:var(--acero);margin-top:8px">Cada equipo cuenta desde su propia última carga. Si un equipo tiene celular en modo tractor se usa ese recorrido; si no, el de JDLink. Litros: se reparten al registrar la próxima carga de cada equipo (en el detalle de abajo).</div>';
+}
+window.acumVerDetalle = async function(eq) {
+  const d = acumDatos[eq];
+  const sel = document.getElementById('jdp-equipo');
+  sel.value = eq;
+  await window.jdpCambioEquipo();
+  if (d && d.fuente) { document.getElementById('jdp-fuente').value = d.fuente; jdpCambioFuente(); }
+  document.getElementById('jdp-resultado').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  try { await window.consultarJdPotreros(); } catch (e) {}
+};
+function acumProgramar() {
+  if (acumTimer) clearInterval(acumTimer);
+  acumTimer = setInterval(() => { if (document.visibilityState !== 'hidden') acumCorrer(false); }, ACUM_CADA_MS);
+}
 
 // ── Inicio ───────────────────────────────────────────────────────
 // ── Acceso: admin, Camila o un operador con permiso "reparto" (Configurar en la app) ──
@@ -1020,7 +1201,22 @@ function revisarAcceso() {
   } catch (e) { toast('No se pudo leer la configuración: ' + e.message, false); }
   await cargarConfigJD();
   // la función de la app abre un modal; aquí la página ya está a la vista
-  window.abrirJdPotreros();
+  await window.abrirJdPotreros();
+  // Equipo preseleccionado: el que informó ubicación más recientemente (celular en modo tractor)
+  try {
+    const ub = await getDocs(collection(db, 'ubicacion_actual'));
+    let mejor = null;
+    ub.docs.forEach(x => { const u = x.data(); if (u.equipo && u.ts && (!mejor || u.ts > mejor.ts)) mejor = u; });
+    const sel = document.getElementById('jdp-equipo');
+    if (mejor && Date.now() - mejor.ts < 24 * 3600000 && [...sel.options].some(o => o.value === mejor.equipo) && sel.value !== mejor.equipo) {
+      sel.value = mejor.equipo;
+      await window.jdpCambioEquipo();
+    }
+  } catch (e) { console.warn('equipo activo', e); }
+  // Acumulado de todos los equipos (modo tractor + JDLink) y se actualiza solo
+  acumCorrer(false).then(acumProgramar);
+  // Reparto automático: calcula de una vez "en curso" y se actualiza solo cada minuto
+  if (jdpEnCurso) { try { await window.consultarJdPotreros(); } catch (e) { console.warn(e); } }
 })();
 </script>
 </body>
