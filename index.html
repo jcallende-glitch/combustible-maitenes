@@ -713,6 +713,8 @@ async function jdpTraerRango(urlBase, desde, hasta, diag, etiqueta) {
 let jdpMaquinas = [];
 let jdpCargas = [];
 let jdpCargaSel = null;
+let jdpEnCurso = false;      // 'En curso': desde la última carga hasta ahora, se actualiza solo
+let jdpTimerCurso = null, jdpConsultando = false, jdpTickN = 0, jdpUltimaAct = 0;
 let jdpMapa = null;
 let jdpZonas = [];   // zonas sin cultivo guardadas (config/zonas_sin_cultivo)
 let jdpMargenM = 10; // margen de cabeceras: puntos a menos de X m del borde cuentan para ese potrero
@@ -887,14 +889,23 @@ window.jdpCambioEquipo = async function() {
     const snap = await getDocs(query(collection(db, 'registros'), where('equipo', '==', eq), orderBy('ts', 'desc'), limit(30)));
     jdpCargas = snap.docs.map(d => ({ id: d.id, ...d.data() })).map(r => ({ ...r, _t: jdpMomentoCarga(r) })).sort((a, b) => b._t - a._t);
   } catch (e) { jdpCargas = []; console.warn('jdp cargas', e); }
-  selC.innerHTML = '<option value="">— Elegir fechas a mano —</option>' + jdpCargas.slice(0, jdpCargas.length - 1).map((r, i) =>
-    `<option value="${r.id}" ${i === 0 ? 'selected' : ''}>${r.fecha} ${r.hora || ''} · ${Number(r.litros || 0).toFixed(1)} L${(r.centros || []).length ? ' · ' + r.centros.join(', ') : ''}</option>`).join('');
+  const hayCurso = jdpCargas.length >= 1;
+  selC.innerHTML = '<option value="">— Elegir fechas a mano —</option>' + (hayCurso ? '<option value="__curso__" selected>🔴 En curso: desde la última carga hasta ahora (se actualiza solo)</option>' : '') + jdpCargas.slice(0, jdpCargas.length - 1).map((r, i) =>
+    `<option value="${r.id}" ${(!hayCurso && i === 0) ? 'selected' : ''}>${r.fecha} ${r.hora || ''} · ${Number(r.litros || 0).toFixed(1)} L${(r.centros || []).length ? ' · ' + r.centros.join(', ') : ''}</option>`).join('');
   jdpCambioCarga();
 }
 
 window.jdpCambioCarga = function() {
   const id = document.getElementById('jdp-carga').value;
   jdpCargaSel = null;
+  jdpEnCurso = id === '__curso__';
+  jdpProgramarCurso();
+  if (jdpEnCurso) {
+    if (!jdpCargas.length) { jdpEnCurso = false; return; }
+    document.getElementById('jdp-desde').value = jdpFechaInput(jdpCargas[0]._t);
+    document.getElementById('jdp-hasta').value = jdpFechaInput(Date.now());
+    return;
+  }
   if (!id) return;
   const i = jdpCargas.findIndex(r => r.id === id);
   if (i < 0 || i + 1 >= jdpCargas.length) return;
@@ -903,7 +914,31 @@ window.jdpCambioCarga = function() {
   document.getElementById('jdp-hasta').value = jdpFechaInput(jdpCargas[i]._t);
 }
 
-window.consultarJdPotreros = async function() {
+// 'En curso': el "hasta" siempre es ahora, y se vuelve a calcular solo cada minuto
+function jdpActualizarHastaCurso() {
+  if (!jdpEnCurso || !jdpCargas.length) return;
+  document.getElementById('jdp-desde').value = jdpFechaInput(jdpCargas[0]._t);
+  document.getElementById('jdp-hasta').value = jdpFechaInput(Date.now());
+}
+function jdpProgramarCurso() {
+  if (jdpTimerCurso) { clearInterval(jdpTimerCurso); jdpTimerCurso = null; }
+  if (!jdpEnCurso) return;
+  jdpTimerCurso = setInterval(async () => {
+    if (!jdpEnCurso || jdpConsultando || document.visibilityState === 'hidden') return;
+    const modal = document.getElementById('modal-jd-potreros');
+    if (modal && modal.style.display === 'none') return;
+    const celular = document.getElementById('jdp-fuente') && document.getElementById('jdp-fuente').value === 'celular';
+    jdpTickN++;
+    if (!celular && jdpTickN % 5 !== 0) return; // JDLink: cada 5 min (consulta a John Deere)
+    if (!jdpRaw) return; // solo se actualiza después de la primera consulta
+    jdpConsultando = true;
+    try { await window.consultarJdPotreros(true); } catch (e) {}
+    jdpConsultando = false;
+  }, 60000);
+}
+
+window.consultarJdPotreros = async function(silencioso) {
+  jdpActualizarHastaCurso();
   const res = document.getElementById('jdp-resultado');
   const desde = Date.parse(document.getElementById('jdp-desde').value);
   const hasta = Date.parse(document.getElementById('jdp-hasta').value);
@@ -918,7 +953,7 @@ window.consultarJdPotreros = async function() {
   }
   const btn = document.getElementById('jdp-btn');
   btn.disabled = true; btn.textContent = '📡 Consultando Operations Center...';
-  res.innerHTML = '<div style="padding:12px;color:var(--acero);font-size:13px">Consultando recorrido y horas de motor...</div>';
+  if (!silencioso) res.innerHTML = '<div style="padding:12px;color:var(--acero);font-size:13px">Consultando recorrido y horas de motor...</div>';
   const diag = { maquina: m.name || m.id, rels: [], fuenteGps: '', llamadas: [], errores: {}, muestras: {} };
   try {
     const principalId = m.organizationRole?.principalId || m.principalId || m.id;
@@ -1012,7 +1047,9 @@ function jdpRenderResultado(r, diag, desde, hasta, nPotreros) {
   if (r.totalMs && !prodMs) avisos.push('No hubo tiempo dentro de potreros: los litros de esta carga no se pueden repartir.');
   const gapProm = r.puntos.length > 1 ? (r.puntos[r.puntos.length - 1].t - r.puntos[0].t) / (r.puntos.length - 1) / 60000 : null;
   const horometro = jdpCargaSel && jdpCargaSel.medidor_tipo === 'hr' && jdpCargaSel.diff_medidor != null ? Number(jdpCargaSel.diff_medidor) : null;
-  res.innerHTML = `
+  jdpUltimaAct = Date.now();
+  const bannerCurso = jdpEnCurso ? `<div style="background:#FEE2E2;border-left:4px solid #DC2626;padding:8px 10px;border-radius:6px;margin:10px 0;font-size:12px">🔴 <strong>En curso</strong> desde la última carga (${jdpCargas[0] ? new Date(jdpCargas[0]._t).toLocaleString('es-CL', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—'}). Se actualiza solo cada minuto · última actualización ${new Date(jdpUltimaAct).toLocaleTimeString('es-CL')}.<br>Las horas ya se asignan a cada potrero; los litros se reparten automáticamente cuando se registre la próxima carga.</div>` : '';
+  res.innerHTML = `${bannerCurso}
     <div style="font-size:13px;background:var(--fondo);border-radius:8px;padding:10px 12px;margin:10px 0">
       <strong>${new Date(desde).toLocaleString('es-CL')}</strong> → <strong>${new Date(hasta).toLocaleString('es-CL')}</strong><br>
       ${r.puntos.length} puntos GPS (${diag.fuenteGps || '—'})${gapProm != null ? `, uno cada ~${gapProm.toFixed(0)} min en promedio` : ''} ·
