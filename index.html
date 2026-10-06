@@ -6301,7 +6301,7 @@ window.abrirLotes = async function(idx) {
   if (!poligonoValido(p.poligono)) { toast('Primero dibuja el mapa de este potrero (Config. Potreros → dibujar)', false); return; }
   await cargarLotesTemporada();
   const anioAct = new Date().getFullYear();
-  LT = { pot: p, poly: jdpNormPoligono(p.poligono), anio: anioAct, lotes: [], hist: [], cortando: false, pts: [], map: null, capas: [] };
+  LT = { pot: p, poly: jdpNormPoligono(p.poligono), anio: anioAct, lotes: [], hist: [], cortando: false, pts: [], map: null, capas: [], gpsId: null, pos: null, seguir: false, caminando: false, track: [] };
   const sel = document.getElementById('lotes-anio');
   sel.innerHTML = [anioAct + 1, anioAct, anioAct - 1, anioAct - 2, anioAct - 3, anioAct - 4].map(a => `<option value="${a}" ${a === anioAct ? 'selected' : ''}>Temporada ${a}</option>`).join('');
   document.getElementById('lotes-titulo').textContent = '✂️ ' + p.nombre + (p.hectareas != null ? ' · ' + p.hectareas + ' ha' : '');
@@ -6318,9 +6318,10 @@ function lotesCargarAnio() {
   LT.hist = []; LT.cortando = false; LT.pts = [];
   lotesRedibujar();
 }
-window.lotesCambiarAnio = function() { LT.anio = parseInt(document.getElementById('lotes-anio').value); lotesCargarAnio(); }
+window.lotesCambiarAnio = function() { LT.anio = parseInt(document.getElementById('lotes-anio').value); LT.caminando = false; LT.track = []; if (LT.capaTrack && LT.map) { LT.map.removeLayer(LT.capaTrack); LT.capaTrack = null; } lotesCargarAnio(); }
 window.cerrarLotes = function() {
   document.getElementById('modal-lotes').style.display = 'none';
+  if (LT && LT.gpsId != null) { navigator.geolocation.clearWatch(LT.gpsId); LT.gpsId = null; }
   if (LT && LT.map) { LT.map.remove(); LT.map = null; }
   LT = null;
 }
@@ -6351,6 +6352,7 @@ function lotesPintarMapa() {
       LT.pts.forEach(pt => LT.capas.push(L.circleMarker(pt, { radius: 6, color: '#fff', fillColor: '#EF4444', fillOpacity: 1 }).addTo(LT.map)));
       if (LT.pts.length === 2) LT.capas.push(L.polyline(LT.pts, { color: '#EF4444', weight: 3, dashArray: '6 6' }).addTo(LT.map));
     }
+    ['capaAcc', 'capaTrack', 'capaPos'].forEach(k => { if (LT[k]) LT[k].bringToFront(); });
   }
 }
 function lotesRedibujar() {
@@ -6359,7 +6361,10 @@ function lotesRedibujar() {
   const btn = document.getElementById('lotes-btn-cortar');
   btn.style.background = LT.cortando ? '#EF4444' : ''; btn.style.color = LT.cortando ? '#fff' : '';
   btn.textContent = LT.cortando ? '✕ Cancelar corte' : '✂️ Cortar';
-  document.getElementById('lotes-estado').textContent = LT.cortando
+  lotesRenderGpsBar();
+  document.getElementById('lotes-estado').textContent = LT.caminando
+    ? 'Caminando el límite: anda de un borde del lote al otro por donde va la división y toca ⏹ Terminar.'
+    : LT.cortando
     ? (LT.pts.length === 0 ? 'Toca un punto a un lado del lote y luego otro al lado opuesto: esa línea lo divide.' : 'Toca el 2º punto, al otro lado del lote.')
     : 'Temporada ' + LT.anio + ': ' + (LT.lotes.length > 1 ? LT.lotes.length + ' lotes' : 'potrero entero') + '. Usa ✂️ Cortar para dividirlo.';
   const total = LT.lotes.reduce((a, l) => a + areaHaPoligono(l.poligono), 0);
@@ -6385,8 +6390,11 @@ window.lotesClickMapa = function(lat, lng) {
     || LT.lotes.find(l => { const m = [(A[0] + B[0]) / 2, (A[1] + B[1]) / 2]; return jdpPuntoEnPoligono(m[0], m[1], l.poligono); });
   if (!objetivo) { toast('La línea no pasa por ningún lote', false); LT.pts = []; lotesRedibujar(); return; }
   const [p1, p2] = cortarPoligonoConRecta(objetivo.poligono, A, B);
-  if (p1.length < 3 || p2.length < 3 || areaHaPoligono(p1) < 0.01 || areaHaPoligono(p2) < 0.01) {
-    toast('Esa línea no divide el lote: debe atravesarlo de lado a lado', false); LT.pts = []; lotesRedibujar(); return;
+  lotesAplicarCorte(objetivo, p1, p2);
+}
+function lotesAplicarCorte(objetivo, p1, p2) {
+  if (!p1 || !p2 || p1.length < 3 || p2.length < 3 || areaHaPoligono(p1) < 0.01 || areaHaPoligono(p2) < 0.01) {
+    toast('Esa línea no divide el lote: debe atravesarlo de lado a lado', false); LT.pts = []; lotesRedibujar(); return false;
   }
   LT.hist.push(JSON.stringify(LT.lotes));
   const resto = LT.lotes.filter(l => l !== objetivo);
@@ -6398,6 +6406,132 @@ window.lotesClickMapa = function(lat, lng) {
   LT.lotes.splice(idx, 1, n1, n2);
   LT.cortando = false; LT.pts = [];
   lotesRedibujar();
+  return true;
+}
+
+// ── Corte con una línea quebrada (límite caminado con GPS) ──
+// Extiende los extremos 60 m para que crucen el borde, busca la 1ª entrada
+// y la siguiente salida, y arma los dos lados recorriendo el perímetro.
+function lotesKxy(lat) { return { kx: 111320 * Math.cos(lat * Math.PI / 180), ky: 110540 }; }
+function extenderLinea(line, m) {
+  if (line.length < 2) return line;
+  const { kx, ky } = lotesKxy(line[0][0]);
+  const ext = (a, b) => { const dx = (a[1] - b[1]) * kx, dy = (a[0] - b[0]) * ky, d = Math.hypot(dx, dy) || 1; return [a[0] + dy / d * m / ky, a[1] + dx / d * m / kx]; };
+  return [ext(line[0], line[1]), ...line, ext(line[line.length - 1], line[line.length - 2])];
+}
+function interSeg(a, b, c, d) { // devuelve {t,u,p} si los segmentos a-b y c-d se cruzan
+  const r0 = b[0] - a[0], r1 = b[1] - a[1], s0 = d[0] - c[0], s1 = d[1] - c[1];
+  const den = r0 * s1 - r1 * s0;
+  if (Math.abs(den) < 1e-18) return null;
+  const t = ((c[0] - a[0]) * s1 - (c[1] - a[1]) * s0) / den, u = ((c[0] - a[0]) * r1 - (c[1] - a[1]) * r0) / den;
+  if (t < 0 || t > 1 || u < 0 || u > 1) return null;
+  return { t, u, p: [a[0] + t * r0, a[1] + t * r1] };
+}
+function cortarPoligonoConLinea(poly, lineaOrig) {
+  const line = extenderLinea(lineaOrig, 60), n = poly.length, cruces = [];
+  for (let k = 0; k < line.length - 1; k++)
+    for (let e = 0; e < n; e++) {
+      const x = interSeg(line[k], line[k + 1], poly[e], poly[(e + 1) % n]);
+      if (x) cruces.push({ k, t: x.t, e, u: x.u, p: x.p, pos: k + x.t });
+    }
+  cruces.sort((a, b) => a.pos - b.pos);
+  if (cruces.length < 2) return [null, null];
+  const I1 = cruces[0], I2 = cruces[1];
+  const cadena = [I1.p, ...line.slice(I1.k + 1, I2.k + 1), I2.p];
+  const entre = (ea, ua, eb, ub) => { // vértices del perímetro yendo hacia adelante desde el cruce a al cruce b
+    if (ea === eb && ua <= ub) return [];
+    const out = []; let i = (ea + 1) % n;
+    for (let g = 0; g <= n; g++) { out.push(poly[i]); if (i === eb) break; i = (i + 1) % n; }
+    return out;
+  };
+  const A = [...cadena, ...entre(I2.e, I2.u, I1.e, I1.u)];
+  const B = [...cadena.slice().reverse(), ...entre(I1.e, I1.u, I2.e, I2.u)];
+  return [A, B];
+}
+
+// ── GPS: mi ubicación, seguir, marcar punto aquí y caminar el límite ──
+window.lotesGpsToggle = function() {
+  if (!LT) return;
+  if (LT.gpsId != null) { navigator.geolocation.clearWatch(LT.gpsId); LT.gpsId = null; LT.seguir = false; lotesBorrarGps(); lotesRenderGpsBar(); return; }
+  if (!navigator.geolocation) { toast('Este equipo no tiene GPS disponible', false); return; }
+  LT.gpsId = navigator.geolocation.watchPosition(
+    p => lotesOnPos(p.coords.latitude, p.coords.longitude, p.coords.accuracy),
+    e => toast('GPS: ' + (e.code === 1 ? 'permiso de ubicación denegado' : e.message), false),
+    { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 });
+  LT.seguir = true;
+  lotesRenderGpsBar();
+}
+window.lotesOnPos = function(lat, lng, acc) {
+  if (!LT) return;
+  LT.pos = { lat, lng, acc: acc || 0 };
+  if (LT.map) {
+    if (!LT.capaPos) {
+      LT.capaAcc = L.circle([lat, lng], { radius: acc || 0, color: '#3B82F6', weight: 1, fillOpacity: 0.12 }).addTo(LT.map);
+      LT.capaPos = L.circleMarker([lat, lng], { radius: 8, color: '#fff', weight: 3, fillColor: '#2563EB', fillOpacity: 1 }).addTo(LT.map);
+    } else { LT.capaPos.setLatLng([lat, lng]); LT.capaAcc.setLatLng([lat, lng]).setRadius(acc || 0); }
+    if (LT.seguir) LT.map.panTo([lat, lng], { animate: true });
+  }
+  if (LT.caminando && (acc == null || acc <= 20)) {
+    const ult = LT.track[LT.track.length - 1];
+    const { kx, ky } = lotesKxy(lat);
+    if (!ult || Math.hypot((lat - ult[0]) * ky, (lng - ult[1]) * kx) >= 2) {
+      LT.track.push([lat, lng]);
+      if (LT.map) { if (LT.capaTrack) LT.capaTrack.setLatLngs(LT.track); else LT.capaTrack = L.polyline(LT.track, { color: '#EF4444', weight: 4 }).addTo(LT.map); }
+    }
+  }
+  lotesRenderGpsBar();
+}
+function lotesBorrarGps() {
+  if (!LT || !LT.map) return;
+  ['capaPos', 'capaAcc', 'capaTrack'].forEach(k => { if (LT[k]) { LT.map.removeLayer(LT[k]); LT[k] = null; } });
+}
+window.lotesSeguirToggle = function() { if (!LT) return; LT.seguir = !LT.seguir; if (LT.seguir && LT.pos && LT.map) LT.map.panTo([LT.pos.lat, LT.pos.lng]); lotesRenderGpsBar(); }
+window.lotesMarcarAqui = function() {
+  if (!LT || !LT.pos) { toast('Esperando señal GPS…', false); return; }
+  if (LT.pos.acc > 25) { toast('Precisión baja (' + Math.round(LT.pos.acc) + ' m). Espera unos segundos.', false); return; }
+  if (!LT.cortando) { LT.cortando = true; LT.pts = []; }
+  lotesClickMapa(LT.pos.lat, LT.pos.lng);
+  lotesRenderGpsBar();
+}
+window.lotesCaminarToggle = function() {
+  if (!LT) return;
+  if (!LT.caminando) {
+    if (LT.gpsId == null) lotesGpsToggle();
+    LT.caminando = true; LT.track = []; LT.cortando = false; LT.pts = [];
+    if (LT.capaTrack && LT.map) { LT.map.removeLayer(LT.capaTrack); LT.capaTrack = null; }
+    if (LT.pos && (LT.pos.acc == null || LT.pos.acc <= 20)) lotesOnPos(LT.pos.lat, LT.pos.lng, LT.pos.acc);
+    lotesRedibujar(); return;
+  }
+  // terminar: cortar con el recorrido
+  LT.caminando = false;
+  const track = LT.track.slice();
+  if (LT.capaTrack && LT.map) { LT.map.removeLayer(LT.capaTrack); LT.capaTrack = null; }
+  LT.track = [];
+  if (track.length < 2) { toast('Recorrido muy corto: camina el límite de borde a borde', false); lotesRedibujar(); return; }
+  const cuenta = l => track.filter(pt => jdpPuntoEnPoligono(pt[0], pt[1], l.poligono)).length;
+  const objetivo = LT.lotes.slice().sort((a, b) => cuenta(b) - cuenta(a))[0];
+  if (!objetivo || !cuenta(objetivo)) { toast('El recorrido no pasa por ningún lote', false); lotesRedibujar(); return; }
+  const [p1, p2] = cortarPoligonoConLinea(objetivo.poligono, track);
+  if (lotesAplicarCorte(objetivo, p1, p2)) toast('✓ Lote dividido por el límite caminado', true);
+}
+window.lotesCaminarCancelar = function() {
+  if (!LT) return;
+  LT.caminando = false; LT.track = [];
+  if (LT.capaTrack && LT.map) { LT.map.removeLayer(LT.capaTrack); LT.capaTrack = null; }
+  lotesRedibujar();
+}
+function lotesRenderGpsBar() {
+  const w = document.getElementById('lotes-gps-bar');
+  if (!w || !LT) return;
+  const b = (txt, fn, on, extra) => `<button type="button" class="btn ${on ? 'btn-verde' : 'btn-secondary'}" style="width:auto;padding:8px 10px;font-size:12px;${extra || ''}" onclick="${fn}">${txt}</button>`;
+  const gpsOn = LT.gpsId != null;
+  const acc = LT.pos ? ' ±' + Math.round(LT.pos.acc) + ' m' : '';
+  w.innerHTML = b('📍 Mi ubicación' + (gpsOn ? acc : ''), 'lotesGpsToggle()', gpsOn)
+    + (gpsOn ? b('🎯 Seguir', 'lotesSeguirToggle()', LT.seguir) : '')
+    + (LT.caminando
+        ? b('⏹ Terminar límite (' + LT.track.length + ' pts)', 'lotesCaminarToggle()', true, 'background:#DC2626;color:#fff') + b('✕', 'lotesCaminarCancelar()', false)
+        : b('🚶 Caminar límite', 'lotesCaminarToggle()', false))
+    + (gpsOn && !LT.caminando ? b(LT.cortando && LT.pts.length === 1 ? '📌 Marcar 2º punto aquí' : '📌 Marcar punto aquí', 'lotesMarcarAqui()', false) : '');
 }
 window.lotesDeshacer = function() {
   if (!LT) return;
@@ -10719,6 +10853,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
             </span>
           </div>
           <div style="font-size:12px;color:var(--acero);margin-top:4px" id="lotes-estado"></div>
+          <div id="lotes-gps-bar" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px"></div>
         </div>
         <div id="lotes-mapa" style="flex:1;min-height:180px"></div>
         <div id="lotes-lista" style="max-height:38%;overflow-y:auto;padding:8px 14px;border-top:1px solid var(--borde)"></div>
