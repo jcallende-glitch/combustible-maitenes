@@ -1,7 +1,7 @@
 // Service worker del modo tractor (solo controla /tractor*).
 // Guarda la página, las librerías y las imágenes del mapa que se van viendo,
 // para que el modo tractor abra y muestre el mapa aunque no haya señal.
-const VERSION = 'tractor-v3';
+const VERSION = 'tractor-v4';
 const TESELAS = 'tractor-teselas';
 const MAX_TESELAS = 6000;
 
