@@ -326,6 +326,7 @@ function jdpPotreroCercano(lat, lng, potreros, margenM) {
   return mejor;
 }
 
+const JDP_SALIDA_MIN_MS = 2 * 60000;
 function jdpRepartir(puntos, tramos, desde, hasta, potreros, zonas, margenM, salidaPuntos, maxPasoMin, velMin, velMax, salidaDistM, usarEstadoJD) {
   const enVentana = puntos.filter(p => p.t >= desde - 6 * 3600000 && p.t <= hasta + 6 * 3600000);
   // Velocidad de cada punto: la informada por el equipo o, si no viene, calculada
@@ -381,7 +382,9 @@ function jdpRepartir(puntos, tramos, desde, hasta, potreros, zonas, margenM, sal
       const prev = pts[i - 1];
       if (!prev.potrero || pts[i].potrero === prev.potrero) continue;
       let j = i;
-      while (j < pts.length && pts[j].potrero !== prev.potrero && absorbible(pts[j], prev.potrero) && (j - i) < salidaN) j++;
+      // salida por cantidad de puntos (JDLink: ~1 por minuto) o, con puntos muy seguidos
+      // (celular: 1 cada 2 s), por tiempo: una vuelta de cabecera de hasta 2 min no es salir
+      while (j < pts.length && pts[j].potrero !== prev.potrero && absorbible(pts[j], prev.potrero) && ((j - i) < salidaN || pts[j].t - pts[i].t < JDP_SALIDA_MIN_MS)) j++;
       if (j >= pts.length || pts[j].potrero !== prev.potrero) continue;      // no volvió al mismo potrero
       const afuera = (pts[j - 1].t + pts[j].t) / 2 - (prev.t + pts[i].t) / 2;
       if (minContMs > 0 && afuera >= minContMs) continue;                    // estuvo demasiado rato afuera
@@ -955,7 +958,8 @@ async function jdpTraerCelular(eq, desde, hasta, diag) {
   // Motor encendido: celular cargando (= llave puesta). Si el celular no informa
   // la carga, se usa el tiempo con puntos continuos (huecos de menos de 5 min).
   const HUECO = 5 * 60000;
-  const conCarga = pts.some(p => p.c === true || p.c === false);
+  // si el celular nunca estuvo cargando (no lo enchufaron), no se puede saber la llave: se usan los puntos
+  const conCarga = pts.some(p => p.c === true);
   const tramos = [];
   let ini = null, ult = null;
   pts.forEach(p => {
@@ -965,7 +969,7 @@ async function jdpTraerCelular(eq, desde, hasta, diag) {
     ini = on ? p.t : null; ult = on ? p.t : null;
   });
   if (ini != null) tramos.push([ini, ult]);
-  diag.motorDesde = conCarga ? 'carga del celular (llave)' : 'puntos continuos (el celular no informó la carga)';
+  diag.motorDesde = conCarga ? 'carga del celular (llave)' : (pts.some(p => p.c === false) ? 'puntos continuos (el celular no estuvo enchufado a la llave)' : 'puntos continuos (el celular no informó la carga)');
   return { puntos, tramos: tramos.filter(([a, b]) => b > a), crudos: pts };
 }
 
