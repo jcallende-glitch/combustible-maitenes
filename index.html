@@ -1162,12 +1162,112 @@ function hilEstimar(poly, tramos, sp) {
   g.off = (Math.atan2(s2, c) / (2 * Math.PI)) * sp;
   return g;
 }
+// ── GRILLA DE HILERAS (compartida: app, reparto y modo tractor) ─────────
+// v2: uniforme { az, off, sp }  → entrecalle k centrada en d = off + k·sp
+// v3: filas de árboles reales  { az, nudos:[s…], filas:[{d:[…]}…] } → cada fila
+//     de árboles tiene su posición lateral d en cada nudo (a lo largo de la
+//     hilera) y se interpola entre nudos; la entrecalle k va entre la fila k y
+//     la k+1. Así se pueden corregir sectores con hileras más separadas o que
+//     se van corriendo a lo largo.
+function grillaDe(g) {
+  if (!g || g.az == null || g.lat0 == null) return null;
+  const kx = 111320 * Math.cos(g.lat0 * Math.PI / 180), ky = 110540, az = g.az * Math.PI / 180;
+  const ux = Math.sin(az), uy = Math.cos(az), nx = Math.cos(az), ny = -Math.sin(az);
+  const sd = (lat, lng) => { const x = (lng - g.lng0) * kx, y = (lat - g.lat0) * ky; return [x * ux + y * uy, x * nx + y * ny]; };
+  const ll = (s, d) => { const x = s * ux + d * nx, y = s * uy + d * ny; return [g.lat0 + y / ky, g.lng0 + x / kx]; };
+  if (g.v === 3 && Array.isArray(g.filas) && g.filas.length >= 2 && Array.isArray(g.nudos) && g.nudos.length) {
+    const K = g.nudos, F = g.filas.map(f => f.d || f), sp = g.sp || 5;
+    const dF = (i, s) => {
+      const f = F[i];
+      if (K.length === 1) return f[0];
+      let j = 0; while (j < K.length - 2 && s > K[j + 1]) j++;
+      const t = (s - K[j]) / ((K[j + 1] - K[j]) || 1);
+      return f[j] + (f[j + 1] - f[j]) * t;
+    };
+    const n = F.length - 1;
+    return {
+      tipo: 3, sd, ll, n, nFilas: F.length, sp,
+      fila: dF,
+      bordes: (k, s) => [dF(k, s), dF(k + 1, s)],
+      centro: (k, s) => (dF(k, s) + dF(k + 1, s)) / 2,
+      k: (s, d) => {
+        const ult = F.length - 1, d0 = dF(0, s), dn = dF(ult, s);
+        if (d < d0) return -1 - Math.floor((d0 - d) / sp);
+        if (d >= dn) return n + Math.floor((d - dn) / sp);
+        let lo = 0, hi = ult;
+        while (hi - lo > 1) { const m = (lo + hi) >> 1; if (dF(m, s) <= d) lo = m; else hi = m; }
+        return lo;
+      }
+    };
+  }
+  const sp = g.sp || 5, off = g.off || 0;
+  return {
+    tipo: 2, sd, ll, n: null, sp,
+    fila: i => off + (i - 0.5) * sp,
+    bordes: k => [off + (k - 0.5) * sp, off + (k + 0.5) * sp],
+    centro: k => off + k * sp,
+    k: (s, d) => Math.round((d - off) / sp)
+  };
+}
+function gPip(lat, lng, poly) {
+  let c = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const yi = poly[i][0], xi = poly[i][1], yj = poly[j][0], xj = poly[j][1];
+    if (((yi > lat) !== (yj > lat)) && (lng < (xj - xi) * (lat - yi) / ((yj - yi) || 1e-12) + xi)) c = !c;
+  }
+  return c;
+}
+function gRangoS(G, poly) { const ss = poly.map(c => G.sd(c[0], c[1])[0]); return [Math.min(...ss), Math.max(...ss)]; }
+// Partes dentro del potrero de la línea d = fn(s): [{ s0, s1, pts:[[lat,lng]…] }]
+function gTramos(G, poly, fn, paso) {
+  const [a, b] = gRangoS(G, poly); paso = paso || 2;
+  const out = []; let cur = null;
+  for (let s = a; ; s += paso) {
+    const sv = Math.min(s, b), p = G.ll(sv, fn(sv));
+    if (gPip(p[0], p[1], poly)) { if (!cur) cur = { s0: sv, s1: sv, pts: [] }; cur.pts.push(p); cur.s1 = sv; }
+    else if (cur) { out.push(cur); cur = null; }
+    if (sv >= b) break;
+  }
+  if (cur) out.push(cur);
+  return out.filter(t => t.pts.length >= 2);
+}
+// Puntos [lat,lng] de la línea d = fn(s) entre s0 y s1
+function gLinea(G, fn, s0, s1, paso) {
+  paso = paso || 3; const out = [];
+  if (s1 < s0) [s0, s1] = [s1, s0];
+  for (let s = s0; s < s1; s += paso) out.push(G.ll(s, fn(s)));
+  out.push(G.ll(s1, fn(s1)));
+  return out;
+}
+// Número (1..N) de la entrecalle k; null si está fuera de las numeradas
+function gNumero(g, k) {
+  if (!g) return null;
+  if (g.v === 3) { const n = (g.filas || []).length - 1; if (k < 0 || k >= n) return null; return g.dir === -1 ? n - k : k + 1; }
+  if (g.kIni == null || !g.nHileras) return null;
+  const n = (g.dir === -1 ? g.kIni - k : k - g.kIni) + 1;
+  return n >= 1 && n <= g.nHileras ? n : null;
+}
+// Entrecalles del potrero: [{ k, n, tramos }] ordenadas por número
+function gEntrecalles(g, poly) {
+  const G = grillaDe(g); if (!G) return [];
+  const ks = [];
+  if (G.tipo === 3) { for (let k = 0; k < G.n; k++) ks.push(k); }
+  else {
+    const ds = poly.map(c => G.sd(c[0], c[1])[1]), sp = g.sp || 5, off = g.off || 0;
+    for (let k = Math.ceil((Math.min(...ds) - off) / sp); k <= Math.floor((Math.max(...ds) - off) / sp) && ks.length < 3000; k++) ks.push(k);
+  }
+  const filas = ks.map(k => ({ k, tramos: gTramos(G, poly, s => G.centro(k, s)).filter(t => t.s1 - t.s0 >= 3) })).filter(f => f.tramos.length);
+  if (G.tipo === 3) { filas.forEach(f => f.n = gNumero(g, f.k)); filas.sort((a, b) => a.n - b.n); }
+  else { if (g.dir === -1) filas.reverse(); filas.forEach((f, i) => f.n = i + 1); }
+  return filas;
+}
+
 // Pasadas por entrecalle (mediana lateral en ±12 m; cambios de menos de 15 m se juntan)
-function hilPasadas(tr, g, sp) {
-  const pr = hilProyector(g), kDe = d => Math.round((d - g.off) / sp), dirs = hilDirecciones(tr), out = [];
+function hilPasadas(tr, g) {
+  const G = grillaDe(g), sp = G.sp, dirs = hilDirecciones(tr), out = [];
   const corridas = []; let cur = null;
   tr.forEach((q, i) => {
-    const [sv, d] = pr.sd(q[0], q[1]);
+    const [sv, d] = G.sd(q[0], q[1]);
     const al = dirs[i] != null && hilDifAxial(dirs[i], g.az) < 25;
     const corta = !al || (cur && (Math.abs(d - cur[cur.length - 1].d) > sp || q[2] - cur[cur.length - 1].t > 30000 * (q[3] ? 1 : 4)));
     if (corta && cur) { corridas.push(cur); cur = null; }
@@ -1181,8 +1281,9 @@ function hilPasadas(tr, g, sp) {
       while (Math.abs(c[lo].sv - p.sv) > 12 && lo < i) lo++;
       while (hi + 1 < c.length && Math.abs(c[hi + 1].sv - p.sv) <= 12) hi++;
       if (hi < i) hi = i;
-      const ds = c.slice(Math.min(lo, i), Math.max(hi, i) + 1).map(x => x.d).sort((x, y) => x - y);
-      return kDe(ds[Math.floor(ds.length / 2)]);
+      const vec = c.slice(Math.min(lo, i), Math.max(hi, i) + 1);
+      const ds = vec.map(x => x.d).sort((x, y) => x - y);
+      return G.k(p.sv, ds[Math.floor(ds.length / 2)]);
     });
     const grupos = [];
     ks.forEach((k, i) => { const gq = grupos[grupos.length - 1]; if (gq && gq.k === k) gq.i1 = i; else grupos.push({ k, i0: i, i1: i }); });
@@ -1208,7 +1309,7 @@ function hilPasadas(tr, g, sp) {
   });
   return out;
 }
-const hilNumero = (g, k) => { if (!g || g.kIni == null || !g.nHileras) return null; const n = (g.dir === -1 ? g.kIni - k : k - g.kIni) + 1; return n >= 1 && n <= g.nHileras ? n : null; };
+const hilNumero = (g, k) => gNumero(g, k);
 const HIL_COLORES = [[3, '#1D4ED8', '< 3'], [5, '#16A34A', '3–5'], [7, '#FACC15', '5–7'], [9, '#F97316', '7–9'], [Infinity, '#DC2626', '> 9']];
 const hilColorVel = v => v == null ? '#9CA3AF' : HIL_COLORES.find(c => v < c[0])[1];
 function hilSpDe(pot) {
@@ -1224,41 +1325,36 @@ function hilDibujar(map, r, bounds) {
     const pc = potrerosConfig.find(x => x.nombre === pot);
     if (!pc || !poligonoValido(pc.poligono) || pts.length < 15) return;
     const poly = jdpNormPoligono(pc.poligono);
-    // tramos continuos (cortes de más de 2 min)
     const tramos = []; let cur = [];
     pts.sort((a, b) => a.t - b.t).forEach(p => { const q = [p.lat, p.lng, p.t, p.estado === 'aplicando', p.vkmh]; if (cur.length && p.t - cur[cur.length - 1][2] > 120000) { tramos.push(cur); cur = []; } cur.push(q); });
     if (cur.length) tramos.push(cur);
     const guardada = jdpHilerasCfg && jdpHilerasCfg[pot];
-    const sp = (guardada && guardada.sp) || hilSpDe(pot);
-    const g = guardada && guardada.v === 2 && guardada.fija ? guardada : hilEstimar(poly, tramos, sp);
+    const g = guardada && (guardada.v === 3 || (guardada.v === 2 && guardada.fija)) ? guardada : hilEstimar(poly, tramos, (guardada && guardada.sp) || hilSpDe(pot));
     if (!g) return;
-    const pr = hilProyector(g);
-    const pasadas = tramos.flatMap(tr => hilPasadas(tr, g, sp));
+    const G = grillaDe(g);
+    if (!G) return;
+    const pasadas = tramos.flatMap(tr => hilPasadas(tr, g));
     if (!pasadas.length) return;
     const cub = {};
     pasadas.sort((a, b) => a.t0 - b.t0).forEach(ps => {
-      const d = g.off + ps.k * sp, h = sp / 2;
-      const rect = [pr.ll(ps.s0, d - h), pr.ll(ps.s1, d - h), pr.ll(ps.s1, d + h), pr.ll(ps.s0, d + h)];
+      const izq = gLinea(G, s => G.bordes(ps.k, s)[0], ps.s0, ps.s1), der = gLinea(G, s => G.bordes(ps.k, s)[1], ps.s0, ps.s1);
+      const rect = [...izq, ...der.reverse()];
       const prev = (cub[ps.k] || []).some(([a, b]) => Math.min(b, ps.s1) - Math.max(a, ps.s0) > 8);
       (cub[ps.k] = cub[ps.k] || []).push([ps.s0, ps.s1]);
-      const col = hilColorVel(ps.vel);
+      const col = hilColorVel(ps.vel), num = hilNumero(g, ps.k);
       L.polygon(rect, { color: prev ? '#7F1D1D' : col, weight: prev ? 2 : 0.5, dashArray: prev ? '4 3' : null, fillColor: col, fillOpacity: 0.75 }).addTo(map)
-        .bindTooltip(`<b>${pot}</b> · ${hilNumero(g, ps.k) ? '<b>Entrecalle ' + hilNumero(g, ps.k) + '</b>' : 'entrecalle ' + ps.k}<br>${ps.vel != null ? 'Velocidad promedio: <b>' + ps.vel.toFixed(1) + ' km/h</b><br>' : ''}${Math.round(ps.s1 - ps.s0)} m · ${new Date(ps.t0).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' })}–${new Date(ps.t1).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' })}${prev ? '<br><b style="color:#B91C1C">Repetida</b>' : ''}`, { sticky: true });
+        .bindTooltip(`<b>${pot}</b> · ${num ? '<b>Entrecalle ' + num + '</b>' : 'entrecalle ' + ps.k}<br>${ps.vel != null ? 'Velocidad promedio: <b>' + ps.vel.toFixed(1) + ' km/h</b><br>' : ''}${Math.round(ps.s1 - ps.s0)} m · ${new Date(ps.t0).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' })}–${new Date(ps.t1).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' })}${prev ? '<br><b style="color:#B91C1C">Repetida</b>' : ''}`, { sticky: true });
       rect.forEach(c => bounds.push(c));
     });
     // Entrecalles sin pasar entre la primera y la última trabajada (posibles saltadas)
     const ks = Object.keys(cub).map(Number), kmin = Math.min(...ks), kmax = Math.max(...ks);
-    const sdp = poly.map(c => pr.sd(c[0], c[1]));
     let saltadas = 0; const faltan = [];
     for (let k = kmin; k <= kmax; k++) {
       if (cub[k]) continue;
-      const d = g.off + k * sp, xs = [];
-      for (let i = 0, j = sdp.length - 1; i < sdp.length; j = i++) { const [s1, d1] = sdp[j], [s2, d2] = sdp[i]; if ((d1 > d) !== (d2 > d)) xs.push(s1 + (d - d1) * (s2 - s1) / (d2 - d1)); }
-      xs.sort((a, b) => a - b);
-      for (let i = 0; i + 1 < xs.length; i += 2) {
-        L.polyline([pr.ll(xs[i], d), pr.ll(xs[i + 1], d)], { color: '#FFFFFF', weight: 2, opacity: 0.9, dashArray: '6 6' }).addTo(map)
+      gTramos(G, poly, s => G.centro(k, s), 3).forEach(t => {
+        L.polyline(t.pts, { color: '#FFFFFF', weight: 2, opacity: 0.9, dashArray: '6 6' }).addTo(map)
           .bindTooltip(`<b>${pot}</b> · ${hilNumero(g, k) ? 'Entrecalle ' + hilNumero(g, k) : 'entrecalle ' + k}: <b>sin pasar</b>`, { sticky: true });
-      }
+      });
       saltadas++;
       if (hilNumero(g, k)) faltan.push(hilNumero(g, k));
     }
@@ -1267,6 +1363,7 @@ function hilDibujar(map, r, bounds) {
   });
   return resumen;
 }
+
 function jdpRenderMapa(r, soloMapa) {
   if (typeof L === 'undefined') return;
   jdpUltimoR = r;
@@ -6383,19 +6480,16 @@ function renderMapaPotreros(containerId, clickable, drawable, multiSelect, forza
   if (containerId === 'config-mapa-preview' && jdpHilerasCfg) {
     conPoligono.filter(p => p.tipo === 'frutal').forEach(p => {
       const g = jdpHilerasCfg[p.nombre];
-      if (!g || g.v !== 2 || !g.nHileras) return;
+      if (!g || !(g.v === 2 || g.v === 3) || !g.nHileras) return;
       try {
-        const filas = hilFilasDe(jdpNormPoligono(p.poligono), g), pr = hilProyector(g);
+        const filas = gEntrecalles(g, jdpNormPoligono(p.poligono));
         const cada = filas.length > 60 ? 10 : 5;
-        filas.forEach(f => {
-          const d = g.off + f.k * g.sp;
-          f.tramos.forEach(([a, b], ti) => {
-            L.polyline([pr.ll(a, d), pr.ll(b, d)], { color: f.n === 1 ? '#22C55E' : '#FFFFFF', weight: f.n === 1 ? 2.5 : 1, opacity: 0.85, interactive: true }).addTo(map)
-              .bindTooltip(`${p.nombre} · Entrecalle ${f.n} de ${filas.length}`, { sticky: true });
-            if (ti === 0 && (f.n === 1 || f.n === filas.length || f.n % cada === 0))
-              L.marker(pr.ll(a, d), { opacity: 0, interactive: false }).addTo(map).bindTooltip(String(f.n), { permanent: true, direction: 'center', className: 'lote-tip' });
-          });
-        });
+        filas.forEach(f => f.tramos.forEach((t, ti) => {
+          L.polyline(t.pts, { color: f.n === 1 ? '#22C55E' : '#FFFFFF', weight: f.n === 1 ? 2.5 : 1, opacity: 0.85 }).addTo(map)
+            .bindTooltip(`${p.nombre} · Entrecalle ${f.n} de ${filas.length}`, { sticky: true });
+          if (ti === 0 && (f.n === 1 || f.n === filas.length || f.n % cada === 0))
+            L.marker(t.pts[0], { opacity: 0, interactive: false }).addTo(map).bindTooltip(String(f.n), { permanent: true, direction: 'center', className: 'lote-tip' });
+        }));
       } catch (err) { console.warn('hileras de', p.nombre, err); }
     });
   }
@@ -6764,11 +6858,167 @@ window.lotesGuardar = async function() {
 }
 
 
-// ─── HILERAS NUMERADAS DE UNA PLANTACIÓN (Config. Potreros) ─────────
-// La grilla de entrecalles (por donde pasa el tractor) se guarda en
-// config/hileras[potrero] = { az, off, sp, lat0, lng0, v:2, fija, kIni, dir, nHileras, manual }
-// La usan el modo tractor y el reparto. Las hileras se numeran de 1 a N desde un borde.
+// ─── HILERAS DE UNA PLANTACIÓN (Config. Potreros) ─────────────────
+// Se guarda en config/hileras[potrero] como grilla v3 (filas de árboles con
+// nudos). Primero se propone sola (desde la imagen satelital o desde una fila
+// marcada) y después se corrige: cuadratura general (mover, girar, separación)
+// y correcciones locales tocando el mapa donde está la fila real.
 let HG = null;
+window._hg = () => HG; window.grillaDe = g => grillaDe(g);
+const HG_NUDO_M = 50; // distancia entre nudos de la propuesta automática
+
+// Grilla uniforme v3: filas de árboles cada sp m, pasando por dFila0
+function hilUniforme(az, dFila0, sp, poly, lat0, lng0) {
+  const g = { v: 3, az, lat0, lng0, sp, dir: 1, nudos: [0], filas: [] };
+  const G0 = grillaDe({ v: 2, az, lat0, lng0, sp, off: 0 });
+  const [a, b] = gRangoS(G0, poly);
+  g.nudos = [+(a - 5).toFixed(2), +(b + 5).toFixed(2)];
+  const ds = poly.map(c => G0.sd(c[0], c[1])[1]), dmin = Math.min(...ds), dmax = Math.max(...ds);
+  const i0 = Math.floor((dmin - dFila0) / sp) - 1, i1 = Math.ceil((dmax - dFila0) / sp) + 1;
+  for (let i = i0; i <= i1; i++) { const d = +(dFila0 + i * sp).toFixed(2); g.filas.push({ d: [d, d] }); }
+  return hilRecortarFilas(g, poly);
+}
+// Deja solo las filas que tocan el potrero, más una de margen a cada lado
+function hilRecortarFilas(g, poly) {
+  const G = grillaDe(g);
+  const toca = g.filas.map((f, i) => gTramos(G, poly, s => G.fila(i, s), 4).length > 0);
+  const a = toca.indexOf(true), b = toca.lastIndexOf(true);
+  if (a < 0) return g;
+  g.filas = g.filas.slice(Math.max(0, a - 1), Math.min(g.filas.length, b + 2));
+  return g;
+}
+
+// ── Propuesta automática desde la imagen satelital ──
+async function hilAutoImagen(poly, spNom, avance) {
+  const z = 18, T = 256, N = Math.pow(2, z) * T;
+  const gx = lng => (lng + 180) / 360 * N;
+  const gy = lat => { const r = lat * Math.PI / 180; return (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * N; };
+  const ix = X => X / N * 360 - 180;
+  const iy = Y => { const n = Math.PI - 2 * Math.PI * Y / N; return 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n))); };
+  const lats = poly.map(c => c[0]), lngs = poly.map(c => c[1]);
+  const x0 = Math.floor(gx(Math.min(...lngs))) - 4, x1 = Math.ceil(gx(Math.max(...lngs))) + 4;
+  const y0 = Math.floor(gy(Math.max(...lats))) - 4, y1 = Math.ceil(gy(Math.min(...lats))) + 4;
+  const W = x1 - x0, H = y1 - y0;
+  if (W * H > 9e6) throw new Error('El potrero es muy grande para analizarlo de una vez.');
+  const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+  const cx = cv.getContext('2d', { willReadFrequently: true });
+  const tiles = [];
+  for (let ty = Math.floor(y0 / T); ty <= Math.floor(y1 / T); ty++) for (let tx = Math.floor(x0 / T); tx <= Math.floor(x1 / T); tx++) tiles.push([tx, ty]);
+  let hechos = 0;
+  const bajar = ([tx, ty]) => new Promise((res, rej) => {
+    const im = new Image(); im.crossOrigin = 'anonymous';
+    im.onload = () => { cx.drawImage(im, tx * T - x0, ty * T - y0); avance(`Bajando imagen satelital… ${++hechos}/${tiles.length}`); res(); };
+    im.onerror = () => rej(new Error('No se pudo bajar la imagen satelital (¿sin internet?)'));
+    im.src = `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${ty}/${tx}`;
+  });
+  for (let i = 0; i < tiles.length; i += 6) await Promise.all(tiles.slice(i, i + 6).map(bajar));
+  let px;
+  try { px = cx.getImageData(0, 0, W, H).data; } catch (e) { throw new Error('El navegador no deja leer la imagen satelital.'); }
+  avance('Analizando la imagen…'); await new Promise(r => setTimeout(r, 30));
+  const lat0 = poly[0][0], lng0 = poly[0][1], kx = 111320 * Math.cos(lat0 * Math.PI / 180), ky = 110540;
+  // borde: se descartan 4 m hacia adentro para no confundir caminos con hileras
+  const X = [], Y = [], F = [];
+  const st = 2;
+  const latPx = []; for (let py = 0; py < H; py += st) latPx.push(iy(y0 + py + 0.5));
+  for (let r = 0, py = 0; py < H; py += st, r++) {
+    const lat = latPx[r];
+    for (let pxx = 0; pxx < W; pxx += st) {
+      const lng = ix(x0 + pxx + 0.5);
+      if (!gPip(lat, lng, poly)) continue;
+      const o = (py * W + pxx) * 4;
+      X.push((lng - lng0) * kx); Y.push((lat - lat0) * ky);
+      F.push(255 - (0.3 * px[o] + 0.59 * px[o + 1] + 0.11 * px[o + 2])); // oscuro = árbol
+    }
+  }
+  const n = F.length;
+  if (n < 3000) throw new Error('Muy poca imagen dentro del potrero.');
+  const media = F.reduce((a, b) => a + b, 0) / n;
+  for (let i = 0; i < n; i++) F[i] -= media;
+  const BIN = 0.25;
+  const perfil = (az, idx) => {
+    const c = Math.cos(az * Math.PI / 180), s = Math.sin(az * Math.PI / 180);
+    let dmin = Infinity, dmax = -Infinity; const ds = new Float32Array(idx.length);
+    for (let j = 0; j < idx.length; j++) { const i = idx[j], d = X[i] * c - Y[i] * s; ds[j] = d; if (d < dmin) dmin = d; if (d > dmax) dmax = d; }
+    const nb = Math.ceil((dmax - dmin) / BIN) + 1, sum = new Float32Array(nb), cnt = new Uint32Array(nb);
+    for (let j = 0; j < idx.length; j++) { const b = Math.floor((ds[j] - dmin) / BIN); sum[b] += F[idx[j]]; cnt[b]++; }
+    for (let b = 0; b < nb; b++) if (cnt[b]) sum[b] /= cnt[b];
+    return { prof: sum, dmin };
+  };
+  const periodo = (prof, pMin, pMax, paso) => {
+    let best = { amp: 0, p: 0, ph: 0 };
+    for (let p = pMin; p <= pMax + 1e-9; p += paso) {
+      const w = 2 * Math.PI * BIN / p; let re = 0, im = 0;
+      for (let b = 0; b < prof.length; b++) { const v = prof[b]; if (v) { re += v * Math.cos(w * b); im -= v * Math.sin(w * b); } }
+      const amp = Math.hypot(re, im) / prof.length;
+      if (amp > best.amp) best = { amp, p, ph: Math.atan2(-im, re) };
+    }
+    return best;
+  };
+  const pMin = Math.max(2.5, spNom * 0.6), pMax = spNom * 1.6;
+  const todos = Array.from({ length: n }, (_, i) => i);
+  const sub = n > 40000 ? todos.filter((_, i) => i % Math.ceil(n / 40000) === 0) : todos;
+  let mejor = { amp: 0 }, amps = [];
+  for (let az = 0; az < 180; az += 1) {
+    const r = periodo(perfil(az, sub).prof, pMin, pMax, 0.1);
+    amps.push(r.amp);
+    if (r.amp > mejor.amp) mejor = { ...r, az };
+    if (az % 30 === 29) { avance(`Buscando el sentido de las hileras… ${Math.round(az / 1.8)}%`); await new Promise(res => setTimeout(res, 0)); }
+  }
+  for (let az = mejor.az - 1.5; az <= mejor.az + 1.5; az += 0.1) {
+    const r = periodo(perfil(az, sub).prof, Math.max(pMin, mejor.p - 0.4), Math.min(pMax, mejor.p + 0.4), 0.02);
+    if (r.amp > mejor.amp) mejor = { ...r, az };
+  }
+  const azF = ((mejor.az % 180) + 180) % 180;
+  const fin = perfil(azF, todos), pf = periodo(fin.prof, mejor.p - 0.1, mejor.p + 0.1, 0.01);
+  const p = pf.p, dFila0 = fin.dmin + pf.ph * p / (2 * Math.PI);
+  const mediana = amps.slice().sort((a, b) => a - b)[Math.floor(amps.length / 2)];
+  const confianza = mediana ? mejor.amp / mediana : 0;
+  // Grilla uniforme de partida
+  const g = hilUniforme(+azF.toFixed(3), dFila0, +p.toFixed(3), poly, lat0, lng0);
+  const G = grillaDe({ v: 2, az: g.az, lat0, lng0, off: 0, sp: p });
+  // Ajuste local: el potrero se corta a lo largo en tramos de 50 m y en cada tramo
+  // se busca la fila de árboles real cerca de donde viene la del tramo vecino.
+  avance('Ajustando cada hilera a lo largo…'); await new Promise(r => setTimeout(r, 0));
+  const sArr = new Float32Array(n), dArr = new Float32Array(n);
+  for (let i = 0; i < n; i++) { const lat = lat0 + Y[i] / ky, lng = lng0 + X[i] / kx; const [s, d] = G.sd(lat, lng); sArr[i] = s; dArr[i] = d; }
+  const [sa, sb] = gRangoS(G, poly);
+  const nb = Math.max(1, Math.round((sb - sa) / HG_NUDO_M));
+  const largo = (sb - sa) / nb;
+  const nudos = Array.from({ length: nb }, (_, j) => sa + largo * (j + 0.5));
+  const perfiles = nudos.map((sc) => {
+    let dmin = Infinity, dmax = -Infinity;
+    for (let i = 0; i < n; i++) if (Math.abs(sArr[i] - sc) <= largo / 2 + 5) { if (dArr[i] < dmin) dmin = dArr[i]; if (dArr[i] > dmax) dmax = dArr[i]; }
+    if (!isFinite(dmin)) return null;
+    const m = Math.ceil((dmax - dmin) / BIN) + 1, sum = new Float32Array(m), cnt = new Uint32Array(m);
+    for (let i = 0; i < n; i++) if (Math.abs(sArr[i] - sc) <= largo / 2 + 5) { const b = Math.floor((dArr[i] - dmin) / BIN); sum[b] += F[i]; cnt[b]++; }
+    const v = new Float32Array(m);
+    for (let b = 0; b < m; b++) { let s2 = 0, c2 = 0; for (let k = b - 3; k <= b + 3; k++) if (k >= 0 && k < m && cnt[k]) { s2 += sum[k]; c2 += cnt[k]; } v[b] = c2 ? s2 / c2 : NaN; }
+    return { v, dmin, m };
+  });
+  const filasD = g.filas.map(f => nudos.map(() => f.d[0]));
+  const buscar = (P, pred) => {
+    if (!P) return null;
+    const b0 = Math.floor((pred - 0.3 * p - P.dmin) / BIN), b1 = Math.ceil((pred + 0.3 * p - P.dmin) / BIN);
+    let bm = -1, vm = -Infinity, vmin = Infinity;
+    for (let b = Math.max(0, b0); b <= Math.min(P.m - 1, b1); b++) { const x = P.v[b]; if (isNaN(x)) continue; if (x > vm) { vm = x; bm = b; } if (x < vmin) vmin = x; }
+    if (bm < 0 || bm === Math.max(0, b0) || bm === Math.min(P.m - 1, b1) || vm - vmin < 6) return null; // sin un máximo claro: se deja la prevista
+    return P.dmin + (bm + 0.5) * BIN;
+  };
+  const jc = perfiles.reduce((bi, P, j) => (P && (!perfiles[bi] || P.m > perfiles[bi].m) ? j : bi), 0);
+  const orden = [jc]; for (let k = 1; k < nb; k++) { if (jc - k >= 0) orden.push(jc - k); if (jc + k < nb) orden.push(jc + k); }
+  orden.forEach(j => {
+    const ref = j === jc ? null : (j < jc ? j + 1 : j - 1);
+    filasD.forEach((fr, i) => { const pred = ref == null ? fr[j] : fr[ref]; const r = buscar(perfiles[j], pred); fr[j] = r == null ? pred : r; });
+  });
+  // suavizado a lo largo (mediana de 3) y orden entre filas
+  filasD.forEach(fr => { const c = fr.slice(); for (let j = 1; j < fr.length - 1; j++) fr[j] = [c[j - 1], c[j], c[j + 1]].sort((a, b) => a - b)[1]; });
+  for (let i = 1; i < filasD.length; i++) for (let j = 0; j < nb; j++) if (filasD[i][j] < filasD[i - 1][j] + 0.5 * p) filasD[i][j] = filasD[i - 1][j] + p;
+  g.nudos = nudos.map(x => +x.toFixed(2));
+  g.filas = filasD.map(fr => ({ d: fr.map(x => +x.toFixed(2)) }));
+  if (nb === 1) { g.nudos = [+(sa - 5).toFixed(2), +(sb + 5).toFixed(2)]; g.filas = g.filas.map(f => ({ d: [f.d[0], f.d[0]] })); }
+  return { g: hilRecortarFilas(g, poly), confianza, p };
+}
+
 window.abrirHileras = async function(idx) {
   const p = potrerosConfig[idx];
   if (!p) return;
@@ -6777,9 +7027,11 @@ window.abrirHileras = async function(idx) {
   const poly = jdpNormPoligono(p.poligono);
   const guardada = jdpHilerasCfg[p.nombre];
   const spDef = /cerez/i.test(p.cultivoPermanente || '') ? 4.5 : 5;
-  HG = { pot: p, poly, g: guardada && guardada.v === 2 ? { ...guardada } : null, fuente: guardada && guardada.v === 2 ? (guardada.manual ? 'definida a mano' : 'estimada por el modo tractor') : null,
-         sp: (guardada && guardada.sp) || spDef, marcando: false, pts: [], map: null, capas: [], gpsId: null, pos: null, capaPos: null };
-  if (HG.g && HG.g.dir == null) HG.g.dir = 1;
+  let g = null, fuente = null;
+  if (guardada && guardada.v === 3) { g = JSON.parse(JSON.stringify(guardada)); fuente = guardada.fuente || 'guardada'; }
+  else if (guardada && guardada.v === 2) { g = hilUniforme(guardada.az, guardada.off + guardada.sp / 2, guardada.sp, poly, guardada.lat0, guardada.lng0); g.dir = guardada.dir || 1; fuente = guardada.manual ? 'definida a mano' : 'estimada por el modo tractor'; }
+  HG = { pot: p, poly, g, fuente, sp: (g && g.sp) || spDef, modo: null, pts: [], map: null, capas: [], gpsId: null, pos: null, capaPos: null,
+         hist: [], alcance: 'tramo', arrastre: 'sola', ocupado: false };
   document.getElementById('hil-titulo').textContent = '🌳 Hileras · ' + p.nombre + (p.cultivoPermanente ? ' (' + p.cultivoPermanente + ')' : '');
   document.getElementById('modal-hileras').style.display = 'flex';
   setTimeout(hilIniciarMapa, 100);
@@ -6800,107 +7052,168 @@ function hilIniciarMapa() {
   setTimeout(() => { if (HG && HG.map) { HG.map.invalidateSize(); HG.map.fitBounds(HG.poly); } }, 150);
   hilRender();
 }
-// Entrecalles que cruzan el potrero: [{ k, n, s0, s1 }] numeradas 1..N
-function hilLista() {
-  if (!HG || !HG.g) return [];
-  return hilFilasDe(HG.poly, HG.g);
-}
-function hilFilasDe(poly, g) {
-  const sp = g.sp, pr = hilProyector(g);
-  const sdp = poly.map(c => pr.sd(c[0], c[1])), ds = sdp.map(c => c[1]);
-  const kmin = Math.ceil((Math.min(...ds) - g.off) / sp), kmax = Math.floor((Math.max(...ds) - g.off) / sp);
-  const filas = [];
-  for (let k = kmin; k <= kmax && k - kmin < 3000; k++) {
-    const d = g.off + k * sp, xs = [];
-    for (let i = 0, j = sdp.length - 1; i < sdp.length; j = i++) { const [s1, d1] = sdp[j], [s2, d2] = sdp[i]; if ((d1 > d) !== (d2 > d)) xs.push(s1 + (d - d1) * (s2 - s1) / (d2 - d1)); }
-    xs.sort((a, b) => a - b);
-    const tramos = []; for (let i = 0; i + 1 < xs.length; i += 2) if (xs[i + 1] - xs[i] >= 3) tramos.push([xs[i], xs[i + 1]]);
-    if (tramos.length) filas.push({ k, tramos });
-  }
-  if (g.dir === -1) filas.reverse();
-  filas.forEach((f, i) => f.n = i + 1);
-  return filas;
-}
+function hilGuardarHist() { if (HG.g) { HG.hist.push(JSON.stringify(HG.g)); if (HG.hist.length > 40) HG.hist.shift(); } }
+window.hilDeshacer = function() { if (!HG.hist.length) { toast('Nada que deshacer', false); return; } HG.g = JSON.parse(HG.hist.pop()); hilRender(); }
+function hilLista() { return HG && HG.g ? gEntrecalles(HG.g, HG.poly) : []; }
+
 function hilRender() {
   if (!HG) return;
-  const map = HG.map;
+  const map = HG.map, g = HG.g;
   if (map) {
     HG.capas.forEach(c => map.removeLayer(c)); HG.capas = [];
-    HG.capas.push(L.polygon(HG.poly, { color: '#FFD400', weight: 3, fill: false }).addTo(map));
-    const filas = hilLista();
-    if (filas.length) {
-      const pr = hilProyector(HG.g), cada = filas.length > 150 ? 10 : filas.length > 30 ? 5 : 1;
-      // Filas de árboles (amarillo): a medio espacio de cada entrecalle. Sirven para calzar con la imagen.
-      const sdpA = HG.poly.map(c => pr.sd(c[0], c[1]));
-      const cruces = d => { const xs = []; for (let i = 0, j = sdpA.length - 1; i < sdpA.length; j = i++) { const [s1, d1] = sdpA[j], [s2, d2] = sdpA[i]; if ((d1 > d) !== (d2 > d)) xs.push(s1 + (d - d1) * (s2 - s1) / (d2 - d1)); } return xs.sort((a, b) => a - b); };
-      const ks = filas.map(f => f.k), kA = Math.min(...ks), kB = Math.max(...ks);
-      for (let k = kA; k <= kB + 1; k++) {
-        const d = HG.g.off + (k - 0.5) * HG.g.sp, xs = cruces(d);
-        for (let i = 0; i + 1 < xs.length; i += 2) {
-          const ln = L.polyline([pr.ll(xs[i], d), pr.ll(xs[i + 1], d)], { color: '#FACC15', weight: 2, opacity: 0.85 }).addTo(map);
-          ln.bindTooltip('Fila de árboles', { sticky: true });
-          HG.capas.push(ln);
-        }
-      }
-      filas.forEach(f => {
-        const d = HG.g.off + f.k * HG.g.sp;
-        f.tramos.forEach(([a, b], ti) => {
-          const ln = L.polyline([pr.ll(a, d), pr.ll(b, d)], { color: f.n === 1 ? '#22C55E' : '#FFFFFF', weight: f.n === 1 ? 3 : 1.5, opacity: 0.9, dashArray: f.n === 1 ? null : '6 6' }).addTo(map);
-          ln.bindTooltip('Entrecalle ' + f.n + ' (pasada del tractor)', { sticky: true });
-          HG.capas.push(ln);
-          if (ti === 0 && (f.n === 1 || f.n === filas.length || f.n % cada === 0)) {
-            const m = L.marker(pr.ll(a, d), { opacity: 0 }).addTo(map);
-            m.bindTooltip(String(f.n), { permanent: true, direction: 'center', className: 'lote-tip' });
-            HG.capas.push(m);
-          }
-        });
+    HG.capas.push(L.polygon(HG.poly, { color: '#FFD400', weight: 3, fill: false, interactive: false }).addTo(map));
+    if (g) {
+      const G = grillaDe(g);
+      // filas de árboles (amarillo)
+      for (let i = 0; i < G.nFilas; i++) gTramos(G, HG.poly, s => G.fila(i, s), 3).forEach(t => {
+        const ln = L.polyline(t.pts, { color: '#FACC15', weight: 2, opacity: 0.85 }).addTo(map);
+        ln.bindTooltip('Fila de árboles', { sticky: true }); HG.capas.push(ln);
       });
+      // entrecalles numeradas (blanco punteado; la 1 en verde)
+      const filas = hilLista(), cada = filas.length > 150 ? 10 : filas.length > 30 ? 5 : 1;
+      filas.forEach(f => f.tramos.forEach((t, ti) => {
+        const ln = L.polyline(t.pts, { color: f.n === 1 ? '#22C55E' : '#FFFFFF', weight: f.n === 1 ? 3 : 1.5, opacity: 0.9, dashArray: f.n === 1 ? null : '6 6' }).addTo(map);
+        ln.bindTooltip('Entrecalle ' + f.n + ' (pasada del tractor)', { sticky: true }); HG.capas.push(ln);
+        if (ti === 0 && (f.n === 1 || f.n === filas.length || f.n % cada === 0)) {
+          const m = L.marker(t.pts[0], { opacity: 0, interactive: false }).addTo(map);
+          m.bindTooltip(String(f.n), { permanent: true, direction: 'center', className: 'lote-tip' }); HG.capas.push(m);
+        }
+      }));
+      // nudos (donde se puede corregir por tramo)
+      if (HG.modo === 'corregir' && g.nudos.length > 2) {
+        g.nudos.forEach(sn => { const a = G.ll(sn, G.fila(0, sn)), b = G.ll(sn, G.fila(G.nFilas - 1, sn)); HG.capas.push(L.polyline([a, b], { color: '#60A5FA', weight: 1, opacity: 0.6, dashArray: '2 6', interactive: false }).addTo(map)); });
+      }
     }
     HG.pts.forEach(pt => HG.capas.push(L.circleMarker(pt, { radius: 6, color: '#fff', fillColor: '#EF4444', fillOpacity: 1 }).addTo(map)));
     if (HG.pts.length === 2) HG.capas.push(L.polyline(HG.pts, { color: '#EF4444', weight: 3, dashArray: '6 6' }).addTo(map));
     if (HG.capaPos) HG.capaPos.bringToFront();
   }
   const n = hilLista().length;
-  document.getElementById('hil-estado').innerHTML = HG.marcando
-    ? (HG.pts.length === 0 ? '✏️ Toca el comienzo de una <b>fila de árboles</b> (la línea verde oscura de la imagen). Con 📌 Marcar aquí, párate junto a un árbol de esa fila.' : '✏️ Ahora toca el final de esa misma fila de árboles, lo más lejos posible.')
-    : HG.g
-      ? `<b>${n} entrecalles</b> numeradas · cada ${HG.g.sp} m · ${HG.fuente || ''}. <span style="color:#CA8A04">━ amarillo</span> = filas de árboles (deben calzar con los árboles de la imagen) · <span style="color:#555">┅ blanco</span> = entrecalles por donde pasa el tractor; la <b style="color:#16A34A">entrecalle 1</b> en verde. Ajusta con las flechas si no calzan.`
-      : 'Este potrero aún no tiene hileras. Toca ✏️ Marcar una fila de árboles y marca su comienzo y final (en el mapa o con tu ubicación).';
-  const b = (txt, fn, extra) => `<button type="button" class="btn btn-secondary" style="width:auto;padding:7px 10px;font-size:12px;${extra || ''}" onclick="${fn}">${txt}</button>`;
+  const ayudas = {
+    marcar: HG.pts.length === 0 ? '✏️ Toca el comienzo de una <b>fila de árboles</b> (línea verde oscura de la imagen), o párate junto a un árbol y usa 📌.' : '✏️ Ahora toca el final de esa misma fila de árboles, lo más lejos posible.',
+    corregir: '🔧 Toca en la imagen <b>dónde está realmente</b> una fila de árboles: la línea amarilla más cercana se mueve ahí' + (HG.alcance === 'tramo' ? ' (solo en ese tramo)' : ' (en toda su largo)') + (HG.arrastre === 'siguientes' ? ', y las siguientes se mueven igual.' : '.'),
+    agregar: '➕ Toca donde hay una fila de árboles que falta.',
+    quitar: '➖ Toca la fila amarilla que sobra.'
+  };
+  document.getElementById('hil-estado').innerHTML = HG.ocupado ? HG.ocupado
+    : HG.modo ? ayudas[HG.modo]
+    : g ? `<b>${n} entrecalles</b> · ${g.filas.length} filas de árboles · separación ~${(+g.sp).toFixed(2)} m · ${HG.fuente || ''}. <span style="color:#CA8A04">━ amarillo</span> = filas de árboles · <span style="color:#555">┅ blanco</span> = entrecalles (pasada del tractor), la <b style="color:#16A34A">1</b> en verde. Revisa con zoom y corrige donde no calcen.`
+    : 'Este potrero aún no tiene hileras. Toca <b>🤖 Proponer desde la imagen</b> (tarda un poco) o marca una fila de árboles a mano.';
+  const b = (txt, fn, on, extra) => `<button type="button" class="btn ${on ? 'btn-verde' : 'btn-secondary'}" style="width:auto;padding:7px 10px;font-size:12px;${extra || ''}" onclick="${fn}">${txt}</button>`;
+  const sep = '<span style="width:100%;height:0"></span>';
   document.getElementById('hil-barra').innerHTML =
-    `<label style="font-size:12px;display:flex;align-items:center;gap:4px;text-transform:none;letter-spacing:0;margin:0">Distancia entre hileras <input type="number" step="0.1" min="1" max="20" value="${HG.g ? HG.g.sp : HG.sp}" style="width:70px;padding:5px" onchange="hilCambiarSp(this.value)"> m</label>`
-    + (HG.g ? b('◀ 0,5 m', 'hilMover(-0.5)') + b('0,5 m ▶', 'hilMover(0.5)') + b('⟲ 0,2°', 'hilGirar(-0.2)') + b('0,2° ⟳', 'hilGirar(0.2)') + b('↔ Invertir numeración', 'hilInvertir()') : '')
-    + b('📍 Mi ubicación' + (HG.pos ? ' ±' + Math.round(HG.pos.acc) + ' m' : ''), 'hilGps()', HG.gpsId != null ? 'background:var(--verde);color:#fff' : '')
-    + (HG.gpsId != null ? b('📌 Marcar aquí', 'hilMarcarAqui()') : '');
+    b('🤖 Proponer desde la imagen', 'hilAuto()', false, 'background:#1D4ED8;color:#fff')
+    + b('✏️ Marcar fila a mano', "hilModo('marcar')", HG.modo === 'marcar')
+    + `<label style="font-size:12px;display:flex;align-items:center;gap:4px;text-transform:none;letter-spacing:0;margin:0">Separación <input type="number" step="0.1" min="1" max="20" value="${g ? (+g.sp).toFixed(2) : HG.sp}" style="width:70px;padding:5px" onchange="hilCambiarSp(this.value)"> m</label>`
+    + (g ? sep + '<span style="font-size:11px;color:var(--acero);align-self:center">Cuadratura general:</span>'
+      + b('◀ 0,5 m', 'hilMover(-0.5)') + b('0,5 m ▶', 'hilMover(0.5)') + b('⟲ 0,2°', 'hilGirar(-0.2)') + b('0,2° ⟳', 'hilGirar(0.2)') + b('⇤⇥ −1%', 'hilEscala(-0.01)') + b('⇤ ⇥ +1%', 'hilEscala(0.01)') + b('↔ Invertir numeración', 'hilInvertir()')
+      + sep + '<span style="font-size:11px;color:var(--acero);align-self:center">Corregir sectores:</span>'
+      + b('🔧 Corregir aquí', "hilModo('corregir')", HG.modo === 'corregir') + b('➕ Fila', "hilModo('agregar')", HG.modo === 'agregar') + b('➖ Fila', "hilModo('quitar')", HG.modo === 'quitar')
+      + (HG.modo === 'corregir' ? b(HG.alcance === 'tramo' ? 'Alcance: este tramo' : 'Alcance: toda la fila', 'hilAlcance()', true) + b(HG.arrastre === 'sola' ? 'Mover: solo esa fila' : 'Mover: esa y las siguientes', 'hilArrastre()', true) : '')
+      + b('↶ Deshacer', 'hilDeshacer()') : '')
+    + sep + b('📍 Mi ubicación' + (HG.pos ? ' ±' + Math.round(HG.pos.acc) + ' m' : ''), 'hilGps()', HG.gpsId != null)
+    + (HG.gpsId != null && HG.modo ? b('📌 Marcar aquí', 'hilMarcarAqui()') : '');
   const btn = document.getElementById('hil-btn-marcar');
-  btn.textContent = HG.marcando ? '✕ Cancelar' : '✏️ Marcar una fila de árboles';
+  btn.textContent = HG.modo ? '✕ Terminar de corregir' : '✏️ Marcar fila a mano';
 }
-window.hilCambiarSp = function(v) { const x = parseFloat(String(v).replace(',', '.')); if (!(x > 0)) return; HG.sp = x; if (HG.g) { HG.g.sp = x; HG.fuente = 'definida a mano'; } hilRender(); }
-window.hilMover = function(m) { HG.g.off += m; HG.fuente = 'definida a mano'; hilRender(); }
+window.hilModo = function(m) { HG.modo = HG.modo === m ? null : m; HG.pts = []; hilRender(); }
+window.hilMarcarToggle = function() { HG.modo = HG.modo ? null : 'marcar'; HG.pts = []; hilRender(); }
+window.hilAlcance = function() { HG.alcance = HG.alcance === 'tramo' ? 'fila' : 'tramo'; hilRender(); }
+window.hilArrastre = function() { HG.arrastre = HG.arrastre === 'sola' ? 'siguientes' : 'sola'; hilRender(); }
+const hilCentroD = (G, poly) => { const c = poly.reduce((a, q) => [a[0] + q[0] / poly.length, a[1] + q[1] / poly.length], [0, 0]); return G.sd(c[0], c[1]); };
+window.hilCambiarSp = function(v) {
+  const x = parseFloat(String(v).replace(',', '.')); if (!(x > 0)) return;
+  if (!HG.g) { HG.sp = x; hilRender(); return; }
+  hilEscala(x / HG.g.sp - 1); HG.g.sp = x;
+}
+window.hilMover = function(m) { hilGuardarHist(); HG.g.filas.forEach(f => f.d = f.d.map(d => +(d + m).toFixed(2))); HG.fuente = 'corregida a mano'; hilRender(); }
 window.hilGirar = function(gr) {
-  // gira alrededor del centro del potrero, manteniendo la entrecalle que pasa por ahí
-  const c = HG.poly.reduce((a, q) => [a[0] + q[0] / HG.poly.length, a[1] + q[1] / HG.poly.length], [0, 0]);
-  const d0 = hilProyector(HG.g).sd(c[0], c[1])[1];
-  const kc = Math.round((d0 - HG.g.off) / HG.g.sp), resto = d0 - (HG.g.off + kc * HG.g.sp);
-  HG.g.az = (HG.g.az + gr + 360) % 360;
-  const d1 = hilProyector(HG.g).sd(c[0], c[1])[1];
-  HG.g.off = d1 - resto - kc * HG.g.sp;
-  HG.fuente = 'definida a mano'; hilRender();
+  hilGuardarHist();
+  const G = grillaDe(HG.g), [sc] = hilCentroD(G, HG.poly), t = Math.tan(gr * Math.PI / 180);
+  if (HG.g.nudos.length < 2) return;
+  HG.g.filas.forEach(f => f.d = f.d.map((d, j) => +(d + (HG.g.nudos[j] - sc) * t).toFixed(2)));
+  HG.fuente = 'corregida a mano'; hilRender();
+}
+window.hilEscala = function(e) {
+  hilGuardarHist();
+  const G = grillaDe(HG.g), [, dc] = hilCentroD(G, HG.poly);
+  HG.g.filas.forEach(f => f.d = f.d.map(d => +(dc + (d - dc) * (1 + e)).toFixed(2)));
+  HG.g.sp = +(HG.g.sp * (1 + e)).toFixed(3);
+  HG.fuente = 'corregida a mano'; hilRender();
 }
 window.hilInvertir = function() { HG.g.dir = HG.g.dir === -1 ? 1 : -1; hilRender(); }
-window.hilMarcarToggle = function() { HG.marcando = !HG.marcando; HG.pts = []; hilRender(); }
+window.hilAuto = async function() {
+  if (HG.ocupado) return;
+  if (HG.g && !confirm('¿Reemplazar las hileras actuales por una propuesta nueva desde la imagen?')) return;
+  const sp = HG.g ? HG.g.sp : HG.sp;
+  HG.ocupado = '⏳ Preparando…'; hilRender();
+  try {
+    const r = await hilAutoImagen(HG.poly, sp, txt => { HG.ocupado = '⏳ ' + txt; const e = document.getElementById('hil-estado'); if (e) e.innerHTML = HG.ocupado; });
+    if (HG.g) hilGuardarHist();
+    HG.g = r.g; HG.g.dir = 1; HG.fuente = 'propuesta desde la imagen';
+    HG.ocupado = false; hilRender();
+    toast(r.confianza > 3 ? `✓ Propuesta lista: hileras cada ${r.p.toFixed(2)} m. Revisa con zoom.` : `Propuesta con poca seguridad (la imagen no muestra bien las hileras). Revísala con cuidado o marca una fila a mano.`, r.confianza > 3);
+  } catch (e) { HG.ocupado = false; hilRender(); toast(e.message, false); }
+}
+// Inserta un nudo en s (si no hay uno cerca) y devuelve su índice
+function hilNudoEn(s) {
+  const g = HG.g, G = grillaDe(g);
+  let j = g.nudos.findIndex(x => Math.abs(x - s) < 12);
+  if (j >= 0) return j;
+  j = g.nudos.findIndex(x => x > s); if (j < 0) j = g.nudos.length;
+  const vals = g.filas.map((f, i) => +G.fila(i, s).toFixed(2));
+  g.nudos.splice(j, 0, +s.toFixed(2));
+  g.filas.forEach((f, i) => f.d.splice(j, 0, vals[i]));
+  return j;
+}
 window.hilClick = function(lat, lng) {
-  if (!HG || !HG.marcando) return;
-  HG.pts.push([lat, lng]);
-  if (HG.pts.length < 2) { hilRender(); return; }
-  const [A, B] = HG.pts;
-  if (hilDist(A, B) < 20) { toast('Marca dos puntos más separados (al menos 20 m) sobre la misma fila de árboles', false); HG.pts = []; hilRender(); return; }
-  const az = hilRumbo(A, B) % 180;
-  const g = { az, off: 0, sp: HG.g ? HG.g.sp : HG.sp, lat0: HG.poly[0][0], lng0: HG.poly[0][1], v: 2, fija: true, manual: true, dir: HG.g ? HG.g.dir : 1 };
-  const pr = hilProyector(g);
-  const dA = pr.sd(A[0], A[1])[1], dB = pr.sd(B[0], B[1])[1];
-  g.off = ((((dA + dB) / 2) + g.sp / 2) % g.sp + g.sp) % g.sp; // lo marcado es una fila de árboles: la entrecalle va a medio espacio
-  HG.g = g; HG.fuente = 'definida a mano'; HG.marcando = false; HG.pts = [];
+  if (!HG || !HG.modo) return;
+  if (HG.modo === 'marcar') {
+    HG.pts.push([lat, lng]);
+    if (HG.pts.length < 2) { hilRender(); return; }
+    const [A, B] = HG.pts;
+    if (hilDist(A, B) < 20) { toast('Marca dos puntos más separados (al menos 20 m) sobre la misma fila de árboles', false); HG.pts = []; hilRender(); return; }
+    const az = hilRumbo(A, B) % 180, sp = HG.g ? HG.g.sp : HG.sp, lat0 = HG.poly[0][0], lng0 = HG.poly[0][1];
+    const G0 = grillaDe({ v: 2, az, lat0, lng0, sp, off: 0 });
+    const dA = G0.sd(A[0], A[1])[1], dB = G0.sd(B[0], B[1])[1];
+    if (HG.g) hilGuardarHist();
+    const dir = HG.g ? HG.g.dir : 1;
+    HG.g = hilUniforme(+az.toFixed(3), (dA + dB) / 2, sp, HG.poly, lat0, lng0); HG.g.dir = dir;
+    HG.fuente = 'definida a mano'; HG.modo = null; HG.pts = [];
+    hilRender(); return;
+  }
+  const g = HG.g; if (!g) return;
+  const G = grillaDe(g), [s, d] = G.sd(lat, lng);
+  // fila de árboles más cercana en ese punto
+  let i = 0, best = Infinity;
+  for (let k = 0; k < G.nFilas; k++) { const e = Math.abs(G.fila(k, s) - d); if (e < best) { best = e; i = k; } }
+  hilGuardarHist();
+  if (HG.modo === 'quitar') {
+    if (best > g.sp * 0.5) { HG.hist.pop(); toast('Toca más cerca de una fila amarilla', false); return; }
+    if (g.filas.length <= 2) { HG.hist.pop(); return; }
+    g.filas.splice(i, 1);
+  } else if (HG.modo === 'agregar') {
+    const lo = G.k(s, d);
+    if (lo >= 0 && lo < G.n) {
+      const a = G.fila(lo, s), b2 = G.fila(lo + 1, s), t = (d - a) / ((b2 - a) || 1);
+      g.filas.splice(lo + 1, 0, { d: g.nudos.map((sn, j) => +(g.filas[lo].d[j] + t * (g.filas[lo + 1].d[j] - g.filas[lo].d[j])).toFixed(2)) });
+    } else {
+      const borde = lo < 0 ? 0 : G.nFilas - 1, delta = d - G.fila(borde, s);
+      const nueva = { d: g.filas[borde].d.map(x => +(x + delta).toFixed(2)) };
+      if (lo < 0) g.filas.unshift(nueva); else g.filas.push(nueva);
+    }
+  } else if (HG.modo === 'corregir') {
+    if (best > g.sp * 0.8) { HG.hist.pop(); toast('Toca cerca de la fila que quieres corregir (a menos de una entrecalle)', false); return; }
+    const delta = d - G.fila(i, s);
+    const filasMover = HG.arrastre === 'sola' ? [i] : g.filas.map((_, k) => k).filter(k => (g.dir === -1 ? k <= i : k >= i));
+    if (HG.alcance === 'tramo') {
+      const j = hilNudoEn(s);
+      filasMover.forEach(k => { g.filas[k].d[j] = +(g.filas[k].d[j] + delta).toFixed(2); });
+    } else {
+      filasMover.forEach(k => { g.filas[k].d = g.filas[k].d.map(x => +(x + delta).toFixed(2)); });
+    }
+  }
+  HG.fuente = 'corregida a mano';
   hilRender();
 }
 window.hilGps = function() {
@@ -6922,27 +7235,22 @@ window.hilGps = function() {
 window.hilMarcarAqui = function() {
   if (!HG || !HG.pos) { toast('Esperando señal GPS…', false); return; }
   if (HG.pos.acc > 15) { toast('Precisión baja (' + Math.round(HG.pos.acc) + ' m). Espera unos segundos.', false); return; }
-  if (!HG.marcando) { HG.marcando = true; HG.pts = []; }
   hilClick(HG.pos.lat, HG.pos.lng);
 }
 window.hilGuardar = async function() {
-  if (!HG || !HG.g) { toast('Primero marca una fila de árboles', false); return; }
+  if (!HG || !HG.g) { toast('Primero propón o marca las hileras', false); return; }
   const filas = hilLista();
-  const g = { ...HG.g, v: 2, fija: true, ts: Date.now(), nHileras: filas.length, kIni: filas.length ? filas[0].k : null };
-  g.manual = true; g.m = 1e9; // revisada y guardada: el modo tractor ya no la reemplaza ni la mueve
+  const g = { ...HG.g, v: 3, fija: true, manual: true, m: 1e9, ts: Date.now(), nHileras: filas.length, fuente: HG.fuente || '' };
   try {
-    await setDoc(doc(db, 'config', 'hileras'), { [HG.pot.nombre]: g }, { merge: true });
+    // merge junta mapas anidados: se limpian los campos de la grilla uniforme vieja
+    await setDoc(doc(db, 'config', 'hileras'), { [HG.pot.nombre]: { ...g, off: null, kIni: null } }, { merge: true });
     jdpHilerasCfg[HG.pot.nombre] = g;
     toast(`✓ ${filas.length} entrecalles guardadas en ${HG.pot.nombre}`, true);
     cerrarHileras(); renderListaPotreros(); try { renderMapaCampoPreview(); } catch (e) {}
   } catch (e) { toast('Error: ' + e.message, false); }
 }
-// Número de hilera (1..N) de una entrecalle k según la grilla guardada; null si no está numerada
-window.numeroHilera = function(g, k) {
-  if (!g || g.kIni == null || !g.nHileras) return null;
-  const n = (g.dir === -1 ? g.kIni - k : k - g.kIni) + 1;
-  return n >= 1 && n <= g.nHileras ? n : null;
-};
+// Número de entrecalle (para otras partes de la app)
+window.numeroHilera = (g, k) => gNumero(g, k);
 
 // ─── DIBUJAR POTRERO EN PANTALLA COMPLETA ───────────────────
 // Tocar el mapa agrega una esquina; "Deshacer" quita la última; "Guardar"
@@ -7407,7 +7715,7 @@ function renderListaPotreros() {
         <span style="flex:1;min-width:140px">
           <strong>${p.nombre}</strong><br>
           <span style="font-size:12px;color:var(--acero)">${p.hectareas != null ? p.hectareas+' ha' : 'sin ha'} · ${p.tipo === 'frutal' ? '🌳 Frutal' : '🌾 Anual'}</span><br>
-          <span style="font-size:12px;color:var(--verde);font-weight:600">🌱 ${textoCultivoActual(p.nombre)}</span>${p.tipo === 'frutal' ? (() => { const g = jdpHilerasCfg && jdpHilerasCfg[p.nombre]; return g && g.v === 2 && g.nHileras ? '<br><span style="font-size:12px;color:#065F46">🌳 ' + g.nHileras + ' entrecalles cada ' + g.sp + ' m</span>' : '<br><span style="font-size:12px;color:#92400E">🌳 hileras sin definir</span>'; })() : ''}${(() => { const ls = lotesDe(p.nombre, new Date().getFullYear()); return ls ? '<br><span style="font-size:12px;color:#92400E">✂️ ' + new Date().getFullYear() + ': ' + ls.map(l => escA(l.nombre) + ' ' + escA(l.cultivo || '?') + ' ' + (l.hectareas != null ? l.hectareas.toFixed(1) + ' ha' : '')).join(' · ') + '</span>' : ''; })()}
+          <span style="font-size:12px;color:var(--verde);font-weight:600">🌱 ${textoCultivoActual(p.nombre)}</span>${p.tipo === 'frutal' ? (() => { const g = jdpHilerasCfg && jdpHilerasCfg[p.nombre]; return g && (g.v === 2 || g.v === 3) && g.nHileras ? '<br><span style="font-size:12px;color:#065F46">🌳 ' + g.nHileras + ' entrecalles cada ' + g.sp + ' m</span>' : '<br><span style="font-size:12px;color:#92400E">🌳 hileras sin definir</span>'; })() : ''}${(() => { const ls = lotesDe(p.nombre, new Date().getFullYear()); return ls ? '<br><span style="font-size:12px;color:#92400E">✂️ ' + new Date().getFullYear() + ': ' + ls.map(l => escA(l.nombre) + ' ' + escA(l.cultivo || '?') + ' ' + (l.hectareas != null ? l.hectareas.toFixed(1) + ' ha' : '')).join(' · ') + '</span>' : ''; })()}
         </span>
         ${p.tipo !== 'frutal' ? `<button class="btn btn-secondary" style="font-size:11px;padding:6px 10px" onclick="abrirEdicionCultivoPotrero(${i})">✏️ Definir cultivo</button>` : ''}
         ${p.tipo !== 'frutal' ? `<button class="btn btn-secondary" style="font-size:11px;padding:6px 10px" onclick="abrirLotes(${i})">✂️ Dividir por año</button>` : ''}
@@ -11239,7 +11547,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         </div>
         <div id="hil-mapa" style="flex:1;min-height:200px"></div>
         <div style="display:flex;gap:8px;padding:10px 14px;border-top:1px solid var(--borde)">
-          <button class="btn btn-secondary" style="flex:1;justify-content:center;padding:12px" onclick="hilMarcarToggle()" id="hil-btn-marcar">✏️ Marcar una fila de árboles</button>
+          <button class="btn btn-secondary" style="flex:1;justify-content:center;padding:12px" onclick="hilMarcarToggle()" id="hil-btn-marcar">✏️ Marcar fila a mano</button>
           <button class="btn btn-verde" style="flex:1;justify-content:center;padding:12px" onclick="hilGuardar()">✓ Guardar</button>
         </div>
       </div>
