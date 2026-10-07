@@ -949,12 +949,112 @@ function hilEstimar(poly, tramos, sp) {
   g.off = (Math.atan2(s2, c) / (2 * Math.PI)) * sp;
   return g;
 }
+// ── GRILLA DE HILERAS (compartida: app, reparto y modo tractor) ─────────
+// v2: uniforme { az, off, sp }  → entrecalle k centrada en d = off + k·sp
+// v3: filas de árboles reales  { az, nudos:[s…], filas:[{d:[…]}…] } → cada fila
+//     de árboles tiene su posición lateral d en cada nudo (a lo largo de la
+//     hilera) y se interpola entre nudos; la entrecalle k va entre la fila k y
+//     la k+1. Así se pueden corregir sectores con hileras más separadas o que
+//     se van corriendo a lo largo.
+function grillaDe(g) {
+  if (!g || g.az == null || g.lat0 == null) return null;
+  const kx = 111320 * Math.cos(g.lat0 * Math.PI / 180), ky = 110540, az = g.az * Math.PI / 180;
+  const ux = Math.sin(az), uy = Math.cos(az), nx = Math.cos(az), ny = -Math.sin(az);
+  const sd = (lat, lng) => { const x = (lng - g.lng0) * kx, y = (lat - g.lat0) * ky; return [x * ux + y * uy, x * nx + y * ny]; };
+  const ll = (s, d) => { const x = s * ux + d * nx, y = s * uy + d * ny; return [g.lat0 + y / ky, g.lng0 + x / kx]; };
+  if (g.v === 3 && Array.isArray(g.filas) && g.filas.length >= 2 && Array.isArray(g.nudos) && g.nudos.length) {
+    const K = g.nudos, F = g.filas.map(f => f.d || f), sp = g.sp || 5;
+    const dF = (i, s) => {
+      const f = F[i];
+      if (K.length === 1) return f[0];
+      let j = 0; while (j < K.length - 2 && s > K[j + 1]) j++;
+      const t = (s - K[j]) / ((K[j + 1] - K[j]) || 1);
+      return f[j] + (f[j + 1] - f[j]) * t;
+    };
+    const n = F.length - 1;
+    return {
+      tipo: 3, sd, ll, n, nFilas: F.length, sp,
+      fila: dF,
+      bordes: (k, s) => [dF(k, s), dF(k + 1, s)],
+      centro: (k, s) => (dF(k, s) + dF(k + 1, s)) / 2,
+      k: (s, d) => {
+        const ult = F.length - 1, d0 = dF(0, s), dn = dF(ult, s);
+        if (d < d0) return -1 - Math.floor((d0 - d) / sp);
+        if (d >= dn) return n + Math.floor((d - dn) / sp);
+        let lo = 0, hi = ult;
+        while (hi - lo > 1) { const m = (lo + hi) >> 1; if (dF(m, s) <= d) lo = m; else hi = m; }
+        return lo;
+      }
+    };
+  }
+  const sp = g.sp || 5, off = g.off || 0;
+  return {
+    tipo: 2, sd, ll, n: null, sp,
+    fila: i => off + (i - 0.5) * sp,
+    bordes: k => [off + (k - 0.5) * sp, off + (k + 0.5) * sp],
+    centro: k => off + k * sp,
+    k: (s, d) => Math.round((d - off) / sp)
+  };
+}
+function gPip(lat, lng, poly) {
+  let c = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const yi = poly[i][0], xi = poly[i][1], yj = poly[j][0], xj = poly[j][1];
+    if (((yi > lat) !== (yj > lat)) && (lng < (xj - xi) * (lat - yi) / ((yj - yi) || 1e-12) + xi)) c = !c;
+  }
+  return c;
+}
+function gRangoS(G, poly) { const ss = poly.map(c => G.sd(c[0], c[1])[0]); return [Math.min(...ss), Math.max(...ss)]; }
+// Partes dentro del potrero de la línea d = fn(s): [{ s0, s1, pts:[[lat,lng]…] }]
+function gTramos(G, poly, fn, paso) {
+  const [a, b] = gRangoS(G, poly); paso = paso || 2;
+  const out = []; let cur = null;
+  for (let s = a; ; s += paso) {
+    const sv = Math.min(s, b), p = G.ll(sv, fn(sv));
+    if (gPip(p[0], p[1], poly)) { if (!cur) cur = { s0: sv, s1: sv, pts: [] }; cur.pts.push(p); cur.s1 = sv; }
+    else if (cur) { out.push(cur); cur = null; }
+    if (sv >= b) break;
+  }
+  if (cur) out.push(cur);
+  return out.filter(t => t.pts.length >= 2);
+}
+// Puntos [lat,lng] de la línea d = fn(s) entre s0 y s1
+function gLinea(G, fn, s0, s1, paso) {
+  paso = paso || 3; const out = [];
+  if (s1 < s0) [s0, s1] = [s1, s0];
+  for (let s = s0; s < s1; s += paso) out.push(G.ll(s, fn(s)));
+  out.push(G.ll(s1, fn(s1)));
+  return out;
+}
+// Número (1..N) de la entrecalle k; null si está fuera de las numeradas
+function gNumero(g, k) {
+  if (!g) return null;
+  if (g.v === 3) { const n = (g.filas || []).length - 1; if (k < 0 || k >= n) return null; return g.dir === -1 ? n - k : k + 1; }
+  if (g.kIni == null || !g.nHileras) return null;
+  const n = (g.dir === -1 ? g.kIni - k : k - g.kIni) + 1;
+  return n >= 1 && n <= g.nHileras ? n : null;
+}
+// Entrecalles del potrero: [{ k, n, tramos }] ordenadas por número
+function gEntrecalles(g, poly) {
+  const G = grillaDe(g); if (!G) return [];
+  const ks = [];
+  if (G.tipo === 3) { for (let k = 0; k < G.n; k++) ks.push(k); }
+  else {
+    const ds = poly.map(c => G.sd(c[0], c[1])[1]), sp = g.sp || 5, off = g.off || 0;
+    for (let k = Math.ceil((Math.min(...ds) - off) / sp); k <= Math.floor((Math.max(...ds) - off) / sp) && ks.length < 3000; k++) ks.push(k);
+  }
+  const filas = ks.map(k => ({ k, tramos: gTramos(G, poly, s => G.centro(k, s)).filter(t => t.s1 - t.s0 >= 3) })).filter(f => f.tramos.length);
+  if (G.tipo === 3) { filas.forEach(f => f.n = gNumero(g, f.k)); filas.sort((a, b) => a.n - b.n); }
+  else { if (g.dir === -1) filas.reverse(); filas.forEach((f, i) => f.n = i + 1); }
+  return filas;
+}
+
 // Pasadas por entrecalle (mediana lateral en ±12 m; cambios de menos de 15 m se juntan)
-function hilPasadas(tr, g, sp) {
-  const pr = hilProyector(g), kDe = d => Math.round((d - g.off) / sp), dirs = hilDirecciones(tr), out = [];
+function hilPasadas(tr, g) {
+  const G = grillaDe(g), sp = G.sp, dirs = hilDirecciones(tr), out = [];
   const corridas = []; let cur = null;
   tr.forEach((q, i) => {
-    const [sv, d] = pr.sd(q[0], q[1]);
+    const [sv, d] = G.sd(q[0], q[1]);
     const al = dirs[i] != null && hilDifAxial(dirs[i], g.az) < 25;
     const corta = !al || (cur && (Math.abs(d - cur[cur.length - 1].d) > sp || q[2] - cur[cur.length - 1].t > 30000 * (q[3] ? 1 : 4)));
     if (corta && cur) { corridas.push(cur); cur = null; }
@@ -968,8 +1068,9 @@ function hilPasadas(tr, g, sp) {
       while (Math.abs(c[lo].sv - p.sv) > 12 && lo < i) lo++;
       while (hi + 1 < c.length && Math.abs(c[hi + 1].sv - p.sv) <= 12) hi++;
       if (hi < i) hi = i;
-      const ds = c.slice(Math.min(lo, i), Math.max(hi, i) + 1).map(x => x.d).sort((x, y) => x - y);
-      return kDe(ds[Math.floor(ds.length / 2)]);
+      const vec = c.slice(Math.min(lo, i), Math.max(hi, i) + 1);
+      const ds = vec.map(x => x.d).sort((x, y) => x - y);
+      return G.k(p.sv, ds[Math.floor(ds.length / 2)]);
     });
     const grupos = [];
     ks.forEach((k, i) => { const gq = grupos[grupos.length - 1]; if (gq && gq.k === k) gq.i1 = i; else grupos.push({ k, i0: i, i1: i }); });
@@ -995,7 +1096,7 @@ function hilPasadas(tr, g, sp) {
   });
   return out;
 }
-const hilNumero = (g, k) => { if (!g || g.kIni == null || !g.nHileras) return null; const n = (g.dir === -1 ? g.kIni - k : k - g.kIni) + 1; return n >= 1 && n <= g.nHileras ? n : null; };
+const hilNumero = (g, k) => gNumero(g, k);
 const HIL_COLORES = [[3, '#1D4ED8', '< 3'], [5, '#16A34A', '3–5'], [7, '#FACC15', '5–7'], [9, '#F97316', '7–9'], [Infinity, '#DC2626', '> 9']];
 const hilColorVel = v => v == null ? '#9CA3AF' : HIL_COLORES.find(c => v < c[0])[1];
 function hilSpDe(pot) {
@@ -1011,41 +1112,36 @@ function hilDibujar(map, r, bounds) {
     const pc = potrerosConfig.find(x => x.nombre === pot);
     if (!pc || !poligonoValido(pc.poligono) || pts.length < 15) return;
     const poly = jdpNormPoligono(pc.poligono);
-    // tramos continuos (cortes de más de 2 min)
     const tramos = []; let cur = [];
     pts.sort((a, b) => a.t - b.t).forEach(p => { const q = [p.lat, p.lng, p.t, p.estado === 'aplicando', p.vkmh]; if (cur.length && p.t - cur[cur.length - 1][2] > 120000) { tramos.push(cur); cur = []; } cur.push(q); });
     if (cur.length) tramos.push(cur);
     const guardada = jdpHilerasCfg && jdpHilerasCfg[pot];
-    const sp = (guardada && guardada.sp) || hilSpDe(pot);
-    const g = guardada && guardada.v === 2 && guardada.fija ? guardada : hilEstimar(poly, tramos, sp);
+    const g = guardada && (guardada.v === 3 || (guardada.v === 2 && guardada.fija)) ? guardada : hilEstimar(poly, tramos, (guardada && guardada.sp) || hilSpDe(pot));
     if (!g) return;
-    const pr = hilProyector(g);
-    const pasadas = tramos.flatMap(tr => hilPasadas(tr, g, sp));
+    const G = grillaDe(g);
+    if (!G) return;
+    const pasadas = tramos.flatMap(tr => hilPasadas(tr, g));
     if (!pasadas.length) return;
     const cub = {};
     pasadas.sort((a, b) => a.t0 - b.t0).forEach(ps => {
-      const d = g.off + ps.k * sp, h = sp / 2;
-      const rect = [pr.ll(ps.s0, d - h), pr.ll(ps.s1, d - h), pr.ll(ps.s1, d + h), pr.ll(ps.s0, d + h)];
+      const izq = gLinea(G, s => G.bordes(ps.k, s)[0], ps.s0, ps.s1), der = gLinea(G, s => G.bordes(ps.k, s)[1], ps.s0, ps.s1);
+      const rect = [...izq, ...der.reverse()];
       const prev = (cub[ps.k] || []).some(([a, b]) => Math.min(b, ps.s1) - Math.max(a, ps.s0) > 8);
       (cub[ps.k] = cub[ps.k] || []).push([ps.s0, ps.s1]);
-      const col = hilColorVel(ps.vel);
+      const col = hilColorVel(ps.vel), num = hilNumero(g, ps.k);
       L.polygon(rect, { color: prev ? '#7F1D1D' : col, weight: prev ? 2 : 0.5, dashArray: prev ? '4 3' : null, fillColor: col, fillOpacity: 0.75 }).addTo(map)
-        .bindTooltip(`<b>${pot}</b> · ${hilNumero(g, ps.k) ? '<b>Entrecalle ' + hilNumero(g, ps.k) + '</b>' : 'entrecalle ' + ps.k}<br>${ps.vel != null ? 'Velocidad promedio: <b>' + ps.vel.toFixed(1) + ' km/h</b><br>' : ''}${Math.round(ps.s1 - ps.s0)} m · ${new Date(ps.t0).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' })}–${new Date(ps.t1).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' })}${prev ? '<br><b style="color:#B91C1C">Repetida</b>' : ''}`, { sticky: true });
+        .bindTooltip(`<b>${pot}</b> · ${num ? '<b>Entrecalle ' + num + '</b>' : 'entrecalle ' + ps.k}<br>${ps.vel != null ? 'Velocidad promedio: <b>' + ps.vel.toFixed(1) + ' km/h</b><br>' : ''}${Math.round(ps.s1 - ps.s0)} m · ${new Date(ps.t0).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' })}–${new Date(ps.t1).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' })}${prev ? '<br><b style="color:#B91C1C">Repetida</b>' : ''}`, { sticky: true });
       rect.forEach(c => bounds.push(c));
     });
     // Entrecalles sin pasar entre la primera y la última trabajada (posibles saltadas)
     const ks = Object.keys(cub).map(Number), kmin = Math.min(...ks), kmax = Math.max(...ks);
-    const sdp = poly.map(c => pr.sd(c[0], c[1]));
     let saltadas = 0; const faltan = [];
     for (let k = kmin; k <= kmax; k++) {
       if (cub[k]) continue;
-      const d = g.off + k * sp, xs = [];
-      for (let i = 0, j = sdp.length - 1; i < sdp.length; j = i++) { const [s1, d1] = sdp[j], [s2, d2] = sdp[i]; if ((d1 > d) !== (d2 > d)) xs.push(s1 + (d - d1) * (s2 - s1) / (d2 - d1)); }
-      xs.sort((a, b) => a - b);
-      for (let i = 0; i + 1 < xs.length; i += 2) {
-        L.polyline([pr.ll(xs[i], d), pr.ll(xs[i + 1], d)], { color: '#FFFFFF', weight: 2, opacity: 0.9, dashArray: '6 6' }).addTo(map)
+      gTramos(G, poly, s => G.centro(k, s), 3).forEach(t => {
+        L.polyline(t.pts, { color: '#FFFFFF', weight: 2, opacity: 0.9, dashArray: '6 6' }).addTo(map)
           .bindTooltip(`<b>${pot}</b> · ${hilNumero(g, k) ? 'Entrecalle ' + hilNumero(g, k) : 'entrecalle ' + k}: <b>sin pasar</b>`, { sticky: true });
-      }
+      });
       saltadas++;
       if (hilNumero(g, k)) faltan.push(hilNumero(g, k));
     }
@@ -1054,6 +1150,7 @@ function hilDibujar(map, r, bounds) {
   });
   return resumen;
 }
+
 function jdpRenderMapa(r, soloMapa) {
   if (typeof L === 'undefined') return;
   jdpUltimoR = r;
