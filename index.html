@@ -2879,14 +2879,10 @@ function initRegistro() {
       document.getElementById('equipo-multi-wrap').style.display = 'block';
       document.getElementById('equipo-selector').style.display = 'none';
       document.getElementById('btn-cambiar-equipo').style.display = 'block';
-      const equipoDefault = equiposAsignados[0];
-      document.getElementById('equipo').value = equipoDefault;
+      // Con 2 o más equipos asignados NO se preselecciona ninguno: el operador elige con cuál trabaja.
+      document.getElementById('equipo').value = '';
       renderEquipoMultiSelector(equiposAsignados);
-      setMedidor(tipoEquipo(equipoDefault));
-      cargarUltimoRegistro(equipoDefault);
-      cargarHorometroShelly(equipoDefault);
-      actualizarBotonesJDLink(equipoDefault);
-      if ((fuenteHorometroDe(equipoDefault) === 'jdlink') && jdAccessToken) obtenerHorasJDLink();
+      actualizarBotonesJDLink('');
     }
   } else {
     document.getElementById('equipo-fijo').style.display = 'none';
@@ -3569,8 +3565,8 @@ window.toggleCambioEquipo = function() {
     if (equiposAsignados.length > 1) {
       fijo.style.display = 'none';
       multiWrap.style.display = 'block';
-      equipoAsignado = equiposAsignados[0];
-      document.getElementById('equipo').value = equipoAsignado;
+      equipoAsignado = null;
+      document.getElementById('equipo').value = '';
       renderEquipoMultiSelector(equiposAsignados);
     } else {
       multiWrap.style.display = 'none';
@@ -3579,13 +3575,18 @@ window.toggleCambioEquipo = function() {
       fijo.textContent = equipoAsignado;
       document.getElementById('equipo').value = equipoAsignado;
     }
-    setMedidor(tipoEquipo(equipoAsignado));
-    cargarUltimoRegistro(equipoAsignado);
-    cargarHorometroShelly(equipoAsignado);
-    actualizarBotonesJDLink(equipoAsignado);
-    if ((fuenteHorometroDe(equipoAsignado) === 'jdlink') && jdAccessToken) obtenerHorasJDLink();
+    if (equipoAsignado) {
+      setMedidor(tipoEquipo(equipoAsignado));
+      cargarUltimoRegistro(equipoAsignado);
+      cargarHorometroShelly(equipoAsignado);
+      actualizarBotonesJDLink(equipoAsignado);
+      if ((fuenteHorometroDe(equipoAsignado) === 'jdlink') && jdAccessToken) obtenerHorasJDLink();
+    } else {
+      actualizarBotonesJDLink('');
+    }
     actualizarVisibilidadHorario();
     limpiarPreview();
+    validarPaso1();
   }
 }
 
