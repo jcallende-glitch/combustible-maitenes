@@ -242,7 +242,7 @@ let seguir = vista.modo !== 'fijo', rumbo = null, previoRumbo = null;
 const mapa = new maplibregl.Map({
   container: 'mapa', center: [-72.15, -36.83], zoom: 15, pitch: vista.incl, maxPitch: 70,
   attributionControl: { compact: true }, pitchWithRotate: false, fadeDuration: 0,
-  style: { version: 8, sources: { sat: { type: 'raster', tileSize: 256, maxzoom: 19, attribution: 'Tiles &copy; Esri',
+  style: { version: 8, sources: { sat: { type: 'raster', tileSize: 256, maxzoom: 18, attribution: 'Tiles &copy; Esri',
     tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'] } },
     layers: [{ id: 'sat', type: 'raster', source: 'sat' }] }
 });
@@ -434,7 +434,8 @@ let trazosOtros = [], kmOtros = 0, equiposOtros = [];
 // no ensucia el mapa. Lo que se vuelve a pasar por una entrecalle ya aplicada se pinta rojo.
 let hileras = ls.get('tractor_hileras', {});          // { potrero: { az, off, sp, lat0, lng0, m, fija, ts } }
 let repetidoM = 0, repitiendoAhora = false, avisoRepetir = 0;
-const MIN_M_HILERAS = 300;                            // metros rectos para dejar fija la estimación
+const MIN_M_HILERAS = 500;                            // metros rectos reales (≈ 2 pasadas largas) para dejar fija la estimación
+const VERSION_HILERAS = 2;
 function proyector(g) {
   const kx = 111320 * Math.cos(g.lat0 * Math.PI / 180), ky = 110540, az = g.az * Math.PI / 180;
   const ux = Math.sin(az), uy = Math.cos(az), nx = Math.cos(az), ny = -Math.sin(az);
@@ -472,14 +473,22 @@ function estimarHileras(potrero, tramos, sp) {
   let rectos = segs.filter(x => difAxial(x.az, az) < 20);
   if (rectos.length < 3) return null;
   az = media(rectos); rectos = segs.filter(x => difAxial(x.az, az) < 15);
-  const m = rectos.reduce((t, x) => t + x.L, 0);
+  // metros rectos REALES (sin contar dos veces el mismo tramo)
+  let m = 0;
+  tramos.forEach(tr => {
+    for (let i = 0; i + 1 < tr.length;) {
+      let j = i + 1; while (j < tr.length - 1 && distM(tr[i], tr[j]) < 8) j++;
+      const L = distM(tr[i], tr[j]); if (L >= 6 && L < 40 && difAxial(rumboEntre(tr[i], tr[j]), az) < 15) m += L;
+      i = j;
+    }
+  });
   if (m < 50) return null;                              // muy poco para estimar
   const g = { az: +az.toFixed(2), off: 0, sp, lat0: pg.poly[0][0], lng0: pg.poly[0][1] };
   const pr = proyector(g);
   let c = 0, s2 = 0;
   tramos.forEach(tr => { const dirs = direcciones(tr); tr.forEach((q, i) => { if (dirs[i] != null && difAxial(dirs[i], az) < 15) { const f = 2 * Math.PI * pr.sd(q[0], q[1])[1] / sp; c += Math.cos(f); s2 += Math.sin(f); } }); });
   g.off = +((Math.atan2(s2, c) / (2 * Math.PI)) * sp).toFixed(2);
-  g.m = Math.round(m); g.fija = m >= MIN_M_HILERAS; g.ts = Date.now();
+  g.m = Math.round(m); g.fija = m >= MIN_M_HILERAS; g.ts = Date.now(); g.v = VERSION_HILERAS;
   return g;
 }
 function guardarHileras(potrero, g) {
@@ -520,31 +529,73 @@ function calcularCobertura() {
   const verde = [], rojo = [], cian = [], guias = [];
   repetidoM = 0; repitiendoAhora = false;
   let g = a && esFrutal(a.potrero) ? hileras[a.potrero] : null;
-  if (a && esFrutal(a.potrero) && !(g && g.fija)) {      // estimar (o seguir afinando) las hileras
+  if (g && g.v !== VERSION_HILERAS) g = null;            // estimaciones viejas (fijadas con muy pocos datos): se rehacen
+  // Se estima mientras no esté fija; ya fija, se sigue afinando cada 1 min si hay más pasadas
+  if (a && esFrutal(a.potrero) && (!(g && g.fija) || Date.now() - (g.ts || 0) > 60000)) {
     const est = estimarHileras(a.potrero, [...tramosAplicados, ...trazosOtros], w);
-    if (est) { g = est; guardarHileras(a.potrero, est); }
+    if (est && (!g || !g.fija || est.m >= g.m)) { g = est; guardarHileras(a.potrero, est); }
+    else if (g) g.ts = Date.now();
   }
   if (g) {
     const pr = proyector(g), sp = g.sp || w;
     const kDe = d => Math.round((d - g.off) / sp);
     const cub = {};                                      // entrecalle k → intervalos ya aplicados
     // Pasadas sobre entrecalles: puntos alineados con las hileras, agrupados por entrecalle
+    // Pasadas sobre entrecalles. La entrecalle de cada punto se decide con la
+    // MEDIANA de la posición lateral de los puntos vecinos (±12 m de avance), no
+    // con el primer punto: así, al entrar a la hilera terminando la vuelta, el
+    // error del GPS no "engancha" la entrecalle de al lado. Los cambios de
+    // entrecalle de menos de 15 m se juntan con el tramo vecino.
+    const VENT_M = 12, MIN_TRAMO_M = 15;
     const pasadas = (trs, quien) => {
       const out = [];
       trs.forEach(tr => {
-        const dirs = direcciones(tr); let act = null;
+        const dirs = direcciones(tr);
+        const corridas = []; let cur = null;
         tr.forEach((q, i) => {
           const [sv, d] = pr.sd(q[0], q[1]);
           const alineado = dirs[i] != null && difAxial(dirs[i], g.az) < 25;
-          if (!alineado) { if (act) { out.push(act); act = null; } return; }
-          const k = kDe(d);
-          if (act && act.k !== k && Math.abs(d - (g.off + act.k * sp)) < sp * 0.75) { act.s.push(sv); act.t1 = q[2] || 0; return; } // tolera el error del GPS
-          if (!act || act.k !== k) { if (act) out.push(act); act = { k, s: [], t0: q[2] || 0, t1: q[2] || 0, quien }; }
-          act.s.push(sv); act.t1 = q[2] || 0;
+          const t = q[2] || 0;
+          const corta = !alineado || (cur && (Math.abs(d - cur[cur.length - 1].d) > sp || (t && cur[cur.length - 1].t && t - cur[cur.length - 1].t > 30000)));
+          if (corta && cur) { corridas.push(cur); cur = null; }
+          if (!alineado) return;
+          (cur || (cur = [])).push({ sv, d, t });
         });
-        if (act) out.push(act);
+        if (cur) corridas.push(cur);
+        corridas.filter(c => c.length >= 2).forEach(c => {
+          // mediana lateral en una ventana de avance
+          let lo = 0, hi = 0;
+          const ks = c.map((p, i) => {
+            while (Math.abs(c[lo].sv - p.sv) > VENT_M && lo < i) lo++;
+            while (hi + 1 < c.length && Math.abs(c[hi + 1].sv - p.sv) <= VENT_M) hi++;
+            if (hi < i) hi = i;
+            const ds = c.slice(Math.min(lo, i), Math.max(hi, i) + 1).map(x => x.d).sort((x, y) => x - y);
+            return kDe(ds[Math.floor(ds.length / 2)]);
+          });
+          // grupos de igual entrecalle; los cortos (< 15 m) se pegan al vecino más largo
+          const grupos = [];
+          ks.forEach((k, i) => { const gq = grupos[grupos.length - 1]; if (gq && gq.k === k) gq.i1 = i; else grupos.push({ k, i0: i, i1: i }); });
+          const largo = gq => Math.abs(c[gq.i1].sv - c[gq.i0].sv);
+          for (let pasada = 0; pasada < 2 && grupos.length > 1; pasada++) {
+            for (let x = 0; x < grupos.length; x++) {
+              const gq = grupos[x];
+              if (grupos.length > 1 && largo(gq) < MIN_TRAMO_M) {
+                const ant = grupos[x - 1], sig = grupos[x + 1];
+                const dest = !ant ? sig : !sig ? ant : (largo(ant) >= largo(sig) ? ant : sig);
+                if (dest === ant) ant.i1 = gq.i1; else sig.i0 = gq.i0;
+                grupos.splice(x, 1); x--;
+                // unir vecinos que quedaron con la misma entrecalle
+                for (let y = 1; y < grupos.length; y++) if (grupos[y].k === grupos[y - 1].k) { grupos[y - 1].i1 = grupos[y].i1; grupos.splice(y, 1); y--; }
+              }
+            }
+          }
+          grupos.forEach(gq => {
+            const pts = c.slice(gq.i0, gq.i1 + 1);
+            if (pts.length >= 2) out.push({ k: gq.k, s: pts.map(x => x.sv), t0: pts[0].t, t1: pts[pts.length - 1].t, quien });
+          });
+        });
       });
-      return out.filter(x => x.s.length >= 2);
+      return out;
     };
     const todas = [...pasadas(trazosOtros, 'otro'), ...pasadas(tramosAplicados, 'yo')].sort((x, y) => x.t0 - y.t0);
     const ultima = todas.filter(x => x.quien === 'yo').slice(-1)[0];
@@ -554,7 +605,7 @@ function calcularCobertura() {
       const c = cub[ps.k] || (cub[ps.k] = []);
       const { nuevas, rep } = restar(c, a0, a1);
       nuevas.forEach(([x0, x1]) => (ps.quien === 'yo' ? verde : cian).push(linea(segLL(ps.k, x0, x1), {})));
-      rep.filter(([x0, x1]) => x1 - x0 >= 4).forEach(([x0, x1]) => {
+      rep.filter(([x0, x1]) => x1 - x0 >= 8).forEach(([x0, x1]) => {
         (ps.quien === 'yo' ? rojo : cian).push(linea(segLL(ps.k, x0, x1), {}));
         if (ps.quien === 'yo') { repetidoM += x1 - x0; if (ps === ultima && ultimaPos && Date.now() - ps.t1 < 20000) { const sv = pr.sd(ultimaPos.lat, ultimaPos.lng)[0]; if (sv >= x0 - 8 && sv <= x1 + 8) repitiendoAhora = true; } }
       });
