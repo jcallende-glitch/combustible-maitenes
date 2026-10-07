@@ -1243,7 +1243,7 @@ function hilDibujar(map, r, bounds) {
       (cub[ps.k] = cub[ps.k] || []).push([ps.s0, ps.s1]);
       const col = hilColorVel(ps.vel);
       L.polygon(rect, { color: prev ? '#7F1D1D' : col, weight: prev ? 2 : 0.5, dashArray: prev ? '4 3' : null, fillColor: col, fillOpacity: 0.75 }).addTo(map)
-        .bindTooltip(`<b>${pot}</b> · ${hilNumero(g, ps.k) ? '<b>Hilera ' + hilNumero(g, ps.k) + '</b>' : 'entrecalle ' + ps.k}<br>${ps.vel != null ? 'Velocidad promedio: <b>' + ps.vel.toFixed(1) + ' km/h</b><br>' : ''}${Math.round(ps.s1 - ps.s0)} m · ${new Date(ps.t0).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' })}–${new Date(ps.t1).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' })}${prev ? '<br><b style="color:#B91C1C">Repetida</b>' : ''}`, { sticky: true });
+        .bindTooltip(`<b>${pot}</b> · ${hilNumero(g, ps.k) ? '<b>Entrecalle ' + hilNumero(g, ps.k) + '</b>' : 'entrecalle ' + ps.k}<br>${ps.vel != null ? 'Velocidad promedio: <b>' + ps.vel.toFixed(1) + ' km/h</b><br>' : ''}${Math.round(ps.s1 - ps.s0)} m · ${new Date(ps.t0).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' })}–${new Date(ps.t1).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' })}${prev ? '<br><b style="color:#B91C1C">Repetida</b>' : ''}`, { sticky: true });
       rect.forEach(c => bounds.push(c));
     });
     // Entrecalles sin pasar entre la primera y la última trabajada (posibles saltadas)
@@ -1257,7 +1257,7 @@ function hilDibujar(map, r, bounds) {
       xs.sort((a, b) => a - b);
       for (let i = 0; i + 1 < xs.length; i += 2) {
         L.polyline([pr.ll(xs[i], d), pr.ll(xs[i + 1], d)], { color: '#FFFFFF', weight: 2, opacity: 0.9, dashArray: '6 6' }).addTo(map)
-          .bindTooltip(`<b>${pot}</b> · ${hilNumero(g, k) ? 'Hilera ' + hilNumero(g, k) : 'entrecalle ' + k}: <b>sin pasar</b>`, { sticky: true });
+          .bindTooltip(`<b>${pot}</b> · ${hilNumero(g, k) ? 'Entrecalle ' + hilNumero(g, k) : 'entrecalle ' + k}: <b>sin pasar</b>`, { sticky: true });
       }
       saltadas++;
       if (hilNumero(g, k)) faltan.push(hilNumero(g, k));
@@ -1312,7 +1312,7 @@ function jdpRenderMapa(r, soloMapa) {
   const ley = document.getElementById('jdp-leyenda');
   if (ley) ley.innerHTML = hil
     ? 'Hileras corregidas al ancho de la entrecalle, color por velocidad promedio (km/h): ' + HIL_COLORES.map(c => `<span style="display:inline-block;width:12px;height:12px;background:${c[1]};border-radius:2px;vertical-align:-2px;margin:0 3px 0 6px"></span>${c[2]}`).join('') + ' · borde rojo punteado = repetida · <span style="background:#555;color:#fff;padding:0 4px;border-radius:3px">- - -</span> blanca = entrecalle sin pasar'
-      + (resumenHil && resumenHil.length ? '<br>' + resumenHil.map(x => `<b>${x.pot}</b>: ${x.pasadas} pasadas${x.hechas && x.hechas.length ? ' (hileras ' + x.hechas[0] + ' a ' + x.hechas[x.hechas.length - 1] + (x.total ? ' de ' + x.total : '') + ')' : ''}${x.faltan && x.faltan.length ? ', <b style="color:#B91C1C">faltaron las hileras ' + x.faltan.join(', ') + '</b>' : x.saltadas ? ', ' + x.saltadas + ' entrecalles sin pasar' : ''}${x.repetidas > 0 ? ', ' + x.repetidas + ' repetidas' : ''}`).join(' · ') : (resumenHil ? '<br>No hay suficientes pasadas rectas dentro de potreros para corregir hileras.' : ''))
+      + (resumenHil && resumenHil.length ? '<br>' + resumenHil.map(x => `<b>${x.pot}</b>: ${x.pasadas} pasadas${x.hechas && x.hechas.length ? ' (entrecalles ' + x.hechas[0] + ' a ' + x.hechas[x.hechas.length - 1] + (x.total ? ' de ' + x.total : '') + ')' : ''}${x.faltan && x.faltan.length ? ', <b style="color:#B91C1C">faltaron las entrecalles ' + x.faltan.join(', ') + '</b>' : x.saltadas ? ', ' + x.saltadas + ' entrecalles sin pasar' : ''}${x.repetidas > 0 ? ', ' + x.repetidas + ' repetidas' : ''}`).join(' · ') : (resumenHil ? '<br>No hay suficientes pasadas rectas dentro de potreros para corregir hileras.' : ''))
     : '🟡 en potrero · 🟠 cabecera o continuidad · 🔵 bodegas, camino o carga · 🟣 traslado (rápido) · ⚪ detenido · 🔴 fuera · pasa el puntero sobre un punto para ver su velocidad';
   setTimeout(() => map.invalidateSize(), 150);
 }
@@ -6391,7 +6391,7 @@ function renderMapaPotreros(containerId, clickable, drawable, multiSelect, forza
           const d = g.off + f.k * g.sp;
           f.tramos.forEach(([a, b], ti) => {
             L.polyline([pr.ll(a, d), pr.ll(b, d)], { color: f.n === 1 ? '#22C55E' : '#FFFFFF', weight: f.n === 1 ? 2.5 : 1, opacity: 0.85, interactive: true }).addTo(map)
-              .bindTooltip(`${p.nombre} · Hilera ${f.n} de ${filas.length}`, { sticky: true });
+              .bindTooltip(`${p.nombre} · Entrecalle ${f.n} de ${filas.length}`, { sticky: true });
             if (ti === 0 && (f.n === 1 || f.n === filas.length || f.n % cada === 0))
               L.marker(pr.ll(a, d), { opacity: 0, interactive: false }).addTo(map).bindTooltip(String(f.n), { permanent: true, direction: 'center', className: 'lote-tip' });
           });
@@ -6829,12 +6829,24 @@ function hilRender() {
     HG.capas.push(L.polygon(HG.poly, { color: '#FFD400', weight: 3, fill: false }).addTo(map));
     const filas = hilLista();
     if (filas.length) {
-      const pr = hilProyector(HG.g), cada = filas.length > 80 ? 5 : 1;
+      const pr = hilProyector(HG.g), cada = filas.length > 150 ? 10 : filas.length > 30 ? 5 : 1;
+      // Filas de árboles (amarillo): a medio espacio de cada entrecalle. Sirven para calzar con la imagen.
+      const sdpA = HG.poly.map(c => pr.sd(c[0], c[1]));
+      const cruces = d => { const xs = []; for (let i = 0, j = sdpA.length - 1; i < sdpA.length; j = i++) { const [s1, d1] = sdpA[j], [s2, d2] = sdpA[i]; if ((d1 > d) !== (d2 > d)) xs.push(s1 + (d - d1) * (s2 - s1) / (d2 - d1)); } return xs.sort((a, b) => a - b); };
+      const ks = filas.map(f => f.k), kA = Math.min(...ks), kB = Math.max(...ks);
+      for (let k = kA; k <= kB + 1; k++) {
+        const d = HG.g.off + (k - 0.5) * HG.g.sp, xs = cruces(d);
+        for (let i = 0; i + 1 < xs.length; i += 2) {
+          const ln = L.polyline([pr.ll(xs[i], d), pr.ll(xs[i + 1], d)], { color: '#FACC15', weight: 2, opacity: 0.85 }).addTo(map);
+          ln.bindTooltip('Fila de árboles', { sticky: true });
+          HG.capas.push(ln);
+        }
+      }
       filas.forEach(f => {
         const d = HG.g.off + f.k * HG.g.sp;
         f.tramos.forEach(([a, b], ti) => {
-          const ln = L.polyline([pr.ll(a, d), pr.ll(b, d)], { color: f.n === 1 ? '#22C55E' : '#FFFFFF', weight: f.n === 1 ? 3 : 1.5, opacity: 0.9 }).addTo(map);
-          ln.bindTooltip('Hilera ' + f.n, { sticky: true });
+          const ln = L.polyline([pr.ll(a, d), pr.ll(b, d)], { color: f.n === 1 ? '#22C55E' : '#FFFFFF', weight: f.n === 1 ? 3 : 1.5, opacity: 0.9, dashArray: f.n === 1 ? null : '6 6' }).addTo(map);
+          ln.bindTooltip('Entrecalle ' + f.n + ' (pasada del tractor)', { sticky: true });
           HG.capas.push(ln);
           if (ti === 0 && (f.n === 1 || f.n === filas.length || f.n % cada === 0)) {
             const m = L.marker(pr.ll(a, d), { opacity: 0 }).addTo(map);
@@ -6850,10 +6862,10 @@ function hilRender() {
   }
   const n = hilLista().length;
   document.getElementById('hil-estado').innerHTML = HG.marcando
-    ? (HG.pts.length === 0 ? '✏️ Toca (o marca con 📌) el comienzo de una entrecalle, justo al medio entre dos hileras de árboles.' : '✏️ Ahora toca el final de esa misma entrecalle, lo más lejos posible.')
+    ? (HG.pts.length === 0 ? '✏️ Toca el comienzo de una <b>fila de árboles</b> (la línea verde oscura de la imagen). Con 📌 Marcar aquí, párate junto a un árbol de esa fila.' : '✏️ Ahora toca el final de esa misma fila de árboles, lo más lejos posible.')
     : HG.g
-      ? `<b>${n} hileras</b> (entrecalles por donde pasa el tractor) · cada ${HG.g.sp} m · ${HG.fuente || ''}. La <b style="color:#16A34A">hilera 1</b> está en verde. Si las líneas no calzan con la imagen, ajústalas con las flechas.`
-      : 'Este potrero aún no tiene hileras. Toca ✏️ Marcar una hilera y marca el comienzo y el final de una entrecalle (en el mapa o con tu ubicación).';
+      ? `<b>${n} entrecalles</b> numeradas · cada ${HG.g.sp} m · ${HG.fuente || ''}. <span style="color:#CA8A04">━ amarillo</span> = filas de árboles (deben calzar con los árboles de la imagen) · <span style="color:#555">┅ blanco</span> = entrecalles por donde pasa el tractor; la <b style="color:#16A34A">entrecalle 1</b> en verde. Ajusta con las flechas si no calzan.`
+      : 'Este potrero aún no tiene hileras. Toca ✏️ Marcar una fila de árboles y marca su comienzo y final (en el mapa o con tu ubicación).';
   const b = (txt, fn, extra) => `<button type="button" class="btn btn-secondary" style="width:auto;padding:7px 10px;font-size:12px;${extra || ''}" onclick="${fn}">${txt}</button>`;
   document.getElementById('hil-barra').innerHTML =
     `<label style="font-size:12px;display:flex;align-items:center;gap:4px;text-transform:none;letter-spacing:0;margin:0">Distancia entre hileras <input type="number" step="0.1" min="1" max="20" value="${HG.g ? HG.g.sp : HG.sp}" style="width:70px;padding:5px" onchange="hilCambiarSp(this.value)"> m</label>`
@@ -6861,7 +6873,7 @@ function hilRender() {
     + b('📍 Mi ubicación' + (HG.pos ? ' ±' + Math.round(HG.pos.acc) + ' m' : ''), 'hilGps()', HG.gpsId != null ? 'background:var(--verde);color:#fff' : '')
     + (HG.gpsId != null ? b('📌 Marcar aquí', 'hilMarcarAqui()') : '');
   const btn = document.getElementById('hil-btn-marcar');
-  btn.textContent = HG.marcando ? '✕ Cancelar' : '✏️ Marcar una hilera';
+  btn.textContent = HG.marcando ? '✕ Cancelar' : '✏️ Marcar una fila de árboles';
 }
 window.hilCambiarSp = function(v) { const x = parseFloat(String(v).replace(',', '.')); if (!(x > 0)) return; HG.sp = x; if (HG.g) { HG.g.sp = x; HG.fuente = 'definida a mano'; } hilRender(); }
 window.hilMover = function(m) { HG.g.off += m; HG.fuente = 'definida a mano'; hilRender(); }
@@ -6882,12 +6894,12 @@ window.hilClick = function(lat, lng) {
   HG.pts.push([lat, lng]);
   if (HG.pts.length < 2) { hilRender(); return; }
   const [A, B] = HG.pts;
-  if (hilDist(A, B) < 20) { toast('Marca dos puntos más separados (al menos 20 m) sobre la misma entrecalle', false); HG.pts = []; hilRender(); return; }
+  if (hilDist(A, B) < 20) { toast('Marca dos puntos más separados (al menos 20 m) sobre la misma fila de árboles', false); HG.pts = []; hilRender(); return; }
   const az = hilRumbo(A, B) % 180;
   const g = { az, off: 0, sp: HG.g ? HG.g.sp : HG.sp, lat0: HG.poly[0][0], lng0: HG.poly[0][1], v: 2, fija: true, manual: true, dir: HG.g ? HG.g.dir : 1 };
   const pr = hilProyector(g);
   const dA = pr.sd(A[0], A[1])[1], dB = pr.sd(B[0], B[1])[1];
-  g.off = (((dA + dB) / 2) % g.sp + g.sp) % g.sp;
+  g.off = ((((dA + dB) / 2) + g.sp / 2) % g.sp + g.sp) % g.sp; // lo marcado es una fila de árboles: la entrecalle va a medio espacio
   HG.g = g; HG.fuente = 'definida a mano'; HG.marcando = false; HG.pts = [];
   hilRender();
 }
@@ -6914,14 +6926,14 @@ window.hilMarcarAqui = function() {
   hilClick(HG.pos.lat, HG.pos.lng);
 }
 window.hilGuardar = async function() {
-  if (!HG || !HG.g) { toast('Primero marca una hilera', false); return; }
+  if (!HG || !HG.g) { toast('Primero marca una fila de árboles', false); return; }
   const filas = hilLista();
   const g = { ...HG.g, v: 2, fija: true, ts: Date.now(), nHileras: filas.length, kIni: filas.length ? filas[0].k : null };
   g.manual = true; g.m = 1e9; // revisada y guardada: el modo tractor ya no la reemplaza ni la mueve
   try {
     await setDoc(doc(db, 'config', 'hileras'), { [HG.pot.nombre]: g }, { merge: true });
     jdpHilerasCfg[HG.pot.nombre] = g;
-    toast(`✓ ${filas.length} hileras guardadas en ${HG.pot.nombre}`, true);
+    toast(`✓ ${filas.length} entrecalles guardadas en ${HG.pot.nombre}`, true);
     cerrarHileras(); renderListaPotreros(); try { renderMapaCampoPreview(); } catch (e) {}
   } catch (e) { toast('Error: ' + e.message, false); }
 }
@@ -7395,7 +7407,7 @@ function renderListaPotreros() {
         <span style="flex:1;min-width:140px">
           <strong>${p.nombre}</strong><br>
           <span style="font-size:12px;color:var(--acero)">${p.hectareas != null ? p.hectareas+' ha' : 'sin ha'} · ${p.tipo === 'frutal' ? '🌳 Frutal' : '🌾 Anual'}</span><br>
-          <span style="font-size:12px;color:var(--verde);font-weight:600">🌱 ${textoCultivoActual(p.nombre)}</span>${p.tipo === 'frutal' ? (() => { const g = jdpHilerasCfg && jdpHilerasCfg[p.nombre]; return g && g.v === 2 && g.nHileras ? '<br><span style="font-size:12px;color:#065F46">🌳 ' + g.nHileras + ' hileras cada ' + g.sp + ' m</span>' : '<br><span style="font-size:12px;color:#92400E">🌳 hileras sin definir</span>'; })() : ''}${(() => { const ls = lotesDe(p.nombre, new Date().getFullYear()); return ls ? '<br><span style="font-size:12px;color:#92400E">✂️ ' + new Date().getFullYear() + ': ' + ls.map(l => escA(l.nombre) + ' ' + escA(l.cultivo || '?') + ' ' + (l.hectareas != null ? l.hectareas.toFixed(1) + ' ha' : '')).join(' · ') + '</span>' : ''; })()}
+          <span style="font-size:12px;color:var(--verde);font-weight:600">🌱 ${textoCultivoActual(p.nombre)}</span>${p.tipo === 'frutal' ? (() => { const g = jdpHilerasCfg && jdpHilerasCfg[p.nombre]; return g && g.v === 2 && g.nHileras ? '<br><span style="font-size:12px;color:#065F46">🌳 ' + g.nHileras + ' entrecalles cada ' + g.sp + ' m</span>' : '<br><span style="font-size:12px;color:#92400E">🌳 hileras sin definir</span>'; })() : ''}${(() => { const ls = lotesDe(p.nombre, new Date().getFullYear()); return ls ? '<br><span style="font-size:12px;color:#92400E">✂️ ' + new Date().getFullYear() + ': ' + ls.map(l => escA(l.nombre) + ' ' + escA(l.cultivo || '?') + ' ' + (l.hectareas != null ? l.hectareas.toFixed(1) + ' ha' : '')).join(' · ') + '</span>' : ''; })()}
         </span>
         ${p.tipo !== 'frutal' ? `<button class="btn btn-secondary" style="font-size:11px;padding:6px 10px" onclick="abrirEdicionCultivoPotrero(${i})">✏️ Definir cultivo</button>` : ''}
         ${p.tipo !== 'frutal' ? `<button class="btn btn-secondary" style="font-size:11px;padding:6px 10px" onclick="abrirLotes(${i})">✂️ Dividir por año</button>` : ''}
@@ -11227,7 +11239,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         </div>
         <div id="hil-mapa" style="flex:1;min-height:200px"></div>
         <div style="display:flex;gap:8px;padding:10px 14px;border-top:1px solid var(--borde)">
-          <button class="btn btn-secondary" style="flex:1;justify-content:center;padding:12px" onclick="hilMarcarToggle()" id="hil-btn-marcar">✏️ Marcar una hilera</button>
+          <button class="btn btn-secondary" style="flex:1;justify-content:center;padding:12px" onclick="hilMarcarToggle()" id="hil-btn-marcar">✏️ Marcar una fila de árboles</button>
           <button class="btn btn-verde" style="flex:1;justify-content:center;padding:12px" onclick="hilGuardar()">✓ Guardar</button>
         </div>
       </div>
