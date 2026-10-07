@@ -1030,7 +1030,7 @@ function hilDibujar(map, r, bounds) {
       (cub[ps.k] = cub[ps.k] || []).push([ps.s0, ps.s1]);
       const col = hilColorVel(ps.vel);
       L.polygon(rect, { color: prev ? '#7F1D1D' : col, weight: prev ? 2 : 0.5, dashArray: prev ? '4 3' : null, fillColor: col, fillOpacity: 0.75 }).addTo(map)
-        .bindTooltip(`<b>${pot}</b> · ${hilNumero(g, ps.k) ? '<b>Hilera ' + hilNumero(g, ps.k) + '</b>' : 'entrecalle ' + ps.k}<br>${ps.vel != null ? 'Velocidad promedio: <b>' + ps.vel.toFixed(1) + ' km/h</b><br>' : ''}${Math.round(ps.s1 - ps.s0)} m · ${new Date(ps.t0).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' })}–${new Date(ps.t1).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' })}${prev ? '<br><b style="color:#B91C1C">Repetida</b>' : ''}`, { sticky: true });
+        .bindTooltip(`<b>${pot}</b> · ${hilNumero(g, ps.k) ? '<b>Entrecalle ' + hilNumero(g, ps.k) + '</b>' : 'entrecalle ' + ps.k}<br>${ps.vel != null ? 'Velocidad promedio: <b>' + ps.vel.toFixed(1) + ' km/h</b><br>' : ''}${Math.round(ps.s1 - ps.s0)} m · ${new Date(ps.t0).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' })}–${new Date(ps.t1).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' })}${prev ? '<br><b style="color:#B91C1C">Repetida</b>' : ''}`, { sticky: true });
       rect.forEach(c => bounds.push(c));
     });
     // Entrecalles sin pasar entre la primera y la última trabajada (posibles saltadas)
@@ -1044,7 +1044,7 @@ function hilDibujar(map, r, bounds) {
       xs.sort((a, b) => a - b);
       for (let i = 0; i + 1 < xs.length; i += 2) {
         L.polyline([pr.ll(xs[i], d), pr.ll(xs[i + 1], d)], { color: '#FFFFFF', weight: 2, opacity: 0.9, dashArray: '6 6' }).addTo(map)
-          .bindTooltip(`<b>${pot}</b> · ${hilNumero(g, k) ? 'Hilera ' + hilNumero(g, k) : 'entrecalle ' + k}: <b>sin pasar</b>`, { sticky: true });
+          .bindTooltip(`<b>${pot}</b> · ${hilNumero(g, k) ? 'Entrecalle ' + hilNumero(g, k) : 'entrecalle ' + k}: <b>sin pasar</b>`, { sticky: true });
       }
       saltadas++;
       if (hilNumero(g, k)) faltan.push(hilNumero(g, k));
@@ -1099,7 +1099,7 @@ function jdpRenderMapa(r, soloMapa) {
   const ley = document.getElementById('jdp-leyenda');
   if (ley) ley.innerHTML = hil
     ? 'Hileras corregidas al ancho de la entrecalle, color por velocidad promedio (km/h): ' + HIL_COLORES.map(c => `<span style="display:inline-block;width:12px;height:12px;background:${c[1]};border-radius:2px;vertical-align:-2px;margin:0 3px 0 6px"></span>${c[2]}`).join('') + ' · borde rojo punteado = repetida · <span style="background:#555;color:#fff;padding:0 4px;border-radius:3px">- - -</span> blanca = entrecalle sin pasar'
-      + (resumenHil && resumenHil.length ? '<br>' + resumenHil.map(x => `<b>${x.pot}</b>: ${x.pasadas} pasadas${x.hechas && x.hechas.length ? ' (hileras ' + x.hechas[0] + ' a ' + x.hechas[x.hechas.length - 1] + (x.total ? ' de ' + x.total : '') + ')' : ''}${x.faltan && x.faltan.length ? ', <b style="color:#B91C1C">faltaron las hileras ' + x.faltan.join(', ') + '</b>' : x.saltadas ? ', ' + x.saltadas + ' entrecalles sin pasar' : ''}${x.repetidas > 0 ? ', ' + x.repetidas + ' repetidas' : ''}`).join(' · ') : (resumenHil ? '<br>No hay suficientes pasadas rectas dentro de potreros para corregir hileras.' : ''))
+      + (resumenHil && resumenHil.length ? '<br>' + resumenHil.map(x => `<b>${x.pot}</b>: ${x.pasadas} pasadas${x.hechas && x.hechas.length ? ' (entrecalles ' + x.hechas[0] + ' a ' + x.hechas[x.hechas.length - 1] + (x.total ? ' de ' + x.total : '') + ')' : ''}${x.faltan && x.faltan.length ? ', <b style="color:#B91C1C">faltaron las entrecalles ' + x.faltan.join(', ') + '</b>' : x.saltadas ? ', ' + x.saltadas + ' entrecalles sin pasar' : ''}${x.repetidas > 0 ? ', ' + x.repetidas + ' repetidas' : ''}`).join(' · ') : (resumenHil ? '<br>No hay suficientes pasadas rectas dentro de potreros para corregir hileras.' : ''))
     : '🟡 en potrero · 🟠 cabecera o continuidad · 🔵 bodegas, camino o carga · 🟣 traslado (rápido) · ⚪ detenido · 🔴 fuera · pasa el puntero sobre un punto para ver su velocidad';
   setTimeout(() => map.invalidateSize(), 150);
 }
