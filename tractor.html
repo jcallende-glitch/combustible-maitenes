@@ -436,6 +436,106 @@ let hileras = ls.get('tractor_hileras', {});          // { potrero: { az, off, s
 let repetidoM = 0, repitiendoAhora = false, avisoRepetir = 0;
 const MIN_M_HILERAS = 500;                            // metros rectos reales (≈ 2 pasadas largas) para dejar fija la estimación
 const VERSION_HILERAS = 2;
+// ── GRILLA DE HILERAS (compartida: app, reparto y modo tractor) ─────────
+// v2: uniforme { az, off, sp }  → entrecalle k centrada en d = off + k·sp
+// v3: filas de árboles reales  { az, nudos:[s…], filas:[{d:[…]}…] } → cada fila
+//     de árboles tiene su posición lateral d en cada nudo (a lo largo de la
+//     hilera) y se interpola entre nudos; la entrecalle k va entre la fila k y
+//     la k+1. Así se pueden corregir sectores con hileras más separadas o que
+//     se van corriendo a lo largo.
+function grillaDe(g) {
+  if (!g || g.az == null || g.lat0 == null) return null;
+  const kx = 111320 * Math.cos(g.lat0 * Math.PI / 180), ky = 110540, az = g.az * Math.PI / 180;
+  const ux = Math.sin(az), uy = Math.cos(az), nx = Math.cos(az), ny = -Math.sin(az);
+  const sd = (lat, lng) => { const x = (lng - g.lng0) * kx, y = (lat - g.lat0) * ky; return [x * ux + y * uy, x * nx + y * ny]; };
+  const ll = (s, d) => { const x = s * ux + d * nx, y = s * uy + d * ny; return [g.lat0 + y / ky, g.lng0 + x / kx]; };
+  if (g.v === 3 && Array.isArray(g.filas) && g.filas.length >= 2 && Array.isArray(g.nudos) && g.nudos.length) {
+    const K = g.nudos, F = g.filas.map(f => f.d || f), sp = g.sp || 5;
+    const dF = (i, s) => {
+      const f = F[i];
+      if (K.length === 1) return f[0];
+      let j = 0; while (j < K.length - 2 && s > K[j + 1]) j++;
+      const t = (s - K[j]) / ((K[j + 1] - K[j]) || 1);
+      return f[j] + (f[j + 1] - f[j]) * t;
+    };
+    const n = F.length - 1;
+    return {
+      tipo: 3, sd, ll, n, nFilas: F.length, sp,
+      fila: dF,
+      bordes: (k, s) => [dF(k, s), dF(k + 1, s)],
+      centro: (k, s) => (dF(k, s) + dF(k + 1, s)) / 2,
+      k: (s, d) => {
+        const ult = F.length - 1, d0 = dF(0, s), dn = dF(ult, s);
+        if (d < d0) return -1 - Math.floor((d0 - d) / sp);
+        if (d >= dn) return n + Math.floor((d - dn) / sp);
+        let lo = 0, hi = ult;
+        while (hi - lo > 1) { const m = (lo + hi) >> 1; if (dF(m, s) <= d) lo = m; else hi = m; }
+        return lo;
+      }
+    };
+  }
+  const sp = g.sp || 5, off = g.off || 0;
+  return {
+    tipo: 2, sd, ll, n: null, sp,
+    fila: i => off + (i - 0.5) * sp,
+    bordes: k => [off + (k - 0.5) * sp, off + (k + 0.5) * sp],
+    centro: k => off + k * sp,
+    k: (s, d) => Math.round((d - off) / sp)
+  };
+}
+function gPip(lat, lng, poly) {
+  let c = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const yi = poly[i][0], xi = poly[i][1], yj = poly[j][0], xj = poly[j][1];
+    if (((yi > lat) !== (yj > lat)) && (lng < (xj - xi) * (lat - yi) / ((yj - yi) || 1e-12) + xi)) c = !c;
+  }
+  return c;
+}
+function gRangoS(G, poly) { const ss = poly.map(c => G.sd(c[0], c[1])[0]); return [Math.min(...ss), Math.max(...ss)]; }
+// Partes dentro del potrero de la línea d = fn(s): [{ s0, s1, pts:[[lat,lng]…] }]
+function gTramos(G, poly, fn, paso) {
+  const [a, b] = gRangoS(G, poly); paso = paso || 2;
+  const out = []; let cur = null;
+  for (let s = a; ; s += paso) {
+    const sv = Math.min(s, b), p = G.ll(sv, fn(sv));
+    if (gPip(p[0], p[1], poly)) { if (!cur) cur = { s0: sv, s1: sv, pts: [] }; cur.pts.push(p); cur.s1 = sv; }
+    else if (cur) { out.push(cur); cur = null; }
+    if (sv >= b) break;
+  }
+  if (cur) out.push(cur);
+  return out.filter(t => t.pts.length >= 2);
+}
+// Puntos [lat,lng] de la línea d = fn(s) entre s0 y s1
+function gLinea(G, fn, s0, s1, paso) {
+  paso = paso || 3; const out = [];
+  if (s1 < s0) [s0, s1] = [s1, s0];
+  for (let s = s0; s < s1; s += paso) out.push(G.ll(s, fn(s)));
+  out.push(G.ll(s1, fn(s1)));
+  return out;
+}
+// Número (1..N) de la entrecalle k; null si está fuera de las numeradas
+function gNumero(g, k) {
+  if (!g) return null;
+  if (g.v === 3) { const n = (g.filas || []).length - 1; if (k < 0 || k >= n) return null; return g.dir === -1 ? n - k : k + 1; }
+  if (g.kIni == null || !g.nHileras) return null;
+  const n = (g.dir === -1 ? g.kIni - k : k - g.kIni) + 1;
+  return n >= 1 && n <= g.nHileras ? n : null;
+}
+// Entrecalles del potrero: [{ k, n, tramos }] ordenadas por número
+function gEntrecalles(g, poly) {
+  const G = grillaDe(g); if (!G) return [];
+  const ks = [];
+  if (G.tipo === 3) { for (let k = 0; k < G.n; k++) ks.push(k); }
+  else {
+    const ds = poly.map(c => G.sd(c[0], c[1])[1]), sp = g.sp || 5, off = g.off || 0;
+    for (let k = Math.ceil((Math.min(...ds) - off) / sp); k <= Math.floor((Math.max(...ds) - off) / sp) && ks.length < 3000; k++) ks.push(k);
+  }
+  const filas = ks.map(k => ({ k, tramos: gTramos(G, poly, s => G.centro(k, s)).filter(t => t.s1 - t.s0 >= 3) })).filter(f => f.tramos.length);
+  if (G.tipo === 3) { filas.forEach(f => f.n = gNumero(g, f.k)); filas.sort((a, b) => a.n - b.n); }
+  else { if (g.dir === -1) filas.reverse(); filas.forEach((f, i) => f.n = i + 1); }
+  return filas;
+}
+
 function proyector(g) {
   const kx = 111320 * Math.cos(g.lat0 * Math.PI / 180), ky = 110540, az = g.az * Math.PI / 180;
   const ux = Math.sin(az), uy = Math.cos(az), nx = Math.cos(az), ny = -Math.sin(az);
@@ -497,6 +597,7 @@ function guardarHileras(potrero, g) {
 }
 window.rehacerHileras = function () {
   const a = activa(); if (!a) return;
+  if (hileras[a.potrero] && (hileras[a.potrero].manual || hileras[a.potrero].v === 3)) { alert('Las hileras de este potrero están definidas en la app (Cuaderno de Campo → Config. Potreros → 🌳 Hileras). Corrígelas allá.'); return; }
   if (!confirm(`¿Volver a estimar las hileras de ${a.potrero}? Se calculan de nuevo con las próximas pasadas rectas.`)) return;
   delete hileras[a.potrero]; ls.set('tractor_hileras', hileras);
   if (navigator.onLine) setDoc(doc(db, 'config', 'hileras'), { [a.potrero]: null }, { merge: true }).catch(() => {});
@@ -529,16 +630,17 @@ function calcularCobertura() {
   const verde = [], rojo = [], cian = [], guias = [];
   repetidoM = 0; repitiendoAhora = false;
   let g = a && esFrutal(a.potrero) ? hileras[a.potrero] : null;
-  if (g && g.v !== VERSION_HILERAS) g = null;            // estimaciones viejas (fijadas con muy pocos datos): se rehacen
-  // Se estima mientras no esté fija; ya fija, se sigue afinando cada 1 min si hay más pasadas
-  if (a && esFrutal(a.potrero) && (!(g && g.fija) || Date.now() - (g.ts || 0) > 60000)) {
+  if (g && !(g.v === VERSION_HILERAS || g.v === 3)) g = null; // estimaciones viejas (fijadas con muy pocos datos): se rehacen
+  // Se estima mientras no esté fija; ya fija, se sigue afinando cada 1 min si hay más pasadas.
+  // Las hileras definidas en Config. Potreros (manual / v3) no se tocan.
+  if (a && esFrutal(a.potrero) && !(g && (g.manual || g.v === 3)) && (!(g && g.fija) || Date.now() - (g.ts || 0) > 60000)) {
     const est = estimarHileras(a.potrero, [...tramosAplicados, ...trazosOtros], w);
     if (est && (!g || !g.fija || est.m >= g.m)) { g = est; guardarHileras(a.potrero, est); }
     else if (g) g.ts = Date.now();
   }
   if (g) {
-    const pr = proyector(g), sp = g.sp || w;
-    const kDe = d => Math.round((d - g.off) / sp);
+    const G = grillaDe(g), pr = G, sp = G.sp || w;
+    const kDe = (sv, d) => G.k(sv, d);
     const cub = {};                                      // entrecalle k → intervalos ya aplicados
     // Pasadas sobre entrecalles: puntos alineados con las hileras, agrupados por entrecalle
     // Pasadas sobre entrecalles. La entrecalle de cada punto se decide con la
@@ -570,7 +672,7 @@ function calcularCobertura() {
             while (hi + 1 < c.length && Math.abs(c[hi + 1].sv - p.sv) <= VENT_M) hi++;
             if (hi < i) hi = i;
             const ds = c.slice(Math.min(lo, i), Math.max(hi, i) + 1).map(x => x.d).sort((x, y) => x - y);
-            return kDe(ds[Math.floor(ds.length / 2)]);
+            return kDe(p.sv, ds[Math.floor(ds.length / 2)]);
           });
           // grupos de igual entrecalle; los cortos (< 15 m) se pegan al vecino más largo
           const grupos = [];
@@ -599,7 +701,7 @@ function calcularCobertura() {
     };
     const todas = [...pasadas(trazosOtros, 'otro'), ...pasadas(tramosAplicados, 'yo')].sort((x, y) => x.t0 - y.t0);
     const ultima = todas.filter(x => x.quien === 'yo').slice(-1)[0];
-    const segLL = (k, s0, s1) => { const d = g.off + k * sp; return [pr.ll(s0, d), pr.ll(s1, d)].map(aLngLat); };
+    const segLL = (k, s0, s1) => gLinea(G, s => G.centro(k, s), s0, s1).map(aLngLat);
     todas.forEach(ps => {
       const a0 = Math.min(...ps.s), a1 = Math.max(...ps.s);
       const c = cub[ps.k] || (cub[ps.k] = []);
@@ -621,26 +723,22 @@ function calcularCobertura() {
     // Guías: entrecalles del potrero (las sin aplicar en blanco; la más cercana sin aplicar en amarillo)
     const pg = potrerosGeo.find(x => x.nombre === a.potrero);
     if (pg) {
-      const sdp = pg.poly.map(c => pr.sd(c[0], c[1]));
-      const ds = sdp.map(c => c[1]), kmin = Math.ceil((Math.min(...ds) - g.off) / sp), kmax = Math.floor((Math.max(...ds) - g.off) / sp);
+      const clave = a.potrero + '|' + (g.ts || 0) + '|' + g.v + '|' + (g.off || 0) + '|' + g.az;
+      if (!calcularCobertura._ent || calcularCobertura._ent.clave !== clave) calcularCobertura._ent = { clave, filas: gEntrecalles(g, pg.poly) };
+      const entrecalles = calcularCobertura._ent.filas;
       let kAqui = null, sAqui = null;
-      if (ultimaPos) { const [sv, d] = pr.sd(ultimaPos.lat, ultimaPos.lng); kAqui = kDe(d); sAqui = sv; }
+      if (ultimaPos) { const [sv, d] = pr.sd(ultimaPos.lat, ultimaPos.lng); kAqui = kDe(sv, d); sAqui = sv; }
       let mejor = null;
-      for (let k = kmin; k <= kmax && k - kmin < 2000; k++) {
-        const d = g.off + k * sp, xs = [];
-        for (let i = 0, j = sdp.length - 1; i < sdp.length; j = i++) {
-          const [s1, d1] = sdp[j], [s2, d2] = sdp[i];
-          if ((d1 > d) !== (d2 > d)) xs.push(s1 + (d - d1) * (s2 - s1) / (d2 - d1));
-        }
-        xs.sort((p, q) => p - q);
-        for (let i = 0; i + 1 < xs.length; i += 2) {
-          const { nuevas } = restar(cub[k] || [], xs[i], xs[i + 1]);
+      entrecalles.forEach(f => {
+        const k = f.k;
+        f.tramos.forEach(t => {
+          const { nuevas } = restar(cub[k] || [], t.s0, t.s1);
           nuevas.filter(([x0, x1]) => x1 - x0 >= 5).forEach(([x0, x1]) => {
-            guias.push({ type: 'Feature', properties: { sig: false, k }, geometry: { type: 'LineString', coordinates: segLL(k, x0, x1) } });
+            guias.push({ type: 'Feature', properties: { sig: false, k, n: f.n || null }, geometry: { type: 'LineString', coordinates: segLL(k, x0, x1) } });
             if (kAqui != null && k !== kAqui && sAqui >= x0 - 40 && sAqui <= x1 + 40 && Math.abs(k - kAqui) <= 6 && (!mejor || Math.abs(k - kAqui) < Math.abs(mejor - kAqui))) mejor = k;
           });
-        }
-      }
+        });
+      });
       if (mejor != null) guias.forEach(f => { if (f.properties.k === mejor) f.properties.sig = true; });
     }
   } else {
