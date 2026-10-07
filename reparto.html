@@ -650,6 +650,7 @@ window.abrirJdPotreros = async function() {
   selEq.innerHTML = eqs.map(e => `<option value="${e}">${e}${fuenteHorometroDe(e) === 'jdlink' ? ' · JDLink' : ''}</option>`).join('');
   if (!Object.keys(cultivoActualPorPotrero).length) await cargarCultivosActualesPotreros();
   await jdpCargarZonas();
+  await jdpCargarHilerasCfg();
   const selM = document.getElementById('jdp-maquina');
   selM.innerHTML = '<option value="">Cargando máquinas de Operations Center...</option>';
   try {
@@ -849,7 +850,7 @@ function jdpRenderResultado(r, diag, desde, hasta, nPotreros) {
     </div>
     ${avisos.map(a => `<div style="background:#FEF3DC;border-left:4px solid #F5A623;padding:8px 10px;border-radius:6px;margin-bottom:6px;font-size:12px">${a}</div>`).join('')}
     <div id="jdp-mapa" style="height:340px;border-radius:8px;margin:8px 0"></div>
-    <div style="font-size:11px;color:var(--acero);margin-bottom:6px">🟡 en potrero · 🟠 cabecera o continuidad · 🔵 bodegas, camino o carga · 🟣 traslado (rápido) · ⚪ detenido · 🔴 fuera</div>
+    <div id="jdp-leyenda" style="font-size:11px;color:var(--acero);margin-bottom:6px"></div>
     <div style="display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:8px">
       <label style="text-transform:none;letter-spacing:normal;font-family:var(--sans);font-size:12px;margin:0">Margen de cabeceras:</label>
       <input type="number" min="0" max="100" step="1" value="${jdpMargenM}" style="width:70px;padding:4px 6px" onchange="jdpCambiarMargen(this.value)"> m
@@ -896,32 +897,210 @@ function jdpRenderResultado(r, diag, desde, hasta, nPotreros) {
   jdpRenderMapa(r);
 }
 
-function jdpRenderMapa(r) {
+// ── Vista del mapa: puntos GPS o hileras corregidas (ancho real, color por velocidad) ──
+let jdpVistaMapa = (() => { try { return localStorage.getItem('jdp_vista_mapa') || 'puntos'; } catch (e) { return 'puntos'; } })();
+let jdpHilerasCfg = null; // config/hileras (grilla de entrecalles que guarda el modo tractor)
+async function jdpCargarHilerasCfg() {
+  try { const s = await getDoc(doc(db, 'config', 'hileras')); jdpHilerasCfg = s.exists() ? (s.data() || {}) : {}; } catch (e) { jdpHilerasCfg = {}; }
+}
+window.jdpCambiarVista = function (v) {
+  jdpVistaMapa = v;
+  try { localStorage.setItem('jdp_vista_mapa', v); } catch (e) {}
+  if (jdpUltimoR) jdpRenderMapa(jdpUltimoR, false);
+};
+let jdpUltimoR = null;
+const hilRumbo = (a, b) => {
+  const r = x => x * Math.PI / 180, y = Math.sin(r(b[1] - a[1])) * Math.cos(r(b[0])),
+    x = Math.cos(r(a[0])) * Math.sin(r(b[0])) - Math.sin(r(a[0])) * Math.cos(r(b[0])) * Math.cos(r(b[1] - a[1]));
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+};
+const hilDist = (a, b) => jdpDistKm({ lat: a[0], lng: a[1] }, { lat: b[0], lng: b[1] }) * 1000;
+const hilDifAxial = (a, b) => { const d = Math.abs(((a - b) % 180 + 180) % 180); return Math.min(d, 180 - d); };
+function hilProyector(g) {
+  const kx = 111320 * Math.cos(g.lat0 * Math.PI / 180), ky = 110540, az = g.az * Math.PI / 180;
+  const ux = Math.sin(az), uy = Math.cos(az), nx = Math.cos(az), ny = -Math.sin(az);
+  return {
+    sd(lat, lng) { const x = (lng - g.lng0) * kx, y = (lat - g.lat0) * ky; return [x * ux + y * uy, x * nx + y * ny]; },
+    ll(sv, d) { const x = sv * ux + d * nx, y = sv * uy + d * ny; return [g.lat0 + y / ky, g.lng0 + x / kx]; }
+  };
+}
+function hilDirecciones(tr) {
+  const out = [];
+  for (let i = 0; i < tr.length; i++) {
+    let a = i, b = i;
+    while (a > 0 && hilDist(tr[a], tr[i]) < 6) a--;
+    while (b < tr.length - 1 && hilDist(tr[b], tr[i]) < 6) b++;
+    out.push(a === b || hilDist(tr[a], tr[b]) < 6 ? null : hilRumbo(tr[a], tr[b]));
+  }
+  return out;
+}
+function hilEstimar(poly, tramos, sp) {
+  const segs = [];
+  tramos.forEach(tr => { for (let i = 0; i + 1 < tr.length; i++) { let j = i + 1; while (j < tr.length - 1 && hilDist(tr[i], tr[j]) < 8) j++; const L = hilDist(tr[i], tr[j]); if (L >= 6 && L < 40) segs.push({ az: hilRumbo(tr[i], tr[j]), L }); } });
+  if (!segs.length) return null;
+  const media = lista => { let c = 0, s2 = 0; lista.forEach(x => { c += x.L * Math.cos(2 * x.az * Math.PI / 180); s2 += x.L * Math.sin(2 * x.az * Math.PI / 180); }); return ((Math.atan2(s2, c) * 90 / Math.PI) + 360) % 180; };
+  let az = media(segs), rectos = segs.filter(x => hilDifAxial(x.az, az) < 20);
+  if (rectos.length < 3) return null;
+  az = media(rectos);
+  const g = { az, off: 0, sp, lat0: poly[0][0], lng0: poly[0][1] };
+  const pr = hilProyector(g);
+  let c = 0, s2 = 0;
+  tramos.forEach(tr => { const dirs = hilDirecciones(tr); tr.forEach((q, i) => { if (dirs[i] != null && hilDifAxial(dirs[i], az) < 15) { const f = 2 * Math.PI * pr.sd(q[0], q[1])[1] / sp; c += Math.cos(f); s2 += Math.sin(f); } }); });
+  g.off = (Math.atan2(s2, c) / (2 * Math.PI)) * sp;
+  return g;
+}
+// Pasadas por entrecalle (mediana lateral en ±12 m; cambios de menos de 15 m se juntan)
+function hilPasadas(tr, g, sp) {
+  const pr = hilProyector(g), kDe = d => Math.round((d - g.off) / sp), dirs = hilDirecciones(tr), out = [];
+  const corridas = []; let cur = null;
+  tr.forEach((q, i) => {
+    const [sv, d] = pr.sd(q[0], q[1]);
+    const al = dirs[i] != null && hilDifAxial(dirs[i], g.az) < 25;
+    const corta = !al || (cur && (Math.abs(d - cur[cur.length - 1].d) > sp || q[2] - cur[cur.length - 1].t > 30000 * (q[3] ? 1 : 4)));
+    if (corta && cur) { corridas.push(cur); cur = null; }
+    if (!al) return;
+    (cur || (cur = [])).push({ sv, d, t: q[2], v: q[4] });
+  });
+  if (cur) corridas.push(cur);
+  corridas.filter(c => c.length >= 2).forEach(c => {
+    let lo = 0, hi = 0;
+    const ks = c.map((p, i) => {
+      while (Math.abs(c[lo].sv - p.sv) > 12 && lo < i) lo++;
+      while (hi + 1 < c.length && Math.abs(c[hi + 1].sv - p.sv) <= 12) hi++;
+      if (hi < i) hi = i;
+      const ds = c.slice(Math.min(lo, i), Math.max(hi, i) + 1).map(x => x.d).sort((x, y) => x - y);
+      return kDe(ds[Math.floor(ds.length / 2)]);
+    });
+    const grupos = [];
+    ks.forEach((k, i) => { const gq = grupos[grupos.length - 1]; if (gq && gq.k === k) gq.i1 = i; else grupos.push({ k, i0: i, i1: i }); });
+    const largo = gq => Math.abs(c[gq.i1].sv - c[gq.i0].sv);
+    for (let x = 0; x < grupos.length && grupos.length > 1; x++) {
+      const gq = grupos[x];
+      if (largo(gq) >= 15) continue;
+      const ant = grupos[x - 1], sig = grupos[x + 1];
+      const dest = !ant ? sig : !sig ? ant : (largo(ant) >= largo(sig) ? ant : sig);
+      if (dest === ant) ant.i1 = gq.i1; else sig.i0 = gq.i0;
+      grupos.splice(x, 1); x = -1;
+      for (let y = 1; y < grupos.length; y++) if (grupos[y].k === grupos[y - 1].k) { grupos[y - 1].i1 = grupos[y].i1; grupos.splice(y, 1); y--; }
+    }
+    grupos.forEach(gq => {
+      const pts = c.slice(gq.i0, gq.i1 + 1);
+      if (pts.length < 2) return;
+      const s0 = Math.min(...pts.map(p => p.sv)), s1 = Math.max(...pts.map(p => p.sv));
+      const dt = (pts[pts.length - 1].t - pts[0].t) / 3600000;
+      const vs = pts.map(p => p.v).filter(v => v != null && isFinite(v));
+      const vel = vs.length ? vs.reduce((a, b) => a + b, 0) / vs.length : (dt > 0 ? (s1 - s0) / 1000 / dt : null);
+      out.push({ k: gq.k, s0, s1, t0: pts[0].t, t1: pts[pts.length - 1].t, vel, n: pts.length });
+    });
+  });
+  return out;
+}
+const hilNumero = (g, k) => { if (!g || g.kIni == null || !g.nHileras) return null; const n = (g.dir === -1 ? g.kIni - k : k - g.kIni) + 1; return n >= 1 && n <= g.nHileras ? n : null; };
+const HIL_COLORES = [[3, '#1D4ED8', '< 3'], [5, '#16A34A', '3–5'], [7, '#FACC15', '5–7'], [9, '#F97316', '7–9'], [Infinity, '#DC2626', '> 9']];
+const hilColorVel = v => v == null ? '#9CA3AF' : HIL_COLORES.find(c => v < c[0])[1];
+function hilSpDe(pot) {
+  const c = (jdpCultivoDePotrero(pot) || '').toLowerCase();
+  return /cerez/.test(c) ? 4.5 : 5;
+}
+// Dibuja las pasadas corregidas de cada potrero; devuelve el resumen por potrero
+function hilDibujar(map, r, bounds) {
+  const resumen = [];
+  const porPot = {};
+  r.puntos.forEach(p => { if (p.potrero) (porPot[p.potrero] = porPot[p.potrero] || []).push(p); });
+  Object.entries(porPot).forEach(([pot, pts]) => {
+    const pc = potrerosConfig.find(x => x.nombre === pot);
+    if (!pc || !poligonoValido(pc.poligono) || pts.length < 15) return;
+    const poly = jdpNormPoligono(pc.poligono);
+    // tramos continuos (cortes de más de 2 min)
+    const tramos = []; let cur = [];
+    pts.sort((a, b) => a.t - b.t).forEach(p => { const q = [p.lat, p.lng, p.t, p.estado === 'aplicando', p.vkmh]; if (cur.length && p.t - cur[cur.length - 1][2] > 120000) { tramos.push(cur); cur = []; } cur.push(q); });
+    if (cur.length) tramos.push(cur);
+    const guardada = jdpHilerasCfg && jdpHilerasCfg[pot];
+    const sp = (guardada && guardada.sp) || hilSpDe(pot);
+    const g = guardada && guardada.v === 2 && guardada.fija ? guardada : hilEstimar(poly, tramos, sp);
+    if (!g) return;
+    const pr = hilProyector(g);
+    const pasadas = tramos.flatMap(tr => hilPasadas(tr, g, sp));
+    if (!pasadas.length) return;
+    const cub = {};
+    pasadas.sort((a, b) => a.t0 - b.t0).forEach(ps => {
+      const d = g.off + ps.k * sp, h = sp / 2;
+      const rect = [pr.ll(ps.s0, d - h), pr.ll(ps.s1, d - h), pr.ll(ps.s1, d + h), pr.ll(ps.s0, d + h)];
+      const prev = (cub[ps.k] || []).some(([a, b]) => Math.min(b, ps.s1) - Math.max(a, ps.s0) > 8);
+      (cub[ps.k] = cub[ps.k] || []).push([ps.s0, ps.s1]);
+      const col = hilColorVel(ps.vel);
+      L.polygon(rect, { color: prev ? '#7F1D1D' : col, weight: prev ? 2 : 0.5, dashArray: prev ? '4 3' : null, fillColor: col, fillOpacity: 0.75 }).addTo(map)
+        .bindTooltip(`<b>${pot}</b> · ${hilNumero(g, ps.k) ? '<b>Hilera ' + hilNumero(g, ps.k) + '</b>' : 'entrecalle ' + ps.k}<br>${ps.vel != null ? 'Velocidad promedio: <b>' + ps.vel.toFixed(1) + ' km/h</b><br>' : ''}${Math.round(ps.s1 - ps.s0)} m · ${new Date(ps.t0).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' })}–${new Date(ps.t1).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' })}${prev ? '<br><b style="color:#B91C1C">Repetida</b>' : ''}`, { sticky: true });
+      rect.forEach(c => bounds.push(c));
+    });
+    // Entrecalles sin pasar entre la primera y la última trabajada (posibles saltadas)
+    const ks = Object.keys(cub).map(Number), kmin = Math.min(...ks), kmax = Math.max(...ks);
+    const sdp = poly.map(c => pr.sd(c[0], c[1]));
+    let saltadas = 0; const faltan = [];
+    for (let k = kmin; k <= kmax; k++) {
+      if (cub[k]) continue;
+      const d = g.off + k * sp, xs = [];
+      for (let i = 0, j = sdp.length - 1; i < sdp.length; j = i++) { const [s1, d1] = sdp[j], [s2, d2] = sdp[i]; if ((d1 > d) !== (d2 > d)) xs.push(s1 + (d - d1) * (s2 - s1) / (d2 - d1)); }
+      xs.sort((a, b) => a - b);
+      for (let i = 0; i + 1 < xs.length; i += 2) {
+        L.polyline([pr.ll(xs[i], d), pr.ll(xs[i + 1], d)], { color: '#FFFFFF', weight: 2, opacity: 0.9, dashArray: '6 6' }).addTo(map)
+          .bindTooltip(`<b>${pot}</b> · ${hilNumero(g, k) ? 'Hilera ' + hilNumero(g, k) : 'entrecalle ' + k}: <b>sin pasar</b>`, { sticky: true });
+      }
+      saltadas++;
+      if (hilNumero(g, k)) faltan.push(hilNumero(g, k));
+    }
+    const hechas = ks.map(k => hilNumero(g, k)).filter(n => n).sort((a, b) => a - b);
+    resumen.push({ pot, pasadas: pasadas.length, saltadas, repetidas: pasadas.length - ks.length, faltan: faltan.sort((a, b) => a - b), hechas, total: g.nHileras || null });
+  });
+  return resumen;
+}
+function jdpRenderMapa(r, soloMapa) {
   if (typeof L === 'undefined') return;
-  if (jdpMapa) { jdpMapa.remove(); jdpMapa = null; }
+  jdpUltimoR = r;
+  let centro = null, zoom = null;
+  if (jdpMapa) { if (soloMapa) { centro = jdpMapa.getCenter(); zoom = jdpMapa.getZoom(); } jdpMapa.remove(); jdpMapa = null; }
   const map = L.map('jdp-mapa');
   jdpMapa = map;
-  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { attribution: 'Tiles &copy; Esri', maxZoom: 20 }).addTo(map);
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { attribution: 'Tiles &copy; Esri', maxZoom: 20, maxNativeZoom: 18 }).addTo(map);
   const bounds = [];
+  const hil = jdpVistaMapa === 'hileras';
   potrerosConfig.filter(p => poligonoValido(p.poligono)).forEach(p => {
     const color = colorParaCultivo(jdpCultivoDePotrero(p.nombre));
     const horas = r.porPotrero[p.nombre];
-    L.polygon(p.poligono, { color, fillColor: color, fillOpacity: horas ? 0.45 : 0.12, weight: horas ? 3 : 1 }).addTo(map)
+    L.polygon(p.poligono, { color, fillColor: color, fillOpacity: hil ? 0.08 : (horas ? 0.45 : 0.12), weight: horas ? 3 : 1 }).addTo(map)
       .bindTooltip(`${p.nombre}${horas ? ' · ' + (horas / 3600000).toFixed(1) + ' h' : ''}`, { sticky: true });
   });
   jdpDibujarZonasEnMapa(map);
-  if (r.puntos.length) {
+  let resumenHil = null;
+  if (hil) {
+    resumenHil = hilDibujar(map, r, bounds);
+  } else if (r.puntos.length) {
     const ll = r.puntos.map(p => [p.lat, p.lng]);
     L.polyline(ll, { color: '#FFFFFF', weight: 2, opacity: 0.8 }).addTo(map);
     r.puntos.forEach(p => {
       L.circleMarker([p.lat, p.lng], { radius: 3, color: p.zona === JDP_TRASLADO ? '#A855F7' : p.zona === JDP_DETENIDO ? '#9CA3AF' : p.zona ? '#60A5FA' : (p.margen || p.cont) ? '#F97316' : p.potrero ? '#FFD400' : '#E11D48', weight: 1, fillOpacity: 0.9 }).addTo(map)
-        .bindTooltip(`${new Date(p.t).toLocaleString('es-CL')} · ${p.zona ? p.zona : p.potrero ? p.potrero + (p.cont ? ' (continuidad)' : p.margen ? ' (cabecera)' : '') : p.paso ? 'cruce por ' + p.paso : 'fuera de potreros'}`);
+        .bindTooltip(`${new Date(p.t).toLocaleString('es-CL')} · ${p.zona ? p.zona : p.potrero ? p.potrero + (p.cont ? ' (continuidad)' : p.margen ? ' (cabecera)' : '') : p.paso ? 'cruce por ' + p.paso : 'fuera de potreros'}<br>Velocidad: <b>${p.vkmh != null ? p.vkmh + ' km/h' + (p.vCalc ? ' (calculada)' : '') : 'sin dato'}</b>${p.estado === 'aplicando' ? ' · aplicando' : ''}`);
       bounds.push([p.lat, p.lng]);
     });
-  } else {
-    potrerosConfig.filter(p => poligonoValido(p.poligono)).forEach(p => jdpNormPoligono(p.poligono).forEach(c => bounds.push(c)));
   }
-  if (bounds.length) map.fitBounds(bounds, { padding: [20, 20] }); else map.setView([-36.6, -72.1], 12);
+  if (!bounds.length) potrerosConfig.filter(p => poligonoValido(p.poligono)).forEach(p => jdpNormPoligono(p.poligono).forEach(c => bounds.push(c)));
+  if (centro) map.setView(centro, zoom);
+  else if (bounds.length) map.fitBounds(bounds, { padding: [20, 20] }); else map.setView([-36.6, -72.1], 12);
+  // Botones para cambiar la vista, al lado del mapa
+  const Ctl = L.Control.extend({ onAdd() {
+    const d = L.DomUtil.create('div');
+    d.style.cssText = 'background:#fff;border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.4);overflow:hidden;display:flex';
+    const b = (v, txt) => `<button type="button" onclick="jdpCambiarVista('${v}')" style="border:none;padding:7px 10px;font-size:12px;font-weight:700;cursor:pointer;background:${jdpVistaMapa === v ? '#1A1A1A' : '#fff'};color:${jdpVistaMapa === v ? '#FFD400' : '#1A1A1A'}">${txt}</button>`;
+    d.innerHTML = b('puntos', '📍 Puntos') + b('hileras', '🌳 Hileras');
+    L.DomEvent.disableClickPropagation(d);
+    return d;
+  } });
+  new Ctl({ position: 'topright' }).addTo(map);
+  const ley = document.getElementById('jdp-leyenda');
+  if (ley) ley.innerHTML = hil
+    ? 'Hileras corregidas al ancho de la entrecalle, color por velocidad promedio (km/h): ' + HIL_COLORES.map(c => `<span style="display:inline-block;width:12px;height:12px;background:${c[1]};border-radius:2px;vertical-align:-2px;margin:0 3px 0 6px"></span>${c[2]}`).join('') + ' · borde rojo punteado = repetida · <span style="background:#555;color:#fff;padding:0 4px;border-radius:3px">- - -</span> blanca = entrecalle sin pasar'
+      + (resumenHil && resumenHil.length ? '<br>' + resumenHil.map(x => `<b>${x.pot}</b>: ${x.pasadas} pasadas${x.hechas && x.hechas.length ? ' (hileras ' + x.hechas[0] + ' a ' + x.hechas[x.hechas.length - 1] + (x.total ? ' de ' + x.total : '') + ')' : ''}${x.faltan && x.faltan.length ? ', <b style="color:#B91C1C">faltaron las hileras ' + x.faltan.join(', ') + '</b>' : x.saltadas ? ', ' + x.saltadas + ' entrecalles sin pasar' : ''}${x.repetidas > 0 ? ', ' + x.repetidas + ' repetidas' : ''}`).join(' · ') : (resumenHil ? '<br>No hay suficientes pasadas rectas dentro de potreros para corregir hileras.' : ''))
+    : '🟡 en potrero · 🟠 cabecera o continuidad · 🔵 bodegas, camino o carga · 🟣 traslado (rápido) · ⚪ detenido · 🔴 fuera · pasa el puntero sobre un punto para ver su velocidad';
   setTimeout(() => map.invalidateSize(), 150);
 }
 
