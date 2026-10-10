@@ -59,6 +59,18 @@
       <div class="field" id="jdp-maquina-wrap"><label>Máquina en Operations Center</label><select id="jdp-maquina"></select></div>
     </div>
     <div class="field"><label>Carga de combustible</label><select id="jdp-carga" onchange="jdpCambioCarga()"></select></div>
+    <div class="field"><label>Por día completo (calendario)</label>
+      <div class="grid">
+        <input type="date" id="jdp-dia-desde" onchange="jdpAplicarDias()">
+        <input type="date" id="jdp-dia-hasta" onchange="jdpAplicarDias()">
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
+        <button type="button" class="btn btn-secondary" style="padding:6px 10px;font-size:12px" onclick="jdpDiasRapido(0)">Hoy</button>
+        <button type="button" class="btn btn-secondary" style="padding:6px 10px;font-size:12px" onclick="jdpDiasRapido(1)">Ayer</button>
+        <button type="button" class="btn btn-secondary" style="padding:6px 10px;font-size:12px" onclick="jdpDiasRapido(7)">Últimos 7 días</button>
+      </div>
+      <div style="font-size:11px;color:var(--acero);margin-top:4px">Elige un día (o desde–hasta) y se llenan las horas de 00:00 a 23:59. Si solo eliges el primero, es ese día completo.</div>
+    </div>
     <div class="grid">
       <div class="field"><label>Desde</label><input type="datetime-local" id="jdp-desde"></div>
       <div class="field"><label>Hasta</label><input type="datetime-local" id="jdp-hasta"></div>
@@ -627,6 +639,32 @@ window.jdpCambiarMargen = async function(v) {
   jdpRecalcular();
 }
 
+// Filtro por días calendario completos: llena Desde/Hasta con 00:00 – 23:59 (hoy: hasta ahora).
+function jdpDiaStr(ms) { const d = new Date(ms), p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`; }
+window.jdpAplicarDias = function() {
+  let d1 = document.getElementById('jdp-dia-desde').value, d2 = document.getElementById('jdp-dia-hasta').value;
+  if (!d1 && !d2) return;
+  if (!d1) d1 = d2;
+  if (!d2) d2 = d1;
+  if (d2 < d1) [d1, d2] = [d2, d1];
+  // pasa a fechas a mano (sale de "en curso")
+  const selC = document.getElementById('jdp-carga');
+  if (selC && selC.value) { selC.value = ''; jdpCambioCarga(); }
+  const ini = new Date(d1 + 'T00:00:00').getTime();
+  let fin = new Date(d2 + 'T23:59:00').getTime();
+  if (fin > Date.now()) fin = Date.now();
+  if (fin <= ini) { toast('Ese día todavía no empieza', false); return; }
+  document.getElementById('jdp-desde').value = jdpFechaInput(ini);
+  document.getElementById('jdp-hasta').value = jdpFechaInput(fin);
+  if ((new Date(d2 + 'T00:00:00') - new Date(d1 + 'T00:00:00')) / 86400000 >= 10) toast('Máximo 10 días por consulta', false);
+};
+window.jdpDiasRapido = function(n) {
+  const hoy = Date.now();
+  if (n === 0) { document.getElementById('jdp-dia-desde').value = jdpDiaStr(hoy); document.getElementById('jdp-dia-hasta').value = jdpDiaStr(hoy); }
+  else if (n === 1) { const ay = jdpDiaStr(hoy - 86400000); document.getElementById('jdp-dia-desde').value = ay; document.getElementById('jdp-dia-hasta').value = ay; }
+  else { document.getElementById('jdp-dia-desde').value = jdpDiaStr(hoy - (n - 1) * 86400000); document.getElementById('jdp-dia-hasta').value = jdpDiaStr(hoy); }
+  jdpAplicarDias();
+};
 function jdpFechaInput(ms) {
   const d = new Date(ms), p = n => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
@@ -661,7 +699,7 @@ window.abrirJdPotreros = async function() {
       const { status, data } = await callJDApi(jdMachinesLink);
       jdpMaquinas = status === 200 && data ? (data.values || []) : [];
       selM.innerHTML = jdpMaquinas.length
-        ? jdpMaquinas.map((m, i) => `<option value="${i}">${m.name || m.equipmentName || m.displayName || ('Máquina ' + (i + 1))}</option>`).join('')
+        ? (jdpMaquinas.length > 1 ? '<option value="__todas__">★ Todas las máquinas</option>' : '') + jdpMaquinas.map((m, i) => `<option value="${i}">${m.name || m.equipmentName || m.displayName || ('Máquina ' + (i + 1))}</option>`).join('')
         : `<option value="">No se pudo leer la flota (HTTP ${status})</option>`;
     }
   } catch (e) { selM.innerHTML = `<option value="">Error: ${e.message}</option>`; }
@@ -673,7 +711,7 @@ window.jdpCambioEquipo = async function() {
   // preselecciona la máquina JD con el mismo número
   const num = eq.replace(/[^0-9]/g, '');
   const idx = jdpMaquinas.findIndex(m => (m.name || m.equipmentName || m.displayName || '').replace(/[^0-9]/g, '') === num && num);
-  if (idx >= 0) document.getElementById('jdp-maquina').value = String(idx);
+  if (idx >= 0 && document.getElementById('jdp-maquina').value !== '__todas__') document.getElementById('jdp-maquina').value = String(idx);
   const selC = document.getElementById('jdp-carga');
   selC.innerHTML = '<option value="">Cargando cargas...</option>';
   try {
@@ -1258,7 +1296,10 @@ window.jdpCambioFuente = function () {
 const consultarSoloJD = window.consultarJdPotreros;
 window.consultarJdPotreros = async function (silencioso) {
   jdpActualizarHastaCurso();
-  if (document.getElementById('jdp-fuente').value !== 'celular') return consultarSoloJD(silencioso);
+  if (document.getElementById('jdp-fuente').value !== 'celular') {
+    if (document.getElementById('jdp-maquina').value === '__todas__') return jdpConsultarTodas(silencioso);
+    return consultarSoloJD(silencioso);
+  }
   const res = document.getElementById('jdp-resultado');
   const desde = Date.parse(document.getElementById('jdp-desde').value);
   const hasta = Date.parse(document.getElementById('jdp-hasta').value);
@@ -1391,6 +1432,61 @@ window.acumCorrer = async function(forzar) {
 const hh = ms => (ms / 3600000).toFixed(1);
 const fCorta = t => new Date(t).toLocaleString('es-CL', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 const punto = c => `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${colorParaCultivo(c)};border:1px solid rgba(0,0,0,.3);margin-right:5px"></span>`;
+// ── TODAS LAS MÁQUINAS (JDLink) en el período Desde/Hasta ──
+window.jdpVerMaquina = function(i) {
+  document.getElementById('jdp-maquina').value = String(i);
+  window.consultarJdPotreros();
+  const r = document.getElementById('jdp-resultado'); if (r) r.scrollIntoView({ behavior: 'smooth', block: 'start' });
+};
+async function jdpConsultarTodas(silencioso) {
+  if (silencioso) return; // en curso se refresca solo por equipo; "todas" solo bajo demanda
+  const res = document.getElementById('jdp-resultado');
+  const desde = Date.parse(document.getElementById('jdp-desde').value);
+  const hasta = Date.parse(document.getElementById('jdp-hasta').value);
+  if (!isFinite(desde) || !isFinite(hasta) || hasta <= desde) { toast('Revisa las fechas desde/hasta', false); return; }
+  if (hasta - desde > 10 * 24 * 3600 * 1000) { toast('Usa un período de máximo 10 días para la prueba', false); return; }
+  const btn = document.getElementById('jdp-btn'); btn.disabled = true;
+  const pots = potrerosConfig.filter(p => poligonoValido(p.poligono)).map(p => ({ nombre: p.nombre, poly: jdpNormPoligono(p.poligono) }));
+  const filas = [];
+  try {
+    for (let i = 0; i < jdpMaquinas.length; i++) {
+      const m = jdpMaquinas[i];
+      btn.textContent = `📡 ${nomMaq(m) || 'Máquina ' + (i + 1)} (${i + 1} de ${jdpMaquinas.length})…`;
+      res.innerHTML = `<div style="padding:12px;color:var(--acero);font-size:13px">Consultando todas las máquinas… ${i + 1} de ${jdpMaquinas.length}</div>`;
+      const eq = (config.equipos || []).find(e => maquinaJDDe(e) === m) || '';
+      try {
+        const diag = { llamadas: [], errores: {}, muestras: {}, rels: [] };
+        const jd = await jdpTraerJDMaquina(m, desde, hasta, diag);
+        if (!jd.puntos.length) { filas.push({ i, nombre: nomMaq(m), eq, sinDatos: true }); continue; }
+        const vel = jdpVelDeEquipo(eq);
+        const r = jdpRepartir(jd.puntos, jd.tramos, desde, hasta, pots, jdpZonasParaCalculo(), jdpMargenM, jdpSalidaPuntos, jdpMaxPasoMin, vel.min, vel.max, jdpSalidaDistM, jdpUsarEstadoJD);
+        const prod = Object.entries(r.porPotrero).filter(([n]) => jdpEsProductivo(n)).sort((a, b) => b[1] - a[1]);
+        filas.push({ i, nombre: nomMaq(m), eq, motorMs: r.motorMs, totalMs: r.totalMs, prod, prodMs: prod.reduce((a, x) => a + x[1], 0) });
+      } catch (e) { filas.push({ i, nombre: nomMaq(m), eq, error: e.message }); }
+    }
+    const con = filas.filter(f => !f.sinDatos && !f.error && (f.totalMs > 0));
+    const sin = filas.filter(f => !con.includes(f));
+    const porPot = {}, porCult = {}; let tot = 0;
+    con.forEach(f => f.prod.forEach(([n, ms]) => { porPot[n] = (porPot[n] || 0) + ms; const c = jdpCultivoDePotrero(n) || 'Sin cultivo definido'; porCult[c] = (porCult[c] || 0) + ms; tot += ms; }));
+    const td = 'style="text-align:right;padding:6px 4px;white-space:nowrap"';
+    const tabla = (pares, titulo, conCult) => `<div style="overflow-x:auto"><table style="margin-top:6px"><thead><tr><th>${titulo}</th><th ${td}>Horas</th><th ${td}>%</th></tr></thead><tbody>
+      ${pares.map(([n, ms]) => `<tr><td style="padding:6px 4px">${punto(conCult ? jdpCultivoDePotrero(n) : n)}${n}${conCult && jdpCultivoDePotrero(n) ? `<span style="font-size:11px;color:var(--acero)"> · ${jdpCultivoDePotrero(n)}</span>` : ''}</td><td ${td}>${hh(ms)}</td><td ${td}>${tot ? (ms / tot * 100).toFixed(0) : 0}%</td></tr>`).join('')}
+      <tr style="font-weight:700;border-top:2px solid var(--borde)"><td style="padding:6px 4px">Total</td><td ${td}>${hh(tot)}</td><td ${td}>${tot ? '100%' : '—'}</td></tr></tbody></table></div>`;
+    res.innerHTML = `<div style="font-size:13px;background:var(--fondo);border-radius:8px;padding:10px 12px;margin:10px 0"><strong>★ Todas las máquinas</strong><br>${new Date(desde).toLocaleString('es-CL')} → ${new Date(hasta).toLocaleString('es-CL')} · ${con.length} de ${filas.length} máquinas con recorrido</div>`
+      + (!con.length ? '<div style="font-size:13px;color:var(--acero)">Ninguna máquina tiene recorrido en este período.</div>'
+        : `<div style="overflow-x:auto"><table><thead><tr><th>Máquina</th><th ${td}>Motor h</th><th ${td}>En potreros h</th></tr></thead><tbody>
+          ${con.sort((a, b) => b.prodMs - a.prodMs).map(f => `<tr style="cursor:pointer" onclick="jdpVerMaquina(${f.i})"><td style="padding:6px 4px"><strong>📡 ${f.nombre}</strong>${f.eq && f.eq !== f.nombre ? `<div style="font-size:11px;color:var(--acero)">${f.eq}</div>` : ''}<div style="font-size:11px">${f.prod.slice(0, 3).map(([n, ms]) => punto(jdpCultivoDePotrero(n)) + n + ' ' + hh(ms) + ' h').join(' · ')}</div></td><td ${td}>${f.motorMs != null ? hh(f.motorMs) : hh(f.totalMs || 0)}</td><td ${td}><strong>${hh(f.prodMs)}</strong></td></tr>`).join('')}
+          </tbody></table></div>
+          <div style="font-size:11px;color:var(--acero);margin-top:4px">Toca una máquina para ver su recorrido en el mapa y repartir sus litros.</div>
+          <div style="font-weight:700;font-size:13px;margin-top:12px">Por potrero (todas las máquinas)</div>${tabla(Object.entries(porPot).sort((a, b) => b[1] - a[1]), 'Potrero', true)}
+          <div style="font-weight:700;font-size:13px;margin-top:12px">Por cultivo (todas las máquinas)</div>${tabla(Object.entries(porCult).sort((a, b) => b[1] - a[1]), 'Cultivo', false)}`)
+      + (sin.length ? `<details style="margin-top:10px;font-size:12px"><summary style="cursor:pointer;color:var(--acero)">${sin.length} máquinas sin recorrido en el período</summary><div style="margin-top:4px">${sin.map(f => `${f.nombre}${f.error ? ' (error: ' + f.error + ')' : ''}`).join('<br>')}</div></details>` : '')
+      + '<div style="font-size:11px;color:var(--acero);margin-top:8px">Usa las fechas Desde/Hasta de arriba para todas las máquinas por igual. Los litros se reparten por equipo, en su detalle.</div>';
+  } catch (e) {
+    res.innerHTML = `<div style="color:#C0392B;font-size:13px;padding:10px">Error: ${e.message}</div>`;
+  }
+  btn.disabled = false; btn.textContent = '📡 Consultar recorrido';
+}
 function acumRender() {
   const lista = Object.values(acumDatos);
   const con = lista.filter(d => d.prod && d.prodMs > 0 || (d.totalMs > 0));
