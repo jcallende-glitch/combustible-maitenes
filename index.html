@@ -1429,6 +1429,7 @@ window.jdpDescargarDatos = function() {
 let envivoMapa = null, envivoCapa = null, envivoUnsub = null, envivoDatos = [], envivoTimer = null, envivoEncuadrado = false;
 // Equipos con JDLink: última ubicación desde Operations Center (cada 2 min mientras la hoja está abierta)
 let envivoJD = [], envivoJDTimer = null, envivoJDEstado = '';
+let envivoRutaCapa = null, envivoRutaEq = null, envivoRutaDatos = null, envivoAncho = null, envivoRutaDias = 0;
 async function traerUbicacionesJD() {
   try {
     const token = await getTokenValido();
@@ -1470,7 +1471,7 @@ async function traerUbicacionesJD() {
         rumbo = (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
       }
       const pot = potrerosConfig.filter(p => poligonoValido(p.poligono)).find(p => jdpPuntoEnPoligono(u.lat, u.lng, jdpNormPoligono(p.poligono)));
-      return { equipo, operador: 'JDLink', lat: u.lat, lng: u.lng, kmh: u.vkmh != null ? +u.vkmh.toFixed(1) : null, rumbo, aplicando: false, aqui: pot ? pot.nombre : null, ts: u.t, fuente: 'jdlink' };
+      return { equipo, operador: 'JDLink', lat: u.lat, lng: u.lng, kmh: u.vkmh != null ? +u.vkmh.toFixed(1) : null, rumbo, aplicando: false, aqui: pot ? pot.nombre : null, ts: u.t, fuente: 'jdlink', _m: m };
     }));
     envivoJD = res.filter(Boolean);
     envivoJDEstado = `JDLink: ${envivoJD.length} de ${maquinas.length} máquinas con ubicación · consultado ${new Date().toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' })}`;
@@ -1490,6 +1491,7 @@ window.abrirEnVivo = function() {
     });
     if (lim.length) envivoMapa.fitBounds(lim);
     envivoCapa = L.layerGroup().addTo(envivoMapa);
+    envivoRutaCapa = L.layerGroup().addTo(envivoMapa);
   }
   setTimeout(() => envivoMapa.invalidateSize(), 150);
   envivoEncuadrado = false;
@@ -1505,6 +1507,7 @@ window.cerrarEnVivo = function() {
   document.getElementById('modal-envivo').style.display = 'none';
   if (envivoUnsub) { envivoUnsub(); envivoUnsub = null; }
   clearInterval(envivoTimer); clearInterval(envivoJDTimer);
+  envivoCerrarRuta();
 }
 function haceTexto(ms) {
   const m = Math.round(ms / 60000);
@@ -1538,7 +1541,7 @@ function renderEnVivo() {
   document.getElementById('envivo-hora').textContent = 'Actualizado ' + new Date().toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' });
   document.getElementById('envivo-lista').innerHTML = lista.length ? `<table style="width:100%;min-width:0;font-size:13px;border-collapse:collapse">
     <thead><tr><th style="text-align:left;padding:6px">Equipo</th><th style="text-align:left;padding:6px">Estado</th><th style="text-align:left;padding:6px">Dónde</th><th style="text-align:left;padding:6px">Último dato</th></tr></thead><tbody>
-    ${lista.map(x => { const viejo = ahora - (x.ts || 0) > 10 * 60000; return `<tr style="cursor:pointer;border-top:1px solid var(--borde)" onclick="envivoIr(${x.lat},${x.lng})">
+    ${lista.map(x => { const viejo = ahora - (x.ts || 0) > 10 * 60000; return `<tr style="cursor:pointer;border-top:1px solid var(--borde)" onclick="envivoIr(${x.lat},${x.lng});envivoVerRuta('${String(x.equipo).replace(/'/g, "\\'")}')">
       <td style="padding:6px"><strong>${x.equipo}</strong><div style="font-size:11px;color:var(--acero)">${x.fuente === 'jdlink' ? '📡 JDLink' : '📱 ' + (x.operador || '')}</div></td>
       <td style="padding:6px">${viejo ? '⚫ sin señal' : x.aplicando ? '🟢 aplicando' : (x.kmh || 0) >= 1 ? `🔵 ${x.kmh} km/h` : '⚪ detenido'}</td>
       <td style="padding:6px">${x.aqui || '—'}${x.potrero && x.potrero !== x.aqui ? `<div style="font-size:11px;color:var(--acero)">aplicación: ${x.potrero}</div>` : ''}</td>
@@ -1547,6 +1550,243 @@ function renderEnVivo() {
   document.getElementById('envivo-lista').insertAdjacentHTML('beforeend', `<div style="font-size:11px;color:var(--acero);margin-top:6px">${envivoJDEstado || 'JDLink: consultando…'}</div>`);
 }
 window.envivoIr = (lat, lng) => { envivoMapa.setView([lat, lng], 17); };
+
+// ── Recorrido del día de un equipo + hectáreas por hora de avance (sin contar paradas) ──
+const ENVIVO_VMIN_KMH = 1.0;     // por debajo de esto el equipo se considera detenido
+const ENVIVO_VMAX_KMH = 40;      // por encima es un salto de GPS: se descarta ese tramo
+const ENVIVO_HUECO_MS = 3 * 60000; // más de 3 min sin datos: no se cuenta como tiempo
+let envivoAnchosCultivo = null;
+function envivoDiaStr(ms) { const d = new Date(ms), p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`; }
+function envivoAnchoPotrero(nombre) {
+  const tabla = envivoAnchosCultivo || { 'Avellanos': 5, 'Cerezos': 4.5 };
+  const norm = t => String(t || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim().replace(/e?s$/, '');
+  const c = typeof jdpCultivoDePotrero === 'function' ? jdpCultivoDePotrero(nombre) : '';
+  if (c) { const k = Object.keys(tabla).find(x => norm(x) === norm(c)); if (k && Number(tabla[k]) > 0) return Number(tabla[k]); }
+  return envivoAncho || 5;
+}
+async function envivoPuntosDelDia(eq, dias) {
+  const desde = new Date(); desde.setHours(0, 0, 0, 0); desde.setDate(desde.getDate() - (dias || 0));
+  const t0 = desde.getTime(), t1 = Date.now();
+  let puntos = [], fuente = null;
+  try {
+    const d0 = envivoDiaStr(t0 - 86400000), d1 = envivoDiaStr(t1);
+    const snap = await getDocs(query(collection(db, 'recorridos_tractor', eq.replace(/\s+/g, '_'), 'lotes'), where('dia', '>=', d0), where('dia', '<=', d1)));
+    let pts = [];
+    snap.docs.forEach(d => (d.data().puntos || []).forEach(p => pts.push(p)));
+    pts = pts.filter(p => p.t >= t0 && p.t <= t1 && (p.acc == null || p.acc <= 40)).sort((a, b) => a.t - b.t);
+    if (pts.length) { puntos = pts.map(p => ({ t: p.t, lat: p.lat, lng: p.lng })); fuente = 'celular'; }
+  } catch (e) { console.warn('ruta celular', e); }
+  if (!fuente) {
+    const it = envivoJD.find(j => j.equipo === eq && j._m);
+    if (it) {
+      try {
+        const m = it._m, id = m.organizationRole?.principalId || m.principalId || m.id, links = m.links || [];
+        const lBc = links.find(l => /breadcrumb/i.test(l.rel || ''));
+        const diag = { llamadas: [], errores: {}, muestras: {} };
+        let pj = [];
+        for (let a0 = t0; a0 < t1; a0 += 24 * 3600000) { // JDLink: de a 24 h
+          const r = await jdpTraerRango(lBc ? lBc.uri : `/machines/${id}/breadcrumbs`, a0, Math.min(t1, a0 + 24 * 3600000), diag, 'bc');
+          if (r.ok) pj = pj.concat(jdpExtraerPuntos(r.valores));
+        }
+        if (!pj.length) {
+          const lLoc = links.find(l => /locationhistory/i.test(l.rel || ''));
+          for (let a0 = t0; a0 < t1; a0 += 24 * 3600000) {
+            const r2 = await jdpTraerRango(lLoc ? lLoc.uri : `/machines/${id}/locationHistory`, a0, Math.min(t1, a0 + 24 * 3600000), diag, 'loc');
+            if (r2.ok) pj = pj.concat(jdpExtraerPuntos(r2.valores));
+          }
+        }
+        pj = pj.filter(p => p.t >= t0).sort((a, b) => a.t - b.t);
+        if (pj.length) { puntos = pj.map(p => ({ t: p.t, lat: p.lat, lng: p.lng })); fuente = 'jdlink'; }
+      } catch (e) { console.warn('ruta jdlink', e); }
+    }
+  }
+  return { puntos, fuente, t0, t1 };
+}
+function envivoCalcular(puntos) {
+  const pots = (potrerosConfig || []).filter(p => poligonoValido(p.poligono)).map(p => ({ nombre: p.nombre, poly: jdpNormPoligono(p.poligono) }));
+  const dePot = (lat, lng) => { const q = pots.find(p => jdpPuntoEnPoligono(lat, lng, p.poly)); return q ? q.nombre : null; };
+  const tr = { total: 0, detenido: 0, mov: 0, trabajo: 0, km: 0, kmTrabajo: 0, ha: 0, porPot: {}, tramos: [] };
+  for (let i = 1; i < puntos.length; i++) {
+    const a = puntos[i - 1], b = puntos[i], dt = b.t - a.t;
+    if (dt <= 0 || dt > ENVIVO_HUECO_MS) continue;
+    const m = jdpDistKm(a, b) * 1000, kmh = m / (dt / 1000) * 3.6;
+    if (kmh > ENVIVO_VMAX_KMH) continue;
+    tr.total += dt;
+    const quieto = kmh < ENVIVO_VMIN_KMH;
+    const pot = dePot((a.lat + b.lat) / 2, (a.lng + b.lng) / 2);
+    let clase;
+    if (quieto) { tr.detenido += dt; clase = 'parado'; }
+    else {
+      tr.mov += dt; tr.km += m / 1000;
+      if (pot) {
+        tr.trabajo += dt; tr.kmTrabajo += m / 1000; clase = 'trabajo';
+        const w = envivoAnchoPotrero(pot), ha = m * w / 10000;
+        tr.ha += ha;
+        const pp = tr.porPot[pot] || (tr.porPot[pot] = { ms: 0, ha: 0, w });
+        pp.ms += dt; pp.ha += ha;
+      } else clase = 'traslado';
+    }
+    tr.tramos.push({ a, b, clase, pot });
+  }
+  return tr;
+}
+// Proyección plana local (metros) para ajustar rectas y dibujar bandas al ancho real
+function envivoProy(lat0, lng0) {
+  const ky = 110540, kx = 111320 * Math.cos(lat0 * Math.PI / 180);
+  return { xy: p => [(p.lng - lng0) * kx, (p.lat - lat0) * ky], ll: (x, y) => [lat0 + y / ky, lng0 + x / kx] };
+}
+function envivoDP(P, tol) { // Douglas-Peucker: devuelve índices de los vértices que se conservan
+  const keep = new Array(P.length).fill(false); keep[0] = keep[P.length - 1] = true;
+  const st = [[0, P.length - 1]];
+  while (st.length) {
+    const [i0, i1] = st.pop(); if (i1 <= i0 + 1) continue;
+    const [x0, y0] = P[i0], [x1, y1] = P[i1], dx = x1 - x0, dy = y1 - y0, L = Math.hypot(dx, dy) || 1e-9;
+    let mx = -1, mi = -1;
+    for (let k = i0 + 1; k < i1; k++) { const d = Math.abs((P[k][0] - x0) * dy - (P[k][1] - y0) * dx) / L; if (d > mx) { mx = d; mi = k; } }
+    if (mx > tol) { keep[mi] = true; st.push([i0, mi], [mi, i1]); }
+  }
+  return keep.map((k, i) => k ? i : -1).filter(i => i >= 0);
+}
+// Recta que mejor se ajusta a un grupo de puntos (mínimos cuadrados ortogonales)
+function envivoRecta(P) {
+  const n = P.length; let mx = 0, my = 0; P.forEach(q => { mx += q[0]; my += q[1]; }); mx /= n; my /= n;
+  let sxx = 0, syy = 0, sxy = 0; P.forEach(q => { const x = q[0] - mx, y = q[1] - my; sxx += x * x; syy += y * y; sxy += x * y; });
+  const ang = 0.5 * Math.atan2(2 * sxy, sxx - syy), ux = Math.cos(ang), uy = Math.sin(ang);
+  let t0 = Infinity, t1 = -Infinity; P.forEach(q => { const t = (q[0] - mx) * ux + (q[1] - my) * uy; if (t < t0) t0 = t; if (t > t1) t1 = t; });
+  // el sentido de la recta sigue el sentido de avance (primer → último punto)
+  const dirOk = ((P[n - 1][0] - P[0][0]) * ux + (P[n - 1][1] - P[0][1]) * uy) >= 0;
+  const A = [mx + ux * t0, my + uy * t0], B = [mx + ux * t1, my + uy * t1];
+  return dirOk ? [A, B] : [B, A];
+}
+function envivoDibujarRuta(tr, puntos) {
+  envivoRutaCapa.clearLayers();
+  if (!puntos.length) return;
+  const P0 = envivoProy(puntos[0].lat, puntos[0].lng);
+  const col = { traslado: '#38BDF8', parado: '#F97316' };
+  const tramos = tr.tramos;
+  // 1) detenido y traslados (línea fina)
+  tramos.forEach(t => {
+    if (t.clase === 'parado') L.circleMarker([t.b.lat, t.b.lng], { radius: 3, color: col.parado, weight: 1, fillOpacity: 0.8, interactive: false }).addTo(envivoRutaCapa);
+  });
+  const trasl = []; let cur = [];
+  tramos.forEach((t, i) => {
+    if (t.clase === 'traslado') { if (cur.length && cur[cur.length - 1] !== t.a) { trasl.push(cur); cur = []; } if (!cur.length) cur.push(t.a); cur.push(t.b); }
+    else if (cur.length) { trasl.push(cur); cur = []; }
+  });
+  if (cur.length) trasl.push(cur);
+  trasl.forEach(pts => L.polyline(pts.map(q => [q.lat, q.lng]), { color: col.traslado, weight: 2.5, opacity: 0.8, interactive: false }).addTo(envivoRutaCapa));
+  // 2) trabajo: corridas continuas dentro de un potrero → pasadas rectas dibujadas al ancho de trabajo
+  const corridas = []; let run = null;
+  tramos.forEach(t => {
+    if (t.clase !== 'trabajo') { run = null; return; }
+    if (run && run.pot === t.pot && run.pts[run.pts.length - 1] === t.a) run.pts.push(t.b);
+    else { run = { pot: t.pot, pts: [t.a, t.b] }; corridas.push(run); }
+  });
+  corridas.forEach(c => {
+    const w = envivoAnchoPotrero(c.pot);
+    const XY = c.pts.map(P0.xy);
+    const idx = envivoDP(XY, 2.5);
+    // tramos rectos entre vértices; los muy cortos son giros de cabecera (línea fina, no banda)
+    const rectas = [];
+    for (let k = 0; k + 1 < idx.length; k++) {
+      const a = idx[k], b = idx[k + 1], sub = XY.slice(a, b + 1);
+      const len = Math.hypot(XY[b][0] - XY[a][0], XY[b][1] - XY[a][1]);
+      rectas.push({ a, b, len, sub });
+    }
+    rectas.forEach(r => {
+      if (r.len < 20 || r.sub.length < 3) { // giro o tramo corto: línea tal cual
+        L.polyline(c.pts.slice(r.a, r.b + 1).map(q => [q.lat, q.lng]), { color: '#15803D', weight: 2, opacity: 0.9, dashArray: '3 3', interactive: false }).addTo(envivoRutaCapa);
+        return;
+      }
+      const [A, B] = envivoRecta(r.sub);
+      const dx = B[0] - A[0], dy = B[1] - A[1], L2 = Math.hypot(dx, dy) || 1e-9, nx = -dy / L2 * w / 2, ny = dx / L2 * w / 2;
+      const poly = [[A[0] + nx, A[1] + ny], [B[0] + nx, B[1] + ny], [B[0] - nx, B[1] - ny], [A[0] - nx, A[1] - ny]].map(q => P0.ll(q[0], q[1]));
+      const tA = c.pts[r.a].t, tB = c.pts[r.b].t, km = L2 / 1000, h = (tB - tA) / 3600000;
+      L.polygon(poly, { stroke: false, fillColor: '#22C55E', fillOpacity: 0.45 }).addTo(envivoRutaCapa)
+        .bindTooltip(`<b>${c.pot}</b><br>${L2.toFixed(0)} m · ancho ${String(w).replace('.', ',')} m<br>${h > 0 ? (km / h).toFixed(1) + ' km/h' : ''} · ${new Date(tA).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' })}`, { sticky: true });
+      L.polyline([P0.ll(A[0], A[1]), P0.ll(B[0], B[1])], { color: '#14532D', weight: 1.5, opacity: 0.9, interactive: false }).addTo(envivoRutaCapa); // eje de la pasada
+    });
+  });
+  // encuadra el trabajo en potreros (si hay); si no, todo el recorrido
+  const trab = tramos.filter(t => t.clase === 'trabajo').flatMap(t => [t.a, t.b]);
+  const enc = trab.length > 3 ? trab : puntos;
+  if (enc.length > 1) envivoMapa.fitBounds(enc.map(p => [p.lat, p.lng]), { padding: [40, 40], maxZoom: 19 });
+}
+const envivoH = ms => { const m = Math.round(ms / 60000); return m >= 60 ? `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')} min` : `${m} min`; };
+function envivoRenderRuta() {
+  const box = document.getElementById('envivo-ruta');
+  if (!box || !envivoRutaDatos) return;
+  const { eq, puntos, fuente, dias } = envivoRutaDatos;
+  const f1 = n => n.toFixed(1).replace('.', ',');
+  const fDia = ms => new Date(ms).toLocaleDateString('es-CL', { weekday: 'short', day: '2-digit', month: '2-digit' });
+  const botones = `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px">
+      <button class="btn-pin" style="font-size:12px;padding:4px 10px" onclick="envivoMasDias(1)" ${dias >= 7 ? 'disabled' : ''}>＋ Sumar día anterior</button>
+      ${dias > 0 ? `<button class="btn-pin" style="font-size:12px;padding:4px 10px" onclick="envivoMasDias(-1)">− Quitar el más antiguo</button>` : ''}
+      <span style="font-size:11px;color:var(--acero)">${dias === 0 ? 'Solo hoy' : 'Hoy + ' + dias + (dias === 1 ? ' día atrás' : ' días atrás')} (máx. 7)</span></div>`;
+  if (!puntos.length) {
+    box.innerHTML = `<div style="background:var(--fondo);border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:13px"><strong>${eq}</strong>: sin recorrido en ${dias === 0 ? 'hoy' : 'este período'}. <button class="btn-pin" style="font-size:11px;padding:3px 8px" onclick="envivoCerrarRuta()">Cerrar</button>${botones}</div>`;
+    return;
+  }
+  // un cálculo por día calendario; el total suma todos
+  const porDia = {};
+  puntos.forEach(p => { const k = envivoDiaStr(p.t); (porDia[k] = porDia[k] || []).push(p); });
+  const dd = Object.keys(porDia).sort().map(k => ({ k, tr: envivoCalcular(porDia[k]), t: porDia[k][0].t }));
+  const tot = { ha: 0, trabajo: 0, detenido: 0, mov: 0, km: 0, kmTrabajo: 0, porPot: {} };
+  dd.forEach(({ tr }) => {
+    ['ha', 'trabajo', 'detenido', 'mov', 'km', 'kmTrabajo'].forEach(c => tot[c] += tr[c]);
+    Object.entries(tr.porPot).forEach(([n, v]) => { const q = tot.porPot[n] || (tot.porPot[n] = { ms: 0, ha: 0, w: v.w }); q.ms += v.ms; q.ha += v.ha; });
+  });
+  envivoDibujarRuta({ tramos: dd.flatMap(x => x.tr.tramos) }, puntos);
+  const hTrab = tot.trabajo / 3600000;
+  const haH = hTrab > 0.05 ? tot.ha / hTrab : null;
+  const th = 'text-align:right;padding:3px 4px';
+  const filasPot = Object.entries(tot.porPot).sort((a, b) => b[1].ms - a[1].ms).map(([n, v]) => `<tr><td style="padding:3px 4px">${n}<span style="color:var(--acero);font-size:11px"> · ${String(v.w).replace('.', ',')} m</span></td><td style="${th}">${envivoH(v.ms)}</td><td style="${th}">${f1(v.ha)}</td><td style="${th}"><strong>${v.ms > 180000 ? f1(v.ha / (v.ms / 3600000)) : '—'}</strong></td></tr>`).join('');
+  const filasDia = dd.length > 1 ? dd.slice().reverse().map(({ tr, t }) => { const h = tr.trabajo / 3600000; return `<tr><td style="padding:3px 4px">${fDia(t)}</td><td style="${th}">${envivoH(tr.trabajo)}</td><td style="${th}">${envivoH(tr.detenido)}</td><td style="${th}">${f1(tr.ha)}</td><td style="${th}"><strong>${h > 0.05 ? f1(tr.ha / h) : '—'}</strong></td></tr>`; }).join('') : '';
+  box.innerHTML = `<div style="background:var(--fondo);border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:13px">
+    <div style="display:flex;align-items:center;gap:8px"><strong style="flex:1">${fuente === 'celular' ? '📱' : '📡'} ${eq} · ${dias === 0 ? 'recorrido de hoy' : 'últimos ' + (dias + 1) + ' días'}</strong>
+      <button class="btn-pin" style="font-size:11px;padding:3px 8px" onclick="envivoCerrarRuta()">Cerrar</button></div>
+    <div style="font-size:22px;font-weight:800;margin:4px 0">${haH != null ? f1(haH) + ' ha/h' : '— ha/h'}<span style="font-size:12px;font-weight:400;color:var(--acero)"> de avance, sin contar paradas</span></div>
+    <div style="font-size:12px;color:var(--acero)">⏱ Trabajando ${envivoH(tot.trabajo)} · ⚪ detenido ${envivoH(tot.detenido)} · 🚜 traslados ${envivoH(tot.mov - tot.trabajo)}<br>≈ <strong style="color:var(--negro)">${f1(tot.ha)} ha</strong> en ${f1(tot.kmTrabajo)} km de trabajo · ${f1(tot.km)} km recorridos</div>
+    ${botones}
+    ${filasDia ? `<table style="width:100%;min-width:0;font-size:12px;margin-top:6px;border-collapse:collapse"><thead><tr><th style="text-align:left;padding:3px 4px">Día</th><th style="${th}">Trabajando</th><th style="${th}">Detenido</th><th style="${th}">ha</th><th style="${th}">ha/h</th></tr></thead><tbody>${filasDia}</tbody></table>` : ''}
+    ${filasPot ? `<table style="width:100%;min-width:0;font-size:12px;margin-top:6px;border-collapse:collapse"><thead><tr><th style="text-align:left;padding:3px 4px">Potrero · ancho${dd.length > 1 ? ' (todos los días)' : ''}</th><th style="${th}">Tiempo</th><th style="${th}">ha</th><th style="${th}">ha/h</th></tr></thead><tbody>${filasPot}</tbody></table>` : ''}
+    <div style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--acero);margin-top:6px;flex-wrap:wrap">
+      <span>Ancho de trabajo en potreros sin ancho propio:</span>
+      <input type="number" min="1" max="60" step="0.5" value="${envivoAncho || 5}" style="width:60px;padding:3px 5px" onchange="envivoCambiarAncho(this.value)"> m
+      <span>· 🟩 banda = ancho de trabajo (con su eje) · 🟦 traslado · 🟧 detenido (menos de ${ENVIVO_VMIN_KMH} km/h) · más oscuro = pasó 2 veces</span></div>
+  </div>`;
+}
+window.envivoCambiarAncho = function(v) { const n = parseFloat(v); envivoAncho = n > 0 ? n : null; envivoRenderRuta(); };
+window.envivoMasDias = async function(delta) {
+  if (!envivoRutaEq) return;
+  envivoRutaDias = Math.max(0, Math.min(7, envivoRutaDias + delta));
+  await envivoCargarRuta(envivoRutaEq);
+};
+window.envivoCerrarRuta = function() {
+  envivoRutaDatos = null; envivoRutaEq = null; envivoRutaDias = 0;
+  if (envivoRutaCapa) envivoRutaCapa.clearLayers();
+  const box = document.getElementById('envivo-ruta'); if (box) box.innerHTML = '';
+};
+async function envivoCargarRuta(eq) {
+  const box = document.getElementById('envivo-ruta'); if (!box) return;
+  box.innerHTML = `<div style="padding:8px;font-size:13px;color:var(--acero)">Cargando recorrido de ${eq}…</div>`;
+  try {
+    if (!envivoAnchosCultivo) {
+      try { const sz = await getDoc(doc(db, 'config', 'zonas_sin_cultivo')); if (sz.exists() && sz.data().anchosCultivo) envivoAnchosCultivo = sz.data().anchosCultivo; } catch (e) {}
+    }
+    const dias = envivoRutaDias;
+    const { puntos, fuente } = await envivoPuntosDelDia(eq, dias);
+    if (envivoRutaEq !== eq || envivoRutaDias !== dias) return; // cambió mientras cargaba
+    envivoRutaDatos = { eq, puntos, fuente, dias };
+    envivoRenderRuta();
+  } catch (e) { box.innerHTML = `<div style="color:#C0392B;font-size:13px;padding:8px">Error: ${e.message}</div>`; }
+}
+window.envivoVerRuta = async function(eq) {
+  const box = document.getElementById('envivo-ruta'); if (!box) return;
+  if (envivoRutaEq === eq) { envivoCerrarRuta(); return; } // segundo toque en el mismo equipo: oculta
+  envivoRutaEq = eq; envivoRutaDias = 0;
+  await envivoCargarRuta(eq);
+};
 
 window.cerrarJdPotreros = function() {
   document.getElementById('modal-jd-potreros').style.display = 'none';
@@ -12032,7 +12272,8 @@ tbody td{padding:10px 12px;vertical-align:middle;}
   </div>
   <div id="envivo-mapa" style="flex:1;min-height:0"></div>
   <div style="max-height:38vh;overflow:auto;background:var(--blanco);border-top:1px solid var(--borde);padding:8px 12px">
-    <div style="font-size:11px;color:var(--acero);margin-bottom:4px">🟢 aplicando · 🔵 en movimiento · ⚪ detenido · gris: sin datos hace más de 10 min. Toca un equipo para ir a él.</div>
+    <div style="font-size:11px;color:var(--acero);margin-bottom:4px">🟢 aplicando · 🔵 en movimiento · ⚪ detenido · gris: sin datos hace más de 10 min. Toca un equipo para ir a él y ver su recorrido de hoy con las ha/h de avance.</div>
+    <div id="envivo-ruta"></div>
     <div id="envivo-lista"></div>
   </div>
 </div>
