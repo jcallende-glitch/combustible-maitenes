@@ -66,7 +66,7 @@
 <body>
 <div id="app">
   <div id="barra">
-    <span class="eq" id="b-equipo" onclick="abrirAjustes()" style="cursor:pointer">Modo tractor</span>
+    <span class="eq" id="b-equipo" onclick="tocarEquipo()" style="cursor:pointer">Modo tractor</span>
     <span class="chip" id="b-gps">📍 GPS…</span>
     <span class="chip" id="b-red">⚪ —</span>
     <span class="chip" id="b-pend">⬆ 0</span>
@@ -151,6 +151,15 @@
     <div class="lista-pot" id="lista-pot"></div>
     <div class="acciones" id="acc-pot-terminar"></div>
     <div class="acciones"><button class="btn-gris" onclick="cerrarCapa('capa-potreros')">Cancelar</button></div>
+  </div>
+</div>
+
+<div class="capa" id="capa-jornada">
+  <div class="caja">
+    <h2 id="jor-titulo">🚜 ¿Con qué tractor trabajas hoy?</h2>
+    <div id="jor-texto" style="font-size:15px;line-height:1.5"></div>
+    <div id="jor-botones" style="display:flex;flex-direction:column;gap:8px;margin-top:14px"></div>
+    <div class="nota" id="jor-nota"></div>
   </div>
 </div>
 
@@ -1158,10 +1167,61 @@ function entrarComo(nombre, admin) {
   cerrarCapa('capa-login');
   const mios = equiposDe(nombre);
   eqElegido = '';
-  if (mios.length === 1 && !admin) {
-    ajustes = { ...ajustes, equipo: mios[0] }; ls.set('tractor_ajustes', ajustes);
-    pintarBarraEquipo(); redibujarAplicado(); pintarAplicacion(); pedirPantalla(); iniciarGPS(); subir();
-  } else { eqElegido = mios[0] || ''; abrirAjustes(); }
+  if (admin || !mios.length) { eqElegido = mios[0] || ''; abrirAjustes(); return; }
+  if (jornadaVigente()) { pintarBarraEquipo(); redibujarAplicado(); pintarAplicacion(); pedirPantalla(); iniciarGPS(); subir(); return; }
+  if (mios.length === 1) aplicarTractor(mios[0]);   // un solo tractor: parte con él y pregunta por el potrero
+  else pintarElegirTractor(mios);                   // dos o más: elige con cuál trabaja hoy
+}
+
+// ── Inicio de jornada: ¿con qué tractor? y ¿sigue en el potrero anterior? ──
+const JORNADA_MS = 6 * 3600000;
+function jornadaVigente() {
+  const j = ls.get('tractor_jornada', null);
+  return !!(j && sesion && j.op === sesion.nombre && Date.now() - j.ts < JORNADA_MS && ajustes.equipo === j.eq);
+}
+window.tocarEquipo = function () {
+  const mios = sesion && !sesion.admin ? equiposDe(sesion.nombre) : [];
+  if (mios.length >= 2) pintarElegirTractor(mios); else abrirAjustes();
+};
+function pintarElegirTractor(lista) {
+  document.getElementById('jor-titulo').textContent = '🚜 ¿Con qué tractor trabajas hoy?';
+  document.getElementById('jor-texto').innerHTML = `Hola ${sesion ? sesion.nombre.split(' ')[0] : ''}. Elige el tractor donde llevas el celular: lo que se registre queda a su nombre.`;
+  document.getElementById('jor-botones').innerHTML = lista.map(e => {
+    const ab = aplicaciones.filter(a => a.estado === 'abierta' && a.equipo === e).sort((x, y) => y.inicio - x.inicio)[0];
+    return `<button type="button" class="btn-prim" style="flex:none" data-eq="${e.replace(/"/g, '&quot;')}">🚜 ${e}${ab ? `<div style="font-size:12px;font-weight:400;opacity:.85">última aplicación: ${ab.potrero}</div>` : ''}</button>`;
+  }).join('') + '<button type="button" class="btn-gris" style="flex:none" onclick="cerrarCapa(\'capa-jornada\');abrirAjustes()">Otro equipo…</button>';
+  document.querySelectorAll('#jor-botones [data-eq]').forEach(b => b.onclick = () => aplicarTractor(b.dataset.eq));
+  document.getElementById('jor-nota').textContent = 'Si cambias de tractor durante el día, toca el nombre del equipo arriba para elegir de nuevo.';
+  document.getElementById('capa-jornada').style.display = 'flex';
+}
+function aplicarTractor(eq) {
+  if (ajustes.equipo !== eq) {
+    aplicando = false; ls.set('tractor_aplicando', false);
+    const a = activa();
+    if (a && a.equipo && a.equipo !== eq) { activaId = null; guardarAplicaciones(); } // la aplicación abierta era de otro tractor
+    ajustes = { ...ajustes, equipo: eq, ancho: ajustes.ancho || 5 }; ls.set('tractor_ajustes', ajustes);
+  }
+  ls.set('tractor_jornada', { op: sesion ? sesion.nombre : '', eq, ts: Date.now() });
+  cerrarCapa('capa-jornada');
+  pintarBarraEquipo(); pintarBotonAplicar(); dibujarCampo();
+  cargarAplicadoActivo().then(() => { redibujarAplicado(); pintarAplicacion(); }).catch(() => {});
+  pedirPantalla(); iniciarGPS(); subir();
+  preguntarPotreroAnterior(eq);
+}
+async function preguntarPotreroAnterior(eq) {
+  try { await traerAbiertasCompartidas(); } catch (e) {}
+  const ab = aplicaciones.filter(a => a.estado === 'abierta' && a.equipo === eq).sort((x, y) => y.inicio - x.inicio)[0];
+  if (!ab) return; // sin aplicación abierta: sigue el flujo normal al empezar a aplicar
+  if (ab.id === activaId && aplicando) return;
+  document.getElementById('jor-titulo').textContent = '🌾 ¿Sigues en el potrero anterior?';
+  document.getElementById('jor-texto').innerHTML = `Con <strong>${eq}</strong> quedó una aplicación sin terminar en <strong>${ab.potrero}</strong>, desde el ${fechaCorta(ab.inicio)} (${(ab.km || 0).toFixed(1).replace('.', ',')} km).`;
+  document.getElementById('jor-botones').innerHTML = `<button type="button" class="btn-prim" style="flex:none" id="jor-cont">↪ Continuar en ${ab.potrero}</button>
+    <button type="button" class="btn-amar" style="flex:none" id="jor-otro">🌾 Pasar a otro potrero</button>
+    <button type="button" class="btn-gris" style="flex:none" onclick="cerrarCapa('capa-jornada')">Decidir después</button>`;
+  document.getElementById('jor-cont').onclick = () => { cerrarCapa('capa-jornada'); activarAplicacion(ab.id); };
+  document.getElementById('jor-otro').onclick = () => { cerrarCapa('capa-jornada'); abrirPotreros(null); };
+  document.getElementById('jor-nota').textContent = 'Continuar: se sigue pintando sobre lo ya aplicado. Otro potrero: eliges de la lista y, si ese tiene una aplicación abierta, se te pregunta si es continuación.';
+  document.getElementById('capa-jornada').style.display = 'flex';
 }
 // Pase que deja la app al tocar "🚜 Tractor" (válido 10 minutos)
 async function usarPaseDeLaApp() {
@@ -1300,7 +1360,11 @@ document.getElementById('aviso').onclick = e => { e.target.style.display = 'none
   pintarBarraEquipo();
   if (!(await usarPaseDeLaApp())) {
     if (!sesion) document.getElementById('capa-login').style.display = 'flex';
-    else if (ajustes.equipo) { pedirPantalla(); iniciarGPS(); }
+    else if (ajustes.equipo) {
+      pedirPantalla(); iniciarGPS();
+      const mios = sesion.admin ? [] : equiposDe(sesion.nombre);
+      if (mios.length >= 2 && !jornadaVigente()) pintarElegirTractor(mios);
+    }
     else abrirAjustes();
   }
   actualizarDatosCampo(false);
