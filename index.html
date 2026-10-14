@@ -8693,9 +8693,12 @@ window.guardarEdicionEquipoOperador = async function(idx) {
 const PRUEBAS_GPS = [ { id: 'tractor', txt: '🚜 Modo tractor' }, { id: 'reparto', txt: '📍 Reparto por potrero' }, { id: 'ubicacion', txt: '📡 Ubicación equipos' } ];
 function permisosPruebasDe(op) { const v = (config.permisosPruebas || {})[op]; return Array.isArray(v) ? v : []; }
 window.abrirPrueba = function(cual) {
-  try { localStorage.setItem('maitenes_pase', JSON.stringify({ nombre: currentUser, admin: !!isAdmin, ts: Date.now() })); } catch (e) {}
-  if (cual === 'tractor') window.location.href = '/tractor.html';
-  else window.open('/reparto.html', '_blank');
+  const pase = JSON.stringify({ nombre: currentUser, admin: !!isAdmin, ts: Date.now() });
+  try { localStorage.setItem('maitenes_pase', pase); } catch (e) {}
+  // El pase va también en la dirección (#pase=...), porque al abrir en otra ventana o navegador el almacenamiento puede no compartirse
+  const h = '#pase=' + encodeURIComponent(pase);
+  if (cual === 'tractor') window.location.href = '/tractor.html' + h;
+  else window.open('/reparto.html' + h, '_blank');
 }
 function renderPanelPermisosPruebas() {
   const cont = document.getElementById('lista-permisos-pruebas');
