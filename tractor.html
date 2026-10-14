@@ -1227,6 +1227,8 @@ async function preguntarPotreroAnterior(eq) {
 async function usarPaseDeLaApp() {
   let pase = null;
   try { pase = JSON.parse(localStorage.getItem('maitenes_pase') || 'null'); localStorage.removeItem('maitenes_pase'); } catch (e) {}
+  const hm = /[#&]pase=([^&]+)/.exec(location.hash || '');
+  if (hm) { try { pase = JSON.parse(decodeURIComponent(hm[1])); } catch (e) {} try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {} }
   if (!pase || !pase.nombre || Date.now() - pase.ts > 10 * 60000) return false;
   if (sesion && sesion.nombre === pase.nombre) return false; // ya estaba adentro
   await actualizarDatosCampo(false);
