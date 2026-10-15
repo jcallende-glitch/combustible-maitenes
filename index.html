@@ -1737,6 +1737,11 @@ function envivoRenderRuta() {
     Object.entries(tr.porPot).forEach(([n, v]) => { const q = tot.porPot[n] || (tot.porPot[n] = { ms: 0, ha: 0, w: v.w }); q.ms += v.ms; q.ha += v.ha; });
   });
   envivoDibujarRuta({ tramos: dd.flatMap(x => x.tr.tramos) }, puntos);
+  // Diagnóstico de datos: cuántos puntos llegaron y cuánto tiempo quedó sin cubrir por huecos
+  let nHuecos = 0, msHuecos = 0, msCub = 0;
+  for (let i = 1; i < puntos.length; i++) { const dt = puntos[i].t - puntos[i - 1].t; if (envivoDiaStr(puntos[i].t) !== envivoDiaStr(puntos[i - 1].t)) continue; if (dt > ENVIVO_HUECO_MS) { nHuecos++; msHuecos += dt; } else if (dt > 0) msCub += dt; }
+  const hhmm = ms => new Date(ms).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' });
+  const diagTxt = `${puntos.length} puntos · primero ${hhmm(puntos[0].t)}, último ${hhmm(puntos[puntos.length - 1].t)} · un punto cada ${Math.round(msCub / Math.max(1, puntos.length - 1 - nHuecos) / 1000)} s` + (nHuecos ? ` · <strong>${nHuecos} huecos sin datos (${envivoH(msHuecos)})</strong>` : '');
   const hTrab = tot.trabajo / 3600000;
   const haH = hTrab > 0.05 ? tot.ha / hTrab : null;
   const th = 'text-align:right;padding:3px 4px';
@@ -1748,6 +1753,7 @@ function envivoRenderRuta() {
     <div style="font-size:22px;font-weight:800;margin:4px 0">${haH != null ? f1(haH) + ' ha/h' : '— ha/h'}<span style="font-size:12px;font-weight:400;color:var(--acero)"> de avance, sin contar paradas</span></div>
     <div style="font-size:12px;color:var(--acero)">⏱ Trabajando ${envivoH(tot.trabajo)} · ⚪ detenido ${envivoH(tot.detenido)} · 🚜 traslados ${envivoH(tot.mov - tot.trabajo)}<br>≈ <strong style="color:var(--negro)">${f1(tot.ha)} ha</strong> en ${f1(tot.kmTrabajo)} km de trabajo · ${f1(tot.km)} km recorridos</div>
     ${botones}
+    <div style="font-size:11px;color:var(--acero);margin-top:4px">🔎 Datos recibidos: ${diagTxt}</div>
     ${filasDia ? `<table style="width:100%;min-width:0;font-size:12px;margin-top:6px;border-collapse:collapse"><thead><tr><th style="text-align:left;padding:3px 4px">Día</th><th style="${th}">Trabajando</th><th style="${th}">Detenido</th><th style="${th}">ha</th><th style="${th}">ha/h</th></tr></thead><tbody>${filasDia}</tbody></table>` : ''}
     ${filasPot ? `<table style="width:100%;min-width:0;font-size:12px;margin-top:6px;border-collapse:collapse"><thead><tr><th style="text-align:left;padding:3px 4px">Potrero · ancho${dd.length > 1 ? ' (todos los días)' : ''}</th><th style="${th}">Tiempo</th><th style="${th}">ha</th><th style="${th}">ha/h</th></tr></thead><tbody>${filasPot}</tbody></table>` : ''}
     <div style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--acero);margin-top:6px;flex-wrap:wrap">
