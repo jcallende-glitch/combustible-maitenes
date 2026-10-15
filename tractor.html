@@ -61,6 +61,17 @@
   .seg { display: flex; gap: 6px; }
   .seg button { flex: 1; padding: 14px 6px; font-size: 15px; font-weight: 700; background: #262626; color: var(--texto); border: 2px solid #444; }
   .seg button.sel { background: var(--azul); color: #0b1b33; border-color: #3b82f6; }
+  /* Vista de conducción: solo mapa + un dato grande (entra sola tras 10 s sin tocar) */
+  #hud { display: none; position: absolute; left: 10px; right: 10px; top: 10px; z-index: 950; background: rgba(17,17,17,.88); border: 3px solid #444; border-radius: 16px; padding: 8px 12px 10px; text-align: center; }
+  #hud.ap { border-color: var(--verde); }
+  #hud .h-val { font-size: 64px; font-weight: 800; line-height: 1.05; font-variant-numeric: tabular-nums; }
+  #hud .h-sub { font-size: 14px; color: var(--gris); margin-top: 2px; }
+  #hud .h-sel { display: flex; gap: 6px; margin-top: 8px; }
+  #hud .h-sel button { flex: 1; padding: 8px 2px; font-size: 13px; font-weight: 700; background: #262626; color: var(--texto); border: 2px solid #444; border-radius: 10px; }
+  #hud .h-sel button.sel { background: var(--azul); color: #0b1b33; border-color: #3b82f6; }
+  body.foco #hud { display: block; }
+  body.foco #barra, body.foco #pie { display: none; }
+  body.foco #aviso { top: 190px; }
 </style>
 </head>
 <body>
@@ -73,7 +84,7 @@
     <span class="chip" id="b-llave">🔋 —</span>
   </div>
   <div id="aviso"></div>
-  <div id="mapa"><div id="banner"></div></div>
+  <div id="mapa"><div id="banner"></div><div id="hud"></div></div>
   <div id="pie">
     <div id="ap-linea">
       <div id="ap-info">Sin potrero iniciado</div>
@@ -819,8 +830,10 @@ function pintarAplicacion() {
     const haOtros = kmOtros * 1000 * ancho / 10000, haTot = ha + haOtros;
     const pctT = pg && pg.ha ? Math.min(100, haTot / pg.ha * 100) : null;
     info.innerHTML = `🌾 <strong>${a.potrero}</strong><div class="sub">Desde ${fechaCorta(a.inicio)} · este tractor ${kmAplicacion.toFixed(1).replace('.', ',')} km${kmOtros ? ` · otros (${equiposOtros.join(', ')}) ${kmOtros.toFixed(1).replace('.', ',')} km` : ''} · ≈ ${haTot.toFixed(1).replace('.', ',')} ha${pctT != null ? ` (~${pctT.toFixed(0)}% de ${pg.ha.toFixed(1).replace('.', ',')} ha)` : ''}</div>`;
+    resumenAp = { haTot, pct: pctT, haPot: pg && pg.ha ? pg.ha : null };
     btn.textContent = '🌾 Cambiar / terminar';
   } else {
+    resumenAp = null;
     info.innerHTML = 'Sin potrero iniciado<div class="sub">Toca "Iniciar potrero" antes de aplicar</div>';
     btn.textContent = '🌾 Iniciar potrero';
   }
@@ -1223,6 +1236,47 @@ async function preguntarPotreroAnterior(eq) {
   document.getElementById('jor-nota').textContent = 'Continuar: se sigue pintando sobre lo ya aplicado. Otro potrero: eliges de la lista y, si ese tiene una aplicación abierta, se te pregunta si es continuación.';
   document.getElementById('capa-jornada').style.display = 'flex';
 }
+
+// ── Vista de conducción ──────────────────────────────────────────
+// Tras 10 s sin tocar la pantalla (con un potrero iniciado) se oculta todo salvo el mapa y un
+// cuadro arriba con un dato grande a elegir. Cualquier toque vuelve a la vista normal.
+const FOCO_MS = 10000;
+const HUD_DATOS = [ { id: 'vel', t: '🚜 Velocidad' }, { id: 'pre', t: '📍 Precisión' }, { id: 'pct', t: '🌾 % potrero' }, { id: 'ha', t: '≈ Hectáreas' } ];
+let hudDato = ls.get('tractor_hud', 'vel'), focoActivo = false, ultimoToque = Date.now(), resumenAp = null;
+const nf = (n, d) => n.toFixed(d).replace('.', ',');
+function hudPintar() {
+  const hud = document.getElementById('hud'); if (!hud) return;
+  const a = activa(), pos = ultimaPos;
+  let val = '—', sub = '';
+  if (hudDato === 'vel') { val = pos && pos.v != null ? nf(pos.v * 3.6, 1) : '—'; sub = 'km/h'; }
+  else if (hudDato === 'pre') { val = pos ? '±' + pos.acc : '—'; sub = 'metros de precisión del GPS'; }
+  else if (hudDato === 'pct') { val = resumenAp && resumenAp.pct != null ? Math.round(resumenAp.pct) + '%' : '—'; sub = resumenAp && resumenAp.haPot ? `de ${nf(resumenAp.haPot, 1)} ha de ${a ? a.potrero : ''}` : 'del potrero'; }
+  else { val = resumenAp ? nf(resumenAp.haTot, 1) : '—'; sub = 'ha aplicadas' + (a ? ' en ' + a.potrero : ''); }
+  hud.className = aplicando ? 'ap' : '';
+  hud.innerHTML = `<div class="h-val">${val}</div><div class="h-sub">${sub} · ${aplicando ? '▶ aplicando' : '⏸ sin aplicar'}</div>
+    <div class="h-sel">${HUD_DATOS.map(d => `<button type="button" data-d="${d.id}" class="${d.id === hudDato ? 'sel' : ''}">${d.t}</button>`).join('')}</div>`;
+  hud.querySelectorAll('[data-d]').forEach(b => b.onclick = e => { e.stopPropagation(); ultimoToque = Date.now(); hudDato = b.dataset.d; ls.set('tractor_hud', hudDato); hudPintar(); });
+}
+function hayCapaAbierta() {
+  return [...document.querySelectorAll('.capa')].some(c => c.style.display === 'flex' || c.style.display === 'block') || document.getElementById('banner').style.display === 'block';
+}
+function entrarFoco() {
+  if (focoActivo) return; focoActivo = true;
+  document.body.classList.add('foco'); hudPintar();
+  setTimeout(() => { try { mapa.resize(); moverCamara(true); } catch (e) {} }, 60);
+}
+function salirFoco() {
+  if (!focoActivo) return; focoActivo = false;
+  document.body.classList.remove('foco');
+  setTimeout(() => { try { mapa.resize(); } catch (e) {} }, 60);
+}
+['pointerdown', 'touchstart', 'mousedown', 'keydown'].forEach(ev => document.addEventListener(ev, e => { ultimoToque = Date.now(); if (focoActivo && e.target && e.target.closest && e.target.closest('.h-sel')) return; salirFoco(); }, true));
+setInterval(() => {
+  try {
+    if (focoActivo) { if (hayCapaAbierta()) salirFoco(); else hudPintar(); return; }
+    if (sesion && activa() && !hayCapaAbierta() && Date.now() - ultimoToque >= FOCO_MS) entrarFoco();
+  } catch (e) {}
+}, 1000);
 // Pase que deja la app al tocar "🚜 Tractor" (válido 10 minutos)
 async function usarPaseDeLaApp() {
   let pase = null;
