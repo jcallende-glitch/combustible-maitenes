@@ -498,8 +498,13 @@ async function jdpTraerRango(urlBase, desde, hasta, diag, etiqueta) {
   for (let ini = desde; ini < hasta; ini += DIA) {
     const fin = Math.min(hasta, ini + DIA);
     let url = urlBase + (urlBase.includes('?') ? '&' : '?') + `startDate=${new Date(ini).toISOString()}&endDate=${new Date(fin).toISOString()}`;
-    for (let pag = 0; url && pag < 40; pag++) {
-      const { status, data } = await callJDApi(url);
+    // Páginas grandes (100 por página) y hasta 600 páginas: antes el tope era 40 páginas y se cortaba el recorrido del día
+    let urlGrande = /itemLimit=/i.test(url) ? null : url + '&itemLimit=100';
+    for (let pag = 0; url && pag < 600; pag++) {
+      let res;
+      if (pag === 0 && urlGrande) { res = await callJDApi(urlGrande); if (res.status !== 200 || !res.data) res = await callJDApi(url); }
+      else res = await callJDApi(url);
+      const { status, data } = res;
       diag.llamadas.push(`${etiqueta}: HTTP ${status}${data && Array.isArray(data.values) ? ` · ${data.values.length} registros` : ''}`);
       if (status !== 200 || !data) { if (!diag.errores[etiqueta]) diag.errores[etiqueta] = { status, data }; return { ok: false, status, valores }; }
       const vals = data.values || [];
