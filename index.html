@@ -1564,7 +1564,9 @@ function envivoAnchoPotrero(nombre) {
   if (c) { const k = Object.keys(tabla).find(x => norm(x) === norm(c)); if (k && Number(tabla[k]) > 0) return Number(tabla[k]); }
   return envivoAncho || 5;
 }
+let envivoFuenteN = null;
 async function envivoPuntosDelDia(eq, dias) {
+  envivoFuenteN = null;
   const desde = new Date(); desde.setHours(0, 0, 0, 0); desde.setDate(desde.getDate() - (dias || 0));
   const t0 = desde.getTime(), t1 = Date.now();
   let puntos = [], fuente = null;
@@ -1583,18 +1585,21 @@ async function envivoPuntosDelDia(eq, dias) {
         const m = it._m, id = m.organizationRole?.principalId || m.principalId || m.id, links = m.links || [];
         const lBc = links.find(l => /breadcrumb/i.test(l.rel || ''));
         const diag = { llamadas: [], errores: {}, muestras: {} };
-        let pj = [];
+        let pj = [], nBc = 0, nLoc = 0;
         for (let a0 = t0; a0 < t1; a0 += 24 * 3600000) { // JDLink: de a 24 h
           const r = await jdpTraerRango(lBc ? lBc.uri : `/machines/${id}/breadcrumbs`, a0, Math.min(t1, a0 + 24 * 3600000), diag, 'bc');
-          if (r.ok) pj = pj.concat(jdpExtraerPuntos(r.valores));
+          if (r.ok) { const x = jdpExtraerPuntos(r.valores); nBc += x.length; pj = pj.concat(x); }
         }
-        if (!pj.length) {
-          const lLoc = links.find(l => /locationhistory/i.test(l.rel || ''));
-          for (let a0 = t0; a0 < t1; a0 += 24 * 3600000) {
+        // También el historial de ubicaciones: se juntan las dos fuentes (sin repetir) para cubrir huecos
+        const lLoc = links.find(l => /locationhistory/i.test(l.rel || ''));
+        for (let a0 = t0; a0 < t1; a0 += 24 * 3600000) {
+          try {
             const r2 = await jdpTraerRango(lLoc ? lLoc.uri : `/machines/${id}/locationHistory`, a0, Math.min(t1, a0 + 24 * 3600000), diag, 'loc');
-            if (r2.ok) pj = pj.concat(jdpExtraerPuntos(r2.valores));
-          }
+            if (r2.ok) { const x = jdpExtraerPuntos(r2.valores); nLoc += x.length; pj = pj.concat(x); }
+          } catch (e) {}
         }
+        envivoFuenteN = { bc: nBc, loc: nLoc };
+        { const vistos = new Set(); pj = pj.filter(q => { const k = Math.round(q.t / 1000); if (vistos.has(k)) return false; vistos.add(k); return true; }); }
         pj = pj.filter(p => p.t >= t0).sort((a, b) => a.t - b.t);
         if (pj.length) { puntos = pj.map(p => ({ t: p.t, lat: p.lat, lng: p.lng })); fuente = 'jdlink'; }
       } catch (e) { console.warn('ruta jdlink', e); }
@@ -1741,7 +1746,7 @@ function envivoRenderRuta() {
   let nHuecos = 0, msHuecos = 0, msCub = 0;
   for (let i = 1; i < puntos.length; i++) { const dt = puntos[i].t - puntos[i - 1].t; if (envivoDiaStr(puntos[i].t) !== envivoDiaStr(puntos[i - 1].t)) continue; if (dt > ENVIVO_HUECO_MS) { nHuecos++; msHuecos += dt; } else if (dt > 0) msCub += dt; }
   const hhmm = ms => new Date(ms).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' });
-  const diagTxt = `${puntos.length} puntos · primero ${hhmm(puntos[0].t)}, último ${hhmm(puntos[puntos.length - 1].t)} · un punto cada ${Math.round(msCub / Math.max(1, puntos.length - 1 - nHuecos) / 1000)} s` + (nHuecos ? ` · <strong>${nHuecos} huecos sin datos (${envivoH(msHuecos)})</strong>` : '');
+  const diagTxt = `${puntos.length} puntos · primero ${hhmm(puntos[0].t)}, último ${hhmm(puntos[puntos.length - 1].t)} · un punto cada ${Math.round(msCub / Math.max(1, puntos.length - 1 - nHuecos) / 1000)} s` + (nHuecos ? ` · <strong>${nHuecos} huecos sin datos (${envivoH(msHuecos)})</strong>` : '') + (fuente === 'jdlink' && envivoFuenteN ? ` · JDLink: ${envivoFuenteN.bc} del recorrido + ${envivoFuenteN.loc} de ubicaciones` : '') + (Date.now() - puntos[puntos.length - 1].t > 30 * 60000 ? ` · <strong>el último dato tiene ${envivoH(Date.now() - puntos[puntos.length - 1].t)}</strong>` : '');
   const hTrab = tot.trabajo / 3600000;
   const haH = hTrab > 0.05 ? tot.ha / hTrab : null;
   const th = 'text-align:right;padding:3px 4px';
