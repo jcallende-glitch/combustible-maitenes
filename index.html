@@ -8559,7 +8559,90 @@ function listaEquiposDisponibles() {
   return config.equipos.filter(e => e !== 'Otro (especificar)');
 }
 
+// ─── RENDIMIENTO Y COSTO POR APERO ─────────────────────────────
+// Cada apero guarda: ancho (m), velocidad base (km/h) y, opcionalmente, una velocidad distinta por tractor (velEquipo).
+// ha/h = ancho × velocidad / 10 × eficiencia de campo.  L/ha = L/h del tractor ÷ ha/h.  $/ha = L/ha × precio del petróleo.
+function costosParams() { const c = config.costos || {}; return { precio: Number(c.precioLitro) || 0, efic: Number(c.eficCampo) || 85 }; }
+function consumoLHr(equipo, apero) {
+  const hr = (registros || []).filter(r => r.equipo === equipo && r.medidor_tipo === 'hr' && r.eficiencia > 0);
+  const prom = l => l.length ? l.reduce((x, r) => x + r.eficiencia, 0) / l.length : null;
+  const conApero = prom(hr.filter(r => r.apero === apero));
+  if (conApero != null) return { lh: conApero, fuente: 'con este apero' };
+  const eq = prom(hr);
+  return eq != null ? { lh: eq, fuente: 'promedio del equipo' } : null;
+}
+function rendimientoApero(a, equipo) {
+  const vel = Number((a.velEquipo || {})[equipo]) || Number(a.velocidad) || 0;
+  const ancho = Number(a.ancho) || 0;
+  if (!ancho || !vel) return null;
+  const { precio, efic } = costosParams();
+  const haH = ancho * vel / 10 * efic / 100;
+  const c = consumoLHr(equipo, a.nombre);
+  const lHa = c ? c.lh / haH : null;
+  return { vel, haH, lh: c ? c.lh : null, fuente: c ? c.fuente : '', lHa, pesosHa: (lHa != null && precio) ? lHa * precio : null };
+}
+function tractoresDeApero(a) {
+  return config.equipos.filter(e => e !== OTRO && tipoEquipo(e) === 'hr' && (!a.equipos || !a.equipos.length || a.equipos.includes(e)));
+}
+function resumenRendimientoApero(a, i) {
+  if (!a.ancho && !a.velocidad) return '<div style="font-size:12px;color:#9CA3AF">Sin ancho ni velocidad de trabajo definidos.</div>';
+  const filas = tractoresDeApero(a).map(e => ({ e, r: rendimientoApero(a, e) })).filter(x => x.r);
+  const fmt = (n, d) => n == null ? '—' : n.toLocaleString('es-CL', { minimumFractionDigits: d, maximumFractionDigits: d });
+  const cab = `<div style="font-size:12px;color:var(--acero)"><strong>Ancho:</strong> ${a.ancho ? a.ancho + ' m' : '—'} · <strong>Velocidad:</strong> ${a.velocidad ? a.velocidad + ' km/h' : '—'}</div>`;
+  if (!filas.length) return cab;
+  return cab + `<div style="overflow-x:auto"><table style="width:100%;min-width:0;font-size:12px;margin-top:4px"><thead><tr><th style="padding:4px">Tractor</th><th>km/h</th><th>ha/h</th><th>L/h</th><th>L/ha</th><th>$/ha</th></tr></thead><tbody>` +
+    filas.map(({ e, r }) => `<tr><td style="padding:4px">${e}</td><td>${fmt(r.vel, 1)}</td><td>${fmt(r.haH, 2)}</td><td title="${r.fuente}">${fmt(r.lh, 1)}${r.fuente === 'con este apero' ? ' ✓' : ''}</td><td>${fmt(r.lHa, 1)}</td><td>${r.pesosHa != null ? '$' + Math.round(r.pesosHa).toLocaleString('es-CL') : '—'}</td></tr>`).join('') +
+    `</tbody></table></div><div style="font-size:11px;color:#9CA3AF">L/h: promedio histórico del tractor (✓ = medido con este apero). ha/h con eficiencia de campo ${costosParams().efic}%.</div>`;
+}
+window.abrirRendimientoApero = function(i) {
+  const a = aperosConfig[i]; const cont = document.getElementById('apero-rend-' + i);
+  if (!a || !cont) return;
+  if (cont.innerHTML) { cont.innerHTML = ''; return; }
+  const trs = tractoresDeApero(a);
+  cont.innerHTML = `<div style="background:var(--fondo);border:1px solid var(--borde);border-radius:6px;padding:10px;margin-top:4px">
+    <div class="cultivos-label">Ancho y velocidad de trabajo</div>
+    <div style="display:flex;gap:8px">
+      <div class="field" style="flex:1;margin-bottom:8px"><label>Ancho de trabajo (m)</label><input type="number" id="ren-ancho-${i}" min="0" step="0.1" value="${a.ancho || ''}"></div>
+      <div class="field" style="flex:1;margin-bottom:8px"><label>Velocidad base (km/h)</label><input type="number" id="ren-vel-${i}" min="0" step="0.1" value="${a.velocidad || ''}"></div>
+    </div>
+    ${trs.length ? `<div class="cultivos-label">Velocidad según tractor (vacío = velocidad base)</div>
+      ${trs.map((e, j) => `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><span style="flex:1;font-size:13px">${e}</span><input type="number" min="0" step="0.1" style="width:90px" id="ren-eq-${i}-${j}" placeholder="km/h" value="${(a.velEquipo || {})[e] || ''}"></div>`).join('')}` : ''}
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="document.getElementById('apero-rend-${i}').innerHTML=''">Cancelar</button>
+      <button class="btn btn-verde" style="flex:1" onclick="guardarRendimientoApero(${i})">✓ Guardar</button>
+    </div></div>`;
+}
+window.guardarRendimientoApero = async function(i) {
+  const a = aperosConfig[i]; if (!a) return;
+  const num = id => { const v = parseFloat(document.getElementById(id).value); return isFinite(v) && v > 0 ? v : null; };
+  a.ancho = num('ren-ancho-' + i); a.velocidad = num('ren-vel-' + i);
+  const ve = {};
+  tractoresDeApero(a).forEach((e, j) => { const v = num(`ren-eq-${i}-${j}`); if (v) ve[e] = v; });
+  a.velEquipo = ve;
+  config.aperos = aperosConfig;
+  try { await saveConfig(); renderPanelAperos(); toast('✓ Rendimiento guardado', true); }
+  catch (e) { toast('Error: ' + e.message, false); }
+}
+window.guardarCostosParams = async function() {
+  const p = parseFloat(document.getElementById('costos-precio').value), e = parseFloat(document.getElementById('costos-efic').value);
+  config.costos = { precioLitro: isFinite(p) && p > 0 ? p : 0, eficCampo: isFinite(e) && e > 0 && e <= 100 ? e : 85 };
+  try { await saveConfig(); renderPanelAperos(); toast('✓ Guardado', true); } catch (err) { toast('Error: ' + err.message, false); }
+}
+function renderCostosParams() {
+  const el = document.getElementById('apero-costos-params'); if (!el) return;
+  const { precio, efic } = costosParams();
+  el.innerHTML = `<div style="background:var(--fondo);border:1px solid var(--borde);border-radius:8px;padding:10px">
+    <div class="cultivos-label">Costo del petróleo y eficiencia de campo</div>
+    <div style="display:flex;gap:8px;align-items:flex-end">
+      <div class="field" style="flex:1;margin-bottom:0"><label>Precio petróleo ($/L)</label><input type="number" id="costos-precio" min="0" step="1" value="${precio || ''}"></div>
+      <div class="field" style="flex:1;margin-bottom:0"><label>Eficiencia de campo (%)</label><input type="number" id="costos-efic" min="1" max="100" step="1" value="${efic}"></div>
+      <button class="btn btn-verde" onclick="guardarCostosParams()">Guardar</button>
+    </div>
+    <div class="hint">La eficiencia de campo descuenta giros y tiempos muertos (85% es un valor típico).</div></div>`;
+}
+
 function renderPanelAperos() {
+  renderCostosParams();
   const cont = document.getElementById('lista-aperos');
   if (cont) {
     cont.innerHTML = aperosConfig.length ? aperosConfig.map((a,i) => `
@@ -8567,13 +8650,16 @@ function renderPanelAperos() {
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
           <strong style="font-size:14px">${a.nombre}</strong>
           <div style="display:flex;gap:6px">
+            <button class="btn btn-secondary" style="font-size:11px;padding:6px 10px" onclick="abrirRendimientoApero(${i})">📐 Rendimiento</button>
             <button class="btn btn-secondary" style="font-size:11px;padding:6px 10px" onclick="abrirEdicionApero(${i})">✏️ Asignar</button>
             <button class="btn btn-danger" onclick="eliminarApero(${i})">✕</button>
           </div>
         </div>
         <div style="font-size:12px;color:var(--acero)"><strong>Trabajos:</strong> ${a.trabajos && a.trabajos.length ? a.trabajos.join(', ') : 'Todos'}</div>
         <div style="font-size:12px;color:var(--acero)"><strong>Equipos:</strong> ${a.equipos && a.equipos.length ? a.equipos.join(', ') : 'Todos'}</div>
+        ${resumenRendimientoApero(a, i)}
         <div id="apero-editor-${i}"></div>
+        <div id="apero-rend-${i}"></div>
       </div>`).join('') : '<div style="color:#9CA3AF;font-size:13px;padding:8px">Sin aperos configurados.</div>';
   }
 
@@ -11522,6 +11608,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
             <button class="btn-add" onclick="agregarApero()">+ Agregar</button>
           </div>
         </div>
+        <div id="apero-costos-params" style="margin:12px 0"></div>
         <div class="config-lista" id="lista-aperos"></div>
       </div>
 
