@@ -2284,6 +2284,9 @@ let unsubReg = null;
 let ultimoRegistroEquipo = null;
 let centrosSeleccionados = [];
 let trabajoSeleccionado = null;
+let trabajosSel = [];      // labores elegidas (1 o más). trabajoSeleccionado = la primera, por compatibilidad
+let trabajoObsTexto = '';  // detalle cuando una labor es "Otro (especificar)"
+function trabajoTxt(r){ const t = r.trabajo || ''; return t.includes('Otro (especificar)') ? t.replace('Otro (especificar)', r.trabajo_detalle || 'Otro') : t; }
 let aperoSeleccionado = null;
 let aperosSel = [];   // aperos elegidos (1 o más). aperoSeleccionado = el primero, por compatibilidad
 function aperosDeReg(r){ return Array.isArray(r.aperos) && r.aperos.length ? r.aperos : (r.apero ? [r.apero] : []); }
@@ -3162,18 +3165,18 @@ function initRegistro() {
   const preset = !isAdmin ? presetDe(currentUser) : null;
   if (preset) {
     centrosSeleccionados = [...(preset.cultivos || [])];
-    trabajoSeleccionado = preset.trabajo || null;
+    trabajoSeleccionado = preset.trabajo || null; trabajosSel = preset.trabajo ? [preset.trabajo] : [];
     aperoSeleccionado = preset.apero || null; aperosSel = preset.apero ? [preset.apero] : [];
     aperoObsTexto = preset.aperoObsTexto || '';
     centroObsTexto = '';
   } else {
     centrosSeleccionados = [];
-    trabajoSeleccionado = null; aperoSeleccionado = null; aperosSel = []; aperoObsTexto = ''; centroObsTexto = '';
+    trabajoSeleccionado = null; trabajosSel = []; trabajoObsTexto = ''; aperoSeleccionado = null; aperosSel = []; aperoObsTexto = ''; centroObsTexto = '';
   }
   const cultivoAutoInit = cultivoAutomaticoDe(document.getElementById('equipo').value);
   if (cultivoAutoInit) {
     centrosSeleccionados = [cultivoAutoInit];
-    trabajoSeleccionado = null; aperoSeleccionado = null; aperosSel = []; aperoObsTexto = ''; centroObsTexto = '';
+    trabajoSeleccionado = null; trabajosSel = []; trabajoObsTexto = ''; aperoSeleccionado = null; aperosSel = []; aperoObsTexto = ''; centroObsTexto = '';
   } else if (!preset) {
     const cultivoDefaultInit = cultivoDefaultDe(document.getElementById('equipo').value);
     if (cultivoDefaultInit) centrosSeleccionados = [cultivoDefaultInit];
@@ -3236,7 +3239,7 @@ window.toggleCultivo = function(c) {
   } else {
     centrosSeleccionados.push(c);
   }
-  trabajoSeleccionado = null; aperoSeleccionado = null; aperosSel = []; aperoObsTexto = '';
+  trabajoSeleccionado = null; trabajosSel = []; trabajoObsTexto = ''; aperoSeleccionado = null; aperosSel = []; aperoObsTexto = '';
   renderCentrosSelector();
   renderTrabajoSelector();
   validarPaso1();
@@ -3267,28 +3270,44 @@ function renderTrabajoSelector() {
   const lista = trabajosConfig;
 
   container.innerHTML = `
-    <div class="cultivos-label">Tipo de trabajo</div>
+    <div class="cultivos-label">Tipo de trabajo <span style="font-weight:400;color:#6B7280">(puedes elegir más de uno)</span></div>
     <div class="centros-selector" id="trabajo-selector">
-      ${lista.map(t => `<div class="cultivo-chip ${trabajoSeleccionado===t?'sel':''}" onclick="seleccionarTrabajo('${t}')">${t}</div>`).join('')}
+      ${lista.map(t => `<div class="cultivo-chip ${trabajosSel.includes(t)?'sel':''}" onclick="seleccionarTrabajo('${t}')">${t}</div>`).join('')}
     </div>
     <div id="trabajo-otro-wrap"></div>
     <div id="apero-selector-wrap"></div>`;
 
-  if (trabajoSeleccionado === OTRO) renderTrabajoOtro();
-  if (trabajoSeleccionado) renderAperoSelector();
+  if (trabajosSel.includes(OTRO)) renderTrabajoOtro();
+  if (trabajosSel.length) renderAperoSelector();
 }
 
 window.seleccionarTrabajo = function(t) {
-  trabajoSeleccionado = t;
-  aperoSeleccionado = null; aperosSel = []; aperoObsTexto = '';
+  const i = trabajosSel.indexOf(t);
+  if (i >= 0) { trabajosSel.splice(i, 1); if (t === OTRO) trabajoObsTexto = ''; }
+  else trabajosSel.push(t);
+  trabajoSeleccionado = trabajosSel[0] || null;
+  // se mantienen solo los aperos que siguen siendo válidos para las labores elegidas
+  const validos = new Set(aperosParaLabores().map(a => a.nombre));
+  aperosSel = aperosSel.filter(a => a === OTRO || a === 'LIBRE' || validos.has(a));
+  if (!aperosSel.includes(OTRO) && !aperosSel.includes('LIBRE')) aperoObsTexto = '';
+  aperoSeleccionado = aperosSel[0] || null;
   renderTrabajoSelector();
   validarPaso1();
 }
 
+// labores que piden apero (se excluyen "Otro" y "Riego", que tienen su propio detalle)
+function laboresConApero() { return trabajosSel.filter(t => t !== OTRO && t !== 'Riego'); }
+function aperosParaLabores() {
+  const lab = laboresConApero();
+  const eq = (document.getElementById('equipo') || {}).value;
+  return aperosConfig
+    .filter(a => !a.trabajos || a.trabajos.length === 0 || lab.some(t => a.trabajos.includes(t)))
+    .filter(a => !a.equipos || a.equipos.length === 0 || a.equipos.includes(eq));
+}
 function renderTrabajoOtro() {
   const wrap = document.getElementById('trabajo-otro-wrap');
   if (!wrap) return;
-  wrap.innerHTML = `<div class="field" style="margin-top:8px"><input type="text" id="trabajo-otro-input" placeholder="Especificar trabajo realizado..." value="${aperoObsTexto}" oninput="aperoObsTexto=this.value;validarPaso1()"></div>`;
+  wrap.innerHTML = `<div class="field" style="margin-top:8px"><input type="text" id="trabajo-otro-input" placeholder="Especificar trabajo realizado..." value="${trabajoObsTexto}" oninput="trabajoObsTexto=this.value;validarPaso1()"></div>`;
 }
 
 // ─── APERO/IMPLEMENTO (depende de trabajo + tractor) ────
@@ -3299,8 +3318,9 @@ function renderAperoSelector() {
 }
 
 function renderAperoSinFiltro(wrap) {
-  if (trabajoSeleccionado === OTRO) { wrap.innerHTML = ''; return; }
-  if (trabajoSeleccionado === 'Riego') {
+  const labAp = laboresConApero();
+  if (!labAp.length && !trabajosSel.includes('Riego')) { wrap.innerHTML = ''; return; }
+  if (!labAp.length && trabajosSel.includes('Riego')) {
     wrap.innerHTML = `
       <div style="margin-top:10px">
         <div class="cultivos-label">Detalle del riego (texto libre)</div>
@@ -3310,10 +3330,7 @@ function renderAperoSinFiltro(wrap) {
   }
 
   const equipoActual = document.getElementById('equipo').value;
-  const aperos = aperosConfig
-    .filter(a => !a.trabajos || a.trabajos.length === 0 || a.trabajos.includes(trabajoSeleccionado))
-    .filter(a => !a.equipos || a.equipos.length === 0 || a.equipos.includes(equipoActual))
-    .map(a => a.nombre);
+  const aperos = aperosParaLabores().map(a => a.nombre);
   aperos.push(OTRO);
 
   wrap.innerHTML = `
@@ -3450,15 +3467,15 @@ window.validarPaso1 = function() {
   const esMantencion = centrosSeleccionados.includes('Mantención');
 
   if (!esKm && !esOtroEquipo && !esMantencion && !esCentroOtro && req.trabajo) {
-    if (!trabajoSeleccionado) {
+    if (!trabajosSel.length) {
       faltantes.push('Selecciona el tipo de trabajo');
-    } else if (trabajoSeleccionado === OTRO && !aperoObsTexto.trim()) {
+    } else if (trabajosSel.includes(OTRO) && !trabajoObsTexto.trim()) {
       faltantes.push('Especifica el trabajo realizado');
     }
 
     const esAvellanos = centrosSeleccionados.includes('Avellanos');
-    if (trabajoSeleccionado && req.apero && trabajoSeleccionado !== OTRO && trabajoSeleccionado !== 'Riego') {
-      const cfg = esAvellanos ? APEROS_AVELLANOS[trabajoSeleccionado] : APEROS_GENERAL_DETALLE[trabajoSeleccionado];
+    if (laboresConApero().length && req.apero) {
+      const cfg = laboresConApero().some(t => esAvellanos ? APEROS_AVELLANOS[t] : APEROS_GENERAL_DETALLE[t]);
       if (cfg) {
         if (!aperoSeleccionado) {
           faltantes.push('Selecciona el apero utilizado');
@@ -3544,11 +3561,11 @@ window.onEquipoChange = async function() {
 
   const preset = !isAdmin ? presetDe(currentUser) : null;
   if (preset) {
-    trabajoSeleccionado = preset.trabajo || null;
+    trabajoSeleccionado = preset.trabajo || null; trabajosSel = preset.trabajo ? [preset.trabajo] : [];
     aperoSeleccionado = preset.apero || null; aperosSel = preset.apero ? [preset.apero] : [];
     aperoObsTexto = preset.aperoObsTexto || '';
   } else if (tipoEquipo(eq) === 'km' || eq === 'Otro (especificar)') {
-    trabajoSeleccionado = null; aperoSeleccionado = null; aperosSel = []; aperoObsTexto = '';
+    trabajoSeleccionado = null; trabajosSel = []; trabajoObsTexto = ''; aperoSeleccionado = null; aperosSel = []; aperoObsTexto = '';
   } else {
     aperoSeleccionado = null; aperosSel = []; aperoObsTexto = '';
   }
@@ -3556,7 +3573,7 @@ window.onEquipoChange = async function() {
   const cultivoAuto = cultivoAutomaticoDe(eq);
   if (cultivoAuto) {
     centrosSeleccionados = [cultivoAuto];
-    trabajoSeleccionado = null; aperoSeleccionado = null; aperosSel = []; aperoObsTexto = ''; centroObsTexto = '';
+    trabajoSeleccionado = null; trabajosSel = []; trabajoObsTexto = ''; aperoSeleccionado = null; aperosSel = []; aperoObsTexto = ''; centroObsTexto = '';
   } else if (!preset) {
     const cultivoDefault = cultivoDefaultDe(eq);
     if (cultivoDefault) {
@@ -4084,6 +4101,7 @@ async function registrarInterno() {
   })) : [];
 
   const btn = document.getElementById('btn-registrar');
+  const trabajosGuardar = trabajosSel.length ? [...trabajosSel] : (trabajoSeleccionado ? [trabajoSeleccionado] : []);
   const aperosGuardar = aperosSel.length ? [...aperosSel] : (aperoSeleccionado ? [aperoSeleccionado] : []);
   btn.disabled = true; btn.textContent = 'Apagando bomba y guardando...';
   try {
@@ -4096,8 +4114,9 @@ async function registrarInterno() {
       centro: centrosSeleccionados[0] || null,
       centro_detalle: centrosSeleccionados.includes('Otros (especificar)') ? centroObsTexto : null,
       distribucion,
-      trabajo: trabajoSeleccionado,
-      trabajo_detalle: (trabajoSeleccionado === OTRO) ? aperoObsTexto : null,
+      trabajo: trabajosGuardar.length ? trabajosGuardar.join(' + ') : trabajoSeleccionado,
+      trabajos: trabajosGuardar,
+      trabajo_detalle: trabajosGuardar.includes(OTRO) ? (trabajoObsTexto || aperoObsTexto) : null,
       apero: aperosGuardar.length === 1 ? aperosGuardar[0] : null,   // solo con 1 apero se asigna eficiencia al apero
       aperos: aperosGuardar,
       apero_detalle: (aperosGuardar.includes(OTRO) || aperosGuardar.includes('LIBRE')) ? aperoObsTexto : null,
@@ -4128,7 +4147,7 @@ async function registrarInterno() {
     const opOtroWrap = document.getElementById('operador-otro-wrap');
     if (opOtroWrap) opOtroWrap.innerHTML = '';
     centrosSeleccionados=[];
-    trabajoSeleccionado = null; aperoSeleccionado = null; aperosSel = []; aperoObsTexto = ''; centroObsTexto = '';
+    trabajoSeleccionado = null; trabajosSel = []; trabajoObsTexto = ''; aperoSeleccionado = null; aperosSel = []; aperoObsTexto = ''; centroObsTexto = '';
     razonSocialSeleccionada = 'maitenes';
     renderRazonSocialSelector();
     const variosWrap = document.getElementById('equipo-varios-wrap');
@@ -4582,7 +4601,7 @@ window.renderTabla = function() {
         }
 
         const cultivos=(r.centros||[r.centro]).join(', ') + (r.centro_detalle ? ` (${r.centro_detalle})` : '');
-        const trabajoStr = r.trabajo === 'Otro (especificar)' ? (r.trabajo_detalle||'Otro') : (r.trabajo||'—');
+        const trabajoStr = trabajoTxt(r) || '—';
         const aperoStr = aperosTxt(r);
 
         let trabajadoHtml = '<span style="color:#9CA3AF">—</span>';
@@ -4710,7 +4729,7 @@ window.exportarExcel = function() {
   if(!data.length){toast('No hay registros en ese rango de fechas',false);return;}
   const fd=document.getElementById('filtro-desde')?.value||'', fh=document.getElementById('filtro-hasta')?.value||'';
   const rsLabel = { maitenes: 'Los Maitenes', jcar: 'JCAR', ambos: 'Ambos' };
-  const rows=data.map(r=>({'Fecha':r.fecha,'Hora':r.hora,'Equipo':r.equipo_detalle?`${r.equipo}: ${r.equipo_detalle}`:r.equipo,'Operador':r.operador,'Razón social':rsLabel[r.razon_social]||'Los Maitenes','Cultivos':(r.centros||[r.centro]).join(' / ')+(r.centro_detalle?` (${r.centro_detalle})`:''),'Trabajo':r.trabajo==='Otro (especificar)'?(r.trabajo_detalle||'Otro'):(r.trabajo||''),'Apero':aperosTxt(r),'Litros':r.litros,'Tipo Medidor':r.medidor_tipo==='km'?'Kilómetros':'Horas','Medidor Actual':r.medidor_valor,'Trabajado':r.diff_medidor||'','Eficiencia':r.eficiencia?(r.medidor_tipo==='km'?r.eficiencia.toFixed(2)+' km/L':r.eficiencia.toFixed(2)+' L/hr'):'','Totalizador':r.totalizador||'','Alerta':r.alerta_totalizador?'SÍ':'','Dif.Totalizador':r.dif_totalizador||'','Observación':r.obs||''}));
+  const rows=data.map(r=>({'Fecha':r.fecha,'Hora':r.hora,'Equipo':r.equipo_detalle?`${r.equipo}: ${r.equipo_detalle}`:r.equipo,'Operador':r.operador,'Razón social':rsLabel[r.razon_social]||'Los Maitenes','Cultivos':(r.centros||[r.centro]).join(' / ')+(r.centro_detalle?` (${r.centro_detalle})`:''),'Trabajo':trabajoTxt(r),'Apero':aperosTxt(r),'Litros':r.litros,'Tipo Medidor':r.medidor_tipo==='km'?'Kilómetros':'Horas','Medidor Actual':r.medidor_valor,'Trabajado':r.diff_medidor||'','Eficiencia':r.eficiencia?(r.medidor_tipo==='km'?r.eficiencia.toFixed(2)+' km/L':r.eficiencia.toFixed(2)+' L/hr'):'','Totalizador':r.totalizador||'','Alerta':r.alerta_totalizador?'SÍ':'','Dif.Totalizador':r.dif_totalizador||'','Observación':r.obs||''}));
   const ws=XLSX.utils.json_to_sheet(rows);
   const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,'Combustible');
   const sufijo=(fd||fh)?`${fd||'inicio'}_a_${fh||'hoy'}`:new Date().toISOString().slice(0,10);
