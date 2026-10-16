@@ -6514,9 +6514,9 @@ window.renderHistorialLabores = function() {
     return campoHistorialOrden === 'asc' ? a.fecha.localeCompare(b.fecha) : b.fecha.localeCompare(a.fecha);
   });
   const tipoLabel = {}; TIPOS_LABOR_CAMPO.forEach(t => tipoLabel[t.id] = t.label);
-  cont.innerHTML = `<div class="table-wrap"><table>
+  const tabla = filas => `<div class="table-wrap"><table>
     <thead><tr><th>Fecha</th><th>Tipo</th><th>Detalle</th><th>Obs.</th><th>Registró</th>${isAdmin?'<th></th>':''}</tr></thead>
-    <tbody>${data.map(l => `<tr>
+    <tbody>${filas.map(l => `<tr>
       <td class="td-mono">${l.fecha || '—'}</td>
       <td style="font-size:13px;font-weight:600">${l.tipo === 'personalizado' ? '🧩 '+l.nombreTipo : (tipoLabel[l.tipo] || l.tipo)}</td>
       <td style="font-size:12px">${detalleLaborCampo(l)}</td>
@@ -6525,6 +6525,16 @@ window.renderHistorialLabores = function() {
       ${isAdmin?`<td><button class="btn btn-danger" onclick="eliminarLaborCampo('${l.id}')">✕</button></td>`:''}
     </tr>`).join('')}</tbody>
   </table></div>`;
+  // Con 2 o más potreros elegidos, las labores se muestran por separado (la selección conjunta es solo para ingresar más rápido)
+  if (camposLaborPotrerosSel.length > 1) {
+    cont.innerHTML = camposLaborPotrerosSel.map(nombre => {
+      const filas = data.filter(l => l.potrero === nombre);
+      return `<div style="margin:14px 0 6px;font-weight:700;font-size:14px;display:flex;align-items:center;gap:8px"><span>📍 ${escA(nombre)}</span><span style="font-weight:400;font-size:12px;color:#6B7280">${filas.length} labor${filas.length === 1 ? '' : 'es'}</span></div>`
+        + (filas.length ? tabla(filas) : '<div class="empty" style="padding:8px;font-size:13px">Sin labores registradas.</div>');
+    }).join('');
+    return;
+  }
+  cont.innerHTML = tabla(data);
 }
 
 window.eliminarLaborCampo = async function(id) {
