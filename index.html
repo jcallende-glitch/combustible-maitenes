@@ -6158,13 +6158,18 @@ function renderCamposLaborTipo() {
   } else if (tipo === 'fertilizacion') {
     campoAplProductosSel = [];
     cont.innerHTML = `
-      <div class="cultivos-label">Productos aplicados</div>
+      <div class="cultivos-label">¿Qué fertilizante se aplicó? (producto y dosis)</div>
       <div id="campo-apl-productos-lista"></div>
-      <div class="grid-2">
-        <div class="field"><label>Producto</label><input type="text" id="campo-apl-producto" placeholder="Ej: Urea, Nitrato de potasio..."></div>
-        <div class="field"><label>Dosis</label><input type="text" id="campo-apl-dosis" placeholder="Ej: 150 kg/ha..."></div>
-      </div>
-      <button type="button" class="btn btn-secondary" style="margin-bottom:14px" onclick="agregarCampoAplProducto()">+ Agregar producto a la lista</button>`;
+      <div class="field"><label>Producto aplicado</label>
+        <div class="select-wrapper"><select id="campo-apl-producto" onchange="fertSelProd(this.value)">
+          <option value="">Elige un fertilizante</option>${fertilizantesLista().map(f => `<option value="${escA(f)}">${escA(f)}</option>`).join('')}<option value="__otro__">Otro (escribir)…</option></select></div>
+        <div id="campo-fert-otro-wrap" style="display:none;margin-top:8px"><input type="text" id="campo-fert-otro" placeholder="Nombre del fertilizante" oninput="fertPintaLey()"></div></div>
+      <div class="field" id="campo-fert-ley-wrap" style="display:none"><label>Ley del fertilizante (%) — N, P₂O₅, K₂O y microelementos</label><div id="campo-fert-ley" style="display:flex;flex-wrap:wrap;gap:6px"></div></div>
+      <div class="field"><label>Dosis</label>
+        <div style="display:flex;gap:8px"><input type="number" id="campo-apl-dosis" min="0" step="any" inputmode="decimal" placeholder="Cantidad" style="flex:1">
+        <div class="select-wrapper" style="width:120px"><select id="campo-apl-dosis-un"><option>kg/ha</option><option>L/ha</option><option>kg total</option><option>L total</option></select></div></div></div>
+      <button type="button" class="btn btn-secondary" style="margin-bottom:10px" onclick="agregarCampoAplProducto()">+ Agregar este producto a la lista</button>
+      <div class="field"><label>Momento o etapa (opcional)</label><input type="text" id="campo-fert-momento" placeholder="Ej: preabonadura, cobertera, a la siembra..."></div>`;
     renderCampoAplProductosLista();
   } else if (tipo === 'fumigacion') {
     campoAplTiposProductoSel = [];
@@ -6316,14 +6321,38 @@ function renderCampoAplProductosLista() {
     </div>`).join('') : '';
 }
 
+// Dosis del formulario: si es solo un número y hay selector de unidad (fertilización), se une ("150 kg/ha")
+window.fertSelProd = function(v) {
+  document.getElementById('campo-fert-otro-wrap').style.display = v === '__otro__' ? 'block' : 'none';
+  fertPintaLey();
+}
+window.fertPintaLey = function() {
+  const w = document.getElementById('campo-fert-ley-wrap'); if (!w) return;
+  const nombre = leerProductoCampoApl();
+  w.style.display = (document.getElementById('campo-apl-producto').value) ? 'block' : 'none';
+  document.getElementById('campo-fert-ley').innerHTML = leyInputsHtml('fley_', nombre ? leyDeFert(nombre) : {}, '');
+}
+function leerLeyForm() { return leerLeyInputs('fley_'); }
+function leerProductoCampoApl() {
+  const v = (document.getElementById('campo-apl-producto').value || '').trim();
+  return v === '__otro__' ? ((document.getElementById('campo-fert-otro') || {}).value || '').trim() : v;
+}
+function leerDosisCampoApl() {
+  const v = (document.getElementById('campo-apl-dosis').value || '').trim();
+  const un = document.getElementById('campo-apl-dosis-un');
+  return (v && un && /^[\d.,]+$/.test(v)) ? `${v} ${un.value}` : v;
+}
 window.agregarCampoAplProducto = function() {
   const inpProd = document.getElementById('campo-apl-producto');
   const inpDosis = document.getElementById('campo-apl-dosis');
-  const producto = inpProd.value.trim();
-  const dosis = inpDosis.value.trim();
-  if (!producto || !dosis) { toast('Completa producto y dosis antes de agregar', false); return; }
-  campoAplProductosSel.push({ producto, dosis });
+  const producto = leerProductoCampoApl();
+  const dosis = leerDosisCampoApl();
+  if (!producto || !dosis) { toast('Indica qué producto se aplicó y su dosis antes de agregar', false); return; }
+  const esFert = !!document.getElementById('campo-fert-ley-wrap');
+  campoAplProductosSel.push(esFert ? { producto, dosis, ley: leerLeyForm() } : { producto, dosis });
+  if (esFert) { document.getElementById('campo-fert-ley-wrap').style.display = 'none'; }
   inpProd.value = ''; inpDosis.value = '';
+  { const ow = document.getElementById('campo-fert-otro-wrap'); if (ow) { ow.style.display = 'none'; document.getElementById('campo-fert-otro').value = ''; } }
   renderCampoAplProductosLista();
   renderAvisoAbejasCampo();
 }
@@ -6363,12 +6392,25 @@ window.registrarLaborCampo = async function() {
       payloadBase.fertDosis = document.getElementById('campo-siembra-fert-dosis').value.trim() || null;
     }
   } else if (tipo === 'fertilizacion') {
-    const prodPendiente = document.getElementById('campo-apl-producto').value.trim();
-    const dosisPendiente = document.getElementById('campo-apl-dosis').value.trim();
+    const prodPendiente = leerProductoCampoApl();
+    const dosisPendiente = leerDosisCampoApl();
+    if (prodPendiente && !dosisPendiente) { toast(`Falta la dosis de "${prodPendiente}"`, false); return; }
     const productos = [...campoAplProductosSel];
-    if (prodPendiente && dosisPendiente) productos.push({ producto: prodPendiente, dosis: dosisPendiente });
-    if (!productos.length) { toast('Agrega al menos un producto con su dosis', false); return; }
+    if (prodPendiente && dosisPendiente) productos.push({ producto: prodPendiente, dosis: dosisPendiente, ley: leerLeyForm() });
+    if (!productos.length) { toast('Indica qué fertilizante se aplicó y la dosis', false); return; }
     payloadBase.productos = productos;
+    // Recuerda la ley en la lista (admin) para no volver a pedirla
+    if (isAdmin) {
+      const mapa = Object.assign({}, config.fertilizantesLey);
+      productos.forEach(p => { if (p.ley) mapa[p.producto] = p.ley; });
+      config.fertilizantesLey = mapa;
+      saveConfig().catch(() => {});
+    }
+    const mom = (document.getElementById('campo-fert-momento') || {}).value;
+    if (mom && mom.trim()) payloadBase.momento = mom.trim();
+    // Fertilizantes escritos con "Otro" se suman a la lista (solo administrador)
+    const nuevos = productos.map(p => p.producto).filter(n => !fertilizantesLista().some(f => f.toLowerCase() === n.toLowerCase()));
+    if (isAdmin && nuevos.length) { config.fertilizantesCampo = [...fertilizantesLista(), ...nuevos]; saveConfig().catch(() => {}); }
   } else if (tipo === 'fumigacion') {
     const mojamientoRaw = document.getElementById('campo-fum-mojamiento').value;
     if (mojamientoRaw === '') { toast('Ingresa el mojamiento (L/ha)', false); return; }
@@ -6475,6 +6517,62 @@ function populateFiltroAnioCampo() {
     anios.map(a => `<option value="${a}" ${a===cur?'selected':''}>${a}</option>`).join('');
 }
 
+function haDeLabor(l) {
+  if (l.aplicacion_completa === false && l.hectareas_aplicadas != null) return parseFloat(l.hectareas_aplicadas) || null;
+  const ls = l.lote ? lotesDe(l.potrero, l.anio || (l.fecha || '').slice(0, 4)) : null;
+  const lo = ls && ls.find(x => x.nombre === l.lote);
+  if (lo && lo.hectareas) return lo.hectareas;
+  const p = potrerosConfig.find(x => x.nombre === l.potrero);
+  return p && p.hectareas ? p.hectareas : null;
+}
+function kgHaDeProducto(pr, ha) {
+  const m = String(pr.dosis || '').trim().match(/^([\d.,]+)\s*(kg\/ha|kg total|kg|l\/ha|l total|l)\b/i);
+  if (!m) return null;
+  const v = parseFloat(m[1].replace(',', '.')); if (!isFinite(v)) return null;
+  const u = m[2].toLowerCase();
+  if (u === 'kg/ha') return v;
+  if (u === 'kg total' || u === 'kg') return ha ? v / ha : null;
+  return null; // litros: no se convierten a kg
+}
+function calcFertLabor(l) {
+  const ha = haDeLabor(l); let kgHa = 0, ok = 0, sin = 0; const un = {};
+  (l.productos || []).forEach(pr => {
+    const k = kgHaDeProducto(pr, ha);
+    if (k == null) { sin++; return; }
+    ok++; kgHa += k;
+    const ley = leyDeProducto(pr);
+    Object.keys(ley).forEach(e => { un[e] = (un[e] || 0) + k * ley[e] / 100; });
+  });
+  return { kgHa, un, ok, sin, ha };
+}
+const fmtN = v => (Math.round(v * 10) / 10).toLocaleString('es-CL');
+function resumenFertLabor(l) {
+  const c = calcFertLabor(l);
+  if (!c.ok && !c.sin) return '';
+  const els = Object.keys(c.un).filter(e => c.un[e] > 0.0001).map(e => `${nomElem(e)} ${fmtN(c.un[e])}`).join(' · ');
+  return `<div style="margin-top:4px;color:#2D7D46;font-weight:600">📦 ${c.ok ? fmtN(c.kgHa) + ' kg/ha' : 'sin kg/ha'}${els ? ' · unidades/ha: ' + els : (c.ok ? ' · sin ley cargada' : '')}</div>`
+    + (c.sin ? `<div style="color:#92400E;font-size:11px">${c.sin} producto(s) sin cálculo (dosis en litros o falta ha)</div>` : '');
+}
+function renderFertTotal(data) {
+  const cont = document.getElementById('campo-fert-total'); if (!cont) return;
+  const fert = data.filter(l => l.tipo === 'fertilizacion' && Array.isArray(l.productos) && l.productos.length);
+  if (!fert.length) { cont.innerHTML = ''; return; }
+  const unidades = camposLaborPotrerosSel.length ? [...camposLaborPotrerosSel].sort(cmpEs) : [];
+  const grupos = unidades.map(u => ({ label: infoUnidad(u).label, ls: fert.filter(l => laborEsDeUnidad(l, u)) })).filter(g => g.ls.length);
+  if (!grupos.length) { cont.innerHTML = ''; return; }
+  const filas = grupos.map(g => {
+    const tot = {}; let kg = 0, sin = 0;
+    g.ls.forEach(l => { const c = calcFertLabor(l); kg += c.kgHa; sin += c.sin; Object.keys(c.un).forEach(e => { tot[e] = (tot[e] || 0) + c.un[e]; }); });
+    return { label: g.label, n: g.ls.length, kg, tot, sin };
+  });
+  const els = elementosFert().filter(e => ['N', 'P', 'K'].includes(e) || filas.some(f => (f.tot[e] || 0) > 0.0001));
+  const fAnio = document.getElementById('campo-filtro-anio')?.value || '';
+  cont.innerHTML = `<div class="panel"><div class="panel-title">🧪 Fertilización total${fAnio ? ' ' + fAnio : ' (todos los años)'}</div>
+    <div class="table-wrap"><table><thead><tr><th>Potrero / lote</th><th>Aplic.</th><th>kg/ha</th>${els.map(e => `<th>${nomElem(e)}</th>`).join('')}</tr></thead>
+    <tbody>${filas.map(f => `<tr><td style="font-weight:600">${escA(f.label)}</td><td class="td-mono">${f.n}</td><td class="td-mono">${fmtN(f.kg)}</td>${els.map(e => `<td class="td-mono">${fmtN(f.tot[e] || 0)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
+    <div class="hint" style="margin-top:6px">Unidades por hectárea acumuladas (N, P₂O₅, K₂O y microelementos = kg/ha × ley %). Las dosis en litros no se incluyen.${filas.some(f => f.sin) ? ' ⚠️ Hay productos sin cálculo.' : ''}</div></div>`;
+}
+
 function detalleLaborCampo(l) {
   const p = potrerosConfig.find(x => x.nombre === l.potrero);
   let base = '—';
@@ -6482,7 +6580,7 @@ function detalleLaborCampo(l) {
     const fertStr = l.fertilizacion ? ` · 🧪 Fertilización: ${l.fertMezcla||'—'}${l.fertDosis?' ('+l.fertDosis+')':''}` : (l.fertilizacion === false ? ' · Sin fertilización' : '');
     base = `${l.cultivo}${l.variedad?' · '+l.variedad:''}${l.dosis?' · Dosis: '+l.dosis:''}${l.hectareas?' · '+l.hectareas+' ha':''}${fertStr}${(!l.fecha||l.pendiente)?' · <span style="color:#92400E">pendiente de siembra</span>':''}`;
   } else if (l.tipo === 'fertilizacion') {
-    base = Array.isArray(l.productos) && l.productos.length ? l.productos.map(pr => `${pr.producto} (${pr.dosis})`).join(', ') : '—';
+    base = (Array.isArray(l.productos) && l.productos.length ? l.productos.map(pr => `${pr.producto} (${pr.dosis})`).join(', ') : '—') + (l.momento ? ` · ${escA(l.momento)}` : '') + resumenFertLabor(l);
   } else if (l.tipo === 'fumigacion') {
     const prefTipo = l.tiposProducto && l.tiposProducto.length ? '['+l.tiposProducto.join(', ')+'] ' : '';
     const prodStr = Array.isArray(l.productos) && l.productos.length ? l.productos.map(pr => `${pr.producto} (${pr.dosis})`).join(', ') : '—';
@@ -6531,6 +6629,8 @@ window.renderHistorialLabores = function() {
   if (fAnio) data = data.filter(l => l.anio === fAnio);
   const cont = document.getElementById('campo-historial-container');
   if (!cont) return;
+  renderFertTotal(data);
+  renderSueloLista();
   if (!data.length) { cont.innerHTML = '<div class="empty"><div class="empty-icon">📋</div>Sin labores registradas.</div>'; return; }
   // Orden por la fecha real de la labor (no por cuándo se ingresó al sistema).
   // Los registros sin fecha (ej. siembra pendiente) quedan al final.
@@ -6616,6 +6716,7 @@ function pintarEdicionLabor() {
     if (!Array.isArray(d.productos)) d.productos = [];
     esp += `<div class="cultivos-label">Productos</div>` + d.productos.map((p, i) => `<div style="display:flex;gap:6px;margin-bottom:6px"><input type="text" placeholder="Producto" style="flex:2" value="${escA(p.producto || '')}" oninput="elProd(${i},'producto',this.value)"><input type="text" placeholder="Dosis" style="flex:1" value="${escA(p.dosis || '')}" oninput="elProd(${i},'dosis',this.value)"><button class="btn btn-danger" onclick="elProdDel(${i})">✕</button></div>`).join('')
       + `<button class="btn btn-secondary" style="margin-bottom:8px" onclick="elProdAdd()">+ Producto</button>`;
+    if (t === 'fertilizacion') esp += elInput('Momento o etapa', 'momento');
     if (t === 'fumigacion' || t === 'aplicacion') esp += elInput('Mojamiento (L/ha)', 'mojamiento', 'number', 'min="0"') + `<div class="cultivos-label">Categorías de producto</div>` + chips(t === 'fumigacion' ? CATEGORIAS_FUM_CAMPO : tiposProductoCampoConfig, 'tiposProducto');
     if (t === 'aplicacion') esp += elInput('Objetivo', 'objetivo') + selEq;
   }
@@ -8043,6 +8144,7 @@ async function renderConfigPotreros() {
   renderListaPotreros();
   renderListaCultivosCampo();
   renderListaTiposProductoCampo();
+  renderListaFertilizantes();
   renderListaTiposLaborFijos();
   renderListaTiposLaborCampo();
   cargarListaEncargadosCampo();
@@ -8184,6 +8286,195 @@ function renderListaTiposProductoCampo() {
   cont.innerHTML = tiposProductoCampoConfig.length ? tiposProductoCampoConfig.map((t, i) =>
     `<div class="config-item"><span>${t}</span><button class="btn btn-danger" onclick="eliminarTipoProductoCampo(${i})">✕</button></div>`
   ).join('') : '<div style="color:#9CA3AF;font-size:13px;padding:8px">Sin tipos de producto agregados.</div>';
+}
+
+// ─── LISTA DE FERTILIZANTES (para Fertilización en el Cuaderno de Campo) ───
+const FERTILIZANTES_BASE = ['Urea', 'Nitrato de amonio', 'Salitre sódico', 'Nitrato de potasio', 'Nitrato de calcio', 'Sulfato de amonio', 'Superfosfato triple', 'Fosfato diamónico (DAP)', 'Cloruro de potasio', 'Sulfato de potasio', 'Sulfato de magnesio', 'Boro', 'Mezcla NPK'];
+function fertilizantesLista() { return (Array.isArray(config.fertilizantesCampo) ? config.fertilizantesCampo : FERTILIZANTES_BASE).slice().sort(cmpEs); }
+const ELEMENTOS_FERT_BASE = ['N', 'P', 'K', 'S', 'B', 'Zn'];
+function elementosFert() {
+  const a = Array.isArray(config.elementosFert) && config.elementosFert.length ? config.elementosFert : ELEMENTOS_FERT_BASE;
+  return a.slice();
+}
+function leyDeFert(nombre) {
+  const m = (config.fertilizantesLey && config.fertilizantesLey[nombre]) || {};
+  const o = {}; elementosFert().forEach(e => { o[e] = parseFloat(m[e]) || 0; }); return o;
+}
+function leyDeProducto(pr) { // la ley guardada en la labor manda; si no hay, la de la lista
+  const base = leyDeFert(pr.producto);
+  if (pr.ley && typeof pr.ley === 'object') { const o = {}; Object.keys(pr.ley).forEach(k => { o[k] = parseFloat(pr.ley[k]) || 0; }); return Object.assign({}, base, o); }
+  return base;
+}
+const NOM_ELEM = { N: 'N', P: 'P₂O₅', K: 'K₂O' };
+function nomElem(e) { return NOM_ELEM[e] || e; }
+function leyInputsHtml(prefijo, ley, onchg) {
+  return elementosFert().map(e => `<label style="display:inline-flex;flex-direction:column;font-size:11px;color:#6B7280;width:62px">${nomElem(e)} %<input type="number" min="0" max="100" step="any" inputmode="decimal" id="${prefijo}${e}" value="${ley[e] ? ley[e] : 0}" style="padding:6px 6px;font-size:13px" ${onchg ? `onchange="${onchg}"` : ''}></label>`).join('');
+}
+function leerLeyInputs(prefijo) {
+  const o = {}; elementosFert().forEach(e => { const el = document.getElementById(prefijo + e); o[e] = el ? (parseFloat(el.value) || 0) : 0; }); return o;
+}
+function renderListaFertilizantes() {
+  const cont = document.getElementById('lista-fertilizantes-campo');
+  if (!cont) return;
+  const l = fertilizantesLista();
+  cont.innerHTML = l.length ? l.map((f, i) => `<div class="config-item" style="flex-direction:column;align-items:stretch;gap:6px"><div style="display:flex;justify-content:space-between;align-items:center"><strong>${escA(f)}</strong><button class="btn btn-danger" onclick='eliminarFertilizanteCampo(${JSON.stringify(f)})'>✕</button></div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px">${leyInputsHtml('cfgley' + i + '_', leyDeFert(f), `guardarLeyFert(${i})`)}</div></div>`).join('')
+    : '<div style="color:#9CA3AF;font-size:13px;padding:8px">Sin fertilizantes en la lista.</div>';
+  const ce = document.getElementById('lista-elementos-fert');
+  if (ce) ce.innerHTML = elementosFert().map(e => `<span class="cultivo-chip sel" style="cursor:default">${nomElem(e)}${['N','P','K'].includes(e) ? '' : ` <span style="cursor:pointer;margin-left:4px" onclick='quitarElementoFert(${JSON.stringify(e)})'>✕</span>`}</span>`).join(' ');
+}
+window.guardarLeyFert = async function(i) {
+  const nombre = fertilizantesLista()[i]; if (!nombre) return;
+  config.fertilizantesLey = Object.assign({}, config.fertilizantesLey, { [nombre]: leerLeyInputs('cfgley' + i + '_') });
+  try { await saveConfig(); toast('✓ Ley guardada', true); } catch (e) { toast('Error: ' + e.message, false); }
+}
+window.agregarElementoFert = async function() {
+  const inp = document.getElementById('nuevo-elemento-fert'); const v = inp.value.trim(); if (!v) return;
+  if (elementosFert().some(e => e.toLowerCase() === v.toLowerCase())) { toast('Ese elemento ya existe', false); return; }
+  config.elementosFert = [...elementosFert(), v];
+  try { await saveConfig(); inp.value = ''; renderListaFertilizantes(); toast('✓ Elemento agregado (queda en 0 en todos los fertilizantes)', true); } catch (e) { toast('Error: ' + e.message, false); }
+}
+window.quitarElementoFert = async function(e) {
+  if (!confirm(`¿Quitar "${e}" de los elementos? (las labores ya registradas conservan su ley)`)) return;
+  config.elementosFert = elementosFert().filter(x => x !== e);
+  try { await saveConfig(); renderListaFertilizantes(); } catch (er) { toast('Error: ' + er.message, false); }
+}
+window.agregarFertilizanteCampo = async function() {
+  const inp = document.getElementById('nuevo-fertilizante-campo');
+  const val = inp.value.trim();
+  if (!val) return;
+  const l = fertilizantesLista();
+  if (l.some(f => f.toLowerCase() === val.toLowerCase())) { toast('Ese fertilizante ya está en la lista', false); return; }
+  config.fertilizantesCampo = [...l, val];
+  try { await saveConfig(); inp.value = ''; renderListaFertilizantes(); toast('✓ Fertilizante agregado. Completa su ley abajo', true); }
+  catch (e) { toast('Error: ' + e.message, false); }
+}
+window.eliminarFertilizanteCampo = async function(nombre) {
+  if (!confirm(`¿Quitar "${nombre}" de la lista? (las fertilizaciones ya registradas no se borran)`)) return;
+  config.fertilizantesCampo = fertilizantesLista().filter(f => f !== nombre);
+  try { await saveConfig(); renderListaFertilizantes(); } catch (e) { toast('Error: ' + e.message, false); }
+}
+
+// ─── ANÁLISIS DE SUELO POR POTRERO (archivos en Firestore, en partes) ───
+const SUELO_PARTE = 700000; // caracteres base64 por documento
+const SUELO_MAX_PDF = 6 * 1024 * 1024;
+let sueloDocs = null; // metadatos (sin contenido)
+let sueloPend = []; // [{file, potrero, sugerido, fecha}]
+const normNom = t => String(t || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+function sugerirPotreroSuelo(nombreArchivo) {
+  const f = ' ' + normNom(nombreArchivo.replace(/\.[^.]+$/, '')) + ' ';
+  const hits = potrerosConfig.filter(p => { const n = normNom(p.nombre); return n && f.includes(' ' + n + ' '); });
+  if (!hits.length) return '';
+  const max = Math.max(...hits.map(p => normNom(p.nombre).length));
+  const top = hits.filter(p => normNom(p.nombre).length === max);
+  return top.length === 1 ? top[0].nombre : '';
+}
+async function cargarSueloDocs() {
+  try {
+    const snap = await getDocs(collection(db, 'analisis_suelo'));
+    sueloDocs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  } catch (e) { sueloDocs = sueloDocs || []; toast('No se pudieron leer los análisis: ' + e.message, false); }
+  renderSueloLista();
+}
+window.renderSueloLista = function() {
+  const cont = document.getElementById('suelo-lista'); if (!cont) return;
+  if (sueloDocs === null) { sueloDocs = []; cargarSueloDocs(); }
+  const sel = [...new Set(camposLaborPotrerosSel.map(u => infoUnidad(u).potrero))];
+  let docs = sueloDocs.filter(d => !sel.length || sel.includes(d.potrero));
+  if (!docs.length) { cont.innerHTML = `<div class="empty" style="padding:8px;font-size:13px">${sel.length ? 'Sin análisis para los potreros elegidos.' : 'Aún no hay análisis subidos.'}</div>`; return; }
+  const grupos = {};
+  docs.forEach(d => { (grupos[d.potrero] = grupos[d.potrero] || []).push(d); });
+  cont.innerHTML = Object.keys(grupos).sort(cmpEs).map(pn => `<div style="margin:10px 0 4px;font-weight:700;font-size:14px">📍 ${escA(pn)}</div>` +
+    grupos[pn].sort((a, b) => (b.fecha || '').localeCompare(a.fecha || '')).map(d => `<div class="config-item" style="gap:8px">
+      <span style="flex:1;min-width:0;font-size:13px"><strong>${d.mime === 'application/pdf' ? '📄' : '🖼️'} ${escA(d.nombre)}</strong><br><span style="font-size:11px;color:#6B7280">${d.fecha || 'sin fecha'} · ${Math.round((d.size || 0) / 1024)} KB · ${escA(d.subidoPor || '')}</span></span>
+      <button class="btn btn-secondary" style="padding:6px 9px" onclick="sueloAbrir('${d.id}')">Abrir</button>
+      <button class="btn btn-secondary" style="padding:6px 9px" title="Cambiar de potrero" onclick="sueloMover('${d.id}')">↪</button>
+      ${isAdmin ? `<button class="btn btn-danger" onclick="sueloEliminar('${d.id}')">✕</button>` : ''}</div>`).join('')).join('');
+}
+window.sueloElegir = function(inp) {
+  const hoy = new Date().toISOString().slice(0, 10);
+  [...inp.files].forEach(f => {
+    const ok = f.type === 'application/pdf' || f.type.startsWith('image/');
+    if (!ok) { toast(`"${f.name}" no es PDF ni imagen`, false); return; }
+    if (f.type === 'application/pdf' && f.size > SUELO_MAX_PDF) { toast(`"${f.name}" pesa más de 6 MB`, false); return; }
+    const sug = sugerirPotreroSuelo(f.name);
+    sueloPend.push({ file: f, potrero: sug, sugerido: !!sug, fecha: hoy });
+  });
+  inp.value = '';
+  renderSueloPend();
+}
+function renderSueloPend() {
+  const cont = document.getElementById('suelo-pend'); if (!cont) return;
+  if (!sueloPend.length) { cont.innerHTML = ''; return; }
+  const ops = [...potrerosConfig].sort((a, b) => cmpEs(a.nombre, b.nombre));
+  cont.innerHTML = sueloPend.map((p, i) => `<div class="anterior-box" style="margin-bottom:8px">
+    <div style="font-size:13px;font-weight:600;margin-bottom:6px">${p.file.type === 'application/pdf' ? '📄' : '🖼️'} ${escA(p.file.name)}</div>
+    <div style="font-size:12px;margin-bottom:4px;color:${p.potrero ? '#2D7D46' : '#C0392B'}">${p.potrero ? (p.sugerido ? '✓ Parece ser de este potrero (confírmalo)' : 'Potrero elegido') : '¿A qué potrero corresponde?'}</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap"><div class="select-wrapper" style="flex:1;min-width:150px"><select onchange="sueloPendSet(${i},'potrero',this.value)"><option value="">Elige el potrero</option>${ops.map(o => `<option value="${escA(o.nombre)}" ${o.nombre === p.potrero ? 'selected' : ''}>${escA(o.nombre)}</option>`).join('')}</select></div>
+    <input type="date" value="${p.fecha}" style="width:150px" onchange="sueloPendSet(${i},'fecha',this.value)">
+    <button class="btn btn-danger" onclick="sueloPendQuitar(${i})">✕</button></div></div>`).join('')
+    + '<button class="btn btn-primary btn-full" id="suelo-guardar" onclick="sueloGuardar()">Guardar análisis</button>';
+}
+window.sueloPendSet = function(i, k, v) { sueloPend[i][k] = v; if (k === 'potrero') { sueloPend[i].sugerido = false; renderSueloPend(); } }
+window.sueloPendQuitar = function(i) { sueloPend.splice(i, 1); renderSueloPend(); }
+function leerBase64(blob) {
+  return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1] || ''); r.onerror = () => rej(r.error); r.readAsDataURL(blob); });
+}
+async function comprimirImagen(file) {
+  try {
+    const bmp = await createImageBitmap(file);
+    const k = Math.min(1, 1800 / Math.max(bmp.width, bmp.height));
+    const c = document.createElement('canvas'); c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+    c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+    const b = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.8));
+    return b && b.size < file.size ? b : file;
+  } catch (e) { return file; }
+}
+window.sueloGuardar = async function() {
+  if (sueloPend.some(p => !p.potrero)) { toast('Falta elegir el potrero de algún archivo', false); return; }
+  const btn = document.getElementById('suelo-guardar'); if (btn) { btn.disabled = true; btn.textContent = 'Guardando...'; }
+  try {
+    for (const p of sueloPend) {
+      let blob = p.file; if (blob.type.startsWith('image/')) blob = await comprimirImagen(blob);
+      const b64 = await leerBase64(blob);
+      const partes = []; for (let i = 0; i < b64.length; i += SUELO_PARTE) partes.push(b64.slice(i, i + SUELO_PARTE));
+      const mime = blob.type || p.file.type;
+      const ref = await addDoc(collection(db, 'analisis_suelo'), { potrero: p.potrero, nombre: p.file.name, mime, size: blob.size, partes: partes.length, fecha: p.fecha || '', anio: (p.fecha || '').slice(0, 4), subidoPor: currentUser || '', ts: Date.now(), completo: false });
+      for (let i = 0; i < partes.length; i++) await setDoc(doc(db, 'analisis_suelo', ref.id, 'partes', String(i).padStart(4, '0')), { i, d: partes[i] });
+      await updateDoc(doc(db, 'analisis_suelo', ref.id), { completo: true });
+    }
+    sueloPend = []; renderSueloPend(); toast('✓ Análisis guardado', true);
+    await cargarSueloDocs();
+  } catch (e) { toast('Error al guardar: ' + e.message, false); const b2 = document.getElementById('suelo-guardar'); if (b2) { b2.disabled = false; b2.textContent = 'Guardar análisis'; } }
+}
+window.sueloAbrir = async function(id) {
+  const d = sueloDocs.find(x => x.id === id); if (!d) return;
+  const w = window.open('', '_blank');
+  try {
+    const snap = await getDocs(collection(db, 'analisis_suelo', id, 'partes'));
+    const b64 = snap.docs.map(x => x.data()).sort((a, b) => a.i - b.i).map(x => x.d).join('');
+    const bin = atob(b64); const u8 = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    const url = URL.createObjectURL(new Blob([u8], { type: d.mime }));
+    if (w) w.location.href = url; else location.href = url;
+  } catch (e) { if (w) w.close(); toast('No se pudo abrir: ' + e.message, false); }
+}
+window.sueloMover = async function(id) {
+  const d = sueloDocs.find(x => x.id === id); if (!d) return;
+  const nom = prompt('¿A qué potrero corresponde?\n' + potrerosConfig.map(p => p.nombre).sort(cmpEs).join(', '), d.potrero);
+  if (!nom) return;
+  const p = potrerosConfig.find(x => x.nombre.toLowerCase() === nom.trim().toLowerCase());
+  if (!p) { toast('Ese potrero no existe', false); return; }
+  try { await updateDoc(doc(db, 'analisis_suelo', id), { potrero: p.nombre }); d.potrero = p.nombre; renderSueloLista(); toast('✓ Movido a ' + p.nombre, true); }
+  catch (e) { toast('Error: ' + e.message, false); }
+}
+window.sueloEliminar = async function(id) {
+  const d = sueloDocs.find(x => x.id === id); if (!d || !confirm(`¿Eliminar "${d.nombre}"?`)) return;
+  try {
+    const snap = await getDocs(collection(db, 'analisis_suelo', id, 'partes'));
+    for (const x of snap.docs) await deleteDoc(x.ref);
+    await deleteDoc(doc(db, 'analisis_suelo', id));
+    sueloDocs = sueloDocs.filter(x => x.id !== id); renderSueloLista(); toast('Eliminado', true);
+  } catch (e) { toast('Error: ' + e.message, false); }
 }
 
 window.agregarTipoProductoCampo = async function() {
@@ -12147,6 +12438,15 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         <button id="btn-registrar-labor-campo" class="btn btn-verde btn-full" onclick="registrarLaborCampo()">✓ Guardar labor</button>
       </div>
 
+      <div id="campo-fert-total"></div>
+      <div class="panel" id="suelo-panel">
+        <div class="panel-title">🧫 Análisis de suelo</div>
+        <div class="hint" style="margin-bottom:10px">Sube el PDF o la foto del análisis. Si no está claro a qué potrero corresponde, te lo pregunta.</div>
+        <label class="btn btn-secondary btn-full" style="display:block;text-align:center;cursor:pointer">📎 Elegir archivos (PDF o foto)
+          <input type="file" id="suelo-file" multiple accept="application/pdf,image/*" style="display:none" onchange="sueloElegir(this)"></label>
+        <div id="suelo-pend" style="margin-top:10px"></div>
+        <div id="suelo-lista" style="margin-top:10px"></div>
+      </div>
       <div class="panel">
         <div class="panel-title">📋 Historial</div>
         <div class="filtros" style="margin-bottom:12px">
@@ -12382,6 +12682,20 @@ tbody td{padding:10px 12px;vertical-align:middle;}
           <button class="btn-add" onclick="agregarTipoProductoCampo()">+ Agregar</button>
         </div>
         <div class="config-lista" id="lista-tipos-producto-campo" style="margin-top:10px"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">🧪 Lista de fertilizantes</div>
+        <div class="hint" style="margin-bottom:10px">Fertilizantes que aparecen para elegir al registrar una Fertilización en el Cuaderno de Campo. Agrega los que uses.</div>
+        <div class="config-add">
+          <input type="text" id="nuevo-fertilizante-campo" placeholder="Ej: Urea, Salitre potásico, Fosfato monoamónico...">
+          <button class="btn-add" onclick="agregarFertilizanteCampo()">+ Agregar</button>
+        </div>
+        <div class="cultivos-label" style="margin-top:12px">Elementos de la ley (N, P₂O₅ y K₂O fijos; agrega otros microelementos)</div>
+        <div id="lista-elementos-fert" style="margin-bottom:8px"></div>
+        <div class="config-add"><input type="text" id="nuevo-elemento-fert" placeholder="Ej: Mg, Ca, Mn, Cu, Fe, Mo..."><button class="btn-add" onclick="agregarElementoFert()">+ Elemento</button></div>
+        <div class="hint" style="margin:8px 0">Ley de cada fertilizante en % (todo parte en 0 hasta que lo completes). Se guarda al salir de cada casilla.</div>
+        <div class="config-lista" id="lista-fertilizantes-campo" style="margin-top:10px"></div>
       </div>
 
       <div class="panel">
