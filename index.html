@@ -5840,7 +5840,7 @@ async function initCampo() {
   cargarSagAbejasRemoto();
   suscribirProductosInv(); // productos de Inventario, usados en el selector de producto de Fumigación
   suscribirLaboresCampo();
-  if (!camposLaborPotrerosSel.length && potrerosConfig.length) camposLaborPotrerosSel = [potrerosConfig[0].nombre];
+  camposLaborPotrerosSel = [];   // al entrar no hay ningún potrero preseleccionado
   campoTipoLaborSeleccionado = null; campoAperosSel = [];
   document.getElementById('campo-labor-campos').innerHTML = ''; { const ap = document.getElementById('campo-labor-aperos'); if (ap) ap.innerHTML = ''; }
   await cargarCultivosActualesPotreros();
