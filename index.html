@@ -1384,6 +1384,7 @@ function jdpRenderMapa(r, soloMapa) {
     const horas = r.porPotrero[p.nombre];
     L.polygon(p.poligono, { color, fillColor: color, fillOpacity: hil ? 0.08 : (horas ? 0.45 : 0.12), weight: horas ? 3 : 1 }).addTo(map)
       .bindTooltip(`${p.nombre}${horas ? ' · ' + (horas / 3600000).toFixed(1) + ' h' : ''}`, { sticky: true });
+    if (!hil) ponerIconoCultivo(map, p.poligono, jdpCultivoDePotrero(p.nombre));
   });
   jdpDibujarZonasEnMapa(map);
   let resumenHil = null;
@@ -5840,8 +5841,8 @@ async function initCampo() {
   suscribirProductosInv(); // productos de Inventario, usados en el selector de producto de Fumigación
   suscribirLaboresCampo();
   if (!camposLaborPotrerosSel.length && potrerosConfig.length) camposLaborPotrerosSel = [potrerosConfig[0].nombre];
-  campoTipoLaborSeleccionado = null;
-  document.getElementById('campo-labor-campos').innerHTML = '';
+  campoTipoLaborSeleccionado = null; campoAperosSel = [];
+  document.getElementById('campo-labor-campos').innerHTML = ''; { const ap = document.getElementById('campo-labor-aperos'); if (ap) ap.innerHTML = ''; }
   await cargarCultivosActualesPotreros();
   renderSelectorModoCampo();
   renderCamposLaborPotrerosSelector();
@@ -6084,10 +6085,32 @@ let campoSiembraFertSel = null; // true/false/null
 let campoAplTiposProductoSel = [];
 let campoAplProductosSel = [];
 
+// Aperos de la labor (opcional, 1 o más). Se ofrecen los de Configurar; si la labor tiene equipo elegido, solo los de ese equipo.
+let campoAperosSel = [];
+function renderCampoAperos() {
+  const wrap = document.getElementById('campo-labor-aperos');
+  if (!wrap) return;
+  if (!campoTipoLaborSeleccionado) { wrap.innerHTML = ''; return; }
+  const eqEl = document.getElementById('campo-suelo-equipo') || document.getElementById('campo-apl-equipo');
+  const eq = eqEl ? eqEl.value : '';
+  const lista = (aperosConfig || []).filter(a => !eq || !a.equipos || a.equipos.length === 0 || a.equipos.includes(eq)).map(a => a.nombre);
+  campoAperosSel = campoAperosSel.filter(a => lista.includes(a));
+  if (!lista.length) { wrap.innerHTML = ''; return; }
+  wrap.innerHTML = `<div class="cultivos-label" style="margin-top:10px">Apero utilizado <span style="font-weight:400;color:#6B7280">(opcional, puedes elegir más de uno)</span></div>
+    <div class="centros-selector">${lista.map(a => `<div class="cultivo-chip ${campoAperosSel.includes(a)?'sel':''}" onclick='toggleCampoApero(${JSON.stringify(a)})'>${a}</div>`).join('')}</div>`;
+}
+window.toggleCampoApero = function(a) {
+  const i = campoAperosSel.indexOf(a);
+  if (i >= 0) campoAperosSel.splice(i, 1); else campoAperosSel.push(a);
+  renderCampoAperos();
+}
+document.addEventListener('change', e => { if (e.target && (e.target.id === 'campo-suelo-equipo' || e.target.id === 'campo-apl-equipo')) renderCampoAperos(); });
+
 function renderCamposLaborTipo() {
   const cont = document.getElementById('campo-labor-campos');
   if (!cont) return;
   const tipo = campoTipoLaborSeleccionado;
+  campoAperosSel = []; renderCampoAperos();
   if (!tipo) { cont.innerHTML = ''; return; }
   if (tipo === 'siembra') {
     campoSiembraCultivoSel = null;
@@ -6294,6 +6317,7 @@ window.registrarLaborCampo = async function() {
 
   const tipo = campoTipoLaborSeleccionado;
   const payloadBase = { tipo, fecha, anio: fecha.slice(0,4), obs, operador: currentUser, ts: Date.now() };
+  if (campoAperosSel.length) payloadBase.aperos = [...campoAperosSel];
   if (tipo.startsWith('custom:')) {
     payloadBase.tipo = 'personalizado';
     payloadBase.nombreTipo = tipo.slice(7);
@@ -6405,7 +6429,7 @@ window.registrarLaborCampo = async function() {
     });
     await batch.commit();
     document.getElementById('campo-labor-obs').value = '';
-    campoTipoLaborSeleccionado = null;
+    campoTipoLaborSeleccionado = null; campoAperosSel = []; renderCampoAperos();
     // Se mantienen los potreros elegidos: es común registrar varias labores
     // seguidas para el mismo grupo de potreros (ej. fertilización y luego fumigación).
     renderTipoLaborSelector();
@@ -6458,6 +6482,7 @@ function detalleLaborCampo(l) {
       : l.detalle;
   }
 
+  if (Array.isArray(l.aperos) && l.aperos.length) base += ` · 🔧 ${l.aperos.join(' + ')}`;
   if (l.aplicacion_completa === false) {
     base += ` · ⚠️ Parcial${l.hectareas_aplicadas != null ? ' ('+l.hectareas_aplicadas+' ha)' : ''}${l.obs_parcial ? ' — '+l.obs_parcial : ''}`;
   }
@@ -6560,6 +6585,49 @@ function colorParaCultivo(nombreCultivo) {
   let hash = 0;
   for (let i = 0; i < nombreCultivo.length; i++) hash = (hash * 31 + nombreCultivo.charCodeAt(i)) >>> 0;
   return PALETA_COLORES_CULTIVO[hash % PALETA_COLORES_CULTIVO.length];
+}
+
+// Dibujo (emoji) por cultivo, para reconocer el potrero además del color
+const ICONOS_CULTIVO = [
+  [/trigo/, '🌾'], [/ma[ií]z/, '🌽'], [/canola/, '🌼'], [/girasol/, '🌻'], [/arveja/, '🌿'], [/achicoria/, '🧄'],
+  [/avellan/, '🌰'], [/cerez/, '🍒'], [/mantenci/, '🔧'], [/otros/, '❔']
+];
+function iconoParaCultivo(nombreCultivo) {
+  if (!nombreCultivo) return '';
+  const nl = String(nombreCultivo).toLowerCase();
+  for (const [re, ic] of ICONOS_CULTIVO) if (re.test(nl)) return ic;
+  return '🌱';
+}
+// Centro (por área) de un polígono; si cae fuera de la forma, usa el punto medio de sus límites
+function centroPoligono(poly) {
+  let a = 0, cy = 0, cx = 0;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const f = poly[j][1] * poly[i][0] - poly[i][1] * poly[j][0];
+    a += f; cy += (poly[j][0] + poly[i][0]) * f; cx += (poly[j][1] + poly[i][1]) * f;
+  }
+  let c = a ? [cy / (3 * a), cx / (3 * a)] : [poly[0][0], poly[0][1]];
+  if (!jdpPuntoEnPoligono(c[0], c[1], poly)) {
+    const la = poly.map(p => p[0]), lo = poly.map(p => p[1]);
+    const a0 = Math.min(...la), a1 = Math.max(...la), o0 = Math.min(...lo), o1 = Math.max(...lo);
+    let mejor = null, dm = Infinity;
+    for (let i = 0; i <= 20; i++) for (let k = 0; k <= 20; k++) {
+      const y = a0 + (a1 - a0) * i / 20, x = o0 + (o1 - o0) * k / 20;
+      if (!jdpPuntoEnPoligono(y, x, poly)) continue;
+      const d = (y - c[0]) ** 2 + (x - c[1]) ** 2;
+      if (d < dm) { dm = d; mejor = [y, x]; }
+    }
+    c = mejor || [(a0 + a1) / 2, (o0 + o1) / 2];
+  }
+  return c;
+}
+function ponerIconoCultivo(map, poligono, cultivo) {
+  const ic = iconoParaCultivo(cultivo);
+  if (!ic || typeof L === 'undefined') return;
+  try {
+    const c = centroPoligono(jdpNormPoligono(poligono));
+    L.marker(c, { interactive: false, keyboard: false, icon: L.divIcon({ className: '', iconSize: [26, 26], iconAnchor: [13, 13],
+      html: `<div style="font-size:20px;line-height:26px;text-align:center;filter:drop-shadow(0 0 2px #000) drop-shadow(0 0 2px #000)">${ic}</div>` }) }).addTo(map);
+  } catch (e) {}
 }
 
 let shapesImportadasKML = [];
@@ -6796,6 +6864,7 @@ function renderMapaPotreros(containerId, clickable, drawable, multiSelect, forza
           const col = colorParaCultivo(l.cultivo);
           const pg = L.polygon(jdpNormPoligono(l.poligono), estiloPoligonoPotrero(col, seleccionado)).addTo(map);
           pg.bindTooltip(`${p.nombre} · ${l.nombre}${l.cultivo ? ' — ' + l.cultivo : ' — sin definir'}`, { sticky: true });
+          ponerIconoCultivo(map, l.poligono, l.cultivo);
           if (multiSelect) pg.on('click', () => window.toggleCampoLaborPotreroDesdeMapa(p.nombre));
           return { pg, col };
         });
@@ -6803,6 +6872,7 @@ function renderMapaPotreros(containerId, clickable, drawable, multiSelect, forza
       } else {
         const poly = L.polygon(p.poligono, estiloPoligonoPotrero(color, seleccionado)).addTo(map);
         poly.bindTooltip(`${p.nombre}${cultivo ? ' — ' + cultivo : ' — sin definir'}`, { sticky: true });
+        ponerIconoCultivo(map, p.poligono, cultivo);
         mapaPotrerosPoligonos[containerId][p.nombre] = { layer: poly, color };
         if (multiSelect) poly.on('click', () => window.toggleCampoLaborPotreroDesdeMapa(p.nombre));
       }
@@ -11843,8 +11913,9 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         <div class="cultivos-label">Tipo de labor</div>
         <div class="centros-selector" id="campo-tipo-labor-selector"></div>
         <div id="campo-labor-campos"></div>
+        <div id="campo-labor-aperos"></div>
         <div class="field" style="margin-top:8px"><label>Fecha</label><input type="date" id="campo-labor-fecha"></div>
-        <div class="field"><label>Observación (opcional)</label><input type="text" id="campo-labor-obs" placeholder="Detalle adicional..."></div>
+        <div class="field"><label>Comentarios (opcional)</label><textarea id="campo-labor-obs" rows="2" placeholder="Comentarios o detalle adicional..." style="width:100%;font:inherit;padding:10px;border:1px solid var(--borde);border-radius:8px;resize:vertical"></textarea></div>
         <button id="btn-registrar-labor-campo" class="btn btn-verde btn-full" onclick="registrarLaborCampo()">✓ Guardar labor</button>
       </div>
 
