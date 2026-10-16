@@ -1,0 +1,787 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cuaderno de campo v2 · Los Maitenes</title>
+<style>
+  :root { --fondo:#F4F3EF; --blanco:#FFFFFF; --negro:#1A1A1A; --acero:#6B7280; --borde:#E5E2DA; --verde:#2D7D46; --amarillo:#F5A623; --rojo:#B91C1C; --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--fondo); color: var(--negro); font-family: var(--sans); }
+  header { background: var(--negro); color: #fff; padding: 12px 16px; }
+  header h1 { margin: 0; font-size: 17px; }
+  header div { font-size: 12px; color: #D1D5DB; margin-top: 2px; }
+  main { max-width: 820px; margin: 0 auto; padding: 14px 16px 60px; }
+  .prueba { background: #FEF3C7; border: 1px solid #F5D77A; color: #78350F; border-radius: 10px; padding: 10px 12px; font-size: 13px; margin-bottom: 12px; }
+  .panel { background: var(--blanco); border: 1px solid var(--borde); border-radius: 12px; padding: 14px; margin-bottom: 12px; }
+  .panel h2 { margin: 0 0 8px; font-size: 15px; }
+  .field { margin: 8px 0; }
+  .field label, .lbl { display: block; font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--acero); margin-bottom: 4px; }
+  select, input, textarea { width: 100%; min-width: 0; padding: 10px; font-size: 15px; border: 1px solid var(--borde); border-radius: 8px; background: #fff; font-family: var(--sans); }
+  textarea { min-height: 110px; resize: vertical; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; }
+  .btn { display: inline-flex; align-items: center; gap: 6px; border: none; border-radius: 8px; padding: 10px 14px; font-size: 14px; font-weight: 600; cursor: pointer; font-family: var(--sans); }
+  .btn-full { width: 100%; justify-content: center; }
+  .btn-verde { background: var(--verde); color: #fff; }
+  .btn-sec { background: #EEECE6; color: var(--negro); }
+  .btn-rojo { background: #FEE2E2; color: var(--rojo); }
+  .btn:disabled { opacity: .5; }
+  .mic { width: 64px; height: 64px; border-radius: 50%; font-size: 28px; border: none; background: var(--verde); color: #fff; cursor: pointer; flex: none; }
+  .mic.on { background: var(--rojo); animation: pulso 1.2s infinite; }
+  @keyframes pulso { 50% { box-shadow: 0 0 0 10px rgba(185,28,28,.18); } }
+  .chip { display: inline-flex; align-items: center; gap: 4px; padding: 5px 10px; border-radius: 999px; background: #EEECE6; font-size: 13px; margin: 2px 4px 2px 0; }
+  .chip.sel { background: var(--verde); color: #fff; }
+  .chip button { border: none; background: none; cursor: pointer; font-size: 13px; padding: 0 0 0 2px; color: inherit; }
+  .card { border-left: 5px solid var(--verde); }
+  .card.pend { border-left-color: var(--amarillo); }
+  .frase { font-size: 12px; color: var(--acero); font-style: italic; margin: 2px 0 8px; }
+  .preg { background: #FFFBEB; border: 1px solid #F5D77A; border-radius: 10px; padding: 10px; margin: 8px 0; }
+  .preg .q { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+  .preg .ops { display: flex; flex-wrap: wrap; gap: 6px; }
+  .preg .ops .btn { padding: 8px 12px; background: #fff; border: 1px solid #E8C45A; color: var(--negro); }
+  .preg .fila { display: flex; gap: 6px; margin-top: 6px; }
+  .fila { display: flex; gap: 6px; align-items: center; }
+  .fila > * { flex: 1; }
+  .fila > button { flex: none; }
+  .peq { font-size: 12px; color: var(--acero); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  td, th { padding: 6px 4px; border-bottom: 1px solid var(--borde); text-align: left; vertical-align: top; }
+  th { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--acero); }
+  #toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--negro); color: #fff; padding: 10px 16px; border-radius: 8px; font-size: 14px; display: none; z-index: 7000; max-width: 90%; }
+  #toast.mal { background: var(--rojo); }
+  details summary { cursor: pointer; font-weight: 600; font-size: 14px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>📒 Cuaderno de campo · versión 2 (prueba)</h1>
+  <div id="quien">Dicta lo que hicieron los equipos y se arma el cuaderno. Todo se guarda aparte, sin tocar el cuaderno real.</div>
+</header>
+<main>
+  <div class="prueba">🧪 <b>Modo prueba.</b> Lo que guardes aquí queda en un registro aparte (<i>labores_campo_v2</i>). El cuaderno real no se modifica hasta que tú toques "↗ Pasar al cuaderno real" en un registro.</div>
+
+  <div class="panel">
+    <h2>🎤 Dictar</h2>
+    <div class="peq" style="margin-bottom:8px">Cuenta lo que hizo cada equipo: máquina, potrero, labor, producto y dosis, mojamiento, hectáreas… Puedes decir varias labores seguidas. Si el micrófono de arriba no funciona en tu celular, usa el micrófono del teclado.</div>
+    <div class="fila" style="align-items:flex-start">
+      <button class="mic" id="mic" onclick="c2Mic()" title="Dictar">🎤</button>
+      <div style="flex:1"><textarea id="texto" placeholder="Ej: Hoy el 6910 fumigó en agrosur norte con glifosato 2 litros por hectárea, mojamiento 200 litros. Después el 5090 pasó rastra en sinfo norte…"></textarea><div class="peq" id="interim" style="min-height:16px"></div></div>
+    </div>
+    <div class="grid" style="margin-top:8px">
+      <div class="field" style="margin:0"><label>Fecha base (si no dices "ayer" u otra)</label><input type="date" id="fecha-base"></div>
+    </div>
+    <div class="fila" style="margin-top:10px">
+      <button class="btn btn-verde" onclick="c2Interpretar()">✨ Interpretar</button>
+      <button class="btn btn-sec" onclick="c2Limpiar()">Limpiar texto</button>
+    </div>
+  </div>
+
+  <div id="borradores"></div>
+
+  <div class="panel">
+    <h2>📋 Guardados en prueba</h2>
+    <div class="peq" style="margin-bottom:6px">Corrígelos cuando quieras: lo que corrijas ayuda a que aprenda. Cuando estés conforme, pásalos al cuaderno real.</div>
+    <div id="guardados" class="peq">Cargando…</div>
+  </div>
+
+  <div class="panel">
+    <details><summary>🧠 Lo que ha aprendido (<span id="n-alias">0</span>)</summary>
+      <div id="aprendido" class="peq" style="margin-top:8px"></div></details>
+    <details style="margin-top:10px"><summary>📝 Temas por labor (qué pregunto y qué no)</summary>
+      <div class="peq" style="margin:8px 0">Para cada labor elige qué información quieres darme siempre. <b>Preguntar si falta</b>: si no lo dices, te lo pregunto antes de guardar. <b>Opcional</b>: queda en la lista como "sin dato" pero no te pregunto. <b>No aplica</b>: no aparece. Los temas con 🔒 los exige el cuaderno real.</div>
+      <div id="temas"></div></details>
+    <details style="margin-top:10px"><summary>📚 Vocabulario que conoce</summary>
+      <div id="vocab" class="peq" style="margin-top:8px"></div></details>
+  </div>
+</main>
+<div id="toast"></div>
+<div id="acceso" style="display:none;position:fixed;inset:0;z-index:6000;background:rgba(0,0,0,.6);align-items:center;justify-content:center;padding:16px">
+  <div class="panel" style="width:100%;max-width:380px">
+    <div style="font-weight:700;font-size:16px;margin-bottom:8px">📒 Cuaderno de campo v2</div>
+    <div class="field"><label>Ingresa tu PIN</label><input type="password" id="acc-pin" inputmode="numeric" autocomplete="off" style="font-size:22px;text-align:center;letter-spacing:6px" onkeydown="if(event.key==='Enter')entrarC2()"></div>
+    <div id="acc-msg" style="font-size:13px;color:#B91C1C;min-height:18px"></div>
+    <button class="btn btn-verde btn-full" id="acc-btn" onclick="entrarC2()">Ingresar</button>
+  </div>
+</div>
+<datalist id="dl-productos"></datalist>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getFirestore, collection, doc, getDoc, getDocs, query, orderBy, limit, setDoc, deleteDoc, writeBatch } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+const app = initializeApp({ apiKey: "AIzaSyAVsios3N97MQVPJLC94qEOXGJNmKzK9RI", authDomain: "combustible-los-maitenes.firebaseapp.com", projectId: "combustible-los-maitenes", storageBucket: "combustible-los-maitenes.firebasestorage.app", messagingSenderId: "750216939749", appId: "1:750216939749:web:978e4173eaee8235ebac0c" });
+const db = getFirestore(app);
+const appInv = initializeApp({ apiKey: "AIzaSyCNp1RaGDdZfc63jZ4hxXUjUwr9xRZxMsw", authDomain: "inventario-los-maitenes-aa79c.firebaseapp.com", projectId: "inventario-los-maitenes-aa79c", storageBucket: "inventario-los-maitenes-aa79c.firebasestorage.app", messagingSenderId: "635297006041", appId: "1:635297006041:web:8b3f412a92cb33caf119c8" }, "inventario");
+const dbInv = getFirestore(appInv);
+
+// ── DICTADO DEL CUADERNO DE CAMPO: intérprete (puro, sin DOM) ───────────────
+// dictParse(texto, ctx) → { drafts, ctxFinal }
+// ctx = { hoy:'AAAA-MM-DD', potreros:[nombres], equipos:[nombres], productos:[{nombre,categoria}],
+//         cultivos:[nombres], tiposProducto:[nombres], alias:{ potrero:{}, equipo:{}, producto:{}, tipo:{} } }
+const DICT_STOP = new Set(['de','del','la','el','los','las','en','con','y','a','al','un','una','para','por','se','lo','que','hoy','ayer','potrero','campo','lote','tractor','camioneta','maquina','equipo']);
+const DICT_MESES = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+const DICT_DIAS = ['domingo','lunes','martes','miercoles','jueves','viernes','sabado'];
+const dN = t => String(t == null ? '' : t).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+  .replace(/(^|[^\d.])([1-9]\d{0,2})\.(\d{3})(?!\d)/g, '$1$2$3').replace(/(\d),(\d)/g, '$1.$2')
+  .replace(/[^a-z0-9.\/%\s-]/g, ' ').replace(/(?<!\d)\.|\.(?!\d)/g, ' ').replace(/\s+/g, ' ').trim();
+function dLev(a, b) {
+  if (a === b) return 0; if (Math.abs(a.length - b.length) > 2) return 3;
+  const m = []; for (let i = 0; i <= a.length; i++) { m[i] = [i]; } for (let j = 0; j <= b.length; j++) m[0][j] = j;
+  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) m[i][j] = Math.min(m[i - 1][j] + 1, m[i][j - 1] + 1, m[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+  return m[a.length][b.length];
+}
+// ¿el token del nombre aparece (con tolerancia) entre los tokens del texto?
+function dTokEn(tok, toks) {
+  const num = /^\d+$/.test(tok);
+  return toks.some(x => x === tok || (!num && tok.length >= 3 && x.length >= tok.length && x.startsWith(tok) && tok.length >= x.length - 4) || (!num && tok.length >= 5 && dLev(tok, x) <= 1));
+}
+// Puntaje 0..1 de un nombre dentro de un texto normalizado
+function dPuntaje(nombre, textoN, quitar) {
+  const toks = textoN.split(' ');
+  const nt = dN(nombre).split(' ').filter(t => t && !DICT_STOP.has(t) && !(quitar || []).includes(t));
+  if (!nt.length) return 0;
+  return nt.filter(t => dTokEn(t, toks)).length / nt.length;
+}
+function dMejores(lista, textoN, quitar) {
+  const pts = lista.map(n => ({ n, p: dPuntaje(n, textoN, quitar) })).filter(x => x.p > 0);
+  const full = pts.filter(x => x.p >= 1);
+  if (full.length) {
+    // si un nombre completo contiene a otro (ej. "giffoni" y "giffoni 2019"), gana el más largo
+    const largos = full.filter(a => !full.some(b => b !== a && dN(b.n).includes(dN(a.n)) && dN(b.n).length > dN(a.n).length));
+    return { ok: largos.map(x => x.n), dudoso: false };
+  }
+  const max = Math.max(0, ...pts.map(x => x.p));
+  const top = pts.filter(x => x.p === max && max >= 0.5);
+  if (top.length === 1) return { ok: [top[0].n], dudoso: true };
+  return { ok: [], dudoso: false, ambiguos: top.map(x => x.n) };
+}
+function dAplicarAlias(textoN, mapa) {
+  let t = ' ' + textoN + ' ';
+  Object.keys(mapa || {}).sort((a, b) => b.length - a.length).forEach(k => { const kn = dN(k); if (kn) t = t.split(' ' + kn + ' ').join(' ' + dN(mapa[k]) + ' '); });
+  return t.trim();
+}
+const DICT_TIPOS = [
+  ['siembra', /\b(sembr\w*|siembra\w*)\b/],
+  ['fertilizacion', /\b(fertiliz\w*|abon\w*|urea|nitrato|salitre|superfosfato|fosfato|sulfato de (?:amonio|potasio)|nitrogen\w*)\b/],
+  ['fumigacion', /\b(fumig\w*|pulveriz\w*|aplic\w*|herbicida\w*|fungicida\w*|insecticida\w*|spray|asperj\w*|curo|curaron|curar)\b/],
+  ['trabajo_suelo', /\b(aro|aron|arado|arar|arada|rastr\w*|vibro\w*|subsol\w*|cincel\w*|disque\w*|discos?|cultiv(?:o|aron|ar|ado)\b|rotovat\w*|rodill\w*|rulo\w*|aplan\w*|nivel\w*|camellon\w*|melg\w*|labranza|empare\w*|desterron\w*|barbecho|motocultor|ripper|preparacion de suelo|surcad\w*)/],
+  ['riego', /\b(reg[oa]\w*|riego\w*|regaron|regar|regado|regando|tendido|aspersion|goteo)\b/],
+  ['cosecha', /\b(cosech\w*|trill\w*|sego|segar|segaron|siega|corte de|cortaron|cortar|recolec\w*)\b/]
+];
+function dTipoDe(textoN, aliasTipo) {
+  let mejor = null, pos = 1e9;
+  Object.keys(aliasTipo || {}).forEach(k => { const i = textoN.indexOf(dN(k)); if (i >= 0 && i < pos) { pos = i; mejor = aliasTipo[k]; } });
+  DICT_TIPOS.forEach(([id, re]) => { const m = re.exec(textoN); if (m && m.index < pos) { pos = m.index; mejor = id; } });
+  return mejor;
+}
+function dDosisFmt(n, u) {
+  u = u.toLowerCase();
+  const U = /^(l|lt|lts|litro|litros)$/.test(u) ? 'L' : /^(kg|kgs|kilo|kilos)$/.test(u) ? 'kg' : /^(cc|cm3|ml)$/.test(u) ? 'cc' : 'g';
+  return `${String(n).replace('.', ',')} ${U}/ha`;
+}
+function dFechaDe(textoN, hoy) {
+  const d0 = new Date(hoy + 'T12:00:00');
+  const f = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const rest = n => { const d = new Date(d0); d.setDate(d.getDate() - n); return f(d); };
+  if (/\bante ?ayer\b|\bantes de ayer\b/.test(textoN)) return rest(2);
+  if (/\bayer\b/.test(textoN)) return rest(1);
+  if (/\bhoy\b/.test(textoN)) return hoy;
+  let m = /\b(\d{1,2}) de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\b/.exec(textoN);
+  if (m) { const mes = DICT_MESES.indexOf(m[2]); let a = d0.getFullYear(); const d = new Date(a, mes, +m[1], 12); if (d > d0) d.setFullYear(a - 1); return f(d); }
+  m = /\b(?:el )?(lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b/.exec(textoN);
+  if (m) { const idx = DICT_DIAS.indexOf(m[1]); let n = (d0.getDay() - idx + 7) % 7; return rest(n); }
+  return null;
+}
+function dSegmentar(texto) {
+  let segs = String(texto || '').split(/[;!?\n]+|\.(?!\d)|\s+y luego\s+|\s+y despu[eé]s\s+|\s+despu[eé]s\s+|\s+luego\s+|\s+tambi[eé]n\s+|\s+adem[aá]s\s+/i).map(s => s.trim()).filter(Boolean);
+  // "… fumigó en A y el 5090 aró en B": se parte en "y el/la …" si ambos lados traen una labor
+  const out = [];
+  segs.forEach(s => {
+    const partes = s.split(/\s+y\s+(?=(?:el|la|los|las|con el|con la)\s+\S)/i);
+    if (partes.length < 2) { out.push(s); return; }
+    let acum = partes[0];
+    for (let i = 1; i < partes.length; i++) {
+      if (dTipoDe(dN(acum)) && dTipoDe(dN(partes[i]))) { out.push(acum); acum = partes[i]; } else acum += ' y ' + partes[i];
+    }
+    out.push(acum);
+  });
+  return out;
+}
+function dictParse(texto, ctx) {
+  const al = ctx.alias || {};
+  const drafts = [];
+  const sticky = { equipo: '', potreros: [], fecha: ctx.hoy };
+  let ultimo = null;
+  const segs = dSegmentar(texto);
+  segs.forEach(seg => {
+    let tN = dN(seg);
+    if (!tN) return;
+    const frase = seg;
+    // alias aprendidos → nombre canónico
+    tN = dAplicarAlias(tN, al.potrero); tN = dAplicarAlias(tN, al.equipo); tN = dAplicarAlias(tN, al.producto);
+    const fecha = dFechaDe(tN, ctx.hoy); if (fecha) sticky.fecha = fecha;
+    // Dosis ("2 litros por hectárea") y mojamiento ("200 litros de agua")
+    const dosis = []; let rest = tN;
+    const reDos = /(\d+(?:\.\d+)?)\s*(litros?|lts?|l|kilos?|kgs?|kg|cc|cm3|ml|gramos?|grs?|g)\s*(?:por|\/|x|en cada|la)?\s*(?:ha|hectareas?|hect)\b/g;
+    let m; while ((m = reDos.exec(tN))) dosis.push({ pos: m.index, fin: m.index + m[0].length, texto: dDosisFmt(m[1], m[2]) });
+    let mojamiento = null;
+    const reMoj = [/mojamiento\s*(?:de|es|:)?\s*(\d+(?:\.\d+)?)/, /(\d+(?:\.\d+)?)\s*(?:litros?|lts?|l)\s*(?:de )?(?:mojamiento|agua)\b/];
+    reMoj.forEach(re => { const mm = re.exec(tN); if (mm && mojamiento == null) { mojamiento = parseFloat(mm[1]); rest = rest.replace(mm[0], ' '); } });
+    const dosisSueltas = [];
+    if (!dosis.length) { const rd = /dosis (?:de )?(\d+(?:\.\d+)?)\s*(litros?|lts?|l|kilos?|kgs?|kg|cc|cm3|ml|gramos?|grs?|g)\b/g; while ((m = rd.exec(tN))) dosisSueltas.push({ pos: m.index, fin: m.index + m[0].length, texto: dDosisFmt(m[1], m[2]) }); }
+    const todasDosis = dosis.length ? dosis : dosisSueltas;
+    todasDosis.slice().sort((a, b) => b.pos - a.pos).forEach(d => { rest = rest.slice(0, d.pos) + ' '.repeat(d.fin - d.pos) + rest.slice(d.fin); });
+    rest = rest.replace(/\s+/g, ' ');
+    // Equipo
+    let equipo = '', crudoEquipo = '', equipoDudoso = false;
+    const eq = dMejores(ctx.equipos || [], tN, ['jd', 'john', 'deere']);
+    if (eq.ok.length) { equipo = eq.ok[0]; equipoDudoso = eq.dudoso; }
+    else {
+      const num = /\b(\d{3,4})\b/.exec(rest) || /\b(?:tractor|camioneta|maquina)\s+([a-z]+(?: [a-z]+)?)/.exec(rest);
+      if (num && (eq.ambiguos || []).length) crudoEquipo = num[1];
+      else if (num && /\b(el|con el|con la|tractor|camioneta)\b/.test(rest) && /\b\d{3,4}\b/.test(num[1])) crudoEquipo = num[1];
+    }
+    // Potreros
+    const pt = dMejores(ctx.potreros || [], tN, []);
+    let potreros = pt.ok.slice(); let crudoPotrero = '';
+    if (!potreros.length) {
+      const m2 = /\ben (?:el |la )?(?:potrero |campo |lote )?([a-z0-9]+(?: [a-z0-9]+){0,2})/.exec(rest.replace(/\ben (?:el|la) (?:tractor|camioneta)\b/g, ''));
+      if (m2 && !DICT_STOP.has(m2[1].split(' ')[0])) crudoPotrero = m2[1].split(' ').filter(w => !/^(con|aplico|fumigo|y|el|la|de|para|se)$/.test(w)).join(' ');
+    }
+    // Apero y personas (operadores / trabajadores)
+    let apero = ''; const ap = dMejores(ctx.aperos || [], tN, []); if (ap.ok.length && !ap.dudoso) apero = ap.ok[0];
+    let personas = []; let personaDudosa = '';
+    const pe = dMejores(ctx.personas || [], tN, []);
+    if (pe.ok.length && (!pe.dudoso || (ctx.equipoOperador && ctx.equipoOperador[pe.ok[0]]))) personas = pe.ok.slice(0, 3);
+    else if (pe.ok.length && /\b(operador|operario|maneja\w*|manej\w*|estuvo|a cargo|hizo|trabajador|gente)\b/.test(tN)) personaDudosa = pe.ok[0];
+    // Vínculo operador ↔ equipo (cada operador tiene sus tractores asignados en la app)
+    let ambEq = eq.ambiguos || [], porOp = false, porEq = false;
+    if (!equipo && personas.length && ctx.equipoOperador) {
+      const cand = [...new Set(personas.flatMap(x => ctx.equipoOperador[x] || []))];
+      if (cand.length === 1) { equipo = cand[0]; porOp = true; } else if (cand.length > 1) ambEq = cand;
+    }
+    if (equipo && !personas.length && ctx.equipoOperador) {
+      const ops = Object.keys(ctx.equipoOperador).filter(o => (ctx.equipoOperador[o] || []).includes(equipo));
+      if (ops.length === 1) { personas = [ops[0]]; porEq = true; }
+    }
+    // Tipo
+    let tipo = dTipoDe(rest, al.tipo); let laborExtra = '';
+    if (!tipo) { const le = dMejores((ctx.laboresExtra || []).map(x => x.nombre), tN, []); if (le.ok.length && !le.dudoso) { laborExtra = le.ok[0]; const def = ctx.laboresExtra.find(x => x.nombre === laborExtra); tipo = def && def.custom ? 'custom:' + laborExtra : 'otro'; } }
+    // Productos del inventario
+    const prodInv = (ctx.productos || []).map(p => ({ p, pos: -1 })).map(x => {
+      const nt = dN(x.p.nombre).split(' ').filter(t => /[a-z]/.test(t) && !DICT_STOP.has(t) && t.length >= 4);
+      if (!nt.length) return x;
+      const toks = rest.split(' '); const idx = toks.findIndex(tk => tk === nt[0] || (nt[0].length >= 5 && dLev(nt[0], tk) <= 1));
+      if (idx >= 0) x.pos = toks.slice(0, idx).join(' ').length + 1;
+      return x;
+    }).filter(x => x.pos >= 0);
+    // se quedan los de nombre más específico si hay prefijos repetidos
+    const productos = []; const crudoProductos = [];
+    todasDosis.forEach((d, i) => {
+      const antes = prodInv.filter(x => x.pos <= d.pos && !productos.some(q => q._p === x.p)).sort((a, b) => b.pos - a.pos)[0];
+      if (antes) { productos.push({ producto: antes.p.nombre, dosis: d.texto, _p: antes.p }); return; }
+      const antesD = tN.slice(0, d.pos); const cortes = [...antesD.matchAll(/\b(con|de|usando|usaron|uso|aplico|aplicaron|echaron|echo|producto)\s+/g)]; const trasCorte = cortes.length ? antesD.slice(cortes[cortes.length - 1].index + cortes[cortes.length - 1][0].length) : antesD;
+      const nombresConocidos = new Set([...(ctx.personas || []), ...(ctx.equipos || [])].flatMap(x => dN(x).split(' ')));
+      const pre = trasCorte.split(' ').filter(w => !nombresConocidos.has(w)).filter(w => w && !DICT_STOP.has(w) && /[a-z]/.test(w) && !/^(aplico|aplicaron|fumigo|fumigaron|dosis|litros|kilos|usaron|uso|echo|puso|herbicida|fungicida|insecticida|fertilizante)$/.test(w)).filter(w => !crudoPotrero.split(' ').includes(w)).slice(-2);
+      const frasePrd = pre.join(' ');
+      productos.push({ producto: frasePrd, dosis: d.texto, _crudo: true }); if (frasePrd) crudoProductos.push(frasePrd);
+    });
+    // productos mencionados sin dosis
+    prodInv.forEach(x => { if (!productos.some(q => q._p === x.p)) productos.push({ producto: x.p.nombre, dosis: '', _p: x.p }); });
+    if (!tipo && productos.length) { const c = productos[0]._p && dN(productos[0]._p.categoria || ''); tipo = /fertiliz/.test(c || '') ? 'fertilizacion' : 'fumigacion'; }
+    if (tipo === 'fumigacion' && productos.some(q => q._p && /fertiliz/.test(dN(q._p.categoria || '')))) tipo = 'fertilizacion';
+    // Números restantes
+    let ha = null; const mh = /(\d+(?:\.\d+)?)\s*(?:hectareas?|has?)\b/.exec(rest); if (mh) ha = parseFloat(mh[1]);
+    let kg = null; const mk = /(\d+(?:\.\d+)?)\s*(toneladas?|tons?|ton|kilos?|kgs?|kg)\b/.exec(rest); if (mk) kg = parseFloat(mk[1]) * (/^t/.test(mk[2]) ? 1000 : 1);
+    let humedad = null; const mhu = /humedad (?:de |del )?(\d+(?:\.\d+)?)/.exec(rest); if (mhu) humedad = parseFloat(mhu[1]);
+    let duracion = null; const md = /(\d+(?:\.\d+)?)\s*(?:horas?|hrs?|h)\b/.exec(rest); if (md) duracion = parseFloat(md[1]); else if (/\bmedia hora\b/.test(rest)) duracion = 0.5;
+    let metodo = ''; const mme = !(tipo === 'riego') ? null : /\b(microaspersion|aspersion|goteo|surco|tendido|pivote|cinta|inundacion|melgas)\b/.exec(rest); if (mme) metodo = mme[1];
+    let cultivo = ''; const cv = dMejores(ctx.cultivos || [], tN, []); if (cv.ok.length) cultivo = cv.ok[0];
+    let variedad = ''; const mv = /variedad (?:de )?([a-z0-9]+)/.exec(rest); if (mv) variedad = mv[1];
+    const fertJunto = /con fertiliz|fertiliz\w* (?:a la siembra|junto)/.test(rest);
+    // ¿Es continuación (solo datos sueltos)?
+    const tieneTipo = !!tipo, tienePot = potreros.length > 0;
+    const soloDatos = !tienePot && !equipo && ultimo && (!tieneTipo || tipo === ultimo.tipo);
+    if (soloDatos) { if (apero && !ultimo.apero) ultimo.apero = apero; if (personas.length && !ultimo.personas.length) ultimo.personas = personas; dMezclar(ultimo, { productos, mojamiento, kg, humedad, duracion, metodo, cultivo, variedad, ha }, ctx); return; }
+    if (equipo) sticky.equipo = equipo; else if (personas.length || ambEq.length) sticky.equipo = '';
+    const hereda = !tieneTipo && ultimo;
+    const d = {
+      id: 'd' + (drafts.length + 1) + '_' + Math.random().toString(36).slice(2, 6),
+      tipo: tipo || (hereda ? ultimo.tipo : 'otro'), fecha: sticky.fecha,
+      potreros: tienePot ? potreros : (pt.ambiguos && pt.ambiguos.length ? [] : sticky.potreros.slice()),
+      equipo: equipo || ((personas.length || ambEq.length) ? '' : sticky.equipo) || '', apero, personas, personaDudosa, porOp, porEq, frase,
+      productos: productos.map(p => ({ producto: p.producto, dosis: p.dosis })),
+      mojamiento: mojamiento, tiposProducto: [], labor: '', metodo, duracion, kg, humedad,
+      cultivo, variedad, dosis: '', hectareas: null, parcialHa: null, fertilizacion: fertJunto, fertMezcla: '', fertDosis: '', obs: '',
+      crudo: { potrero: crudoPotrero, equipo: crudoEquipo, productos: crudoProductos, tipo: '' },
+      dudas: { equipo: equipoDudoso, potrero: pt.dudoso, ambiguosPotrero: pt.ambiguos || [], ambiguosEquipo: ambEq }
+    };
+    if (hereda && !d.productos.length) { d.productos = ultimo.productos.map(p => ({ ...p })); d.mojamiento = d.mojamiento == null ? ultimo.mojamiento : d.mojamiento; d.tiposProducto = ultimo.tiposProducto.slice(); }
+    if (tienePot) sticky.potreros = potreros.slice();
+    // por tipo
+    if (d.tipo === 'siembra') { d.dosis = todasDosis[0] ? todasDosis[0].texto : ''; d.hectareas = ha; d.productos = []; d.crudo.productos = []; }
+    else if (potreros.length === 1 && ha != null && d.tipo !== 'cosecha') d.parcialHa = ha;
+    if (d.tipo === 'trabajo_suelo') { const ml = DICT_TIPOS[3][1].exec(rest); d.labor = ml ? ml[0].trim() : ''; d.labor = d.labor.charAt(0).toUpperCase() + d.labor.slice(1); }
+    if (laborExtra && d.tipo === 'otro') d.obs = laborExtra;
+    if (d.tipo === 'otro' && !laborExtra) { d.obs = ''; const verbo = dVerbo(tN, equipo); d.crudo.tipo = verbo; }
+    if (d.tipo === 'fumigacion' || d.tipo === 'fertilizacion') d.tiposProducto = dCategorias(d, ctx);
+    drafts.push(d); ultimo = d;
+  });
+  return { drafts, sticky };
+}
+function dVerbo(tN, equipo) {
+  const GEN = /^(hizo|hicieron|hacer|hecho|trabajo|trabajaron|estuvo|estuvieron|realizo|realizaron|paso|pasaron|anduvo|anduvieron|uso|usaron|fue|fueron|estan|estaba)$/;
+  const toks = tN.split(' ').filter(w => w.length >= 4 && !DICT_STOP.has(w) && !/\d/.test(w) && !GEN.test(w));
+  const eqt = dN(equipo || '').split(' ');
+  const libres = toks.filter(w => !eqt.includes(w));
+  return libres[0] || '';
+}
+function dCategorias(d, ctx) {
+  const out = new Set(); const tipos = ctx.tiposProducto || [];
+  d.productos.forEach(p => {
+    const inv = (ctx.productos || []).find(x => x.nombre === p.producto);
+    if (inv && inv.categoria && tipos.includes(inv.categoria)) out.add(inv.categoria);
+  });
+  if (!out.size) { const t = dN(d.frase); tipos.forEach(c => { const cn = dN(c); if (cn && cn.length >= 4 && t.includes(cn.slice(0, Math.max(4, cn.length - 2)))) out.add(c); }); }
+  return [...out];
+}
+function dMezclar(d, x, ctx) {
+  if (x.mojamiento != null && d.mojamiento == null) d.mojamiento = x.mojamiento;
+  x.productos.forEach(p => { const e = d.productos.find(q => q.producto === p.producto || (!q.dosis && !q.producto)); if (e) { if (!e.dosis && p.dosis) e.dosis = p.dosis; if (!e.producto) e.producto = p.producto; } else d.productos.push({ producto: p.producto, dosis: p.dosis }); });
+  ['kg', 'humedad', 'duracion', 'cultivo', 'variedad', 'metodo'].forEach(k => { if ((d[k] == null || d[k] === '') && x[k] != null && x[k] !== '') d[k] = x[k]; });
+  if (x.ha != null && d.potreros.length === 1 && d.tipo !== 'siembra') d.parcialHa = d.parcialHa == null ? x.ha : d.parcialHa;
+  if (d.tipo === 'fumigacion' || d.tipo === 'fertilizacion') d.tiposProducto = dCategorias(d, ctx);
+}
+// ¿Qué falta para poder guardar este borrador? (mismas exigencias del formulario)
+function dictFaltantes(d) {
+  const f = [];
+  if (!d.potreros.length) f.push('potreros');
+  if (!d.fecha) f.push('fecha');
+  const prods = (d.productos || []).filter(p => p.producto || p.dosis);
+  if (d.tipo === 'siembra') { if (!d.cultivo) f.push('cultivo'); }
+  else if (d.tipo === 'fertilizacion') { if (!prods.length || prods.some(p => !p.producto || !p.dosis)) f.push('productos'); }
+  else if (d.tipo === 'fumigacion') {
+    if (d.mojamiento == null || d.mojamiento === '') f.push('mojamiento');
+    if (!d.tiposProducto.length) f.push('tiposProducto');
+    if (!prods.length || prods.some(p => !p.producto || !p.dosis)) f.push('productos');
+  }
+  else if (d.tipo === 'trabajo_suelo') { if (!d.labor) f.push('labor'); }
+  else if (d.tipo === 'riego') { if (!d.metodo) f.push('metodo'); }
+  else if (d.tipo === 'cosecha') { if (d.kg == null || d.kg === '') f.push('kg'); }
+  else if (d.tipo === 'otro' || (d.tipo || '').startsWith('custom:')) { if (!(d.obs || '').trim() && !(d.tipo || '').startsWith('custom:')) f.push('obs'); }
+  return f;
+}
+
+
+
+// ── Datos y acceso ───────────────────────────────────────────────
+const ADMIN_PIN = '1234', ADMIN_NOMBRE = 'JC Allende', ADMINS_EQUIVALENTES = ['Camila Faundez'];
+let usuario = null, permisosPruebas = {}, cfg = {}, productos = [], alias = { potrero: {}, equipo: {}, producto: {}, tipo: {} };
+let drafts = [], guardados = [], Q = {};
+const TIPOS = [['siembra', '🌱 Siembra'], ['fertilizacion', '🧪 Fertilización'], ['fumigacion', '🐛 Fumigación'], ['trabajo_suelo', '🚜 Trabajo de suelo'], ['riego', '🚿 Riego'], ['cosecha', '🌾 Cosecha'], ['otro', '📝 Otro']];
+const APEROS_BASE = ['Rastra', 'Subzolador grande 1 pata', 'Subzolador 3 patas', 'Jympa', 'Niveladora', 'Coloso', 'Trincha Facma', 'Soplador Facma', 'Rotofresa', 'Gama 4000', 'Gaspardo 2000', 'Taton', 'Carro 1000 lts', 'Carro 400 lts'];
+const TRABAJOS_BASE = ['Incorporación', 'Preparación suelo siembra', 'Preparación suelo pre plantación', 'Plantación', 'Postcosecha', 'Nebulizador', 'Sierpes'];
+const esc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const tipoLabel = t => (TIPOS.find(x => x[0] === t) || [0, t && t.startsWith('custom:') ? '🧩 ' + t.slice(7) : t])[1];
+function toast(m, ok = true) { const t = document.getElementById('toast'); t.textContent = m; t.className = ok ? '' : 'mal'; t.style.display = 'block'; clearTimeout(toast._t); toast._t = setTimeout(() => t.style.display = 'none', 3500); }
+const hoyStr = () => { const d = new Date(), p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`; };
+const puedeVer = (n, a) => a || ADMINS_EQUIVALENTES.includes(n) || (Array.isArray(permisosPruebas[n]) && permisosPruebas[n].includes('cuaderno2'));
+let abrirAcceso; const accesoListo = new Promise(r => { abrirAcceso = r; });
+window.entrarC2 = async function () {
+  const pin = document.getElementById('acc-pin').value.trim(), msg = document.getElementById('acc-msg');
+  if (!pin) { msg.textContent = 'Ingresa tu PIN.'; return; }
+  let nombre = null, admin = false;
+  if (pin === ADMIN_PIN) { nombre = ADMIN_NOMBRE; admin = true; }
+  else if (pin === '0000') { msg.textContent = 'Primero cambia tu PIN inicial en la app.'; return; }
+  else { try { const sp = await getDoc(doc(db, 'config', 'pines')); const op = sp.exists() ? Object.entries(sp.data()).find(([, p]) => p === pin) : null; if (op) nombre = op[0]; } catch (e) { msg.textContent = 'No se pudo verificar: ' + e.message; return; } }
+  if (!nombre) { msg.textContent = 'PIN incorrecto.'; document.getElementById('acc-pin').value = ''; return; }
+  if (!puedeVer(nombre, admin)) { msg.textContent = 'No tienes acceso a esta prueba. Pídeselo al administrador.'; return; }
+  try { sessionStorage.setItem('c2_usuario', JSON.stringify({ nombre, admin })); } catch (e) {}
+  document.getElementById('acceso').style.display = 'none'; usuario = { nombre, admin }; abrirAcceso();
+};
+function revisarAcceso() {
+  let u = null;
+  try {
+    let pase = JSON.parse(localStorage.getItem('maitenes_pase') || 'null');
+    const hm = /[#&]pase=([^&]+)/.exec(location.hash || '');
+    if (hm) { try { pase = JSON.parse(decodeURIComponent(hm[1])); } catch (e) {} try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {} }
+    if (pase && pase.nombre && Date.now() - pase.ts < 10 * 60000) { u = pase; localStorage.removeItem('maitenes_pase'); sessionStorage.setItem('c2_usuario', JSON.stringify({ nombre: pase.nombre, admin: !!pase.admin })); }
+    else u = JSON.parse(sessionStorage.getItem('c2_usuario') || 'null');
+  } catch (e) {}
+  if (u && puedeVer(u.nombre, u.admin)) { usuario = { nombre: u.nombre, admin: !!u.admin }; abrirAcceso(); return; }
+  document.getElementById('acceso').style.display = 'flex';
+  if (u) document.getElementById('acc-msg').textContent = 'No tienes acceso a esta prueba. Pídeselo al administrador.';
+}
+function ctxActual() {
+  const personas = [...(cfg.operadores || []), ...(cfg.trabajadoresAsistencia || [])].filter((x, i, a) => x && !/otros/i.test(x) && a.indexOf(x) === i);
+  const aperos = [...new Set([...(cfg.aperos || []).map(a => a && a.nombre).filter(Boolean), ...APEROS_BASE])];
+  const laboresExtra = [...(cfg.tiposLaborCampo || []).map(t => ({ nombre: t && (t.nombre || t.label || t), custom: true })).filter(x => typeof x.nombre === 'string'), ...[...new Set([...(cfg.trabajos || []), ...TRABAJOS_BASE])].filter(x => !/otro/i.test(x)).map(n => ({ nombre: n }))];
+  const equipoOperador = {}; Object.entries(cfg.equipoOperador || {}).forEach(([k, v]) => { const l = (Array.isArray(v) ? v : [v]).filter(Boolean); if (l.length) equipoOperador[k] = l; });
+  return { hoy: document.getElementById('fecha-base').value || hoyStr(), equipoOperador, potreros: (cfg.potreros || []).map(p => p.nombre), equipos: cfg.equipos || [], productos, cultivos: cfg.cultivosCampo || [], tiposProducto: cfg.tiposProductoCampo || [], aperos, personas, laboresExtra, alias };
+}
+async function cargar() {
+  try { const s = await getDoc(doc(db, 'config', 'datos')); cfg = s.exists() ? s.data() : {}; permisosPruebas = cfg.permisosPruebas || {}; } catch (e) { toast('No se pudo leer la configuración: ' + e.message, false); }
+  return cfg;
+}
+async function cargarResto() {
+  try { const s = await getDocs(collection(dbInv, 'productos')); productos = s.docs.map(d => ({ id: d.id, ...d.data() })).filter(p => p.nombre); } catch (e) { productos = []; toast('No pude leer el inventario (' + e.message + '). Los productos se pedirán a mano.', false); }
+  try { const s = await getDoc(doc(db, 'config', 'dictado')); if (s.exists() && s.data().alias) alias = { potrero: {}, equipo: {}, producto: {}, tipo: {}, ...s.data().alias }; } catch (e) {}
+  try { const s2 = await getDoc(doc(db, 'config', 'dictado')); if (s2.exists() && s2.data().temas) cfgTemas = s2.data().temas; } catch (e) {}
+  document.getElementById('dl-productos').innerHTML = productos.map(p => `<option value="${esc(p.nombre)}">`).join('');
+  await cargarGuardados(); pintarAprendido(); pintarVocab(); pintarTemas();
+}
+async function cargarGuardados() {
+  try { const s = await getDocs(query(collection(db, 'labores_campo_v2'), orderBy('ts', 'desc'), limit(80))); guardados = s.docs.map(d => ({ id: d.id, ...d.data() })); } catch (e) { guardados = []; }
+  pintarGuardados();
+}
+async function guardarAlias() { try { await setDoc(doc(db, 'config', 'dictado'), { alias }, { merge: true }); } catch (e) { console.warn(e); } }
+const claveAlias = f => dN(f).replace(/[./]/g, ' ').trim();
+function aprender(cat, frase, valor) { const k = claveAlias(frase); if (!k || !valor || k === dN(valor)) return; alias[cat][k] = valor; guardarAlias(); pintarAprendido(); }
+
+// ── Micrófono ────────────────────────────────────────────────────
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+const ES_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const ES_MOVIL = ES_IOS || /Android/i.test(navigator.userAgent);
+const MIC_ERR = {
+  'no-speech': 'No se escuchó nada. Toca 🎤 y habla de nuevo.',
+  'audio-capture': 'No se encontró el micrófono.',
+  'not-allowed': 'El navegador no tiene permiso de micrófono. Actívalo en sus ajustes, o usa el micrófono del teclado.',
+  'service-not-allowed': ES_IOS ? 'El dictado de Safari está bloqueado (revisa Ajustes → General → Teclado → Activar dictado). Mientras, usa el micrófono del teclado.' : 'El dictado del navegador está bloqueado. Usa el micrófono del teclado.',
+  'network': 'El dictado necesita internet y no hay buena señal. Usa el micrófono del teclado (funciona sin conexión en muchos celulares).'
+};
+let rec = null, micOn = false, micBase = '', micFin = '';
+function micParar(msg) {
+  micOn = false; try { rec && rec.stop(); } catch (e) {}
+  document.getElementById('mic').classList.remove('on');
+  document.getElementById('interim').textContent = msg || '';
+}
+// Cada sesión de reconocimiento escribe desde el texto que había al empezar (micBase): así no se repiten frases
+function micArrancar() {
+  const ta = document.getElementById('texto'), inter = document.getElementById('interim');
+  rec = new SR(); rec.lang = 'es-CL'; rec.interimResults = true; rec.maxAlternatives = 1;
+  rec.continuous = !ES_MOVIL;                       // en celulares, una frase por sesión (el modo continuo repite o se corta)
+  micBase = ta.value ? ta.value.replace(/\s*$/, ' ') : ''; micFin = '';
+  rec.onresult = ev => {
+    let fin = '', tmp = '';
+    for (let i = 0; i < ev.results.length; i++) { const t = ev.results[i][0].transcript.trim(); if (ev.results[i].isFinal) fin += t + ' '; else tmp += t + ' '; }
+    micFin = fin.trim();
+    ta.value = micBase + micFin;
+    inter.textContent = tmp.trim() ? '… ' + tmp.trim() : '';
+  };
+  rec.onerror = e => { if (e.error === 'aborted') return; if (e.error === 'no-speech' && !ES_IOS && micOn) return; micParar(MIC_ERR[e.error] || ('No se pudo dictar (' + e.error + '). Usa el micrófono del teclado.')); };
+  rec.onend = () => {
+    if (micFin && !/[.!?]\s*$/.test(ta.value)) ta.value = ta.value.replace(/\s*$/, '') + '. ';
+    inter.textContent = '';
+    if (!micOn) return;
+    // iPhone no deja volver a encender el micrófono sin un toque: se avisa en vez de reintentar a ciegas
+    if (ES_IOS) { micParar('✓ Listo. Toca 🎤 para seguir dictando.'); return; }
+    setTimeout(() => { if (micOn) { try { micArrancar(); } catch (e) { micParar('Toca 🎤 para seguir dictando.'); } } }, 250);
+  };
+  rec.start();
+}
+window.c2Mic = function () {
+  const btn = document.getElementById('mic'), ta = document.getElementById('texto');
+  if (!SR) { toast('Este navegador no trae dictado. Toca el cuadro de texto y usa el micrófono del teclado.', false); ta.focus(); return; }
+  if (micOn) { micParar(); return; }
+  try { micArrancar(); micOn = true; btn.classList.add('on'); document.getElementById('interim').textContent = '🎙 Escuchando…'; }
+  catch (e) { micParar('No se pudo iniciar el micrófono (' + e.message + '). Usa el micrófono del teclado.'); }
+};
+window.c2Limpiar = () => { document.getElementById('texto').value = ''; document.getElementById('interim').textContent = ''; };
+window.c2Interpretar = function () {
+  const txt = document.getElementById('texto').value.trim();
+  if (!txt) { toast('Primero dicta o escribe lo que hicieron los equipos.', false); return; }
+  if (micOn) window.c2Mic();
+  const r = dictParse(txt, ctxActual());
+  r.drafts.forEach(d => { d.conf = {}; });
+  if (!r.drafts.length) { toast('No encontré labores en ese texto.', false); return; }
+  drafts = drafts.concat(r.drafts);
+  document.getElementById('texto').value = '';
+  pintarBorradores();
+  toast(`Armé ${r.drafts.length} borrador(es). Revisa las preguntas antes de guardar.`);
+  document.getElementById('borradores').scrollIntoView({ behavior: 'smooth' });
+};
+
+// ── Preguntas (lo que no entendió) ───────────────────────────────
+function sugeridos(frase, lista, n = 4) {
+  const f = dN(frase).replace(/ /g, ''); if (!f) return [];
+  return lista.map(x => { const xc = dN(x).replace(/ /g, ''); const p = dPuntaje(x, dN(frase), []); const l = 1 - dLev(f, xc.slice(0, f.length + 2)) / Math.max(f.length, 1); const incl = xc.includes(f) || f.includes(xc) ? 0.7 : 0; return { x, s: Math.max(p, l * 0.9, incl) }; }).filter(o => o.s >= 0.4).sort((a, b) => b.s - a.s).slice(0, n).map(o => o.x);
+}
+// ── Temas de información por labor (qué se pregunta, qué es opcional, qué no aplica) ──
+const COMUNES = [{ id: 'equipo', label: 'Equipo', def: 'ob' }, { id: 'apero', label: 'Apero', def: 'op' }, { id: 'personas', label: 'Operador / trabajador', def: 'op' }, { id: 'parcial', label: 'Hectáreas parciales', def: 'op' }, { id: 'obs', label: 'Observaciones', def: 'op' }];
+const TEMAS_TIPO = {
+  siembra: [{ id: 'cultivo', label: 'Cultivo', lock: 1 }, { id: 'variedad', label: 'Variedad', def: 'op' }, { id: 'dosis0', label: 'Dosis de semilla', def: 'op' }, { id: 'hectareas', label: 'Hectáreas sembradas', def: 'op' }, { id: 'fert', label: 'Con fertilización', def: 'op' }],
+  fertilizacion: [{ id: 'productos', label: 'Producto y dosis', lock: 1 }],
+  fumigacion: [{ id: 'productos', label: 'Producto y dosis', lock: 1 }, { id: 'mojamiento', label: 'Mojamiento', lock: 1 }, { id: 'tiposProducto', label: 'Categoría de producto', lock: 1 }],
+  trabajo_suelo: [{ id: 'labor', label: 'Labor realizada', lock: 1 }],
+  riego: [{ id: 'metodo', label: 'Método de riego', lock: 1 }, { id: 'duracion', label: 'Duración (horas)', def: 'op' }],
+  cosecha: [{ id: 'kg', label: 'Kilos cosechados', lock: 1 }, { id: 'humedad', label: 'Humedad', def: 'op' }],
+  otro: []
+};
+let cfgTemas = {};
+const tipoBase = t => (t || '').startsWith('custom:') ? 'otro' : t;
+function temasDe(tipo) {
+  const b = tipoBase(tipo);
+  const com = COMUNES.filter(t => !(t.id === 'obs' && b === 'otro')).map(t => ({ ...t }));
+  const obsLock = b === 'otro' ? [{ id: 'obs', label: 'Detalle de lo hecho', lock: 1 }] : [];
+  return [{ id: 'potreros', label: 'Potrero', lock: 1 }, ...com, ...(TEMAS_TIPO[b] || []), ...obsLock];
+}
+function nivel(tipo, t) { if (t.lock) return 'ob'; const v = (cfgTemas[tipoBase(tipo)] || {})[t.id]; return v || t.def || 'op'; }
+function valorTema(d, id) {
+  const lleno = x => (x == null || x === '' ? '' : String(x));
+  switch (id) {
+    case 'potreros': return d.potreros.join(', ');
+    case 'equipo': return d.equipo + (d.equipo && d.porOp ? ' (según el operador)' : '');
+    case 'apero': return d.apero; case 'personas': return (d.personas || []).join(', ') + ((d.personas || []).length && d.porEq ? ' (según el equipo)' : '');
+    case 'parcial': return d.parcialHa != null ? d.parcialHa + ' ha' : ''; case 'obs': return (d.obs || '').trim();
+    case 'productos': return (d.productos || []).filter(p => p.producto && p.dosis).map(p => p.producto + ' ' + p.dosis).join(' + ');
+    case 'mojamiento': return lleno(d.mojamiento); case 'tiposProducto': return (d.tiposProducto || []).join(', ');
+    case 'cultivo': return d.cultivo; case 'variedad': return d.variedad; case 'dosis0': return d.dosis; case 'hectareas': return lleno(d.hectareas);
+    case 'fert': return d.fertilizacion ? 'Sí' : ''; case 'labor': return d.labor; case 'metodo': return d.metodo; case 'duracion': return lleno(d.duracion);
+    case 'kg': return lleno(d.kg); case 'humedad': return lleno(d.humedad);
+  } return '';
+}
+const ver = (d, id) => { const t = temasDe(d.tipo).find(x => x.id === id); return !t || nivel(d.tipo, t) !== 'no'; };
+function checklistDe(d) {
+  return `<div class="field"><label>📝 Información dada</label><div>` + temasDe(d.tipo).filter(t => nivel(d.tipo, t) !== 'no').map(t => {
+    const v = valorTema(d, t.id), lv = nivel(d.tipo, t);
+    if (v) return `<span class="chip" style="background:#DCFCE7">✅ ${esc(t.label)}: ${esc(v)}</span>`;
+    return lv === 'ob' ? `<span class="chip" style="background:#FEE2E2">❌ ${esc(t.label)}: falta</span>` : `<span class="chip">⬜ ${esc(t.label)}: sin dato</span>`;
+  }).join('') + `</div></div>`;
+}
+function preguntasDe(d) {
+  const c = ctxActual(), P = [], cf = d.conf || (d.conf = {});
+  const prods = (d.productos || []);
+  // Potrero
+  if (!d.potreros.length) {
+    if (d.crudo.potrero) P.push({ k: 'potrero', t: `No encontré el potrero «${d.crudo.potrero}». ¿Cuál es?`, ops: sugeridos(d.crudo.potrero, c.potreros), todos: c.potreros, multi: true });
+    else if ((d.dudas.ambiguosPotrero || []).length) P.push({ k: 'potrero', t: '¿En cuál de estos potreros fue?', ops: d.dudas.ambiguosPotrero, todos: c.potreros, multi: true });
+    else P.push({ k: 'potrero', t: '¿En qué potrero fue?', ops: [], todos: c.potreros, multi: true });
+  } else if (d.dudas.potrero && !cf.potrero) P.push({ k: 'potreroOk', t: `Entendí el potrero «${d.potreros[0]}». ¿Es correcto?`, ops: ['Sí, es ese'], todos: c.potreros, multi: false });
+  // Equipo
+  const nivEq = nivel(d.tipo, { id: 'equipo', def: 'ob' });
+  if (nivEq === 'ob' && !d.equipo && !cf.equipo) {
+    const amb = d.dudas.ambiguosEquipo || [];
+    P.push({ k: 'equipo', t: d.crudo.equipo ? `¿Cuál es el equipo «${d.crudo.equipo}»?` : amb.length ? '¿Cuál de estos equipos fue?' : '¿Con qué equipo se hizo?', ops: amb.length ? amb : sugeridos(d.crudo.equipo, c.equipos), todos: c.equipos, extra: ['Sin equipo / no sé'] });
+  } else if (d.dudas.equipo && !cf.equipoOk) P.push({ k: 'equipoOk', t: `Entendí el equipo «${d.equipo}». ¿Es correcto?`, ops: ['Sí, es ese'], todos: c.equipos });
+  if (d.personaDudosa && !cf.persona) P.push({ k: 'persona', t: `¿Te refieres a «${d.personaDudosa}» como operador?`, ops: [d.personaDudosa], todos: c.personas, extra: ['No indicar operador'] });
+  // Tipo
+  if (d.tipo === 'otro' && d.crudo.tipo && !cf.tipo) P.push({ k: 'tipo', t: `No entendí qué labor es «${d.crudo.tipo}». ¿Qué tipo de labor fue?`, ops: TIPOS.map(x => x[1]), vals: TIPOS.map(x => x[0]) });
+  // Campos según tipo
+  if (d.tipo === 'fertilizacion' || d.tipo === 'fumigacion') {
+    prods.forEach((p, i) => {
+      const enInv = productos.some(x => x.nombre === p.producto);
+      if (p.producto && !enInv && !cf['prod' + i]) P.push({ k: 'prod' + i, t: `No encuentro «${p.producto}» en el inventario. ¿Qué producto es?`, ops: sugeridos(p.producto, productos.map(x => x.nombre)), todos: productos.map(x => x.nombre), extra: ['Dejar como lo dije'] });
+      else if (!p.producto) P.push({ k: 'prod' + i, t: `¿Qué producto se usó${p.dosis ? ' a ' + p.dosis : ''}?`, ops: [], todos: productos.map(x => x.nombre) });
+      if (p.producto && !p.dosis) P.push({ k: 'dosis' + i, t: `¿Qué dosis de «${p.producto}»? (ej. 2 L/ha)`, texto: true });
+    });
+    if (!prods.length) P.push({ k: 'prod0', t: '¿Qué producto se aplicó?', ops: [], todos: productos.map(x => x.nombre) });
+  }
+  if (d.tipo === 'fumigacion') {
+    if (d.mojamiento == null || d.mojamiento === '') P.push({ k: 'mojamiento', t: '¿Qué mojamiento se usó (litros de agua por hectárea)?', numero: true });
+    if (!d.tiposProducto.length) P.push({ k: 'tiposProducto', t: '¿Qué categoría de producto fue?', ops: c.tiposProducto, multi: true });
+  }
+  if (d.tipo === 'siembra' && !d.cultivo) P.push({ k: 'cultivo', t: '¿Qué cultivo se sembró?', ops: c.cultivos });
+  if (d.tipo === 'trabajo_suelo' && !d.labor) P.push({ k: 'labor', t: '¿Qué labor de suelo fue? (ej. rastra, arado, subsolado)', texto: true });
+  if (d.tipo === 'riego' && !d.metodo) P.push({ k: 'metodo', t: '¿Con qué método se regó?', ops: ['Goteo', 'Aspersión', 'Surco', 'Tendido', 'Pivote'] });
+  if (d.tipo === 'cosecha' && (d.kg == null || d.kg === '')) P.push({ k: 'kg', t: '¿Cuántos kilos se cosecharon?', numero: true });
+  if (d.tipo === 'otro' && !(d.obs || '').trim() && (!d.crudo.tipo || cf.tipo)) P.push({ k: 'obs', t: 'Describe brevemente lo que se hizo.', texto: true });
+  // Temas que el usuario marcó como "preguntar si falta" (no obligatorios para el cuaderno real)
+  temasDe(d.tipo).filter(t => !t.lock && nivel(d.tipo, t) === 'ob' && !cf['t_' + t.id] && !valorTema(d, t.id)).forEach(t => {
+    if (t.id === 'equipo') return;
+    if (t.id === 'apero') P.push({ k: 't_apero', t: '¿Con qué apero se hizo?', ops: [], todos: c.aperos, extra: ['Sin apero'] });
+    else if (t.id === 'personas') P.push({ k: 't_personas', t: '¿Quién lo hizo?', ops: [], todos: c.personas, extra: ['No indicar'] });
+    else if (t.id === 'parcial') P.push({ k: 't_parcial', t: '¿Fue el potrero completo o solo una parte?', ops: ['Potrero completo'], extra: [], numeroExtra: 'Si fue parcial, escribe las hectáreas' });
+    else if (t.id === 'fert') P.push({ k: 't_fert', t: '¿Se fertilizó junto con la siembra?', ops: ['Sí', 'No'] });
+    else P.push({ k: 't_' + t.id, t: `${t.label}: ¿cuál fue?`, texto: !/(hectareas|duracion|humedad)/.test(t.id), numero: /(hectareas|duracion|humedad)/.test(t.id), opcional: true, ops: [], extra: ['No aplica'] });
+  });
+  return P;
+}
+function pintarPreguntas(d) {
+  const P = preguntasDe(d); if (!P.length) return '';
+  return `<div class="preg"><div class="lbl" style="color:#92400E">❓ Antes de guardar necesito confirmar</div>` + P.map(q => {
+    const id = d.id + ':' + q.k; Q[id] = q;
+    const ops = (q.ops || []).map((o, i) => `<button class="btn" onclick="c2R('${d.id}','${q.k}',${i})">${esc(q.vals ? o : o)}</button>`).join('') + (q.extra || []).map((o, i) => `<button class="btn" onclick="c2R('${d.id}','${q.k}',${(q.ops || []).length + i})">${esc(o)}</button>`).join('');
+    let ent = '';
+    if (q.numeroExtra) ent = `<div class="fila"><input id="in-${id}" type="number" inputmode="decimal" placeholder="${esc(q.numeroExtra)}"><button class="btn btn-verde" onclick="c2RT('${d.id}','${q.k}')">OK</button></div>`;
+    else if (q.texto || q.numero) ent = `<div class="fila"><input id="in-${id}" ${q.numero ? 'type="number" inputmode="decimal"' : ''} placeholder="Escribe aquí"><button class="btn btn-verde" onclick="c2RT('${d.id}','${q.k}')">OK</button></div>`;
+    else if (q.todos && q.todos.length) ent = `<div class="fila"><select id="sel-${id}"><option value="">${q.multi ? 'Elegir otro…' : 'Ver todos…'}</option>${q.todos.map(x => `<option value="${esc(x)}">${esc(x)}</option>`).join('')}</select><button class="btn btn-verde" onclick="c2RS('${d.id}','${q.k}')">OK</button></div>`;
+    return `<div style="margin-bottom:10px"><div class="q">${esc(q.t)}</div>${ops ? `<div class="ops">${ops}</div>` : ''}${ent}</div>`;
+  }).join('') + '</div>';
+}
+const D = id => drafts.find(d => d.id === id);
+function aplicarRespuesta(d, k, val, q) {
+  const cf = d.conf;
+  if (k === 'potrero') { d.potreros = [...new Set([...d.potreros, val])]; if (d.crudo.potrero) { aprender('potrero', d.crudo.potrero, val); d.crudo.potrero = ''; } d.dudas.ambiguosPotrero = []; }
+  else if (k === 'potreroOk') { if (val === 'Sí, es ese') cf.potrero = true; else { d.potreros = [val]; cf.potrero = true; } d.dudas.potrero = false; }
+  else if (k === 'equipo') { cf.equipo = true; if (/^Sin equipo/.test(val)) d.equipo = ''; else { d.equipo = val; if (d.crudo.equipo) { aprender('equipo', d.crudo.equipo, val); d.crudo.equipo = ''; } } d.dudas.ambiguosEquipo = []; }
+  else if (k === 'equipoOk') { if (val !== 'Sí, es ese') d.equipo = val; cf.equipoOk = true; d.dudas.equipo = false; }
+  else if (k === 'persona') { cf.persona = true; if (val === d.personaDudosa) d.personas = [val]; d.personaDudosa = ''; }
+  else if (k === 'tipo') { cf.tipo = true; if (d.crudo.tipo && val !== 'otro') aprender('tipo', d.crudo.tipo, val); d.tipo = val; if (val === 'otro') d.obs = d.obs || ''; if (val === 'fumigacion' || val === 'fertilizacion') d.tiposProducto = d.tiposProducto || []; }
+  else if (/^prod\d+$/.test(k)) { const i = +k.slice(4); d.productos[i] = d.productos[i] || { producto: '', dosis: '' }; const crudo = d.productos[i].producto; cf[k] = true; if (val === 'Dejar como lo dije') { /* se mantiene */ } else { d.productos[i].producto = val; if (crudo) aprender('producto', crudo, val); } const inv = productos.find(x => x.nombre === val); if (inv && inv.categoria && (cfgTiposProd().includes(inv.categoria)) && !d.tiposProducto.includes(inv.categoria)) d.tiposProducto.push(inv.categoria); }
+  else if (/^dosis\d+$/.test(k)) d.productos[+k.slice(5)].dosis = val;
+  else if (k === 'mojamiento') d.mojamiento = parseFloat(val);
+  else if (k === 'tiposProducto') { if (!d.tiposProducto.includes(val)) d.tiposProducto.push(val); }
+  else if (k === 'kg') d.kg = parseFloat(val);
+  else if (k.startsWith('t_')) {
+    const id = k.slice(2); cf[k] = true;
+    if (val === 'No aplica' || val === 'Sin apero' || val === 'No indicar' || val === 'Potrero completo' || val === 'No') { if (id === 'fert') d.fertilizacion = false; return; }
+    if (id === 'apero') d.apero = val; else if (id === 'personas') d.personas = [val]; else if (id === 'parcial') d.parcialHa = parseFloat(val);
+    else if (id === 'fert') d.fertilizacion = true; else if (id === 'dosis0') d.dosis = val;
+    else if (['hectareas', 'duracion', 'humedad'].includes(id)) d[id] = parseFloat(val); else d[id] = val;
+  }
+  else d[k] = val;
+}
+const cfgTiposProd = () => cfg.tiposProductoCampo || [];
+window.c2R = function (id, k, i) { const q = Q[id + ':' + k], d = D(id); if (!q || !d) return; const todas = [...(q.ops || []), ...(q.extra || [])]; const val = q.vals && i < q.vals.length ? q.vals[i] : todas[i]; aplicarRespuesta(d, k, val, q); pintarBorradores(); };
+window.c2RS = function (id, k) { const el = document.getElementById('sel-' + id + ':' + k), d = D(id); if (!el || !el.value || !d) return; aplicarRespuesta(d, k, el.value, Q[id + ':' + k]); pintarBorradores(); };
+window.c2RT = function (id, k) { const el = document.getElementById('in-' + id + ':' + k), d = D(id); if (!el || !el.value.trim() || !d) return; aplicarRespuesta(d, k, el.value.trim(), Q[id + ':' + k]); pintarBorradores(); };
+
+// ── Borradores (editar a mano) ───────────────────────────────────
+function opts(lista, sel, vacio) { return (vacio != null ? `<option value="">${esc(vacio)}</option>` : '') + lista.map(x => `<option value="${esc(x)}" ${x === sel ? 'selected' : ''}>${esc(x)}</option>`).join(''); }
+function pintarBorradores() {
+  Q = {}; const c = ctxActual(); const cont = document.getElementById('borradores');
+  if (!drafts.length) { cont.innerHTML = ''; return; }
+  cont.innerHTML = drafts.map(d => {
+    const pend = preguntasDe(d).length;
+    const prods = (d.productos || []).map((p, i) => `<div class="fila" style="margin-bottom:4px"><input list="dl-productos" value="${esc(p.producto)}" placeholder="Producto" onchange="c2S('${d.id}','prod',this.value,${i})"><input value="${esc(p.dosis)}" placeholder="Dosis (2 L/ha)" onchange="c2S('${d.id}','dosis',this.value,${i})" style="max-width:130px"><button class="btn btn-rojo" onclick="c2S('${d.id}','delprod',null,${i})">✕</button></div>`).join('');
+    let campos = '';
+    if (d.tipo === 'fertilizacion' || d.tipo === 'fumigacion') campos += `<div class="field"><label>Productos y dosis</label>${prods}<button class="btn btn-sec" onclick="c2S('${d.id}','addprod')">＋ producto</button></div>`;
+    if (d.tipo === 'fumigacion') campos += `<div class="grid"><div class="field"><label>Mojamiento (L/ha)</label><input type="number" inputmode="decimal" value="${d.mojamiento == null ? '' : d.mojamiento}" onchange="c2S('${d.id}','mojamiento',this.value)"></div><div class="field"><label>Categorías</label>${c.tiposProducto.map(t => `<span class="chip ${d.tiposProducto.includes(t) ? 'sel' : ''}" onclick="c2S('${d.id}','tp','${esc(t)}')">${esc(t)}</span>`).join('')}</div></div>`;
+    if (d.tipo === 'siembra') campos += `<div class="grid"><div class="field"><label>Cultivo</label><select onchange="c2S('${d.id}','cultivo',this.value)">${opts(c.cultivos, d.cultivo, '—')}</select></div><div class="field"><label>Variedad</label><input value="${esc(d.variedad)}" onchange="c2S('${d.id}','variedad',this.value)"></div><div class="field"><label>Dosis semilla</label><input value="${esc(d.dosis)}" onchange="c2S('${d.id}','dosis0',this.value)"></div><div class="field"><label>Hectáreas</label><input type="number" inputmode="decimal" value="${d.hectareas == null ? '' : d.hectareas}" onchange="c2S('${d.id}','hectareas',this.value)"></div></div><label class="chip ${d.fertilizacion ? 'sel' : ''}" onclick="c2S('${d.id}','fert')">${d.fertilizacion ? '✓ ' : ''}Con fertilización</label>`;
+    if (d.tipo === 'trabajo_suelo') campos += `<div class="field"><label>Labor realizada</label><input value="${esc(d.labor)}" onchange="c2S('${d.id}','labor',this.value)"></div>`;
+    if (d.tipo === 'riego') campos += `<div class="grid"><div class="field"><label>Método</label><input value="${esc(d.metodo)}" onchange="c2S('${d.id}','metodo',this.value)"></div><div class="field"><label>Duración (horas)</label><input type="number" inputmode="decimal" value="${d.duracion == null ? '' : d.duracion}" onchange="c2S('${d.id}','duracion',this.value)"></div></div>`;
+    if (d.tipo === 'cosecha') campos += `<div class="grid"><div class="field"><label>Kilos</label><input type="number" inputmode="decimal" value="${d.kg == null ? '' : d.kg}" onchange="c2S('${d.id}','kg',this.value)"></div><div class="field"><label>Humedad %</label><input type="number" inputmode="decimal" value="${d.humedad == null ? '' : d.humedad}" onchange="c2S('${d.id}','humedad',this.value)"></div></div>`;
+    campos += `<div class="field"><label>${d.tipo === 'otro' ? 'Detalle' : 'Observaciones'}</label><input value="${esc(d.obs)}" onchange="c2S('${d.id}','obs',this.value)"></div>`;
+    const parcial = d.potreros.length === 1 && d.tipo !== 'siembra' && d.tipo !== 'cosecha' ? `<div class="field"><label>Hectáreas parciales (vacío = potrero completo)</label><input type="number" inputmode="decimal" value="${d.parcialHa == null ? '' : d.parcialHa}" onchange="c2S('${d.id}','parcialHa',this.value)"></div>` : '';
+    return `<div class="panel card ${pend ? 'pend' : ''}"><div class="fila"><select onchange="c2S('${d.id}','tipo',this.value)">${TIPOS.map(t => `<option value="${t[0]}" ${t[0] === d.tipo ? 'selected' : ''}>${t[1]}</option>`).join('')}${d.tipo.startsWith('custom:') ? `<option value="${esc(d.tipo)}" selected>${esc(tipoLabel(d.tipo))}</option>` : ''}</select><input type="date" value="${d.fecha || ''}" onchange="c2S('${d.id}','fecha',this.value)" style="max-width:160px"><button class="btn btn-rojo" onclick="c2S('${d.id}','quitar')">✕</button></div>
+      ${d.frase ? `<div class="frase">«${esc(d.frase)}»</div>` : ''}${pintarPreguntas(d)}
+      ${checklistDe(d)}
+      <details${d.docId ? ' open' : ''}><summary class="peq" style="font-weight:600;margin:6px 0">✏️ Editar los datos a mano</summary>
+      <div class="field"><label>Potreros</label>${d.potreros.map(p => `<span class="chip">${esc(p)}<button onclick="c2S('${d.id}','delpot','${esc(p)}')">✕</button></span>`).join('')}<select onchange="c2S('${d.id}','addpot',this.value)" style="margin-top:4px"><option value="">＋ agregar potrero…</option>${c.potreros.filter(p => !d.potreros.includes(p)).map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join('')}</select></div>
+      <div class="grid"><div class="field"><label>Equipo</label><select onchange="c2S('${d.id}','equipo',this.value)">${opts(c.equipos, d.equipo, '— sin equipo —')}</select></div>${ver(d, 'apero') ? `<div class="field"><label>Apero</label><select onchange="c2S('${d.id}','apero',this.value)">${opts(c.aperos, d.apero, '— sin apero —')}</select></div>` : ''}</div>
+      ${ver(d, 'personas') ? `<div class="field"><label>Operadores / trabajadores</label>${d.personas.map(p => `<span class="chip">${esc(p)}<button onclick="c2S('${d.id}','delper','${esc(p)}')">✕</button></span>`).join('')}<select onchange="c2S('${d.id}','addper',this.value)" style="margin-top:4px"><option value="">＋ agregar persona…</option>${c.personas.filter(p => !d.personas.includes(p)).map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join('')}</select></div>` : ''}
+      ${campos}${ver(d, 'parcial') ? parcial : ''}</details>
+      <div class="peq" style="margin-top:6px">${pend ? '⏳ Responde las preguntas para poder guardar.' : '✓ Listo para guardar.'}</div></div>`;
+  }).join('') + `<div class="panel"><div class="fila" style="flex-wrap:wrap"><button class="btn btn-verde" onclick="c2GuardarTodos()">💾 Guardar los que están listos (${drafts.filter(d => !preguntasDe(d).length).length} de ${drafts.length})</button><button class="btn btn-sec" onclick="c2Descartar()">Descartar todo</button></div></div>`;
+}
+window.c2Descartar = () => { if (confirm('¿Descartar todos los borradores?')) { drafts = []; pintarBorradores(); } };
+window.c2S = function (id, k, v, i) {
+  const d = D(id); if (!d) return;
+  const num = x => x === '' || x == null ? null : parseFloat(String(x).replace(',', '.'));
+  if (k === 'quitar') drafts = drafts.filter(x => x.id !== id);
+  else if (k === 'tipo') { d.tipo = v; d.conf.tipo = true; if (v === 'fumigacion' || v === 'fertilizacion') d.tiposProducto = d.tiposProducto || []; }
+  else if (k === 'delpot') d.potreros = d.potreros.filter(x => x !== v);
+  else if (k === 'addpot') { if (v) d.potreros.push(v); }
+  else if (k === 'delper') d.personas = d.personas.filter(x => x !== v);
+  else if (k === 'addper') { if (v) d.personas.push(v); }
+  else if (k === 'equipo') { d.equipo = v; d.conf.equipo = true; d.dudas.equipo = false; }
+  else if (k === 'prod') { d.productos[i].producto = v; d.conf['prod' + i] = true; }
+  else if (k === 'dosis') d.productos[i].dosis = v;
+  else if (k === 'delprod') d.productos.splice(i, 1);
+  else if (k === 'addprod') d.productos.push({ producto: '', dosis: '' });
+  else if (k === 'tp') { const j = d.tiposProducto.indexOf(v); if (j >= 0) d.tiposProducto.splice(j, 1); else d.tiposProducto.push(v); }
+  else if (k === 'fert') d.fertilizacion = !d.fertilizacion;
+  else if (k === 'dosis0') d.dosis = v;
+  else if (['mojamiento', 'duracion', 'kg', 'humedad', 'hectareas', 'parcialHa'].includes(k)) d[k] = num(v);
+  else d[k] = v;
+  pintarBorradores();
+};
+
+// ── Guardar / corregir / pasar al real ───────────────────────────
+function payloadDe(d, potrero, ts) {
+  const fecha = d.fecha, custom = d.tipo.startsWith('custom:');
+  const p = { tipo: custom ? 'personalizado' : d.tipo, fecha, anio: fecha.slice(0, 4), obs: (d.obs || '').trim(), operador: usuario.nombre, ts: ts || Date.now(), potrero,
+    aplicacion_completa: !(d.potreros.length === 1 && d.parcialHa != null), hectareas_aplicadas: d.potreros.length === 1 && d.parcialHa != null ? d.parcialHa : null, obs_parcial: null,
+    equipo: d.equipo || null, apero: d.apero || null, personas: d.personas || [], origen: 'dictado', textoDictado: d.frase || null };
+  if (custom) p.nombreTipo = d.tipo.slice(7);
+  const prods = (d.productos || []).filter(x => x.producto && x.dosis).map(x => ({ producto: x.producto, dosis: x.dosis }));
+  if (d.tipo === 'siembra') { p.cultivo = d.cultivo; p.variedad = d.variedad || null; p.dosis = d.dosis || null; p.hectareas = d.hectareas; p.fertilizacion = !!d.fertilizacion; if (d.fertilizacion) { p.fertMezcla = d.fertMezcla || null; p.fertDosis = d.fertDosis || null; } }
+  else if (d.tipo === 'fertilizacion') p.productos = prods;
+  else if (d.tipo === 'fumigacion') { p.mojamiento = d.mojamiento; p.tiposProducto = [...d.tiposProducto]; p.productos = prods; p.avisajeNoRegistrado = true; }
+  else if (d.tipo === 'trabajo_suelo') p.labor = d.labor;
+  else if (d.tipo === 'riego') { p.metodo = d.metodo; p.duracion = d.duracion; }
+  else if (d.tipo === 'cosecha') { p.kg = d.kg; p.humedad = d.humedad; if (d.cultivo) p.cultivo = d.cultivo; }
+  else if (d.tipo === 'otro') p.detalle = (d.obs || '').trim();
+  else if (custom) p.detalle = (d.obs || '').trim();
+  return p;
+}
+window.c2GuardarTodos = async function () {
+  const listos = drafts.filter(d => !preguntasDe(d).length);
+  if (!listos.length) { toast('Todavía hay preguntas por responder.', false); return; }
+  try {
+    const batch = writeBatch(db); let n = 0;
+    listos.forEach(d => {
+      if (d.docId) { batch.set(doc(db, 'labores_campo_v2', d.docId), { ...payloadDe(d, d.potreros[0], d.tsOrig), editadoPor: usuario.nombre, editadoTs: Date.now() }); n++; }
+      else d.potreros.forEach(p => { batch.set(doc(collection(db, 'labores_campo_v2')), payloadDe(d, p)); n++; });
+    });
+    await batch.commit();
+    drafts = drafts.filter(d => !listos.includes(d));
+    toast(`✓ ${n} registro(s) guardado(s) en prueba`); pintarBorradores(); await cargarGuardados();
+  } catch (e) { toast('Error al guardar: ' + e.message, false); }
+};
+function resumenReg(r) {
+  const x = [];
+  if (r.equipo) x.push(r.equipo); if (r.apero) x.push(r.apero);
+  if (r.productos && r.productos.length) x.push(r.productos.map(p => `${p.producto} ${p.dosis}`).join(' + '));
+  if (r.mojamiento != null) x.push(`${r.mojamiento} L/ha agua`);
+  if (r.cultivo) x.push(r.cultivo); if (r.labor) x.push(r.labor); if (r.metodo) x.push(r.metodo + (r.duracion ? ' ' + r.duracion + ' h' : ''));
+  if (r.kg != null) x.push(r.kg + ' kg'); if (r.detalle) x.push(r.detalle);
+  if (r.personas && r.personas.length) x.push('👤 ' + r.personas.join(', '));
+  return x.join(' · ');
+}
+function pintarGuardados() {
+  const el = document.getElementById('guardados');
+  if (!guardados.length) { el.innerHTML = 'Todavía no hay registros de prueba.'; return; }
+  el.innerHTML = `<table><thead><tr><th>Fecha</th><th>Labor · potrero</th><th></th></tr></thead><tbody>` + guardados.map(r => `<tr><td>${esc(r.fecha)}</td><td><b>${esc(tipoLabel(r.tipo === 'personalizado' ? 'custom:' + r.nombreTipo : r.tipo))}</b> · ${esc(r.potrero)}<div class="peq">${esc(resumenReg(r))}</div></td><td style="white-space:nowrap">${r.pasadoAlReal ? '<span class="chip sel">✓ en real</span>' : `<button class="btn btn-sec" title="Corregir" onclick="c2Editar('${r.id}')">✏️</button> <button class="btn btn-sec" title="Pasar al cuaderno real" onclick="c2Pasar('${r.id}')">↗</button> `}<button class="btn btn-rojo" title="Borrar" onclick="c2Borrar('${r.id}')">🗑</button></td></tr>`).join('') + '</tbody></table>';
+}
+window.c2Editar = function (id) {
+  const r = guardados.find(x => x.id === id); if (!r) return;
+  const tipo = r.tipo === 'personalizado' ? 'custom:' + r.nombreTipo : r.tipo;
+  const d = { id: 'e_' + id, docId: id, tsOrig: r.ts, tipo, fecha: r.fecha, potreros: [r.potrero], equipo: r.equipo || '', apero: r.apero || '', personas: r.personas || [], personaDudosa: '', frase: r.textoDictado || '', productos: (r.productos || []).map(p => ({ ...p })), mojamiento: r.mojamiento == null ? null : r.mojamiento, tiposProducto: r.tiposProducto || [], labor: r.labor || '', metodo: r.metodo || '', duracion: r.duracion == null ? null : r.duracion, kg: r.kg == null ? null : r.kg, humedad: r.humedad == null ? null : r.humedad, cultivo: r.cultivo || '', variedad: r.variedad || '', dosis: r.dosis || '', hectareas: r.hectareas == null ? null : r.hectareas, parcialHa: r.hectareas_aplicadas == null ? null : r.hectareas_aplicadas, fertilizacion: !!r.fertilizacion, fertMezcla: r.fertMezcla || '', fertDosis: r.fertDosis || '', obs: r.tipo === 'otro' ? (r.detalle || r.obs || '') : (r.obs || ''), crudo: { potrero: '', equipo: '', productos: [], tipo: '' }, dudas: { equipo: false, potrero: false, ambiguosPotrero: [], ambiguosEquipo: [] }, conf: { equipo: true, potrero: true } };
+  drafts = drafts.filter(x => x.id !== d.id); drafts.unshift(d); pintarBorradores(); document.getElementById('borradores').scrollIntoView({ behavior: 'smooth' });
+  toast('Corrige lo que haga falta y toca "Guardar".');
+};
+window.c2Borrar = async function (id) { if (!confirm('¿Borrar este registro de prueba?')) return; try { await deleteDoc(doc(db, 'labores_campo_v2', id)); await cargarGuardados(); } catch (e) { toast('Error: ' + e.message, false); } };
+window.c2Pasar = async function (id) {
+  const r = guardados.find(x => x.id === id); if (!r) return;
+  if (!confirm(`¿Pasar este registro al cuaderno REAL?\n\n${r.fecha} · ${r.potrero}\n${resumenReg(r)}\n\nDespués de pasarlo, para corregirlo hay que hacerlo en el cuaderno real.`)) return;
+  try {
+    const { id: _i, pasadoAlReal, ...datos } = r;
+    const ref = doc(collection(db, 'labores_campo'));
+    await setDoc(ref, { ...datos, origen: 'dictado_v2' });
+    await setDoc(doc(db, 'labores_campo_v2', id), { pasadoAlReal: true, idReal: ref.id }, { merge: true });
+    toast('✓ Pasado al cuaderno real'); await cargarGuardados();
+  } catch (e) { toast('Error: ' + e.message, false); }
+};
+
+// ── Lo aprendido y el vocabulario ────────────────────────────────
+function pintarAprendido() {
+  const cats = { potrero: 'Potreros', equipo: 'Equipos', producto: 'Productos', tipo: 'Labores' };
+  let n = 0, h = '';
+  Object.keys(cats).forEach(c => { const e = Object.entries(alias[c] || {}); n += e.length; if (e.length) h += `<div style="margin-top:6px"><b>${cats[c]}</b></div>` + e.map(([k, v]) => `<div class="fila" style="margin:2px 0"><span style="flex:1">«${esc(k)}» → <b>${esc(v)}</b></span><button class="btn btn-rojo" style="padding:4px 8px" onclick="c2QuitarAlias('${c}','${esc(k)}')">✕</button></div>`).join(''); });
+  document.getElementById('n-alias').textContent = n; document.getElementById('aprendido').innerHTML = h || 'Aún nada: se llena cuando respondes una pregunta o corriges algo.';
+}
+window.c2QuitarAlias = function (c, k) { delete alias[c][k]; guardarAlias(); pintarAprendido(); };
+function pintarVocab() {
+  const c = ctxActual(); const l = (t, a) => `<div style="margin-top:6px"><b>${t} (${a.length})</b>: ${a.map(esc).join(' · ') || '—'}</div>`;
+  document.getElementById('vocab').innerHTML = l('Equipos', c.equipos) + l('Aperos', c.aperos) + l('Potreros', c.potreros) + l('Operadores y trabajadores', c.personas) + l('Operador → equipos asignados', Object.entries(c.equipoOperador).map(([o, e]) => o + ' → ' + e.join(' / '))) + l('Productos del inventario', c.productos.map(p => p.nombre)) + l('Categorías de producto', c.tiposProducto) + l('Cultivos', c.cultivos) + l('Labores y trabajos', c.laboresExtra.map(x => x.nombre));
+}
+
+function pintarTemas() {
+  const el = document.getElementById('temas'); if (!el) return;
+  el.innerHTML = TIPOS.map(([tipo, label]) => `<div style="margin-top:8px"><b>${label}</b>` + temasDe(tipo).filter(t => t.id !== 'potreros').map(t => t.lock
+    ? `<div class="fila" style="margin:3px 0"><span style="flex:1">${esc(t.label)}</span><span class="peq">🔒 obligatorio</span></div>`
+    : `<div class="fila" style="margin:3px 0"><span style="flex:1">${esc(t.label)}</span><select style="max-width:190px" onchange="c2Tema('${tipo}','${t.id}',this.value)"><option value="ob" ${nivel(tipo, t) === 'ob' ? 'selected' : ''}>Preguntar si falta</option><option value="op" ${nivel(tipo, t) === 'op' ? 'selected' : ''}>Opcional</option><option value="no" ${nivel(tipo, t) === 'no' ? 'selected' : ''}>No aplica</option></select></div>`).join('') + '</div>').join('');
+}
+window.c2Tema = async function (tipo, id, v) { (cfgTemas[tipo] = cfgTemas[tipo] || {})[id] = v; try { await setDoc(doc(db, 'config', 'dictado'), { temas: cfgTemas }, { merge: true }); toast('Guardado'); } catch (e) { toast('Error: ' + e.message, false); } pintarBorradores(); };
+
+// ── Inicio ───────────────────────────────────────────────────────
+(async function iniciar() {
+  document.getElementById('fecha-base').value = hoyStr();
+  await cargar();
+  revisarAcceso(); await accesoListo;
+  document.getElementById('quien').textContent = `👤 ${usuario.nombre} · Dicta lo que hicieron los equipos y se arma el cuaderno. Todo se guarda aparte, sin tocar el cuaderno real.`;
+  await cargarResto();
+})();
+</script>
+</body>
+</html>
