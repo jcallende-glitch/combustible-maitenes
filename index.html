@@ -5825,6 +5825,22 @@ const TIPOS_LABOR_CAMPO = [
 ];
 
 let camposLaborPotrerosSel = [];
+// Unidades de selección: un potrero entero, o cada lote cuando el potrero está dividido (clave "potrero::lote")
+const SEP_LOTE = '::';
+function infoUnidad(u) { const i = String(u).indexOf(SEP_LOTE); return i < 0 ? { potrero: u, lote: null, label: u } : { potrero: u.slice(0, i), lote: u.slice(i + SEP_LOTE.length), label: u.slice(i + SEP_LOTE.length) }; }
+const cmpEs = (a, b) => String(a).localeCompare(String(b), 'es', { numeric: true, sensitivity: 'base' });
+function unidadesCampo(soloAnuales) {
+  const anio = new Date().getFullYear(), out = [];
+  [...potrerosConfig].sort((a, b) => cmpEs(a.nombre, b.nombre)).forEach(p => {
+    if (soloAnuales && p.tipo === 'frutal') return;
+    const ls = p.tipo === 'frutal' ? null : lotesDe(p.nombre, anio);
+    if (ls) [...ls].sort((a, b) => cmpEs(a.nombre, b.nombre)).forEach(l => out.push({ key: p.nombre + SEP_LOTE + l.nombre, label: l.nombre, potrero: p.nombre, lote: l }));
+    else out.push({ key: p.nombre, label: p.nombre, potrero: p.nombre, lote: null });
+  });
+  return out;
+}
+function loteDeUnidad(u) { const i = infoUnidad(u); return i.lote ? (lotesDe(i.potrero, new Date().getFullYear()) || []).find(l => l.nombre === i.lote) || null : null; }
+function laborEsDeUnidad(l, u) { const i = infoUnidad(u); if (l.potrero !== i.potrero) return false; return !i.lote || !l.lote || l.lote === i.lote; }
 let campoLaborPotrerosDetalle = {}; // { [nombrePotrero]: { modo: 'completo'|'parcial', hectareas: number|null } }
 let campoTipoLaborSeleccionado = null;
 let laboresCampoRegistros = []; // subconjunto filtrado por los potreros elegidos ahora
@@ -5871,7 +5887,7 @@ function suscribirLaboresCampo() {
 }
 
 function recalcularLaboresCampoSeleccion() {
-  laboresCampoRegistros = laboresCampoTodos.filter(l => camposLaborPotrerosSel.includes(l.potrero));
+  laboresCampoRegistros = laboresCampoTodos.filter(l => camposLaborPotrerosSel.some(u => laborEsDeUnidad(l, u)));
   renderEstadoPotreros();
   populateFiltroAnioCampo();
   renderHistorialLabores();
@@ -5913,9 +5929,18 @@ function renderEstadoPotreros() {
     cont.innerHTML = '<div class="empty" style="padding:10px"><div class="empty-icon">🌱</div>Elige uno o más potreros arriba.</div>';
     return;
   }
-  cont.innerHTML = camposLaborPotrerosSel.map(nombre => {
+  cont.innerHTML = [...camposLaborPotrerosSel].sort(cmpEs).map(unidad => {
+    const inf = infoUnidad(unidad), nombre = inf.potrero;
     const p = potrerosConfig.find(x => x.nombre === nombre);
     if (!p) return '';
+    const lote = loteDeUnidad(unidad);
+    if (lote) return `
+    <div class="anterior-box" style="margin-bottom:8px">
+      <div class="anterior-row"><span>Lote:</span><strong>${escA(lote.nombre)}</strong></div>
+      <div class="anterior-row"><span>Potrero:</span><strong>${escA(nombre)}</strong></div>
+      <div class="anterior-row"><span>Hectáreas:</span><strong>${lote.hectareas != null ? lote.hectareas.toFixed(1) + ' ha' : '—'}</strong></div>
+      <div class="anterior-row"><span>Cultivo ${new Date().getFullYear()}:</span><strong>${escA(lote.cultivo || 'sin definir')}</strong></div>
+    </div>`;
     let cultivoActual;
     if (p.tipo === 'frutal') {
       cultivoActual = p.cultivoPermanente || '—';
@@ -5934,7 +5959,10 @@ function renderEstadoPotreros() {
   }).join('');
 }
 
-function cultivoDeReferenciaPotrero(nombrePotrero) {
+function cultivoDeReferenciaPotrero(unidad) {
+  const lote = unidad ? loteDeUnidad(unidad) : null;
+  if (lote) return lote.cultivo || null;
+  const nombrePotrero = unidad ? infoUnidad(unidad).potrero : unidad;
   const p = potrerosConfig.find(x => x.nombre === nombrePotrero);
   if (!p) return null;
   if (p.tipo === 'frutal') return p.cultivoPermanente || null;
@@ -5948,7 +5976,7 @@ function renderTipoLaborSelector() {
   // Si hay potreros anuales entre los elegidos (o todavía no se elige ninguno),
   // se muestra "Siembra" como opción — al elegirla se filtran los frutales.
   const esAnual = !camposLaborPotrerosSel.length || camposLaborPotrerosSel.some(nombre => {
-    const p = potrerosConfig.find(x => x.nombre === nombre);
+    const p = potrerosConfig.find(x => x.nombre === infoUnidad(nombre).potrero);
     return p && p.tipo !== 'frutal';
   });
   const cultivoRef = cultivoDeReferenciaPotrero(camposLaborPotrerosSel[0]);
@@ -5969,7 +5997,7 @@ window.seleccionarTipoLaborCampo = function(tipo) {
   // seleccionado es frutal, se saca automáticamente de la selección.
   if (tipo === 'siembra') {
     camposLaborPotrerosSel = camposLaborPotrerosSel.filter(nombre => {
-      const p = potrerosConfig.find(x => x.nombre === nombre);
+      const p = potrerosConfig.find(x => x.nombre === infoUnidad(nombre).potrero);
       return p && p.tipo !== 'frutal';
     });
     restylarMapaPotrerosSeleccion();
@@ -5984,10 +6012,8 @@ window.seleccionarTipoLaborCampo = function(tipo) {
 function renderCamposLaborPotrerosSelector() {
   const wrap = document.getElementById('campo-labor-potreros-selector');
   if (!wrap) return;
-  const lista = campoTipoLaborSeleccionado === 'siembra'
-    ? potrerosConfig.filter(p => p.tipo !== 'frutal')
-    : potrerosConfig;
-  wrap.innerHTML = lista.map(p => `<div class="cultivo-chip ${camposLaborPotrerosSel.includes(p.nombre)?'sel':''}" onclick='toggleCampoLaborPotrero(${JSON.stringify(p.nombre)})'>${p.nombre}</div>`).join('');
+  const lista = unidadesCampo(campoTipoLaborSeleccionado === 'siembra');
+  wrap.innerHTML = lista.map(u => `<div class="cultivo-chip ${camposLaborPotrerosSel.includes(u.key)?'sel':''}" onclick='toggleCampoLaborPotrero(${JSON.stringify(u.key)})'>${escA(u.label)}</div>`).join('');
   renderListaPotrerosLaborSeleccionados();
 }
 
@@ -6007,13 +6033,13 @@ function renderListaPotrerosLaborSeleccionados() {
   const cont = document.getElementById('campo-labor-potreros-lista');
   if (!cont) return;
   if (!camposLaborPotrerosSel.length) { cont.innerHTML = ''; return; }
-  cont.innerHTML = camposLaborPotrerosSel.map(nombre => {
+  cont.innerHTML = [...camposLaborPotrerosSel].sort(cmpEs).map(nombre => {
     const d = campoLaborPotrerosDetalle[nombre] || { modo: 'completo', hectareas: null, obs: '' };
     return `
       <div class="config-item" style="flex-wrap:wrap;gap:8px">
         <span style="flex:1;min-width:140px">
-          <strong>${nombre}</strong><br>
-          <span style="font-size:11px;color:var(--verde)">🌱 ${textoCultivoActual(nombre)}</span>
+          <strong>${escA(infoUnidad(nombre).label)}</strong>${infoUnidad(nombre).lote ? ` <span style="font-size:11px;color:#6B7280">(lote de ${escA(infoUnidad(nombre).potrero)})</span>` : ''}<br>
+          <span style="font-size:11px;color:var(--verde)">🌱 ${escA(infoUnidad(nombre).lote ? ((loteDeUnidad(nombre) || {}).cultivo || 'sin definir') : textoCultivoActual(nombre))}</span>
         </span>
         <div style="display:flex;gap:6px">
           <button type="button" class="btn ${d.modo==='completo'?'btn-verde':'btn-secondary'}" style="font-size:11px;padding:6px 10px" onclick='setModoAplicacionPotrero(${JSON.stringify(nombre)},"completo")'>Completo</button>
@@ -6421,7 +6447,8 @@ window.registrarLaborCampo = async function() {
       const ref = doc(collection(db, 'labores_campo'));
       batch.set(ref, {
         ...payloadBase,
-        potrero: nombrePotrero,
+        potrero: infoUnidad(nombrePotrero).potrero,
+        lote: infoUnidad(nombrePotrero).lote || null,
         aplicacion_completa: detalle.modo === 'completo',
         hectareas_aplicadas: detalle.modo === 'parcial' ? detalle.hectareas : null,
         obs_parcial: detalle.modo === 'parcial' ? (detalle.obs || null) : null
@@ -6522,19 +6549,124 @@ window.renderHistorialLabores = function() {
       <td style="font-size:12px">${detalleLaborCampo(l)}</td>
       <td style="font-size:12px;color:#6B7280">${l.obs || '—'}</td>
       <td style="font-size:12px">${l.operador}</td>
-      ${isAdmin?`<td><button class="btn btn-danger" onclick="eliminarLaborCampo('${l.id}')">✕</button></td>`:''}
+      ${isAdmin?`<td style="white-space:nowrap"><button class="btn btn-secondary" style="padding:6px 9px;margin-right:4px" title="Editar" onclick="editarLaborCampo('${l.id}')">✏️</button><button class="btn btn-danger" onclick="eliminarLaborCampo('${l.id}')">✕</button></td>`:''}
     </tr>`).join('')}</tbody>
   </table></div>`;
   // Con 2 o más potreros elegidos, las labores se muestran por separado (la selección conjunta es solo para ingresar más rápido)
   if (camposLaborPotrerosSel.length > 1) {
-    cont.innerHTML = camposLaborPotrerosSel.map(nombre => {
-      const filas = data.filter(l => l.potrero === nombre);
-      return `<div style="margin:14px 0 6px;font-weight:700;font-size:14px;display:flex;align-items:center;gap:8px"><span>📍 ${escA(nombre)}</span><span style="font-weight:400;font-size:12px;color:#6B7280">${filas.length} labor${filas.length === 1 ? '' : 'es'}</span></div>`
+    cont.innerHTML = [...camposLaborPotrerosSel].sort(cmpEs).map(nombre => {
+      const filas = data.filter(l => laborEsDeUnidad(l, nombre));
+      return `<div style="margin:14px 0 6px;font-weight:700;font-size:14px;display:flex;align-items:center;gap:8px"><span>📍 ${escA(infoUnidad(nombre).label)}</span><span style="font-weight:400;font-size:12px;color:#6B7280">${filas.length} labor${filas.length === 1 ? '' : 'es'}</span></div>`
         + (filas.length ? tabla(filas) : '<div class="empty" style="padding:8px;font-size:13px">Sin labores registradas.</div>');
     }).join('');
     return;
   }
   cont.innerHTML = tabla(data);
+}
+
+// ─── EDICIÓN COMPLETA DE UNA LABOR REGISTRADA ───────────────────
+let EL = null; // { id, l, d } d = copia editable
+window.editarLaborCampo = function(id) {
+  const l = laboresCampoTodos.find(x => x.id === id);
+  if (!l) return;
+  EL = { id, l, d: JSON.parse(JSON.stringify(l)) };
+  if (!Array.isArray(EL.d.productos)) EL.d.productos = l.productos ? [] : null;
+  if (!Array.isArray(EL.d.aperos)) EL.d.aperos = EL.d.apero ? [EL.d.apero] : [];
+  pintarEdicionLabor();
+}
+function elInput(label, campo, tipo, extra) {
+  const v = EL.d[campo]; 
+  return `<div class="field" style="margin-bottom:8px"><label>${label}</label><input type="${tipo || 'text'}" ${extra || ''} value="${v == null ? '' : escA(v)}" oninput="elSet('${campo}', this.value, '${tipo || 'text'}')"></div>`;
+}
+window.elSet = function(campo, valor, tipo) {
+  if (tipo === 'number') EL.d[campo] = valor === '' ? null : parseFloat(valor);
+  else EL.d[campo] = valor;
+}
+window.elProd = function(i, k, v) { EL.d.productos[i][k] = v; }
+window.elProdAdd = function() { EL.d.productos.push({ producto: '', dosis: '' }); pintarEdicionLabor(); }
+window.elProdDel = function(i) { EL.d.productos.splice(i, 1); pintarEdicionLabor(); }
+window.elToggle = function(campo, valor) {
+  const a = EL.d[campo] = Array.isArray(EL.d[campo]) ? EL.d[campo] : [];
+  const i = a.indexOf(valor); if (i >= 0) a.splice(i, 1); else a.push(valor);
+  pintarEdicionLabor();
+}
+window.elAsig = function(campo, valor) { EL.d[campo] = valor; pintarEdicionLabor(); }
+window.elSetPot = function(v) { EL.d.potrero = v; EL.d.lote = null; pintarEdicionLabor(); }
+function pintarEdicionLabor() {
+  const d = EL.d, t = d.tipo;
+  const selEq = `<div class="field" style="margin-bottom:8px"><label>Equipo (opcional)</label><div class="select-wrapper"><select onchange="elSet('equipo', this.value)"><option value="">—</option>${config.equipos.map(e => `<option value="${escA(e)}" ${d.equipo === e ? 'selected' : ''}>${escA(e)}</option>`).join('')}</select></div></div>`;
+  const chips = (lista, campo) => `<div class="centros-selector">${lista.map(x => `<div class="cultivo-chip ${(d[campo] || []).includes(x) ? 'sel' : ''}" onclick='elToggle(${JSON.stringify(campo)},${JSON.stringify(x)})'>${escA(x)}</div>`).join('')}</div>`;
+  let esp = '';
+  if (t === 'siembra') {
+    const cult = [...new Set([...cultivosCampoConfig, d.cultivo].filter(Boolean))];
+    esp = `<div class="cultivos-label">Cultivo</div><div class="centros-selector">${cult.map(c => `<div class="cultivo-chip ${d.cultivo === c ? 'sel' : ''}" onclick='elAsig("cultivo",${JSON.stringify(c)})'>${escA(c)}</div>`).join('')}</div>`
+      + elInput('Variedad', 'variedad') + elInput('Dosis', 'dosis') + elInput('Hectáreas sembradas', 'hectareas', 'number', 'min="0" step="0.1"')
+      + `<div class="cultivos-label">Fertilización</div><div class="centros-selector">${[[true, 'Sí'], [false, 'No'], [null, 'Sin dato']].map(([v, n]) => `<div class="cultivo-chip ${d.fertilizacion === v || (v === null && d.fertilizacion == null) ? 'sel' : ''}" onclick='elAsig("fertilizacion",${v})'>${n}</div>`).join('')}</div>`
+      + (d.fertilizacion ? elInput('Mezcla', 'fertMezcla') + elInput('Dosis fertilización', 'fertDosis') : '');
+  } else if (t === 'riego') {
+    esp = elInput('Método', 'metodo') + elInput('Duración (horas)', 'duracion', 'number', 'min="0" step="0.5"');
+  } else if (t === 'cosecha') {
+    esp = elInput('Kilos cosechados', 'kg', 'number', 'min="0"') + elInput('Humedad %', 'humedad', 'number', 'min="0" step="0.1"');
+  } else if (t === 'trabajo_suelo') {
+    esp = elInput('Labor realizada', 'labor') + selEq;
+  } else if (t === 'otro') {
+    esp = elInput('Detalle', 'detalle');
+  }
+  if (Array.isArray(d.productos) || ['fertilizacion', 'fumigacion', 'aplicacion'].includes(t)) {
+    if (!Array.isArray(d.productos)) d.productos = [];
+    esp += `<div class="cultivos-label">Productos</div>` + d.productos.map((p, i) => `<div style="display:flex;gap:6px;margin-bottom:6px"><input type="text" placeholder="Producto" style="flex:2" value="${escA(p.producto || '')}" oninput="elProd(${i},'producto',this.value)"><input type="text" placeholder="Dosis" style="flex:1" value="${escA(p.dosis || '')}" oninput="elProd(${i},'dosis',this.value)"><button class="btn btn-danger" onclick="elProdDel(${i})">✕</button></div>`).join('')
+      + `<button class="btn btn-secondary" style="margin-bottom:8px" onclick="elProdAdd()">+ Producto</button>`;
+    if (t === 'fumigacion' || t === 'aplicacion') esp += elInput('Mojamiento (L/ha)', 'mojamiento', 'number', 'min="0"') + `<div class="cultivos-label">Categorías de producto</div>` + chips(t === 'fumigacion' ? CATEGORIAS_FUM_CAMPO : tiposProductoCampoConfig, 'tiposProducto');
+    if (t === 'aplicacion') esp += elInput('Objetivo', 'objetivo') + selEq;
+  }
+  if (t === 'personalizado' && !Array.isArray(EL.l.productos)) esp += elInput('Detalle', 'detalle');
+  const potOpts = [...potrerosConfig].sort((a, b) => cmpEs(a.nombre, b.nombre)).map(p => `<option value="${escA(p.nombre)}" ${d.potrero === p.nombre ? 'selected' : ''}>${escA(p.nombre)}</option>`).join('');
+  const lotes = (lotesDe(d.potrero, new Date().getFullYear()) || []);
+  const loteSel = lotes.length ? `<div class="field" style="margin-bottom:8px"><label>Lote</label><div class="select-wrapper"><select onchange="elSet('lote', this.value || null)"><option value="">Todo el potrero</option>${lotes.map(l => `<option value="${escA(l.nombre)}" ${d.lote === l.nombre ? 'selected' : ''}>${escA(l.nombre)}</option>`).join('')}</select></div></div>` : '';
+  const aperosLista = [...new Set([...(aperosConfig || []).map(a => a.nombre), ...(d.aperos || [])])];
+  const parcial = `<div class="cultivos-label">Aplicación</div><div class="centros-selector"><div class="cultivo-chip ${d.aplicacion_completa !== false ? 'sel' : ''}" onclick="elAsig('aplicacion_completa',true)">Completa</div><div class="cultivo-chip ${d.aplicacion_completa === false ? 'sel' : ''}" onclick="elAsig('aplicacion_completa',false)">Parcial</div></div>`
+    + (d.aplicacion_completa === false ? elInput('Ha aplicadas', 'hectareas_aplicadas', 'number', 'min="0" step="0.1"') + elInput('Observación parcial', 'obs_parcial') : '');
+  let ov = document.getElementById('modal-editar-labor');
+  if (!ov) { ov = document.createElement('div'); ov.id = 'modal-editar-labor'; ov.style.cssText = 'position:fixed;inset:0;z-index:4000;background:rgba(0,0,0,.55);display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:16px'; document.body.appendChild(ov); }
+  const tipoLabel = d.tipo === 'personalizado' ? '🧩 ' + (d.nombreTipo || '') : ((TIPOS_LABOR_CAMPO.find(x => x.id === d.tipo) || {}).label || d.tipo);
+  ov.innerHTML = `<div style="background:var(--blanco,#fff);border-radius:12px;max-width:560px;width:100%;padding:16px;margin:auto">
+    <div class="panel-title">✏️ Editar labor · ${escA(tipoLabel)}</div>
+    <div class="field" style="margin-bottom:8px"><label>Potrero</label><div class="select-wrapper"><select onchange="elSetPot(this.value)">${potOpts}</select></div></div>
+    ${loteSel}
+    ${elInput('Fecha', 'fecha', 'date')}
+    ${esp}
+    ${aperosLista.length ? `<div class="cultivos-label">Aperos</div>` + chips(aperosLista, 'aperos') : ''}
+    ${parcial}
+    <div class="field" style="margin:8px 0"><label>Comentarios</label><textarea rows="2" style="width:100%;font:inherit;padding:10px;border:1px solid var(--borde);border-radius:8px" oninput="elSet('obs', this.value)">${escA(d.obs || '')}</textarea></div>
+    <div style="display:flex;gap:8px;margin-top:10px">
+      <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="cerrarEdicionLabor()">Cancelar</button>
+      <button class="btn btn-verde" style="flex:1" onclick="guardarEdicionLabor()">✓ Guardar cambios</button>
+    </div></div>`;
+}
+window.cerrarEdicionLabor = function() { const ov = document.getElementById('modal-editar-labor'); if (ov) ov.remove(); EL = null; }
+window.guardarEdicionLabor = async function() {
+  if (!EL) return;
+  const d = EL.d, t = d.tipo;
+  if (t === 'siembra' && !d.cultivo) { toast('Elige el cultivo', false); return; }
+  if (!d.fecha && t !== 'siembra') { toast('Selecciona una fecha', false); return; }
+  const patch = { ...d };
+  delete patch.id;
+  patch.fecha = d.fecha || null;
+  patch.anio = d.fecha ? String(d.fecha).slice(0, 4) : (d.anio || String(new Date().getFullYear()));
+  if (t === 'siembra') patch.pendiente = !d.fecha;
+  patch.obs = (d.obs || '').trim();
+  patch.aperos = (d.aperos || []).filter(Boolean);
+  if (Array.isArray(patch.productos)) patch.productos = patch.productos.filter(p => (p.producto || '').trim()).map(p => ({ producto: p.producto.trim(), dosis: (p.dosis || '').trim() }));
+  if (d.aplicacion_completa !== false) { patch.aplicacion_completa = true; patch.hectareas_aplicadas = null; patch.obs_parcial = null; }
+  patch.editadoPor = currentUser; patch.editadoTs = Date.now();
+  Object.keys(patch).forEach(k => { if (patch[k] === undefined) patch[k] = null; });
+  try {
+    await setDoc(doc(db, 'labores_campo', EL.id), patch);
+    if (t === 'siembra') await cargarCultivosActualesPotreros();
+    cerrarEdicionLabor();
+    renderEstadoPotreros(); renderHistorialLabores();
+    toast('✓ Labor actualizada', true);
+  } catch (e) { toast('Error: ' + e.message, false); }
 }
 
 window.eliminarLaborCampo = async function(id) {
@@ -6870,15 +7002,14 @@ function renderMapaPotreros(containerId, clickable, drawable, multiSelect, forza
       const seleccionado = multiSelect && camposLaborPotrerosSel.includes(p.nombre);
       const lotesAnio = p.tipo !== 'frutal' ? lotesDe(p.nombre, new Date().getFullYear()) : null;
       if (lotesAnio) {
-        const caps = lotesAnio.map(l => {
-          const col = colorParaCultivo(l.cultivo);
-          const pg = L.polygon(jdpNormPoligono(l.poligono), estiloPoligonoPotrero(col, seleccionado)).addTo(map);
+        lotesAnio.forEach(l => {
+          const col = colorParaCultivo(l.cultivo), clave = p.nombre + SEP_LOTE + l.nombre;
+          const pg = L.polygon(jdpNormPoligono(l.poligono), estiloPoligonoPotrero(col, multiSelect && camposLaborPotrerosSel.includes(clave))).addTo(map);
+          mapaPotrerosPoligonos[containerId][clave] = { layer: pg, color: col };
           pg.bindTooltip(`${p.nombre} · ${l.nombre}${l.cultivo ? ' — ' + l.cultivo : ' — sin definir'}`, { sticky: true });
           ponerIconoCultivo(map, l.poligono, l.cultivo);
-          if (multiSelect) pg.on('click', () => window.toggleCampoLaborPotreroDesdeMapa(p.nombre));
-          return { pg, col };
+          if (multiSelect) pg.on('click', () => window.toggleCampoLaborPotreroDesdeMapa(clave));
         });
-        mapaPotrerosPoligonos[containerId][p.nombre] = { color, layer: { setStyle: st => caps.forEach(c => c.pg.setStyle({ ...st, fillColor: c.col, color: st.color === '#FFD400' ? '#FFD400' : c.col })) } };
       } else {
         const poly = L.polygon(p.poligono, estiloPoligonoPotrero(color, seleccionado)).addTo(map);
         poly.bindTooltip(`${p.nombre}${cultivo ? ' — ' + cultivo : ' — sin definir'}`, { sticky: true });
