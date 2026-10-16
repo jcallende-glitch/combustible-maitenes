@@ -2358,6 +2358,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     await manejarCallbackJD();
   }
   showScreen('login');
+  await loginRecordado();
 });
 
 async function loadConfig() {
@@ -2697,6 +2698,46 @@ function renderEstadoESP32() {
   widgets.forEach(el => el.innerHTML = html);
 }
 
+// ─── ACCESOS DIRECTOS Y CELULAR RECORDADO ───────────────────
+// Dirección directa a una sección: /?s=combustible | asistencia | campo | inventario | autorizaciones | envivo
+let seccionInicialPendiente = (() => { try { return new URLSearchParams(location.search).get('s') || (/[#&]s=([a-z]+)/.exec(location.hash || '') || [])[1] || ''; } catch (e) { return ''; } })();
+function irASeccionInicial() {
+  const sec = seccionInicialPendiente; seccionInicialPendiente = '';
+  if (!sec || !isAdmin) return;
+  try { history.replaceState(null, '', location.pathname); } catch (e) {}
+  if (sec === 'envivo') abrirEnVivo();
+  else if (SECCIONES_TABS[sec]) abrirSeccion(sec);
+}
+// Celular recordado: solo administradores. Se corta desde el menú ("Cerrar sesión en celulares recordados")
+// subiendo la versión en config/dispositivos; también vence a los 7 días de haber puesto el PIN (después vuelve a pedirlo).
+const DISP_KEY = 'maitenes_dev', DISP_DIAS = 7;
+async function versionDispositivos() { const sn = await getDoc(doc(db, 'config', 'dispositivos')); return sn.exists() ? (sn.data().ver || 0) : 0; }
+async function recordarDispositivo(nombre) {
+  try { const ver = await versionDispositivos(); localStorage.setItem(DISP_KEY, JSON.stringify({ nombre, ver, ts: Date.now() })); }
+  catch (e) { toast('No se pudo recordar este celular', false); }
+}
+async function loginRecordado() {
+  let d = null;
+  try { d = JSON.parse(localStorage.getItem(DISP_KEY) || 'null'); } catch (e) {}
+  if (!d || !d.nombre) return false;
+  const valido = d.nombre === ADMIN_NOMBRE || ADMINS_EQUIVALENTES.includes(d.nombre);
+  if (!valido || Date.now() - d.ts > DISP_DIAS * 86400000) { try { localStorage.removeItem(DISP_KEY); } catch (e) {} return false; }
+  let ver;
+  try { ver = await versionDispositivos(); } catch (e) { return false; }   // sin conexión: pide PIN
+  if (ver !== d.ver) { try { localStorage.removeItem(DISP_KEY); } catch (e) {} return false; }
+  entrarConResultado({ ok: true, admin: true, supervisor: false, subadmin: false, campo: false, nombre: d.nombre });
+  return true;
+}
+window.cerrarCelularesRecordados = async function() {
+  if (!confirm('¿Cerrar la sesión recordada en TODOS los celulares? Volverán a pedir el PIN.')) return;
+  try {
+    const v = await versionDispositivos();
+    await setDoc(doc(db, 'config', 'dispositivos'), { ver: v + 1, ts: Date.now(), por: currentUser });
+    try { localStorage.removeItem(DISP_KEY); } catch (e) {}
+    toast('✓ Listo: todos los celulares recordados volverán a pedir el PIN', true);
+  } catch (e) { toast('Error: ' + e.message, false); }
+}
+
 // ─── LOGIN ─────────────────────────────────────────────────
 function showScreen(name) {
   document.querySelectorAll('.screen').forEach(s => s.style.display = 'none');
@@ -2711,6 +2752,12 @@ window.intentarLogin = async function() {
   const result = await verificarPin(pin);
   btn.disabled = false; btn.textContent = 'Ingresar';
   if (!result.ok) { toast('PIN incorrecto', false); document.getElementById('pin-input').value=''; return; }
+  const chk = document.getElementById('recordar-cel');
+  if (result.admin && chk && chk.checked) await recordarDispositivo(result.nombre);
+  entrarConResultado(result);
+}
+
+function entrarConResultado(result) {
   currentUser = result.nombre; isAdmin = result.admin; isSupervisor = result.supervisor || false; isSubadmin = result.subadmin || false; isCampo = result.campo || false;
   document.getElementById('user-label').textContent = isAdmin ? `⚙ ${result.nombre}` : (isSupervisor ? `👁 ${result.nombre}` : (isSubadmin ? `🕒 ${result.nombre}` : (isCampo ? `🌱 ${result.nombre}` : result.nombre)));
   ['tab-registro','tab-historial','tab-mantencion','tab-admin','tab-config','tab-analytics','tab-informes','tab-eficiencia','btn-cisterna-header','tab-asistencia','tab-config-trabajadores','tab-campo','tab-config-potreros','tab-config-gps','tab-autorizaciones'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
@@ -2736,6 +2783,7 @@ window.intentarLogin = async function() {
     // sección abrir. Puede volver a este selector con el botón "☰ Secciones".
     showScreen('app');
     mostrarSelectorSecciones();
+    irASeccionInicial();
     if (result.pinInicial) setTimeout(() => mostrarCambioPin(true), 500);
     return;
   }
@@ -2783,6 +2831,7 @@ window.mostrarSelectorSecciones = function() {
   document.getElementById('sec-btn-reparto').style.display = per.includes('reparto') ? '' : 'none';
   { const b2 = document.getElementById('sec-btn-cuaderno2'); if (b2) b2.style.display = per.includes('cuaderno2') ? '' : 'none'; }
   document.getElementById('sec-lbl-pruebas').style.display = (per.includes('tractor') || per.includes('reparto') || per.includes('cuaderno2')) ? '' : 'none';
+  { const bc = document.getElementById('sec-btn-celulares'); if (bc) bc.style.display = isAdmin ? '' : 'none'; }
   document.getElementById('sec-btn-envivo').style.display = (isAdmin || per.includes('ubicacion')) ? '' : 'none';
   document.getElementById('tabs-bar').style.display = 'none';
   document.getElementById('app-main').style.display = 'none';
@@ -2820,6 +2869,7 @@ window.abrirSeccion = function(seccion) {
 }
 
 window.logout = function() {
+  try { localStorage.removeItem(DISP_KEY); } catch (e) {}
   try { localStorage.removeItem('maitenes_pase'); } catch (e) {}
   currentUser = null; isAdmin = false; isSupervisor = false; isSubadmin = false; isCampo = false;
   if (unsubReg) { unsubReg(); unsubReg = null; }
@@ -11040,6 +11090,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     </div>
     <div class="pin-hint">Ingresa tu PIN personal</div>
     <button class="btn btn-primary" id="btn-login" onclick="intentarLogin()">Ingresar</button>
+    <label style="display:flex;align-items:center;justify-content:center;gap:8px;margin-top:14px;font-size:13px;color:var(--acero);cursor:pointer"><input type="checkbox" id="recordar-cel" style="width:18px;height:18px"> Recordar este celular (solo administradores)</label>
   </div>
 </div>
 
@@ -11075,6 +11126,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       <button class="btn" style="background:#2A2A2A;color:#E5E7EB;justify-content:flex-start;padding:16px 20px;font-size:15px;border-radius:10px" id="sec-btn-tractor" onclick="abrirPrueba('tractor')">🚜 Modo tractor (celular)</button>
       <button class="btn" style="background:#2A2A2A;color:#E5E7EB;justify-content:flex-start;padding:16px 20px;font-size:15px;border-radius:10px" id="sec-btn-reparto" onclick="abrirPrueba('reparto')">📍 Reparto por potrero (prueba)</button>
       <button class="btn" style="background:#2A2A2A;color:#E5E7EB;justify-content:flex-start;padding:16px 20px;font-size:15px;border-radius:10px" id="sec-btn-cuaderno2" onclick="abrirPrueba('cuaderno2')">🎤 Cuaderno de campo v2 · dictado (prueba)</button>
+      <button class="btn" style="background:transparent;color:#9CA3AF;border:1px solid #3A3A3A;justify-content:center;padding:10px 14px;font-size:12px;border-radius:10px;margin-top:10px;display:none" id="sec-btn-celulares" onclick="cerrarCelularesRecordados()">🔒 Cerrar sesión en celulares recordados</button>
     </div>
   </div>
 
