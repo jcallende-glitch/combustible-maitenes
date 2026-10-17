@@ -8290,14 +8290,21 @@ function renderListaTiposProductoCampo() {
 
 // ─── LISTA DE FERTILIZANTES (para Fertilización en el Cuaderno de Campo) ───
 const FERTILIZANTES_BASE = ['Urea', 'Nitrato de amonio', 'Salitre sódico', 'Nitrato de potasio', 'Nitrato de calcio', 'Sulfato de amonio', 'Superfosfato triple', 'Fosfato diamónico (DAP)', 'Cloruro de potasio', 'Sulfato de potasio', 'Sulfato de magnesio', 'Boro', 'Mezcla NPK'];
-function fertilizantesLista() { return (Array.isArray(config.fertilizantesCampo) ? config.fertilizantesCampo : FERTILIZANTES_BASE).slice().sort(cmpEs); }
+function fertilizantesInv() { return (typeof productosInv !== 'undefined' ? productosInv : []).filter(p => p.categoria === 'Fertilizante'); }
+function fertilizantesLista() {
+  const legacy = Array.isArray(config.fertilizantesCampo) ? config.fertilizantesCampo : FERTILIZANTES_BASE;
+  const out = fertilizantesInv().map(p => p.nombre);
+  legacy.forEach(n => { if (!out.some(x => x.toLowerCase() === String(n).toLowerCase())) out.push(n); });
+  return out.sort(cmpEs);
+}
 const ELEMENTOS_FERT_BASE = ['N', 'P', 'K', 'S', 'B', 'Zn'];
 function elementosFert() {
   const a = Array.isArray(config.elementosFert) && config.elementosFert.length ? config.elementosFert : ELEMENTOS_FERT_BASE;
   return a.slice();
 }
 function leyDeFert(nombre) {
-  const m = (config.fertilizantesLey && config.fertilizantesLey[nombre]) || {};
+  const pi = fertilizantesInv().find(p => p.nombre === nombre);
+  const m = (pi && pi.ley) || (config.fertilizantesLey && config.fertilizantesLey[nombre]) || {};
   const o = {}; elementosFert().forEach(e => { o[e] = parseFloat(m[e]) || 0; }); return o;
 }
 function leyDeProducto(pr) { // la ley guardada en la labor manda; si no hay, la de la lista
@@ -10190,10 +10197,10 @@ const estadoConfigInv = {
   agotado: { label: "Agotado",    color: "var(--rojo)",   bg: "var(--rojo-suave)", dot: "var(--rojo)" },
   otra:    { label: "En otra bodega", color: "var(--acero)", bg: "#F3F4F6", dot: "var(--acero)" },
 };
-const CATEGORIAS_INV = ["Herbicida","Fungicida","Insecticida","Foliar","Coadyuvante","Otros"];
+const CATEGORIAS_INV = ["Herbicida","Fungicida","Insecticida","Foliar","Coadyuvante","Fertilizante","Otros"];
 const categoriaColorInv = {
   Herbicida: "#2D7D46", Fungicida: "#4A5568", Insecticida: "#8B5A2B",
-  Foliar: "#1D4ED8", Coadyuvante: "#6B46C1", Otros: "#6B7280",
+  Foliar: "#1D4ED8", Coadyuvante: "#6B46C1", Fertilizante: "#B45309", Otros: "#6B7280",
 };
 // Alias de categorías del CSV que no son categorías propias, sino que
 // se agrupan dentro de una existente (ej: Aminoácido/Bioestimulante → Foliar).
@@ -10602,6 +10609,7 @@ window.abrirEditarProductoInv = function(id) {
   document.getElementById("modal-inv-prod-titulo").textContent = "Editar producto";
   document.getElementById("prod-inv-nombre").value = p.nombre || "";
   document.getElementById("prod-inv-categoria").value = p.categoria || "Herbicida";
+  pintarLeyProdInv(p.ley);
   document.getElementById("prod-inv-ingrediente").value = p.ingredienteActivo || "";
   document.getElementById("prod-inv-fabricante").value = p.fabricante || "";
   document.getElementById("prod-inv-proveedor").value = p.proveedor || "";
@@ -10623,6 +10631,7 @@ window.abrirEditarProductoInv = function(id) {
 function limpiarFormProdInv() {
   ["prod-inv-nombre","prod-inv-ingrediente","prod-inv-fabricante","prod-inv-proveedor","prod-inv-cultivos","prod-inv-etiqueta","prod-inv-hoja"].forEach(id => document.getElementById(id).value = "");
   document.getElementById("prod-inv-categoria").value = "Herbicida";
+  pintarLeyProdInv(null);
   document.getElementById("prod-inv-unidad").value = "L";
   document.getElementById("prod-inv-stock-b0").value = 0;
   document.getElementById("prod-inv-stock-b1").value = 0;
@@ -10630,6 +10639,13 @@ function limpiarFormProdInv() {
   document.getElementById("prod-inv-precio").value = 0;
   const cod = document.getElementById("prod-inv-codigo");
   if (cod) cod.value = "";
+}
+window.pintarLeyProdInv = function(ley) {
+  const w = document.getElementById("prod-inv-ley-wrap"); if (!w) return;
+  const esF = document.getElementById("prod-inv-categoria").value === "Fertilizante";
+  w.style.display = esF ? "" : "none";
+  const actual = ley && typeof ley === "object" && !(ley instanceof Event) ? ley : leerLeyInputs("invley_");
+  document.getElementById("prod-inv-ley").innerHTML = leyInputsHtml("invley_", Object.assign({}, ...elementosFert().map(e => ({ [e]: parseFloat(actual[e]) || 0 }))), "");
 }
 window.onNombreProdInvChange = function() {
   const val = document.getElementById("prod-inv-nombre").value;
@@ -10676,6 +10692,7 @@ window.guardarProductoInv = async function() {
     const cod = document.getElementById("prod-inv-codigo");
     if (cod) data.codigoInterno = cod.value.trim();
   }
+  data.ley = data.categoria === "Fertilizante" ? leerLeyInputs("invley_") : null;
   try {
     if (editProductoInvId) {
       await updateDoc(doc(dbInv, "productos", editProductoInvId), data);
@@ -12685,7 +12702,8 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       </div>
 
       <div class="panel">
-        <div class="panel-title">🧪 Lista de fertilizantes</div>
+        <div class="panel-title">🧪 Fertilizantes y elementos de la ley</div>
+        <div class="hint" style="margin-bottom:10px;color:#1D4ED8">Los fertilizantes (con su ley y stock) se administran en <strong>Inventario</strong>, categoría "Fertilizante". Aquí quedan los elementos de la ley y los fertilizantes antiguos que no están en Inventario.</div>
         <div class="hint" style="margin-bottom:10px">Fertilizantes que aparecen para elegir al registrar una Fertilización en el Cuaderno de Campo. Agrega los que uses.</div>
         <div class="config-add">
           <input type="text" id="nuevo-fertilizante-campo" placeholder="Ej: Urea, Salitre potásico, Fosfato monoamónico...">
@@ -12953,9 +12971,10 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       <div id="prod-inv-autocomplete" style="position:absolute;z-index:10;background:var(--blanco);width:100%;box-shadow:0 8px 24px rgba(0,0,0,.15);border-radius:6px;margin-top:2px"></div>
     </div>
     <div class="grid-2">
-      <div class="field"><label>Categoría</label><div class="select-wrapper"><select id="prod-inv-categoria"><option>Herbicida</option><option>Fungicida</option><option>Insecticida</option><option>Foliar</option><option>Coadyuvante</option><option>Otros</option></select></div></div>
+      <div class="field"><label>Categoría</label><div class="select-wrapper"><select id="prod-inv-categoria" onchange="pintarLeyProdInv()"><option>Herbicida</option><option>Fungicida</option><option>Insecticida</option><option>Foliar</option><option>Coadyuvante</option><option>Fertilizante</option><option>Otros</option></select></div></div>
       <div class="field"><label>Fabricante</label><input type="text" id="prod-inv-fabricante"></div>
     </div>
+    <div class="field" id="prod-inv-ley-wrap" style="display:none"><label>Ley del fertilizante (%) — se usa en el Cuaderno de Campo</label><div id="prod-inv-ley" style="display:flex;flex-wrap:wrap;gap:6px"></div></div>
     <div class="field"><label>Ingrediente activo</label><input type="text" id="prod-inv-ingrediente"></div>
     <div class="field" id="prod-inv-codigo-wrap" style="display:none">
       <label>Código interno (uso restringido)</label>
