@@ -3866,12 +3866,8 @@ window.calcularEficiencia = function() {
     html += `<div class="preview-row verde" style="background:#EFF6FF;color:#1D4ED8">📋 Primer registro de este equipo — sin eficiencia previa para comparar</div>`;
   }
 
-  if (!isNaN(tot) && tot > 0 && ultimoRegistroEquipo?.totalizador) {
-    const dif = Math.abs((tot - ultimoRegistroEquipo.totalizador) - lt);
-    html += dif <= parametrosSistema.margenTotalizador
-      ? `<div class="preview-row verde">✅ Totalizador OK — diferencia: ${dif.toFixed(1)} L</div>`
-      : `<div class="preview-row rojo">⚠️ Diferencia totalizador: ${dif.toFixed(1)} L (máx ${parametrosSistema.margenTotalizador} L)</div>`;
-  }
+  // Totalizador digital: contador interno que acumula los litros del medidor digital (sin control contra el Samoa).
+
 
   preview.innerHTML = html;
 }
@@ -4040,7 +4036,7 @@ window.registrarCargaManual = async function() {
   let alertaTotalizador = false, difTot = 0;
   if (totalizadorGlobal != null) {
     difTot = Math.abs((totBase - totalizadorGlobal) - lt);
-    if (difTot > parametrosSistema.margenTotalizador) alertaTotalizador = true;
+    alertaTotalizador = false; difTot = 0; // sin control contra el Samoa
   }
 
   const n = manualCentrosSeleccionados.length;
@@ -4118,7 +4114,7 @@ async function registrarInterno() {
   let alertaTotalizador = false; let difTot = 0;
   if (totalizadorGlobal != null) {
     difTot = Math.abs((tot - totalizadorGlobal) - lt);
-    if (difTot > parametrosSistema.margenTotalizador) alertaTotalizador = true;
+    alertaTotalizador = false; difTot = 0; // sin control contra el Samoa
   }
 
   let eficiencia = null; let diffMedidor = null; let alertaTrabajado = false;
@@ -11871,7 +11867,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
             <input type="number" id="litros" min="0" step="0.1" placeholder="0.0" oninput="litrosFuenteActual='manual';calcularEficiencia()">
           </div>
           <div class="field">
-            <label>Totalizador SAMOA</label>
+            <label>Totalizador digital</label>
             <input type="number" id="totalizador" min="0" step="1" placeholder="Ej: 60940" readonly style="background:var(--fondo);color:var(--acero);cursor:not-allowed">
             <div class="hint">Se calcula automáticamente (no editable)</div>
           </div>
@@ -12210,7 +12206,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
             <div class="field"><label>Litros</label><input type="number" id="manual-litros" min="0" step="0.1"></div>
             <div class="field"><label>Horómetro/Odómetro (<span id="manual-medidor-unidad">hr</span>)</label><input type="number" id="manual-medidor-valor" min="0" step="0.1"></div>
           </div>
-          <div class="field"><label>Totalizador (opcional — se calcula solo si se deja vacío)</label><input type="number" id="manual-totalizador" min="0" step="1"></div>
+          <div class="field" style="display:none"><input type="number" id="manual-totalizador" min="0" step="1"></div>
           <div class="field"><label>Observación</label><input type="text" id="manual-obs"></div>
           <div class="modal-actions">
             <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="cerrarRegistroManual()">Cancelar</button>
