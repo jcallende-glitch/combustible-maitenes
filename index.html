@@ -9022,19 +9022,33 @@ function rendimientoApero(a, equipo) {
 }
 window.renderRendAperoEficiencia = function() {
   const cont = document.getElementById('ef-rend-apero'); if (!cont) return;
+  const q = (document.getElementById('ef-rend-buscar') || {}).value || '';
+  const hadFocus = document.activeElement && document.activeElement.id === 'ef-rend-buscar';
   const fmt = (n, d) => n == null ? '—' : n.toLocaleString('es-CL', { minimumFractionDigits: d, maximumFractionDigits: d });
-  const filas = [];
+  const nq = normNom(q);
+  const grupos = [];
   (aperosConfig || []).forEach(a => {
-    tractoresDeApero(a).forEach(e => {
-      const r = rendimientoApero(a, e); if (!r) return;
+    if (nq && !normNom(a.nombre).includes(nq)) return;
+    const usos = {}; // equipo -> nº de cargas (incluye cargas con varios aperos)
+    (registros || []).forEach(x => { if (x.apero === a.nombre || (Array.isArray(x.aperos) && x.aperos.includes(a.nombre))) usos[x.equipo] = (usos[x.equipo] || 0) + 1; });
+    const filas = Object.keys(usos).filter(e => e !== OTRO && tipoEquipo(e) === 'hr').map(e => {
+      const r = rendimientoApero(a, e); if (!r) return null;
       const n = (registros || []).filter(x => x.equipo === e && x.apero === a.nombre && x.medidor_tipo === 'hr' && x.eficiencia > 0).length;
-      filas.push({ a: a.nombre, e, r, n });
-    });
+      return { e, r, n, cargas: usos[e] };
+    }).filter(Boolean).sort((x, y) => ((x.r.lHa == null) - (y.r.lHa == null)) || ((x.r.lHa || 0) - (y.r.lHa || 0)));
+    grupos.push({ a, filas, usaron: Object.keys(usos).length });
   });
-  if (!filas.length) { cont.innerHTML = '<div class="empty" style="padding:10px;font-size:13px">Aún no hay aperos con ancho y velocidad. Defínelos en Configurar → Aperos / Implementos.</div>'; return; }
-  filas.sort((x, y) => cmpEs(x.a, y.a) || ((x.r.lHa == null) - (y.r.lHa == null)) || ((x.r.lHa || 0) - (y.r.lHa || 0)));
-  cont.innerHTML = `<div style="overflow-x:auto"><table style="width:100%;min-width:0;font-size:12px"><thead><tr><th style="padding:4px;text-align:left">Apero</th><th style="text-align:left">Equipo</th><th>ha/h</th><th>L/h</th><th>L/ha</th><th>$/ha</th></tr></thead><tbody>${filas.map(f => `<tr><td style="padding:4px;font-weight:600">${escA(f.a)}</td><td>${escA(f.e)}</td><td>${fmt(f.r.haH, 2)}</td><td title="${f.r.fuente}">${fmt(f.r.lh, 1)}${f.n ? ` ✓<span style="color:#9CA3AF"> (${f.n})</span>` : ''}</td><td><strong>${fmt(f.r.lHa, 1)}</strong></td><td>${f.r.pesosHa != null ? '$' + Math.round(f.r.pesosHa).toLocaleString('es-CL') : '—'}</td></tr>`).join('')}</tbody></table></div>
-    <div style="font-size:11px;color:#9CA3AF;margin-top:6px">L/h: ✓ = consumo medido de ese equipo trabajando con ese apero (entre paréntesis, nº de cargas); sin ✓ es el promedio del equipo. Las cargas con 2 o más aperos no se asignan a ninguno. ha/h = ancho × velocidad × eficiencia de campo (${costosParams().efic}%).${costosParams().precio ? '' : ' Falta el precio del petróleo para calcular $/ha.'}</div>`;
+  grupos.sort((x, y) => cmpEs(x.a.nombre, y.a.nombre));
+  const buscador = `<input type="search" id="ef-rend-buscar" placeholder="🔍 Buscar apero..." value="${escA(q)}" oninput="renderRendAperoEficiencia()" style="margin-bottom:10px">`;
+  const conDatos = grupos.filter(g => g.filas.length), sinDef = grupos.filter(g => !g.filas.length);
+  let html = buscador;
+  if (!grupos.length) html += '<div class="empty" style="padding:10px;font-size:13px">Ningún apero coincide.</div>';
+  html += conDatos.map(g => `<div style="margin-top:12px"><div style="background:var(--negro);color:var(--amarillo);padding:8px 10px;border-radius:8px 8px 0 0;font-weight:700;font-size:13px">${escA(g.a.nombre)} <span style="font-weight:400;font-size:11px;color:#D1D5DB">· ${g.a.ancho ? g.a.ancho + ' m' : '—'} · ${g.a.velocidad ? g.a.velocidad + ' km/h' : '—'}</span></div>
+    <div style="overflow-x:auto"><table style="width:100%;min-width:0;font-size:12px"><thead><tr><th style="padding:4px;text-align:left">Equipo</th><th>ha/h</th><th>L/h</th><th>L/ha</th><th>$/ha</th></tr></thead><tbody>${g.filas.map(f => `<tr><td style="padding:4px;font-weight:600">${escA(f.e)}<div style="font-weight:400;font-size:10px;color:#9CA3AF">${f.cargas} carga${f.cargas === 1 ? '' : 's'}</div></td><td>${fmt(f.r.haH, 2)}</td><td title="${f.r.fuente}">${fmt(f.r.lh, 1)}${f.n ? ` ✓<span style="color:#9CA3AF"> (${f.n})</span>` : ''}</td><td><strong>${fmt(f.r.lHa, 1)}</strong></td><td>${f.r.pesosHa != null ? '$' + Math.round(f.r.pesosHa).toLocaleString('es-CL') : '—'}</td></tr>`).join('')}</tbody></table></div></div>`).join('');
+  if (sinDef.length) html += `<div style="font-size:12px;color:#9CA3AF;margin-top:12px">Sin consumo calculable (sin cargas de tractor, o falta ancho/velocidad): ${sinDef.map(g => escA(g.a.nombre)).join(', ')}.</div>`;
+  html += `<div style="font-size:11px;color:#9CA3AF;margin-top:8px">Solo equipos que han usado cada apero. L/h: ✓ = consumo medido con ese apero (entre paréntesis, nº de cargas); sin ✓ es el promedio del equipo. Las cargas con 2 o más aperos cuentan como uso, pero no entran al L/h. ha/h = ancho × velocidad × eficiencia de campo (${costosParams().efic}%).${costosParams().precio ? '' : ' Falta el precio del petróleo para calcular $/ha.'}</div>`;
+  cont.innerHTML = html;
+  if (hadFocus) { const i = document.getElementById('ef-rend-buscar'); if (i) { i.focus(); try { i.setSelectionRange(q.length, q.length); } catch (e) {} } }
 }
 function tractoresDeApero(a) {
   return config.equipos.filter(e => e !== OTRO && tipoEquipo(e) === 'hr' && (!a.equipos || !a.equipos.length || a.equipos.includes(e)));
