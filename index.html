@@ -2761,7 +2761,7 @@ window.intentarLogin = async function() {
 function entrarConResultado(result) {
   currentUser = result.nombre; isAdmin = result.admin; isSupervisor = result.supervisor || false; isSubadmin = result.subadmin || false; isCampo = result.campo || false;
   document.getElementById('user-label').textContent = isAdmin ? `⚙ ${result.nombre}` : (isSupervisor ? `👁 ${result.nombre}` : (isSubadmin ? `🕒 ${result.nombre}` : (isCampo ? `🌱 ${result.nombre}` : result.nombre)));
-  ['tab-registro','tab-historial','tab-mantencion','tab-admin','tab-config','tab-analytics','tab-informes','tab-eficiencia','btn-cisterna-header','tab-asistencia','tab-config-trabajadores','tab-campo','tab-config-potreros','tab-config-gps','tab-autorizaciones'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
+  ['tab-registro','tab-historial','tab-mantencion','tab-admin','tab-config','tab-analytics','tab-informes','tab-eficiencia','tab-config-equipos','btn-cisterna-header','tab-asistencia','tab-config-trabajadores','tab-campo','tab-config-potreros','tab-config-gps','tab-autorizaciones'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
   document.getElementById('pin-input').value = '';
   document.getElementById('btn-secciones-header').style.display = isAdmin ? 'inline-flex' : 'none';
   if (isSubadmin) {
@@ -2818,7 +2818,8 @@ function entrarCombustibleOperador() {
 
 // ─── SELECTOR DE SECCIÓN (solo admin) ───────────────────────
 const SECCIONES_TABS = {
-  combustible: ['tab-registro','tab-historial','tab-mantencion','tab-admin','tab-config','tab-analytics','tab-informes','tab-eficiencia'],
+  combustible: ['tab-registro','tab-historial','tab-mantencion','tab-admin','tab-config'],
+  equipos: ['tab-eficiencia','tab-analytics','tab-informes','tab-config-equipos'],
   asistencia: ['tab-asistencia','tab-config-trabajadores'],
   campo: ['tab-campo','tab-config-potreros','tab-config-gps'],
   inventario: ['tab-inv-inventario','tab-inv-ingresos','tab-inv-alertas'],
@@ -2827,7 +2828,7 @@ const SECCIONES_TABS = {
 
 window.mostrarSelectorSecciones = function() {
   const per = isAdmin ? ['tractor', 'reparto', 'cuaderno2'] : permisosPruebasDe(currentUser);
-  ['asistencia', 'campo', 'inventario', 'autorizaciones'].forEach(sec => { const b = document.getElementById('sec-btn-' + sec); if (b) b.style.display = isAdmin ? '' : 'none'; });
+  ['asistencia', 'campo', 'inventario', 'autorizaciones', 'equipos'].forEach(sec => { const b = document.getElementById('sec-btn-' + sec); if (b) b.style.display = isAdmin ? '' : 'none'; });
   document.getElementById('sec-btn-tractor').style.display = per.includes('tractor') ? '' : 'none';
   document.getElementById('sec-btn-reparto').style.display = per.includes('reparto') ? '' : 'none';
   { const b2 = document.getElementById('sec-btn-cuaderno2'); if (b2) b2.style.display = per.includes('cuaderno2') ? '' : 'none'; }
@@ -2857,6 +2858,8 @@ window.abrirSeccion = function(seccion) {
     initRegistro();
     setTab('registro', document.getElementById('tab-registro'));
     escucharSolicitudesAdmin();
+  } else if (seccion === 'equipos') {
+    setTab('eficiencia', document.getElementById('tab-eficiencia'));
   } else if (seccion === 'asistencia') {
     setTab('asistencia', document.getElementById('tab-asistencia'));
   } else if (seccion === 'campo') {
@@ -4496,6 +4499,7 @@ function loadHistorial() {
   unsubReg = onSnapshot(q, snap => {
     registros = snap.docs.map(d=>({id:d.id,...d.data()}));
     populateFiltros(); renderTabla();
+    if (typeof renderRendAperoEficiencia === 'function') renderRendAperoEficiencia();
     if (isAdmin || isSupervisor) { populateFiltrosAnalytics(); renderAnalytics(); renderInformes(); populateFiltrosEficiencia(); renderEficienciaAnalisis(); renderPanelReintegroJCAR(); }
   });
 }
@@ -9016,6 +9020,22 @@ function rendimientoApero(a, equipo) {
   const lHa = c ? c.lh / haH : null;
   return { vel, haH, lh: c ? c.lh : null, fuente: c ? c.fuente : '', lHa, pesosHa: (lHa != null && precio) ? lHa * precio : null };
 }
+window.renderRendAperoEficiencia = function() {
+  const cont = document.getElementById('ef-rend-apero'); if (!cont) return;
+  const fmt = (n, d) => n == null ? '—' : n.toLocaleString('es-CL', { minimumFractionDigits: d, maximumFractionDigits: d });
+  const filas = [];
+  (aperosConfig || []).forEach(a => {
+    tractoresDeApero(a).forEach(e => {
+      const r = rendimientoApero(a, e); if (!r) return;
+      const n = (registros || []).filter(x => x.equipo === e && x.apero === a.nombre && x.medidor_tipo === 'hr' && x.eficiencia > 0).length;
+      filas.push({ a: a.nombre, e, r, n });
+    });
+  });
+  if (!filas.length) { cont.innerHTML = '<div class="empty" style="padding:10px;font-size:13px">Aún no hay aperos con ancho y velocidad. Defínelos en Configurar → Aperos / Implementos.</div>'; return; }
+  filas.sort((x, y) => cmpEs(x.a, y.a) || ((x.r.lHa == null) - (y.r.lHa == null)) || ((x.r.lHa || 0) - (y.r.lHa || 0)));
+  cont.innerHTML = `<div style="overflow-x:auto"><table style="width:100%;min-width:0;font-size:12px"><thead><tr><th style="padding:4px;text-align:left">Apero</th><th style="text-align:left">Equipo</th><th>ha/h</th><th>L/h</th><th>L/ha</th><th>$/ha</th></tr></thead><tbody>${filas.map(f => `<tr><td style="padding:4px;font-weight:600">${escA(f.a)}</td><td>${escA(f.e)}</td><td>${fmt(f.r.haH, 2)}</td><td title="${f.r.fuente}">${fmt(f.r.lh, 1)}${f.n ? ` ✓<span style="color:#9CA3AF"> (${f.n})</span>` : ''}</td><td><strong>${fmt(f.r.lHa, 1)}</strong></td><td>${f.r.pesosHa != null ? '$' + Math.round(f.r.pesosHa).toLocaleString('es-CL') : '—'}</td></tr>`).join('')}</tbody></table></div>
+    <div style="font-size:11px;color:#9CA3AF;margin-top:6px">L/h: ✓ = consumo medido de ese equipo trabajando con ese apero (entre paréntesis, nº de cargas); sin ✓ es el promedio del equipo. Las cargas con 2 o más aperos no se asignan a ninguno. ha/h = ancho × velocidad × eficiencia de campo (${costosParams().efic}%).${costosParams().precio ? '' : ' Falta el precio del petróleo para calcular $/ha.'}</div>`;
+}
 function tractoresDeApero(a) {
   return config.equipos.filter(e => e !== OTRO && tipoEquipo(e) === 'hr' && (!a.equipos || !a.equipos.length || a.equipos.includes(e)));
 }
@@ -9557,8 +9577,10 @@ window.setTab = function(id,el) {
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
   document.getElementById('tc-'+id).classList.add('active');
   if(el)el.classList.add('active');
-  if(['historial','admin','analytics','informes','eficiencia','config'].includes(id)) loadHistorial();
+  if(['historial','admin','analytics','informes','eficiencia','config','config-equipos'].includes(id)) loadHistorial();
   if(id==='config') { renderConfigListas(); renderPanelAperos(); renderPanelEquipoOperador(); renderPanelPermisosPruebas(); renderPanelPresetsOperador(); renderPanelHorario(); renderPanelMantencionesConfig(); renderPanelParametros(); renderPanelCorreccionHorometro(); renderPanelTotalizadorManual(); renderPanelSaldoManual(); renderPanelRecalculoOpcion(); renderLimpiezaEquiposSelector(); renderRecalcEquiposSelector(); renderPanelReintegroJCAR(); cargarHistorialReintegrosJCAR(); if(isAdmin) cargarPines(); actualizarToggleESP32(); }
+  if(id==='eficiencia') renderRendAperoEficiencia();
+  if(id==='config-equipos') { renderConfigListas(); renderPanelAperos(); }
   if(id==='mantencion') { initMantencion(); }
   if(id==='asistencia') { initAsistencia(); }
   if(id==='config-trabajadores') { renderConfigTrabajadores(); }
@@ -11719,6 +11741,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     <div style="font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--acero);margin-bottom:16px;text-align:center">¿Qué sección quieres abrir?</div>
     <div style="display:flex;flex-direction:column;gap:12px">
       <button class="btn" style="background:var(--negro);color:var(--amarillo);justify-content:flex-start;padding:20px;font-size:16px;border-radius:10px" id="sec-btn-combustible" onclick="abrirSeccion('combustible')">⛽ Combustible</button>
+      <button class="btn" style="background:var(--negro);color:var(--amarillo);justify-content:flex-start;padding:20px;font-size:16px;border-radius:10px" id="sec-btn-equipos" onclick="abrirSeccion('equipos')">🚜 Equipos y aperos</button>
       <button class="btn" style="background:var(--negro);color:var(--amarillo);justify-content:flex-start;padding:20px;font-size:16px;border-radius:10px" id="sec-btn-asistencia" onclick="abrirSeccion('asistencia')">🕒 Asistencia</button>
       <button class="btn" style="background:var(--negro);color:var(--amarillo);justify-content:flex-start;padding:20px;font-size:16px;border-radius:10px" id="sec-btn-campo" onclick="abrirSeccion('campo')">🌱 Cuaderno de Campo</button>
       <button class="btn" style="background:var(--negro);color:var(--amarillo);justify-content:flex-start;padding:20px;font-size:16px;border-radius:10px" id="sec-btn-inventario" onclick="abrirSeccion('inventario')">📦 Inventario Agroquímicos</button>
@@ -11740,6 +11763,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     <button class="tab" id="tab-analytics" style="display:none" onclick="setTab('analytics',this)">Análisis</button>
     <button class="tab" id="tab-informes" style="display:none" onclick="setTab('informes',this)">Informes</button>
     <button class="tab" id="tab-eficiencia" style="display:none" onclick="setTab('eficiencia',this)">Eficiencia</button>
+    <button class="tab" id="tab-config-equipos" style="display:none" onclick="setTab('config-equipos',this)">⚙️ Config. equipos</button>
     <button class="tab" id="tab-config" style="display:none" onclick="setTab('config',this)">Configurar</button>
     <button class="tab" id="tab-autorizaciones" style="display:none" onclick="setTab('autorizaciones',this)">🔐 Autorizaciones</button>
     <button class="tab" id="tab-asistencia" style="display:none" onclick="setTab('asistencia',this)">🕒 Asistencia</button>
@@ -11955,6 +11979,10 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     <!-- EFICIENCIA -->
     <div id="tc-eficiencia" class="tab-content">
       <div class="panel">
+        <div class="panel-title">🚜 Consumo por hectárea (equipo + apero)</div>
+        <div id="ef-rend-apero"></div>
+      </div>
+      <div class="panel">
         <div class="panel-title">🎯 Comparar equipos</div>
         <div class="field">
           <label>Equipos</label>
@@ -12024,7 +12052,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     </div>
 
     <!-- CONFIGURAR -->
-    <div id="tc-config" class="tab-content">
+    <div id="tc-config-equipos" class="tab-content">
       <div class="panel">
         <div class="panel-title">⚙️ Equipos</div>
         <div class="field" style="margin-bottom:8px">
@@ -12057,6 +12085,9 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         <div class="config-lista" id="lista-aperos"></div>
       </div>
 
+    </div>
+
+    <div id="tc-config" class="tab-content">
       <div class="panel">
         <div class="panel-title">🌾 Cultivos / Centros de costo</div>
         <div class="config-add">
