@@ -8315,10 +8315,10 @@ function leyDeProducto(pr) { // la ley guardada en la labor manda; si no hay, la
 const NOM_ELEM = { N: 'N', P: 'P₂O₅', K: 'K₂O' };
 function nomElem(e) { return NOM_ELEM[e] || e; }
 function leyInputsHtml(prefijo, ley, onchg) {
-  return elementosFert().map(e => `<label style="display:inline-flex;flex-direction:column;font-size:11px;color:#6B7280;width:62px">${nomElem(e)} %<input type="number" min="0" max="100" step="any" inputmode="decimal" id="${prefijo}${e}" value="${ley[e] ? ley[e] : 0}" style="padding:6px 6px;font-size:13px" ${onchg ? `onchange="${onchg}"` : ''}></label>`).join('');
+  return elementosFert().map(e => `<label style="display:inline-flex;flex-direction:column;font-size:11px;color:#6B7280;width:62px">${nomElem(e)} %<input type="text" inputmode="decimal" autocomplete="off" id="${prefijo}${e}" value="${ley[e] ? String(ley[e]).replace('.', ',') : 0}" onfocus="this.select()" style="padding:6px 6px;font-size:13px" ${onchg ? `onchange="${onchg}"` : ''}></label>`).join('');
 }
 function leerLeyInputs(prefijo) {
-  const o = {}; elementosFert().forEach(e => { const el = document.getElementById(prefijo + e); o[e] = el ? (parseFloat(el.value) || 0) : 0; }); return o;
+  const o = {}; elementosFert().forEach(e => { const el = document.getElementById(prefijo + e); o[e] = el ? (parseFloat(String(el.value).replace(',', '.')) || 0) : 0; }); return o;
 }
 function renderListaFertilizantes() {
   const cont = document.getElementById('lista-fertilizantes-campo');
