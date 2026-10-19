@@ -5813,13 +5813,14 @@ window.eliminarSubadmin = async function(nombre) {
 // potreros (anuales que rotan cultivo cada temporada, o frutales con cultivo
 // permanente), registro de labores (siembra, aplicación, trabajo de suelo,
 // riego, cosecha, otro) y comparación de historial entre años por potrero.
+const iconoLaborHtml = t => t.svg ? t.svg + ' ' + t.label.replace(/^[^\p{L}]+/u, '') : t.label; // fertilización (trompo abonador) y fumigación (barra fumigadora) usan dibujo propio
 const TIPOS_LABOR_CAMPO = [
   { id: 'siembra', label: '🌱 Siembra', soloAnual: true },
-  { id: 'fertilizacion', label: '🧪 Fertilización' },
-  { id: 'fumigacion', label: '🐛 Fumigación' },
-  { id: 'aplicacion', label: '💧 Aplicación', oculto: true }, // legado: ya no se ofrece al registrar, se mantiene para leer historial viejo
+  { id: 'fertilizacion', label: '🧂 Fertilización', svg: '<svg viewBox="0 0 24 24" width="1.5em" height="1.5em" style="vertical-align:-0.4em" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h14l-4.5 8h-5z"/><path d="M9 11.5h6"/><ellipse cx="12" cy="14.5" rx="3.2" ry="1"/><circle cx="6" cy="17.5" r=".7" fill="currentColor"/><circle cx="9" cy="20" r=".7" fill="currentColor"/><circle cx="12" cy="18" r=".7" fill="currentColor"/><circle cx="15" cy="20.5" r=".7" fill="currentColor"/><circle cx="18" cy="17.5" r=".7" fill="currentColor"/></svg>' },
+  { id: 'fumigacion', label: '🧴 Fumigación', svg: '<svg viewBox="0 0 24 24" width="1.5em" height="1.5em" style="vertical-align:-0.4em" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2.5h6v4H9z"/><path d="M1.5 9h21"/><path d="M3.5 9v2M3.5 11.5l-1.4 5M3.5 11.5l1.4 5"/><path d="M8 9v2M8 11.5l-1.4 5M8 11.5l1.4 5"/><path d="M12 9v2M12 11.5l-1.4 5M12 11.5l1.4 5"/><path d="M16 9v2M16 11.5l-1.4 5M16 11.5l1.4 5"/><path d="M20.5 9v2M20.5 11.5l-1.4 5M20.5 11.5l1.4 5"/></svg>' },
+  { id: 'aplicacion', label: '🧴 Aplicación', oculto: true }, // legado: ya no se ofrece al registrar, se mantiene para leer historial viejo
   { id: 'trabajo_suelo', label: '🚜 Trabajo de suelo' },
-  { id: 'riego', label: '🚿 Riego' },
+  { id: 'riego', label: '💧 Riego' },
   { id: 'cosecha', label: '🌾 Cosecha' },
   { id: 'otro', label: '📝 Otro' }
 ];
@@ -5843,6 +5844,8 @@ function loteDeUnidad(u) { const i = infoUnidad(u); return i.lote ? (lotesDe(i.p
 function laborEsDeUnidad(l, u) { const i = infoUnidad(u); if (l.potrero !== i.potrero) return false; return !i.lote || !l.lote || l.lote === i.lote; }
 let campoLaborPotrerosDetalle = {}; // { [nombrePotrero]: { modo: 'completo'|'parcial', hectareas: number|null } }
 let campoTipoLaborSeleccionado = null;
+let campoOpcionSel = null;
+let campoColaLabores = []; // tipos elegidos; se registran uno tras otro (la primera es la activa)
 let laboresCampoRegistros = []; // subconjunto filtrado por los potreros elegidos ahora
 let laboresCampoTodos = []; // todas las labores, en vivo
 let unsubLaboresCampo = null;
@@ -5857,7 +5860,7 @@ async function initCampo() {
   suscribirProductosInv(); // productos de Inventario, usados en el selector de producto de Fumigación
   suscribirLaboresCampo();
   camposLaborPotrerosSel = [];   // al entrar no hay ningún potrero preseleccionado
-  campoTipoLaborSeleccionado = null; campoAperosSel = [];
+  campoTipoLaborSeleccionado = null; campoColaLabores = []; campoAperosSel = [];
   document.getElementById('campo-labor-campos').innerHTML = ''; { const ap = document.getElementById('campo-labor-aperos'); if (ap) ap.innerHTML = ''; }
   await cargarCultivosActualesPotreros();
   renderSelectorModoCampo();
@@ -5982,21 +5985,35 @@ function renderTipoLaborSelector() {
   const cultivoRef = cultivoDeReferenciaPotrero(camposLaborPotrerosSel[0]);
 
   const tiposFijos = TIPOS_LABOR_CAMPO.filter(t => !t.oculto && (!t.soloAnual || esAnual) && !tiposLaborCampoDeshabilitados.includes(t.id))
-    .map(t => ({ id: t.id, label: t.label }));
+    .map(t => ({ id: t.id, label: iconoLaborHtml(t) }));
   const tiposPersonalizados = tiposLaborCampoConfig
     .filter(t => !t.cultivos || t.cultivos.length === 0 || (cultivoRef && t.cultivos.includes(cultivoRef)))
     .map(t => ({ id: 'custom:' + t.nombre, label: '🧩 ' + t.nombre }));
 
   const tipos = [...tiposFijos, ...tiposPersonalizados];
-  wrap.innerHTML = tipos.map(t => `<div class="cultivo-chip ${campoTipoLaborSeleccionado===t.id?'sel':''}" onclick='seleccionarTipoLaborCampo(${JSON.stringify(t.id)})'>${t.label}</div>`).join('');
+  wrap.innerHTML = tipos.map(t => { const k = campoColaLabores.indexOf(t.id); return `<div class="cultivo-chip ${k >= 0 ? 'sel' : ''}" onclick='toggleTipoLaborCampo(${JSON.stringify(t.id)})'>${campoColaLabores.length > 1 && k >= 0 ? (k + 1) + '. ' : ''}${t.label}</div>`; }).join('');
+  renderColaInfo();
+}
+function labelTipoLaborHtml(id) { const f = TIPOS_LABOR_CAMPO.find(t => t.id === id); return f ? iconoLaborHtml(f) : labelTipoLabor(id); }
+function labelTipoLabor(id) { const f = TIPOS_LABOR_CAMPO.find(t => t.id === id); return f ? f.label : (String(id).startsWith('custom:') ? '🧩 ' + String(id).slice(7) : id); }
+function renderColaInfo() {
+  const el = document.getElementById('campo-cola-info'); if (!el) return;
+  el.innerHTML = campoColaLabores.length > 1 ? `<div style="background:#EFF6FF;color:#1D4ED8;border-radius:8px;padding:8px 10px;font-size:12px;margin-top:8px">Completa primero: <strong>${labelTipoLaborHtml(campoColaLabores[0])}</strong>. Al guardarla pasas a: ${campoColaLabores.slice(1).map(labelTipoLaborHtml).join(' → ')}. La fecha se mantiene.</div>` : '';
 }
 
-window.seleccionarTipoLaborCampo = function(tipo) {
-  campoTipoLaborSeleccionado = tipo;
+window.seleccionarTipoLaborCampo = function(tipo) { campoColaLabores = tipo ? [tipo] : []; activarTipoLabor(); }
+window.toggleTipoLaborCampo = function(tipo) {
+  const i = campoColaLabores.indexOf(tipo);
+  if (i >= 0) campoColaLabores.splice(i, 1); else campoColaLabores.push(tipo);
+  activarTipoLabor();
+}
+function activarTipoLabor() {
+  const previo = campoTipoLaborSeleccionado;
+  campoTipoLaborSeleccionado = campoColaLabores[0] || null;
   setTimeout(() => { try { actualizarHintDDS(); } catch (e) {} }, 0);
   // Para Siembra solo se pueden elegir potreros anuales — si algún potrero
   // seleccionado es frutal, se saca automáticamente de la selección.
-  if (tipo === 'siembra') {
+  if (campoColaLabores.includes('siembra')) {
     camposLaborPotrerosSel = camposLaborPotrerosSel.filter(nombre => {
       const p = potrerosConfig.find(x => x.nombre === infoUnidad(nombre).potrero);
       return p && p.tipo !== 'frutal';
@@ -6007,7 +6024,8 @@ window.seleccionarTipoLaborCampo = function(tipo) {
   }
   renderTipoLaborSelector();
   renderCamposLaborPotrerosSelector();
-  renderCamposLaborTipo();
+  // Solo se redibuja el formulario si cambió la labor activa (así no se pierde lo ya escrito)
+  if (campoTipoLaborSeleccionado !== previo) renderCamposLaborTipo();
 }
 
 function renderCamposLaborPotrerosSelector() {
@@ -6139,6 +6157,7 @@ function renderCamposLaborTipo() {
   if (!cont) return;
   const tipo = campoTipoLaborSeleccionado;
   campoAperosSel = []; renderCampoAperos();
+  campoOpcionSel = null;
   if (!tipo) { cont.innerHTML = ''; return; }
   if (tipo === 'siembra') {
     campoSiembraCultivoSel = null;
@@ -6229,6 +6248,28 @@ function renderCamposLaborTipo() {
       cont.innerHTML = `<div class="field"><label>Detalle de "${nombreTipo}"</label><input type="text" id="campo-custom-detalle" placeholder="Describe lo realizado..."></div>`;
     }
   }
+  const ops = opcionesLabor(tipo);
+  if (ops.length) { cont.insertAdjacentHTML('beforeend', '<div class="field" id="campo-opcion-wrap"></div>'); renderOpcionLabor(); }
+}
+const OPCIONES_SUELO = ['Profunda', 'Superficial'];
+function opcionesLabor(tipo) {
+  if (tipo === 'trabajo_suelo') return OPCIONES_SUELO;
+  if (!String(tipo).startsWith('custom:')) return [];
+  const nombre = tipo.slice(7), def = tiposLaborCampoConfig.find(t => t.nombre === nombre);
+  if (def && Array.isArray(def.opciones) && def.opciones.length) return def.opciones;
+  return /preparaci[oó]n\s+(de\s+)?suelo/i.test(nombre) ? OPCIONES_SUELO : [];
+}
+function renderOpcionLabor() {
+  const w = document.getElementById('campo-opcion-wrap'); if (!w) return;
+  const ops = opcionesLabor(campoTipoLaborSeleccionado);
+  w.innerHTML = `<label>${ops.some(o => /profund/i.test(o)) ? 'Profundidad' : 'Opción'}</label><div class="centros-selector">${ops.map(o => `<div class="cultivo-chip ${campoOpcionSel === o ? 'sel' : ''}" onclick='elegirOpcionLabor(${JSON.stringify(o)})'>${escA(o)}</div>`).join('')}</div>`;
+}
+window.elegirOpcionLabor = function(v) { campoOpcionSel = campoOpcionSel === v ? null : v; renderOpcionLabor(); }
+window.guardarOpcionesTipoLabor = async function(idx) {
+  const t = tiposLaborCampoConfig[idx]; if (!t) return;
+  t.opciones = (document.getElementById('tipo-labor-opc-' + idx).value || '').split(',').map(x => x.trim()).filter(Boolean);
+  config.tiposLaborCampo = tiposLaborCampoConfig;
+  try { await saveConfig(); renderListaTiposLaborCampo(); toast('✓ Opciones guardadas', true); } catch (e) { toast('Error: ' + e.message, false); }
 }
 
 function renderCampoSiembraCultivoSelector() {
@@ -6389,6 +6430,7 @@ window.registrarLaborCampo = async function() {
   const payloadBase = { tipo, fecha, anio: fecha.slice(0,4), obs, operador: currentUser, ts: Date.now() };
   if (campoAperosSel.length) payloadBase.aperos = [...campoAperosSel];
   if (campoFotosSel.length) payloadBase.fotos = [...campoFotosSel];
+  if (campoOpcionSel && opcionesLabor(tipo).includes(campoOpcionSel)) payloadBase.opcion = campoOpcionSel;
   if (tipo.startsWith('custom:')) {
     payloadBase.tipo = 'personalizado';
     payloadBase.nombreTipo = tipo.slice(7);
@@ -6515,12 +6557,16 @@ window.registrarLaborCampo = async function() {
     await batch.commit();
     document.getElementById('campo-labor-obs').value = '';
     campoFotosSel = []; renderCampoFotosPrev();
-    campoTipoLaborSeleccionado = null; campoAperosSel = []; renderCampoAperos();
+    const hechas = camposLaborPotrerosSel.length;
+    campoColaLabores.shift();
+    const siguiente = campoColaLabores[0] || null;
+    campoTipoLaborSeleccionado = siguiente; campoAperosSel = []; renderCampoAperos();
     // Se mantienen los potreros elegidos: es común registrar varias labores
     // seguidas para el mismo grupo de potreros (ej. fertilización y luego fumigación).
     renderTipoLaborSelector();
-    document.getElementById('campo-labor-campos').innerHTML = '';
-    toast(camposLaborPotrerosSel.length > 1 ? `✓ Labor registrada en ${camposLaborPotrerosSel.length} potreros` : '✓ Labor registrada', true);
+    if (siguiente) { renderCamposLaborTipo(); actualizarHintDDS(); }
+    else document.getElementById('campo-labor-campos').innerHTML = '';
+    toast((hechas > 1 ? `✓ Labor registrada en ${hechas} potreros` : '✓ Labor registrada') + (siguiente ? ` — ahora: ${labelTipoLabor(siguiente)}` : ''), true);
   } catch(e) { toast('Error: ' + e.message, false); }
   btn.disabled = false; btn.textContent = '✓ Guardar labor';
 }
@@ -6534,25 +6580,28 @@ function populateFiltroAnioCampo() {
     anios.map(a => `<option value="${a}" ${a===cur?'selected':''}>${a}</option>`).join('');
 }
 
+const esSiembraLabor = x => x.tipo === 'siembra' || (x.tipo === 'personalizado' && normNom(x.nombreTipo) === 'siembra');
 const diasEntre = (a, b) => Math.round((Date.UTC(+b.slice(0,4), +b.slice(5,7) - 1, +b.slice(8,10)) - Date.UTC(+a.slice(0,4), +a.slice(5,7) - 1, +a.slice(8,10))) / 86400000);
 function infoDDS(potrero, lote, fecha, tipo, tsPropio, idPropio) {
   const todas = (typeof laboresCampoTodos !== 'undefined' ? laboresCampoTodos : []).filter(x => x.potrero === potrero && x.id !== idPropio && (!lote || !x.lote || x.lote === lote));
-  const siembras = todas.filter(x => x.tipo === 'siembra' && x.fecha && !x.pendiente && x.fecha <= fecha).sort((a, b) => b.fecha.localeCompare(a.fecha));
+  const siembras = todas.filter(x => esSiembraLabor(x) && x.fecha && !x.pendiente && x.fecha <= fecha).sort((a, b) => b.fecha.localeCompare(a.fecha));
   const previas = todas.filter(x => x.tipo === tipo && x.fecha && (x.fecha < fecha || (x.fecha === fecha && (x.ts || 0) < (tsPropio || Infinity)))).sort((a, b) => b.fecha.localeCompare(a.fecha) || (b.ts || 0) - (a.ts || 0));
   return { dds: siembras.length ? diasEntre(siembras[0].fecha, fecha) : null, cultivo: siembras.length ? siembras[0].cultivo : null, previa: previas.length ? diasEntre(previas[0].fecha, fecha) : null, previaFecha: previas.length ? previas[0].fecha : null };
 }
 function textoDDS(i, tipo) {
-  const nom = tipo === 'fumigacion' ? 'fumigación' : 'fertilización';
   const p = [];
   if (i.dds != null) p.push(`🌱 ${i.dds} DDS`);
-  p.push(i.previa != null ? `↔ ${i.previa} día${i.previa === 1 ? '' : 's'} desde la ${nom} anterior` : `primera ${nom} registrada`);
+  if (tipo === 'fumigacion' || tipo === 'fertilizacion') {
+    const nom = tipo === 'fumigacion' ? 'fumigación' : 'fertilización';
+    p.push(i.previa != null ? `↔ ${i.previa} día${i.previa === 1 ? '' : 's'} desde la ${nom} anterior` : `primera ${nom} registrada`);
+  }
   return p.join(' · ');
 }
 window.actualizarHintDDS = function() {
   const el = document.getElementById('campo-labor-dds-hint'); if (!el) return;
   const tipo = campoTipoLaborSeleccionado, fecha = (document.getElementById('campo-labor-fecha') || {}).value;
-  if (!fecha || (tipo !== 'fumigacion' && tipo !== 'fertilizacion') || !camposLaborPotrerosSel.length) { el.innerHTML = ''; return; }
-  el.innerHTML = [...camposLaborPotrerosSel].sort(cmpEs).map(u => { const inf = infoUnidad(u); return `<div style="font-size:12px;color:#2D7D46"><strong>${escA(inf.label)}:</strong> ${textoDDS(infoDDS(inf.potrero, inf.lote, fecha, tipo), tipo)}</div>`; }).join('');
+  if (!fecha || !tipo || tipo === 'siembra' || normNom(String(tipo).replace('custom:', '')) === 'siembra' || !camposLaborPotrerosSel.length) { el.innerHTML = ''; return; }
+  el.innerHTML = [...camposLaborPotrerosSel].sort(cmpEs).map(u => { const inf = infoUnidad(u); const t = textoDDS(infoDDS(inf.potrero, inf.lote, fecha, tipo), tipo); return t ? `<div style="font-size:12px;color:#2D7D46"><strong>${escA(inf.label)}:</strong> ${t}</div>` : ''; }).join('');
 }
 function haDeLabor(l) {
   if (l.aplicacion_completa === false && l.hectareas_aplicadas != null) return parseFloat(l.hectareas_aplicadas) || null;
@@ -6611,8 +6660,9 @@ function renderFertTotal(data) {
 }
 
 function ddsLinea(l) {
-  if (!l.fecha) return '';
-  return `<div style="margin-top:4px;color:#1D4ED8;font-size:11px;font-weight:600">${textoDDS(infoDDS(l.potrero, l.lote, l.fecha, l.tipo, l.ts, l.id), l.tipo)}</div>`;
+  if (!l.fecha || esSiembraLabor(l)) return '';
+  const t = textoDDS(infoDDS(l.potrero, l.lote, l.fecha, l.tipo, l.ts, l.id), l.tipo);
+  return t ? `<div style="margin-top:4px;color:#1D4ED8;font-size:11px;font-weight:600">${t}</div>` : '';
 }
 function fotosLinea(l) {
   return Array.isArray(l.fotos) && l.fotos.length ? `<div style="margin-top:4px">${l.fotos.map((f, i) => `<img src="${f}" style="width:54px;height:54px;object-fit:cover;border-radius:6px;margin-right:4px;cursor:pointer" onclick="verFotoLabor('${l.id}',${i})">`).join('')}</div>` : '';
@@ -6628,14 +6678,14 @@ function detalleLaborCampo(l) {
     const fertStr = l.fertilizacion ? ` · 🧪 Fertilización: ${l.fertMezcla||'—'}${l.fertDosis?' ('+l.fertDosis+')':''}` : (l.fertilizacion === false ? ' · Sin fertilización' : '');
     base = `${l.cultivo}${l.variedad?' · '+l.variedad:''}${l.dosis?' · Dosis: '+l.dosis:''}${l.hectareas?' · '+l.hectareas+' ha':''}${fertStr}${(!l.fecha||l.pendiente)?' · <span style="color:#92400E">pendiente de siembra</span>':''}`;
   } else if (l.tipo === 'fertilizacion') {
-    base = (Array.isArray(l.productos) && l.productos.length ? l.productos.map(pr => `${pr.producto} (${pr.dosis})`).join(', ') : '—') + (l.momento ? ` · ${escA(l.momento)}` : '') + resumenFertLabor(l) + ddsLinea(l);
+    base = (Array.isArray(l.productos) && l.productos.length ? l.productos.map(pr => `${pr.producto} (${pr.dosis})`).join(', ') : '—') + (l.momento ? ` · ${escA(l.momento)}` : '') + resumenFertLabor(l);
   } else if (l.tipo === 'fumigacion') {
     const prefTipo = l.tiposProducto && l.tiposProducto.length ? '['+l.tiposProducto.join(', ')+'] ' : '';
     const prodStr = Array.isArray(l.productos) && l.productos.length ? l.productos.map(pr => `${pr.producto} (${pr.dosis})`).join(', ') : '—';
     const mojaStr = l.mojamiento != null ? ` · Mojamiento: ${l.mojamiento} L/ha` : '';
     const abejaStr = Array.isArray(l.avisajeApicola) && l.avisajeApicola.length
       ? (l.avisajeRealizado ? ' · <span style="color:#2D7D46">🐝 aviso a apicultores dado</span>' : ' · <span style="color:#C0392B">🐝 requería aviso: NO registrado</span>') : '';
-    base = `${prefTipo}${prodStr}${mojaStr}${abejaStr}` + ddsLinea(l);
+    base = `${prefTipo}${prodStr}${mojaStr}${abejaStr}`;
   } else if (l.tipo === 'aplicacion') {
     const prefTipo = l.tiposProducto && l.tiposProducto.length ? '['+l.tiposProducto.join(', ')+'] ' : '';
     const prodStr = Array.isArray(l.productos) && l.productos.length
@@ -6659,7 +6709,8 @@ function detalleLaborCampo(l) {
   if (l.aplicacion_completa === false) {
     base += ` · ⚠️ Parcial${l.hectareas_aplicadas != null ? ' ('+l.hectareas_aplicadas+' ha)' : ''}${l.obs_parcial ? ' — '+l.obs_parcial : ''}`;
   }
-  return base + fotosLinea(l);
+  if (l.opcion) base = `<strong>${escA(l.opcion)}</strong> · ` + base;
+  return base + ddsLinea(l) + fotosLinea(l);
 }
 
 let campoHistorialOrden = 'asc'; // 'asc' = más antiguo primero (cronológico), 'desc' = más reciente primero
@@ -6688,7 +6739,7 @@ window.renderHistorialLabores = function() {
     if (!b.fecha) return -1;
     return campoHistorialOrden === 'asc' ? a.fecha.localeCompare(b.fecha) : b.fecha.localeCompare(a.fecha);
   });
-  const tipoLabel = {}; TIPOS_LABOR_CAMPO.forEach(t => tipoLabel[t.id] = t.label);
+  const tipoLabel = {}; TIPOS_LABOR_CAMPO.forEach(t => tipoLabel[t.id] = iconoLaborHtml(t));
   const tabla = filas => `<div class="table-wrap"><table>
     <thead><tr><th>Fecha</th><th>Tipo</th><th>Detalle</th><th>Obs.</th><th>Registró</th>${isAdmin?'<th></th>':''}</tr></thead>
     <tbody>${filas.map(l => `<tr>
@@ -6760,6 +6811,7 @@ function pintarEdicionLabor() {
   } else if (t === 'otro') {
     esp = elInput('Detalle', 'detalle');
   }
+  if (t === 'trabajo_suelo' || d.opcion || (t === 'personalizado' && opcionesLabor('custom:' + d.nombreTipo).length)) esp += elInput('Profundidad / opción', 'opcion');
   if (Array.isArray(d.productos) || ['fertilizacion', 'fumigacion', 'aplicacion'].includes(t)) {
     if (!Array.isArray(d.productos)) d.productos = [];
     esp += `<div class="cultivos-label">Productos</div>` + d.productos.map((p, i) => `<div style="display:flex;gap:6px;margin-bottom:6px"><input type="text" placeholder="Producto" style="flex:2" value="${escA(p.producto || '')}" oninput="elProd(${i},'producto',this.value)"><input type="text" placeholder="Dosis" style="flex:1" value="${escA(p.dosis || '')}" oninput="elProd(${i},'dosis',this.value)"><button class="btn btn-danger" onclick="elProdDel(${i})">✕</button></div>`).join('')
@@ -8239,6 +8291,7 @@ function renderListaTiposLaborCampo() {
         </div>
       </div>
       <div style="font-size:12px;color:var(--acero)"><strong>Cultivos:</strong> ${t.cultivos && t.cultivos.length ? t.cultivos.join(', ') : 'Todos'}</div>
+      <div style="display:flex;gap:6px;margin-top:6px"><input type="text" id="tipo-labor-opc-${i}" placeholder="Opciones a elegir, separadas por coma (ej: Profunda, Superficial)" value="${escA((opcionesLabor('custom:' + t.nombre) || []).join(', '))}" style="flex:1"><button class="btn btn-secondary" onclick="guardarOpcionesTipoLabor(${i})">Guardar</button></div>
       <div id="tipo-labor-campo-editor-${i}"></div>
     </div>`).join('') : '<div style="color:#9CA3AF;font-size:13px;padding:8px">Sin tipos de labor personalizados.</div>';
 }
@@ -12537,6 +12590,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         <div class="panel-title">Registrar labor</div>
         <div class="cultivos-label">Tipo de labor</div>
         <div class="centros-selector" id="campo-tipo-labor-selector"></div>
+        <div id="campo-cola-info"></div>
         <div id="campo-labor-campos"></div>
         <div id="campo-labor-aperos"></div>
         <div class="field" style="margin-top:8px"><label>Fecha</label><input type="date" id="campo-labor-fecha" onchange="actualizarHintDDS()"><div id="campo-labor-dds-hint" style="margin-top:6px"></div></div>
