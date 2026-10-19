@@ -5844,6 +5844,7 @@ function loteDeUnidad(u) { const i = infoUnidad(u); return i.lote ? (lotesDe(i.p
 function laborEsDeUnidad(l, u) { const i = infoUnidad(u); if (l.potrero !== i.potrero) return false; return !i.lote || !l.lote || l.lote === i.lote; }
 let campoLaborPotrerosDetalle = {}; // { [nombrePotrero]: { modo: 'completo'|'parcial', hectareas: number|null } }
 let campoTipoLaborSeleccionado = null;
+let campoComboId = null;
 let campoOpcionSel = null;
 let campoColaLabores = []; // tipos elegidos; se registran uno tras otro (la primera es la activa)
 let laboresCampoRegistros = []; // subconjunto filtrado por los potreros elegidos ahora
@@ -5860,7 +5861,7 @@ async function initCampo() {
   suscribirProductosInv(); // productos de Inventario, usados en el selector de producto de Fumigación
   suscribirLaboresCampo();
   camposLaborPotrerosSel = [];   // al entrar no hay ningún potrero preseleccionado
-  campoTipoLaborSeleccionado = null; campoColaLabores = []; campoAperosSel = [];
+  campoTipoLaborSeleccionado = null; campoColaLabores = []; campoComboId = null; campoAperosSel = [];
   document.getElementById('campo-labor-campos').innerHTML = ''; { const ap = document.getElementById('campo-labor-aperos'); if (ap) ap.innerHTML = ''; }
   await cargarCultivosActualesPotreros();
   renderSelectorModoCampo();
@@ -6001,7 +6002,7 @@ function renderColaInfo() {
   el.innerHTML = campoColaLabores.length > 1 ? `<div style="background:#EFF6FF;color:#1D4ED8;border-radius:8px;padding:8px 10px;font-size:12px;margin-top:8px">Completa primero: <strong>${labelTipoLaborHtml(campoColaLabores[0])}</strong>. Al guardarla pasas a: ${campoColaLabores.slice(1).map(labelTipoLaborHtml).join(' → ')}. La fecha se mantiene.</div>` : '';
 }
 
-window.seleccionarTipoLaborCampo = function(tipo) { campoColaLabores = tipo ? [tipo] : []; activarTipoLabor(); }
+window.seleccionarTipoLaborCampo = function(tipo) { campoColaLabores = tipo ? [tipo] : []; campoComboId = null; activarTipoLabor(); }
 window.toggleTipoLaborCampo = function(tipo) {
   const i = campoColaLabores.indexOf(tipo);
   if (i >= 0) campoColaLabores.splice(i, 1); else campoColaLabores.push(tipo);
@@ -6009,6 +6010,7 @@ window.toggleTipoLaborCampo = function(tipo) {
 }
 function activarTipoLabor() {
   const previo = campoTipoLaborSeleccionado;
+  if (!campoColaLabores.length) campoComboId = null;
   campoTipoLaborSeleccionado = campoColaLabores[0] || null;
   setTimeout(() => { try { actualizarHintDDS(); } catch (e) {} }, 0);
   // Para Siembra solo se pueden elegir potreros anuales — si algún potrero
@@ -6187,8 +6189,8 @@ function renderCamposLaborTipo() {
         <div id="campo-fert-otro-wrap" style="display:none;margin-top:8px"><input type="text" id="campo-fert-otro" placeholder="Nombre del fertilizante" oninput="fertPintaLey()"></div></div>
       <div class="field" id="campo-fert-ley-wrap" style="display:none"><label>Ley del fertilizante (%) — N, P₂O₅, K₂O y microelementos</label><div id="campo-fert-ley" style="display:flex;flex-wrap:wrap;gap:6px"></div></div>
       <div class="field"><label>Dosis</label>
-        <div style="display:flex;gap:8px"><input type="number" id="campo-apl-dosis" min="0" step="any" inputmode="decimal" placeholder="Cantidad" style="flex:1">
-        <div class="select-wrapper" style="width:120px"><select id="campo-apl-dosis-un"><option>kg/ha</option><option>L/ha</option><option>kg total</option><option>L total</option></select></div></div></div>
+        <div style="display:flex;gap:8px"><input type="text" id="campo-apl-dosis" inputmode="decimal" placeholder="Cantidad" style="flex:1;min-width:0">
+        <div class="select-wrapper" style="width:120px"><select id="campo-apl-dosis-un"><option>kg/ha</option><option>L/ha</option><option>g/ha</option><option>kg total</option><option>L total</option></select></div></div></div>
       <button type="button" class="btn btn-secondary" style="margin-bottom:10px" onclick="agregarCampoAplProducto()">+ Agregar este producto a la lista</button>
       <div class="field"><label>Momento o etapa (opcional)</label><input type="text" id="campo-fert-momento" placeholder="Ej: preabonadura, cobertera, a la siembra..."></div>`;
     renderCampoAplProductosLista();
@@ -6203,7 +6205,7 @@ function renderCamposLaborTipo() {
       <div id="campo-apl-productos-lista"></div>
       <div class="grid-2">
         <div class="field"><label>Producto</label><div class="select-wrapper"><select id="campo-apl-producto" onchange="renderAvisoAbejasCampo()"><option value="">Elige una categoría primero</option></select></div></div>
-        <div class="field"><label>Dosis</label><input type="text" id="campo-apl-dosis" placeholder="Ej: 2 L/ha..."></div>
+        <div class="field"><label>Dosis</label><div style="display:flex;gap:6px"><input type="text" id="campo-apl-dosis" inputmode="decimal" placeholder="Cantidad" style="flex:1;min-width:0"><div class="select-wrapper" style="width:104px"><select id="campo-apl-dosis-un"><option>L/ha</option><option>g/ha</option><option>kg/ha</option><option>mL/ha</option></select></div></div></div>
       </div>
       <button type="button" class="btn btn-secondary" style="margin-bottom:14px" onclick="agregarCampoAplProducto()">+ Agregar producto a la lista</button>
       <div id="campo-fum-avisaje"></div>`;
@@ -6240,7 +6242,7 @@ function renderCamposLaborTipo() {
         <div id="campo-apl-productos-lista"></div>
         <div class="grid-2">
           <div class="field"><label>Producto</label><input type="text" id="campo-apl-producto" placeholder="Ej: Urea, Nitrato de potasio..."></div>
-          <div class="field"><label>Dosis</label><input type="text" id="campo-apl-dosis" placeholder="Ej: 150 kg/ha..."></div>
+          <div class="field"><label>Dosis</label><div style="display:flex;gap:6px"><input type="text" id="campo-apl-dosis" inputmode="decimal" placeholder="Cantidad" style="flex:1;min-width:0"><div class="select-wrapper" style="width:104px"><select id="campo-apl-dosis-un"><option>kg/ha</option><option>L/ha</option><option>g/ha</option><option>mL/ha</option></select></div></div></div>
         </div>
         <button type="button" class="btn btn-secondary" style="margin-bottom:14px" onclick="agregarCampoAplProducto()">+ Agregar producto a la lista</button>`;
       renderCampoAplProductosLista();
@@ -6429,6 +6431,8 @@ window.registrarLaborCampo = async function() {
   const tipo = campoTipoLaborSeleccionado;
   const payloadBase = { tipo, fecha, anio: fecha.slice(0,4), obs, operador: currentUser, ts: Date.now() };
   if (campoAperosSel.length) payloadBase.aperos = [...campoAperosSel];
+  if (campoColaLabores.length > 1 && !campoComboId) campoComboId = 'c' + Date.now().toString(36);
+  if (campoComboId) payloadBase.comboId = campoComboId;
   if (campoFotosSel.length) payloadBase.fotos = [...campoFotosSel];
   if (campoOpcionSel && opcionesLabor(tipo).includes(campoOpcionSel)) payloadBase.opcion = campoOpcionSel;
   if (tipo.startsWith('custom:')) {
@@ -6474,7 +6478,7 @@ window.registrarLaborCampo = async function() {
     if (mojamientoRaw === '') { toast('Ingresa el mojamiento (L/ha)', false); return; }
     if (!campoAplTiposProductoSel.length) { toast('Selecciona al menos una categoría', false); return; }
     const prodPendiente = document.getElementById('campo-apl-producto').value.trim();
-    const dosisPendiente = document.getElementById('campo-apl-dosis').value.trim();
+    const dosisPendiente = leerDosisCampoApl();
     const productos = [...campoAplProductosSel];
     if (prodPendiente && dosisPendiente) productos.push({ producto: prodPendiente, dosis: dosisPendiente });
     if (!productos.length) { toast('Agrega al menos un producto con su dosis', false); return; }
@@ -6490,7 +6494,7 @@ window.registrarLaborCampo = async function() {
     }
   } else if (tipo === 'aplicacion') {
     const prodPendiente = document.getElementById('campo-apl-producto').value.trim();
-    const dosisPendiente = document.getElementById('campo-apl-dosis').value.trim();
+    const dosisPendiente = leerDosisCampoApl();
     const productos = [...campoAplProductosSel];
     if (prodPendiente && dosisPendiente) productos.push({ producto: prodPendiente, dosis: dosisPendiente });
     if (!productos.length) { toast('Agrega al menos un producto con su dosis', false); return; }
@@ -6526,7 +6530,7 @@ window.registrarLaborCampo = async function() {
     const tipoDef = tiposLaborCampoConfig.find(t => t.nombre === nombreTipo);
     if (tipoDef && tipoDef.tieneProductos) {
       const prodPendiente = document.getElementById('campo-apl-producto').value.trim();
-      const dosisPendiente = document.getElementById('campo-apl-dosis').value.trim();
+      const dosisPendiente = leerDosisCampoApl();
       const productos = [...campoAplProductosSel];
       if (prodPendiente && dosisPendiente) productos.push({ producto: prodPendiente, dosis: dosisPendiente });
       if (!productos.length) { toast('Agrega al menos un producto con su dosis', false); return; }
@@ -6560,6 +6564,7 @@ window.registrarLaborCampo = async function() {
     const hechas = camposLaborPotrerosSel.length;
     campoColaLabores.shift();
     const siguiente = campoColaLabores[0] || null;
+    if (!siguiente) campoComboId = null;
     campoTipoLaborSeleccionado = siguiente; campoAperosSel = []; renderCampoAperos();
     // Se mantienen los potreros elegidos: es común registrar varias labores
     // seguidas para el mismo grupo de potreros (ej. fertilización y luego fumigación).
@@ -6612,11 +6617,12 @@ function haDeLabor(l) {
   return p && p.hectareas ? p.hectareas : null;
 }
 function kgHaDeProducto(pr, ha) {
-  const m = String(pr.dosis || '').trim().match(/^([\d.,]+)\s*(kg\/ha|kg total|kg|l\/ha|l total|l)\b/i);
+  const m = String(pr.dosis || '').trim().match(/^([\d.,]+)\s*(kg\/ha|kg total|kg|g\/ha|l\/ha|l total|l)\b/i);
   if (!m) return null;
   const v = parseFloat(m[1].replace(',', '.')); if (!isFinite(v)) return null;
   const u = m[2].toLowerCase();
   if (u === 'kg/ha') return v;
+  if (u === 'g/ha') return v / 1000;
   if (u === 'kg total' || u === 'kg') return ha ? v / ha : null;
   return null; // litros: no se convierten a kg
 }
@@ -6713,6 +6719,29 @@ function detalleLaborCampo(l) {
   return base + ddsLinea(l) + fotosLinea(l);
 }
 
+const cmpIntraDia = (a, b) => {
+  const ao = a.orden != null, bo = b.orden != null;
+  if (ao && bo && a.orden !== b.orden) return a.orden - b.orden;
+  if (ao !== bo) return ao ? -1 : 1;
+  return (a.ts || 0) - (b.ts || 0);
+};
+const claveDia = l => (l.fecha || '') + '|' + l.potrero + '|' + (l.lote || '');
+function itemsDelDia(l) {
+  const todos = laboresCampoTodos.filter(x => claveDia(x) === claveDia(l)).sort(cmpIntraDia);
+  const grupos = [], vistos = {};
+  todos.forEach(x => { if (!x.comboId) { grupos.push([x]); return; } if (vistos[x.comboId]) vistos[x.comboId].push(x); else { vistos[x.comboId] = [x]; grupos.push(vistos[x.comboId]); } });
+  return grupos;
+}
+window.moverLaborDia = async function(id, dir) {
+  const l = laboresCampoTodos.find(x => x.id === id); if (!l) return;
+  const items = itemsDelDia(l);
+  const i = items.findIndex(g => g.some(x => x.id === id)), j = i + dir;
+  if (i < 0 || j < 0 || j >= items.length) return;
+  [items[i], items[j]] = [items[j], items[i]];
+  const batch = writeBatch(db);
+  items.forEach((g, k) => g.forEach(x => { batch.update(doc(db, 'labores_campo', x.id), { orden: k + 1 }); x.orden = k + 1; }));
+  try { await batch.commit(); renderHistorialLabores(); } catch (e) { toast('Error: ' + e.message, false); }
+}
 let campoHistorialOrden = 'asc'; // 'asc' = más antiguo primero (cronológico), 'desc' = más reciente primero
 
 window.setCampoHistorialOrden = function(orden) {
@@ -6737,20 +6766,48 @@ window.renderHistorialLabores = function() {
     if (!a.fecha && !b.fecha) return b.ts - a.ts;
     if (!a.fecha) return 1;
     if (!b.fecha) return -1;
-    return campoHistorialOrden === 'asc' ? a.fecha.localeCompare(b.fecha) : b.fecha.localeCompare(a.fecha);
+    const cf = a.fecha.localeCompare(b.fecha);
+    if (cf) return campoHistorialOrden === 'asc' ? cf : -cf;
+    const ci = cmpIntraDia(a, b);   // mismo día: orden elegido a mano (o por hora de ingreso)
+    return campoHistorialOrden === 'asc' ? ci : -ci;
   });
   const tipoLabel = {}; TIPOS_LABOR_CAMPO.forEach(t => tipoLabel[t.id] = iconoLaborHtml(t));
-  const tabla = filas => `<div class="table-wrap"><table>
-    <thead><tr><th>Fecha</th><th>Tipo</th><th>Detalle</th><th>Obs.</th><th>Registró</th>${isAdmin?'<th></th>':''}</tr></thead>
-    <tbody>${filas.map(l => `<tr>
+  const tipoTxt = l => l.tipo === 'personalizado' ? '🧩 ' + escA(l.nombreTipo) : (tipoLabel[l.tipo] || l.tipo);
+  const botones = l => `<button class="btn btn-secondary" style="padding:6px 9px;margin-right:4px" title="Editar" onclick="editarLaborCampo('${l.id}')">✏️</button><button class="btn btn-danger" onclick="eliminarLaborCampo('${l.id}')">✕</button>`;
+  const sentido = campoHistorialOrden === 'asc' ? 1 : -1;
+  const ordenInfo = g => { if (!g[0].fecha) return ''; const it = itemsDelDia(g[0]); if (it.length < 2) return ''; const pos = it.findIndex(x => x.some(y => y.id === g[0].id)) + 1; return `<div style="font-size:10px;color:#6B7280;margin-top:3px">${pos}º de ${it.length} del día</div>`; };
+  const botonesOrden = g => { if (!isAdmin || !g[0].fecha || itemsDelDia(g[0]).length < 2) return ''; return `<div style="margin-top:4px"><button class="btn btn-secondary" style="padding:3px 8px;margin-right:3px" title="Subir" onclick="moverLaborDia('${g[0].id}',${-1 * sentido})">▲</button><button class="btn btn-secondary" style="padding:3px 8px" title="Bajar" onclick="moverLaborDia('${g[0].id}',${1 * sentido})">▼</button></div>`; };
+  const filaHtml = g => {
+    if (g.length === 1) { const l = g[0]; return `<tr>
       <td class="td-mono">${l.fecha || '—'}</td>
-      <td style="font-size:13px;font-weight:600">${l.tipo === 'personalizado' ? '🧩 '+l.nombreTipo : (tipoLabel[l.tipo] || l.tipo)}</td>
+      <td style="font-size:13px;font-weight:600">${tipoTxt(l)}${ordenInfo(g)}</td>
       <td style="font-size:12px">${detalleLaborCampo(l)}</td>
       <td style="font-size:12px;color:#6B7280">${l.obs || '—'}</td>
       <td style="font-size:12px">${l.operador}</td>
-      ${isAdmin?`<td style="white-space:nowrap"><button class="btn btn-secondary" style="padding:6px 9px;margin-right:4px" title="Editar" onclick="editarLaborCampo('${l.id}')">✏️</button><button class="btn btn-danger" onclick="eliminarLaborCampo('${l.id}')">✕</button></td>`:''}
-    </tr>`).join('')}</tbody>
+      ${isAdmin ? `<td style="white-space:nowrap">${botones(l)}${botonesOrden(g)}</td>` : ''}
+    </tr>`; }
+    // Labores hechas juntas (varias seleccionadas a la vez): una sola fila con todos los tipos
+    return `<tr style="background:#F5F9FF">
+      <td class="td-mono">${g[0].fecha || '—'}</td>
+      <td style="font-size:13px;font-weight:600">${g.map(tipoTxt).join(' <span style="color:#1D4ED8;font-weight:800">+</span> ')}<div><span title="Labores hechas juntas" style="display:inline-block;margin-top:4px;background:#DBEAFE;color:#1D4ED8;border-radius:999px;padding:1px 8px;font-size:11px;font-weight:700">🔗 combinada</span></div>${ordenInfo(g)}</td>
+      <td style="font-size:12px">${g.map(l => `<div style="margin-bottom:6px"><span style="font-weight:700">${tipoTxt(l)}:</span> ${detalleLaborCampo(l)}</div>`).join('')}</td>
+      <td style="font-size:12px;color:#6B7280">${g.map(l => l.obs).filter(Boolean).join(' · ') || '—'}</td>
+      <td style="font-size:12px">${g[0].operador}</td>
+      ${isAdmin ? `<td style="white-space:nowrap">${g.map(l => `<div style="margin-bottom:4px"><span style="font-size:10px;color:#6B7280">${tipoTxt(l).replace(/<[^>]+>/g, '').slice(0, 14)}</span> ${botones(l)}</div>`).join('')}${botonesOrden(g)}</td>` : ''}
+    </tr>`;
+  };
+  const tabla = filas => {
+    const grupos = [], vistos = {};
+    filas.forEach(l => {
+      if (!l.comboId) { grupos.push([l]); return; }
+      const k = l.comboId + '|' + l.potrero + '|' + (l.lote || '');
+      if (vistos[k]) vistos[k].push(l); else { vistos[k] = [l]; grupos.push(vistos[k]); }
+    });
+    return `<div class="table-wrap"><table>
+    <thead><tr><th>Fecha</th><th>Tipo</th><th>Detalle</th><th>Obs.</th><th>Registró</th>${isAdmin?'<th></th>':''}</tr></thead>
+    <tbody>${grupos.map(filaHtml).join('')}</tbody>
   </table></div>`;
+  };
   // Con 2 o más potreros elegidos, las labores se muestran por separado (la selección conjunta es solo para ingresar más rápido)
   if (camposLaborPotrerosSel.length > 1) {
     cont.innerHTML = [...camposLaborPotrerosSel].sort(cmpEs).map(nombre => {
