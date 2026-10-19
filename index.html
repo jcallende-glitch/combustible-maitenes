@@ -6050,9 +6050,35 @@ function activarTipoLabor() {
   if (campoTipoLaborSeleccionado !== previo) renderCamposLaborTipo();
 }
 
+// Cultivo actual de una unidad (potrero o lote)
+function cultivoDeUnidadSel(u) {
+  const i = infoUnidad(u);
+  if (i.lote) return ((loteDeUnidad(u) || {}).cultivo) || '';
+  const p = potrerosConfig.find(x => x.nombre === i.potrero);
+  if (p && p.tipo === 'frutal') return p.cultivoPermanente || '';
+  return ((cultivoActualPorPotrero[i.potrero] || {}).cultivo) || '';
+}
+function renderSelPorCultivo() {
+  const wrap = document.getElementById('campo-sel-cultivo-wrap'); if (!wrap) return;
+  const por = {};
+  unidadesCampo(campoTipoLaborSeleccionado === 'siembra').forEach(u => { const c = cultivoDeUnidadSel(u.key); if (c) (por[c] = por[c] || []).push(u.key); });
+  const cults = Object.keys(por).sort(cmpEs);
+  if (!cults.length) { wrap.innerHTML = ''; return; }
+  wrap.innerHTML = `<div class="cultivos-label">Seleccionar por cultivo <span style="font-weight:400;color:#6B7280">(toca para elegir todos sus potreros; otra vez para quitarlos)</span></div>
+    <div class="centros-selector">${cults.map(c => { const ks = por[c], todos = ks.every(k => camposLaborPotrerosSel.includes(k)); return `<div class="cultivo-chip ${todos ? 'sel' : ''}" onclick='selPorCultivo(${JSON.stringify(c)})'>🌱 ${escA(c)} (${ks.length})</div>`; }).join('')}</div>`;
+}
+window.selPorCultivo = function(c) {
+  const ks = unidadesCampo(campoTipoLaborSeleccionado === 'siembra').map(u => u.key).filter(k => cultivoDeUnidadSel(k) === c);
+  const todos = ks.every(k => camposLaborPotrerosSel.includes(k));
+  if (todos) camposLaborPotrerosSel = camposLaborPotrerosSel.filter(k => !ks.includes(k));
+  else ks.forEach(k => { if (!camposLaborPotrerosSel.includes(k)) camposLaborPotrerosSel.push(k); });
+  renderCamposLaborPotrerosSelector();
+  actualizarSeleccionPotrerosCampo();
+}
 function renderCamposLaborPotrerosSelector() {
   const wrap = document.getElementById('campo-labor-potreros-selector');
   if (!wrap) return;
+  renderSelPorCultivo();
   const lista = unidadesCampo(campoTipoLaborSeleccionado === 'siembra');
   wrap.innerHTML = lista.map(u => `<div class="cultivo-chip ${camposLaborPotrerosSel.includes(u.key)?'sel':''}" onclick='toggleCampoLaborPotrero(${JSON.stringify(u.key)})'>${escA(u.label)}</div>`).join('');
   renderListaPotrerosLaborSeleccionados();
@@ -12692,6 +12718,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       <div class="panel">
         <div class="panel-title">🌱 Potreros trabajados</div>
         <div class="hint" style="margin-bottom:10px">El campo es una sola unidad: elige uno o más potreros — por nombre, en el mapa, o ambos — y todo lo de abajo se basa en esa elección.</div>
+        <div id="campo-sel-cultivo-wrap" style="margin-bottom:12px"></div>
         <div style="display:flex;gap:6px;margin-bottom:12px" id="campo-modo-selector"></div>
         <div id="campo-selector-nombre-wrap">
           <div class="centros-selector" id="campo-labor-potreros-selector"></div>
