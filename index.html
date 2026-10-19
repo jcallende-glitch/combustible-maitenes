@@ -6814,6 +6814,20 @@ function itemsDelDia(l) {
   todos.forEach(x => { if (!x.comboId) { grupos.push([x]); return; } if (vistos[x.comboId]) vistos[x.comboId].push(x); else { vistos[x.comboId] = [x]; grupos.push(vistos[x.comboId]); } });
   return grupos;
 }
+// Agrega otra labor (ej. preparación de suelo) a una ya registrada, dejándolas enlazadas como una sola fila
+window.agregarLaborAFila = async function(id) {
+  const l = laboresCampoTodos.find(x => x.id === id); if (!l) return;
+  if (!l.comboId) {
+    l.comboId = 'c' + Date.now().toString(36);
+    try { await updateDoc(doc(db, 'labores_campo', id), { comboId: l.comboId }); } catch (e) { toast('Error: ' + e.message, false); return; }
+  }
+  campoComboId = l.comboId; campoColaLabores = []; campoTipoLaborSeleccionado = null;
+  camposLaborPotrerosSel = [l.lote ? l.potrero + SEP_LOTE + l.lote : l.potrero];
+  const f = document.getElementById('campo-labor-fecha'); if (f) f.value = l.fecha;
+  renderTipoLaborSelector(); renderCamposLaborPotrerosSelector(); actualizarSeleccionPotrerosCampo(); renderCamposLaborTipo();
+  const w = document.getElementById('campo-labor-form-wrap'); if (w) w.scrollIntoView({ behavior: 'smooth' });
+  toast('Elige la labor que falta: se guardará enlazada a esta fila', true);
+}
 window.moverLaborDia = async function(id, dir) {
   const l = laboresCampoTodos.find(x => x.id === id); if (!l) return;
   const items = itemsDelDia(l);
@@ -6855,7 +6869,7 @@ window.renderHistorialLabores = function() {
   });
   const tipoLabel = {}; TIPOS_LABOR_CAMPO.forEach(t => tipoLabel[t.id] = iconoLaborHtml(t));
   const tipoTxt = l => l.tipo === 'personalizado' ? '🧩 ' + escA(l.nombreTipo) : (tipoLabel[l.tipo] || l.tipo);
-  const botones = l => `<button class="btn btn-secondary" style="padding:6px 9px;margin-right:4px" title="Editar" onclick="editarLaborCampo('${l.id}')">✏️</button><button class="btn btn-danger" onclick="eliminarLaborCampo('${l.id}')">✕</button>`;
+  const botones = l => `<button class="btn btn-secondary" style="padding:6px 9px;margin-right:4px" title="Editar" onclick="editarLaborCampo('${l.id}')">✏️</button><button class="btn btn-secondary" style="padding:6px 9px;margin-right:4px" title="Agregar otra labor del mismo día enlazada a esta" onclick="agregarLaborAFila('${l.id}')">➕</button><button class="btn btn-danger" onclick="eliminarLaborCampo('${l.id}')">✕</button>`;
   const sentido = campoHistorialOrden === 'asc' ? 1 : -1;
   const ordenInfo = g => { if (!g[0].fecha) return ''; const it = itemsDelDia(g[0]); if (it.length < 2) return ''; const pos = it.findIndex(x => x.some(y => y.id === g[0].id)) + 1; return `<div style="font-size:10px;color:#6B7280;margin-top:3px">${pos}º de ${it.length} del día</div>`; };
   const botonesOrden = g => { if (!isAdmin || !g[0].fecha || itemsDelDia(g[0]).length < 2) return ''; return `<div style="margin-top:4px"><button class="btn btn-secondary" style="padding:3px 8px;margin-right:3px" title="Subir" onclick="moverLaborDia('${g[0].id}',${-1 * sentido})">▲</button><button class="btn btn-secondary" style="padding:3px 8px" title="Bajar" onclick="moverLaborDia('${g[0].id}',${1 * sentido})">▼</button></div>`; };
