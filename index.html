@@ -5993,6 +5993,7 @@ function renderTipoLaborSelector() {
 
 window.seleccionarTipoLaborCampo = function(tipo) {
   campoTipoLaborSeleccionado = tipo;
+  setTimeout(() => { try { actualizarHintDDS(); } catch (e) {} }, 0);
   // Para Siembra solo se pueden elegir potreros anuales — si algún potrero
   // seleccionado es frutal, se saca automáticamente de la selección.
   if (tipo === 'siembra') {
@@ -6030,6 +6031,7 @@ function sincronizarDetallePotrerosLabor() {
 
 function renderListaPotrerosLaborSeleccionados() {
   sincronizarDetallePotrerosLabor();
+  setTimeout(() => { try { actualizarHintDDS(); } catch (e) {} }, 0);
   const cont = document.getElementById('campo-labor-potreros-lista');
   if (!cont) return;
   if (!camposLaborPotrerosSel.length) { cont.innerHTML = ''; return; }
@@ -6301,14 +6303,14 @@ function renderCampoFumProductoOpciones() {
   }
   const categoriasInv = campoAplTiposProductoSel.map(categoriaInvParaFum);
   const opciones = productosInv
-    .filter(p => categoriasInv.includes(p.categoria) && stockTotalInv(p) > 0)
+    .filter(p => categoriasInv.includes(p.categoria))
     .sort((a,b) => a.nombre.localeCompare(b.nombre));
   if (!opciones.length) {
-    sel.innerHTML = '<option value="">Sin productos con stock en esta categoría</option>';
+    sel.innerHTML = '<option value="">Sin productos en esta categoría</option>';
     return;
   }
   sel.innerHTML = '<option value="">Selecciona un producto</option>' +
-    opciones.map(p => `<option value="${p.nombre.replace(/"/g,'&quot;')}" ${p.nombre===valorPrevio?'selected':''}>${requiereAvisajeProducto(p)?'🐝 ':''}${p.nombre} (${p.categoria})${requiereAvisajeProducto(p)?' · requiere avisaje':''}</option>`).join('');
+    opciones.map(p => `<option value="${p.nombre.replace(/"/g,'&quot;')}" ${p.nombre===valorPrevio?'selected':''}>${requiereAvisajeProducto(p)?'🐝 ':''}${p.nombre} (${p.categoria})${stockTotalInv(p) > 0 ? '' : ' · sin stock'}${requiereAvisajeProducto(p)?' · requiere avisaje':''}</option>`).join('');
 }
 
 function renderCampoAplProductosLista() {
@@ -6363,6 +6365,19 @@ window.eliminarCampoAplProducto = function(idx) {
   renderAvisoAbejasCampo();
 }
 
+let campoFotosSel = [];
+function renderCampoFotosPrev() {
+  const c = document.getElementById('campo-fotos-prev'); if (!c) return;
+  c.innerHTML = campoFotosSel.map((f, i) => `<div style="position:relative"><img src="${f}" style="width:72px;height:72px;object-fit:cover;border-radius:8px"><span onclick="campoFotoQuitar(${i})" style="position:absolute;top:-6px;right:-6px;background:#C0392B;color:#fff;border-radius:50%;width:20px;height:20px;text-align:center;line-height:20px;font-size:12px;cursor:pointer">✕</span></div>`).join('');
+}
+window.campoFotoQuitar = function(i) { campoFotosSel.splice(i, 1); renderCampoFotosPrev(); }
+window.campoFotoElegir = async function(inp) {
+  for (const f of [...inp.files]) {
+    if (campoFotosSel.length >= 3) { toast('Máximo 3 fotos por labor', false); break; }
+    try { campoFotosSel.push(await comprimirFotoInv(f, 1100, 0.65)); } catch (e) { toast('No se pudo leer la foto', false); }
+  }
+  inp.value = ''; renderCampoFotosPrev();
+}
 window.registrarLaborCampo = async function() {
   if (!camposLaborPotrerosSel.length) { toast('Selecciona al menos un potrero', false); return; }
   if (!campoTipoLaborSeleccionado) { toast('Selecciona el tipo de labor', false); return; }
@@ -6373,6 +6388,7 @@ window.registrarLaborCampo = async function() {
   const tipo = campoTipoLaborSeleccionado;
   const payloadBase = { tipo, fecha, anio: fecha.slice(0,4), obs, operador: currentUser, ts: Date.now() };
   if (campoAperosSel.length) payloadBase.aperos = [...campoAperosSel];
+  if (campoFotosSel.length) payloadBase.fotos = [...campoFotosSel];
   if (tipo.startsWith('custom:')) {
     payloadBase.tipo = 'personalizado';
     payloadBase.nombreTipo = tipo.slice(7);
@@ -6498,6 +6514,7 @@ window.registrarLaborCampo = async function() {
     });
     await batch.commit();
     document.getElementById('campo-labor-obs').value = '';
+    campoFotosSel = []; renderCampoFotosPrev();
     campoTipoLaborSeleccionado = null; campoAperosSel = []; renderCampoAperos();
     // Se mantienen los potreros elegidos: es común registrar varias labores
     // seguidas para el mismo grupo de potreros (ej. fertilización y luego fumigación).
@@ -6517,6 +6534,26 @@ function populateFiltroAnioCampo() {
     anios.map(a => `<option value="${a}" ${a===cur?'selected':''}>${a}</option>`).join('');
 }
 
+const diasEntre = (a, b) => Math.round((Date.UTC(+b.slice(0,4), +b.slice(5,7) - 1, +b.slice(8,10)) - Date.UTC(+a.slice(0,4), +a.slice(5,7) - 1, +a.slice(8,10))) / 86400000);
+function infoDDS(potrero, lote, fecha, tipo, tsPropio, idPropio) {
+  const todas = (typeof laboresCampoTodos !== 'undefined' ? laboresCampoTodos : []).filter(x => x.potrero === potrero && x.id !== idPropio && (!lote || !x.lote || x.lote === lote));
+  const siembras = todas.filter(x => x.tipo === 'siembra' && x.fecha && !x.pendiente && x.fecha <= fecha).sort((a, b) => b.fecha.localeCompare(a.fecha));
+  const previas = todas.filter(x => x.tipo === tipo && x.fecha && (x.fecha < fecha || (x.fecha === fecha && (x.ts || 0) < (tsPropio || Infinity)))).sort((a, b) => b.fecha.localeCompare(a.fecha) || (b.ts || 0) - (a.ts || 0));
+  return { dds: siembras.length ? diasEntre(siembras[0].fecha, fecha) : null, cultivo: siembras.length ? siembras[0].cultivo : null, previa: previas.length ? diasEntre(previas[0].fecha, fecha) : null, previaFecha: previas.length ? previas[0].fecha : null };
+}
+function textoDDS(i, tipo) {
+  const nom = tipo === 'fumigacion' ? 'fumigación' : 'fertilización';
+  const p = [];
+  if (i.dds != null) p.push(`🌱 ${i.dds} DDS`);
+  p.push(i.previa != null ? `↔ ${i.previa} día${i.previa === 1 ? '' : 's'} desde la ${nom} anterior` : `primera ${nom} registrada`);
+  return p.join(' · ');
+}
+window.actualizarHintDDS = function() {
+  const el = document.getElementById('campo-labor-dds-hint'); if (!el) return;
+  const tipo = campoTipoLaborSeleccionado, fecha = (document.getElementById('campo-labor-fecha') || {}).value;
+  if (!fecha || (tipo !== 'fumigacion' && tipo !== 'fertilizacion') || !camposLaborPotrerosSel.length) { el.innerHTML = ''; return; }
+  el.innerHTML = [...camposLaborPotrerosSel].sort(cmpEs).map(u => { const inf = infoUnidad(u); return `<div style="font-size:12px;color:#2D7D46"><strong>${escA(inf.label)}:</strong> ${textoDDS(infoDDS(inf.potrero, inf.lote, fecha, tipo), tipo)}</div>`; }).join('');
+}
 function haDeLabor(l) {
   if (l.aplicacion_completa === false && l.hectareas_aplicadas != null) return parseFloat(l.hectareas_aplicadas) || null;
   const ls = l.lote ? lotesDe(l.potrero, l.anio || (l.fecha || '').slice(0, 4)) : null;
@@ -6573,6 +6610,17 @@ function renderFertTotal(data) {
     <div class="hint" style="margin-top:6px">Unidades por hectárea acumuladas (N, P₂O₅, K₂O y microelementos = kg/ha × ley %). Las dosis en litros no se incluyen.${filas.some(f => f.sin) ? ' ⚠️ Hay productos sin cálculo.' : ''}</div></div>`;
 }
 
+function ddsLinea(l) {
+  if (!l.fecha) return '';
+  return `<div style="margin-top:4px;color:#1D4ED8;font-size:11px;font-weight:600">${textoDDS(infoDDS(l.potrero, l.lote, l.fecha, l.tipo, l.ts, l.id), l.tipo)}</div>`;
+}
+function fotosLinea(l) {
+  return Array.isArray(l.fotos) && l.fotos.length ? `<div style="margin-top:4px">${l.fotos.map((f, i) => `<img src="${f}" style="width:54px;height:54px;object-fit:cover;border-radius:6px;margin-right:4px;cursor:pointer" onclick="verFotoLabor('${l.id}',${i})">`).join('')}</div>` : '';
+}
+window.verFotoLabor = function(id, i) {
+  const l = laboresCampoTodos.find(x => x.id === id); if (!l || !l.fotos || !l.fotos[i]) return;
+  const w = window.open('', '_blank'); if (w) w.document.write(`<body style="margin:0;background:#000"><img src="${l.fotos[i]}" style="width:100%;height:auto"></body>`);
+}
 function detalleLaborCampo(l) {
   const p = potrerosConfig.find(x => x.nombre === l.potrero);
   let base = '—';
@@ -6580,14 +6628,14 @@ function detalleLaborCampo(l) {
     const fertStr = l.fertilizacion ? ` · 🧪 Fertilización: ${l.fertMezcla||'—'}${l.fertDosis?' ('+l.fertDosis+')':''}` : (l.fertilizacion === false ? ' · Sin fertilización' : '');
     base = `${l.cultivo}${l.variedad?' · '+l.variedad:''}${l.dosis?' · Dosis: '+l.dosis:''}${l.hectareas?' · '+l.hectareas+' ha':''}${fertStr}${(!l.fecha||l.pendiente)?' · <span style="color:#92400E">pendiente de siembra</span>':''}`;
   } else if (l.tipo === 'fertilizacion') {
-    base = (Array.isArray(l.productos) && l.productos.length ? l.productos.map(pr => `${pr.producto} (${pr.dosis})`).join(', ') : '—') + (l.momento ? ` · ${escA(l.momento)}` : '') + resumenFertLabor(l);
+    base = (Array.isArray(l.productos) && l.productos.length ? l.productos.map(pr => `${pr.producto} (${pr.dosis})`).join(', ') : '—') + (l.momento ? ` · ${escA(l.momento)}` : '') + resumenFertLabor(l) + ddsLinea(l);
   } else if (l.tipo === 'fumigacion') {
     const prefTipo = l.tiposProducto && l.tiposProducto.length ? '['+l.tiposProducto.join(', ')+'] ' : '';
     const prodStr = Array.isArray(l.productos) && l.productos.length ? l.productos.map(pr => `${pr.producto} (${pr.dosis})`).join(', ') : '—';
     const mojaStr = l.mojamiento != null ? ` · Mojamiento: ${l.mojamiento} L/ha` : '';
     const abejaStr = Array.isArray(l.avisajeApicola) && l.avisajeApicola.length
       ? (l.avisajeRealizado ? ' · <span style="color:#2D7D46">🐝 aviso a apicultores dado</span>' : ' · <span style="color:#C0392B">🐝 requería aviso: NO registrado</span>') : '';
-    base = `${prefTipo}${prodStr}${mojaStr}${abejaStr}`;
+    base = `${prefTipo}${prodStr}${mojaStr}${abejaStr}` + ddsLinea(l);
   } else if (l.tipo === 'aplicacion') {
     const prefTipo = l.tiposProducto && l.tiposProducto.length ? '['+l.tiposProducto.join(', ')+'] ' : '';
     const prodStr = Array.isArray(l.productos) && l.productos.length
@@ -6611,7 +6659,7 @@ function detalleLaborCampo(l) {
   if (l.aplicacion_completa === false) {
     base += ` · ⚠️ Parcial${l.hectareas_aplicadas != null ? ' ('+l.hectareas_aplicadas+' ha)' : ''}${l.obs_parcial ? ' — '+l.obs_parcial : ''}`;
   }
-  return base;
+  return base + fotosLinea(l);
 }
 
 let campoHistorialOrden = 'asc'; // 'asc' = más antiguo primero (cronológico), 'desc' = más reciente primero
@@ -12491,7 +12539,10 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         <div class="centros-selector" id="campo-tipo-labor-selector"></div>
         <div id="campo-labor-campos"></div>
         <div id="campo-labor-aperos"></div>
-        <div class="field" style="margin-top:8px"><label>Fecha</label><input type="date" id="campo-labor-fecha"></div>
+        <div class="field" style="margin-top:8px"><label>Fecha</label><input type="date" id="campo-labor-fecha" onchange="actualizarHintDDS()"><div id="campo-labor-dds-hint" style="margin-top:6px"></div></div>
+        <div class="field"><label>📷 Foto del cultivo (opcional, hasta 3)</label>
+          <label class="btn btn-secondary btn-full" style="display:block;text-align:center;cursor:pointer">Agregar foto<input type="file" accept="image/*" multiple style="display:none" onchange="campoFotoElegir(this)"></label>
+          <div id="campo-fotos-prev" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px"></div></div>
         <div class="field"><label>Comentarios (opcional)</label><textarea id="campo-labor-obs" rows="2" placeholder="Comentarios o detalle adicional..." style="width:100%;font:inherit;padding:10px;border:1px solid var(--borde);border-radius:8px;resize:vertical"></textarea></div>
         <button id="btn-registrar-labor-campo" class="btn btn-verde btn-full" onclick="registrarLaborCampo()">✓ Guardar labor</button>
       </div>
