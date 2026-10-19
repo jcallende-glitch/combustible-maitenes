@@ -6045,6 +6045,7 @@ function activarTipoLabor() {
   }
   renderTipoLaborSelector();
   renderCamposLaborPotrerosSelector();
+  if (campoTipoLaborSeleccionado === 'siembra') { if (!campoColaLabores.includes('fertilizacion') && campoSiembraFertSel === true && previo === 'siembra') campoSiembraFertSel = null; renderSiembraFertToggle(); }
   // Solo se redibuja el formulario si cambió la labor activa (así no se pierde lo ya escrito)
   if (campoTipoLaborSeleccionado !== previo) renderCamposLaborTipo();
 }
@@ -6306,21 +6307,23 @@ window.seleccionarCampoSiembraCultivo = function(c) {
 function renderSiembraFertToggle() {
   const wrap = document.getElementById('campo-siembra-fert-toggle');
   if (!wrap) return;
-  wrap.innerHTML = `
+  const enCola = campoColaLabores.includes('fertilizacion');
+  if (enCola) campoSiembraFertSel = true;
+  wrap.innerHTML = enCola ? `<div style="background:#ECFDF5;color:#047857;border-radius:8px;padding:8px 10px;font-size:12px;width:100%">✓ Con fertilización. Al guardar la siembra te pido el fertilizante, su ley y la dosis (igual que una fertilización sola) y quedan enlazadas como una sola labor.</div>` : `
     <button type="button" class="btn ${campoSiembraFertSel===true?'btn-verde':'btn-secondary'}" style="flex:1;justify-content:center" onclick="setSiembraFertilizacion(true)">Sí</button>
     <button type="button" class="btn ${campoSiembraFertSel===false?'btn-verde':'btn-secondary'}" style="flex:1;justify-content:center" onclick="setSiembraFertilizacion(false)">No</button>`;
   const extra = document.getElementById('campo-siembra-fert-extra');
-  if (extra) {
-    extra.innerHTML = campoSiembraFertSel === true ? `
-      <div class="grid-2">
-        <div class="field"><label>Mezcla</label><input type="text" id="campo-siembra-fert-mezcla" placeholder="Ej: NPK 15-15-15 + Boro..."></div>
-        <div class="field"><label>Dosis</label><input type="text" id="campo-siembra-fert-dosis" placeholder="Ej: 200 kg/ha..."></div>
-      </div>` : '';
-  }
+  if (extra) extra.innerHTML = '';
 }
 window.setSiembraFertilizacion = function(valor) {
   campoSiembraFertSel = valor;
+  // "Sí" agrega la fertilización a la cola (con producto, ley y dosis); "No" la quita
+  const i = campoColaLabores.indexOf('fertilizacion');
+  if (valor === true && i < 0) campoColaLabores.push('fertilizacion');
+  if (valor === false && i >= 0) campoColaLabores.splice(i, 1);
+  if (campoColaLabores.length <= 1) campoComboId = null;
   renderSiembraFertToggle();
+  renderTipoLaborSelector();
 }
 
 function renderCampoAplTipoProductoSelector() {
@@ -6504,12 +6507,8 @@ window.registrarLaborCampo = async function() {
     payloadBase.dosis = document.getElementById('campo-siembra-dosis').value.trim() || null;
     const ha = document.getElementById('campo-siembra-hectareas').value;
     payloadBase.hectareas = ha !== '' ? parseFloat(ha) : null;
-    if (campoSiembraFertSel === null) { toast('Indica si se aplicó fertilización junto con la siembra', false); return; }
-    payloadBase.fertilizacion = campoSiembraFertSel === true;
-    if (campoSiembraFertSel === true) {
-      payloadBase.fertMezcla = document.getElementById('campo-siembra-fert-mezcla').value.trim() || null;
-      payloadBase.fertDosis = document.getElementById('campo-siembra-fert-dosis').value.trim() || null;
-    }
+    if (campoSiembraFertSel === null && !campoComboId) { toast('Indica si se aplicó fertilización junto con la siembra', false); return; }
+    payloadBase.fertilizacion = campoSiembraFertSel === true || campoColaLabores.includes('fertilizacion');
   } else if (tipo === 'fertilizacion') {
     const prodPendiente = leerProductoCampoApl();
     const dosisPendiente = leerDosisCampoApl();
@@ -6738,7 +6737,7 @@ function detalleLaborCampo(l) {
   const p = potrerosConfig.find(x => x.nombre === l.potrero);
   let base = '—';
   if (l.tipo === 'siembra') {
-    const fertStr = l.fertilizacion ? ` · 🧪 Fertilización: ${l.fertMezcla||'—'}${l.fertDosis?' ('+l.fertDosis+')':''}` : (l.fertilizacion === false ? ' · Sin fertilización' : '');
+    const fertStr = l.fertilizacion ? ` · 🧪 Fertilización: ${l.fertMezcla ? l.fertMezcla + (l.fertDosis?' ('+l.fertDosis+')':'') : 'ver fertilización enlazada'}` : (l.fertilizacion === false ? ' · Sin fertilización' : '');
     base = `${l.cultivo}${l.variedad?' · '+l.variedad:''}${l.dosis?' · Dosis: '+l.dosis:''}${l.hectareas?' · '+l.hectareas+' ha':''}${fertStr}${(!l.fecha||l.pendiente)?' · <span style="color:#92400E">pendiente de siembra</span>':''}`;
   } else if (l.tipo === 'fertilizacion') {
     base = (Array.isArray(l.productos) && l.productos.length ? l.productos.map(pr => `${pr.producto} (${pr.dosis})`).join(', ') : '—') + (l.momento ? ` · ${escA(l.momento)}` : '') + resumenFertLabor(l);
