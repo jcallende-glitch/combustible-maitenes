@@ -2833,7 +2833,8 @@ const SECCIONES_TABS = {
 
 window.mostrarSelectorSecciones = function() {
   const per = isAdmin ? ['tractor', 'reparto', 'cuaderno2'] : permisosPruebasDe(currentUser);
-  ['asistencia', 'campo', 'inventario', 'autorizaciones', 'equipos'].forEach(sec => { const b = document.getElementById('sec-btn-' + sec); if (b) b.style.display = isAdmin ? '' : 'none'; });
+  ['asistencia', 'campo', 'inventario', 'autorizaciones', 'equipos'].forEach(sec => { const b = document.getElementById('sec-btn-' + sec); if (b) b.style.display = (isAdmin || (sec === 'campo' && campoTambien)) ? '' : 'none'; });
+  { const bc = document.getElementById('sec-btn-combustible'); if (bc) bc.style.display = ''; }
   document.getElementById('sec-btn-tractor').style.display = per.includes('tractor') ? '' : 'none';
   document.getElementById('sec-btn-reparto').style.display = per.includes('reparto') ? '' : 'none';
   { const b2 = document.getElementById('sec-btn-cuaderno2'); if (b2) b2.style.display = per.includes('cuaderno2') ? '' : 'none'; }
@@ -2846,7 +2847,19 @@ window.mostrarSelectorSecciones = function() {
 }
 
 window.abrirSeccion = function(seccion) {
-  if (!isAdmin) { if (seccion === 'combustible') entrarCombustibleOperador(); return; }
+  if (!isAdmin) {
+    if (seccion === 'combustible') entrarCombustibleOperador();
+    else if (seccion === 'campo' && campoTambien) {
+      Object.values(SECCIONES_TABS).flat().forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
+      ['tab-registro','tab-historial','tab-mantencion'].forEach(id => document.getElementById(id).style.display = 'none');
+      document.getElementById('tab-campo').style.display = 'block';
+      document.getElementById('panel-secciones').style.display = 'none';
+      document.getElementById('tabs-bar').style.display = 'flex';
+      document.getElementById('app-main').style.display = 'block';
+      setTab('campo', document.getElementById('tab-campo'));
+    }
+    return;
+  }
   Object.values(SECCIONES_TABS).flat().forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
   document.getElementById('btn-cisterna-header').style.display = 'none';
   SECCIONES_TABS[seccion].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'block'; });
