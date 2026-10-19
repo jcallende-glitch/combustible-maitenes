@@ -2234,6 +2234,7 @@ let isAdmin = false;
 let isSupervisor = false;
 let isSubadmin = false;
 let isCampo = false;
+let campoTambien = false; // operador de combustible que además tiene acceso al Cuaderno de Campo (mismo PIN)
 const SUPERVISOR_NOMBRE = 'Camila Faundez';
 
 // ─── ASISTENCIA / TRABAJADORES (módulo separado de combustible) ─────
@@ -2622,7 +2623,9 @@ async function verificarPin(pin) {
   if (operador) {
     const esAdminEquivalente = ADMINS_EQUIVALENTES.includes(operador[0]);
     const esSupervisor = operador[0] === SUPERVISOR_NOMBRE && !esAdminEquivalente;
-    return { ok: true, admin: esAdminEquivalente, supervisor: esSupervisor, subadmin: false, campo: false, nombre: operador[0], pinInicial: pin === PIN_INICIAL };
+    let campoTambien = false;
+    try { campoTambien = (await getPinesCampo())[operador[0]] != null; } catch (e) {}
+    return { ok: true, admin: esAdminEquivalente, supervisor: esSupervisor, subadmin: false, campo: false, campoTambien, nombre: operador[0], pinInicial: pin === PIN_INICIAL };
   }
   const pinesAsis = await getPinesAsistencia();
   const subadmin = Object.entries(pinesAsis).find(([, p]) => p === pin);
@@ -2759,6 +2762,7 @@ window.intentarLogin = async function() {
 }
 
 function entrarConResultado(result) {
+  campoTambien = !!result.campoTambien;
   currentUser = result.nombre; isAdmin = result.admin; isSupervisor = result.supervisor || false; isSubadmin = result.subadmin || false; isCampo = result.campo || false;
   document.getElementById('user-label').textContent = isAdmin ? `⚙ ${result.nombre}` : (isSupervisor ? `👁 ${result.nombre}` : (isSubadmin ? `🕒 ${result.nombre}` : (isCampo ? `🌱 ${result.nombre}` : result.nombre)));
   ['tab-registro','tab-historial','tab-mantencion','tab-admin','tab-config','tab-analytics','tab-informes','tab-eficiencia','tab-config-equipos','btn-cisterna-header','tab-asistencia','tab-config-trabajadores','tab-campo','tab-config-potreros','tab-config-gps','tab-autorizaciones'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
@@ -2805,6 +2809,7 @@ function entrarCombustibleOperador() {
   document.getElementById('tabs-bar').style.display = 'flex';
   document.getElementById('app-main').style.display = 'block';
   ['tab-registro','tab-historial','tab-mantencion'].forEach(id => document.getElementById(id).style.display = 'block');
+  if (campoTambien && !isAdmin) document.getElementById('tab-campo').style.display = 'block';
   if (isSupervisor) {
     ['tab-analytics','tab-informes','tab-eficiencia','tab-admin'].forEach(id => document.getElementById(id).style.display = 'block');
   }
@@ -2875,6 +2880,7 @@ window.abrirSeccion = function(seccion) {
 window.logout = function() {
   try { localStorage.removeItem(DISP_KEY); } catch (e) {}
   try { localStorage.removeItem('maitenes_pase'); } catch (e) {}
+  campoTambien = false;
   currentUser = null; isAdmin = false; isSupervisor = false; isSubadmin = false; isCampo = false;
   if (unsubReg) { unsubReg(); unsubReg = null; }
   if (unsubSolicitud) { unsubSolicitud(); unsubSolicitud = null; }
@@ -6183,10 +6189,9 @@ function renderCamposLaborTipo() {
     cont.innerHTML = `
       <div class="cultivos-label">¿Qué fertilizante se aplicó? (producto y dosis)</div>
       <div id="campo-apl-productos-lista"></div>
-      <div class="field"><label>Producto aplicado</label>
-        <div class="select-wrapper"><select id="campo-apl-producto" onchange="fertSelProd(this.value)">
-          <option value="">Elige un fertilizante</option>${fertilizantesLista().map(f => `<option value="${escA(f)}">${escA(f)}</option>`).join('')}<option value="__otro__">Otro (escribir)…</option></select></div>
-        <div id="campo-fert-otro-wrap" style="display:none;margin-top:8px"><input type="text" id="campo-fert-otro" placeholder="Nombre del fertilizante" oninput="fertPintaLey()"></div></div>
+      <div class="field campo-sugs-wrap" style="position:relative"><label>Producto aplicado (escribe para buscar)</label>
+        <input type="text" id="campo-apl-producto" autocomplete="off" placeholder="🔍 Ej: Urea, Salitre, Fosfato..." oninput="prodBuscar('fert')" onfocus="prodBuscar('fert')" onchange="fertPintaLey()"><div id="campo-apl-sugs"></div>
+        <div id="campo-fert-otro-wrap" style="display:none"><input type="text" id="campo-fert-otro"></div></div>
       <div class="field" id="campo-fert-ley-wrap" style="display:none"><label>Ley del fertilizante (%) — N, P₂O₅, K₂O y microelementos</label><div id="campo-fert-ley" style="display:flex;flex-wrap:wrap;gap:6px"></div></div>
       <div class="field"><label>Dosis</label>
         <div style="display:flex;gap:8px"><input type="text" id="campo-apl-dosis" inputmode="decimal" placeholder="Cantidad" style="flex:1;min-width:0">
@@ -6203,8 +6208,8 @@ function renderCamposLaborTipo() {
       <div class="centros-selector" id="campo-fum-categoria-selector"></div>
       <div class="cultivos-label" style="margin-top:10px">Productos aplicados</div>
       <div id="campo-apl-productos-lista"></div>
-      <div class="grid-2">
-        <div class="field"><label>Producto</label><div class="select-wrapper"><select id="campo-apl-producto" onchange="renderAvisoAbejasCampo()"><option value="">Elige una categoría primero</option></select></div></div>
+      <div>
+        <div class="field campo-sugs-wrap" style="position:relative"><label>Producto (escribe para buscar; sin elegir categoría busca en todos)</label><input type="text" id="campo-apl-producto" autocomplete="off" placeholder="🔍 Ej: Kerb, Glifosato..." oninput="prodBuscar('fum')" onfocus="prodBuscar('fum')" onchange="renderAvisoAbejasCampo()"><div id="campo-apl-sugs"></div></div>
         <div class="field"><label>Dosis</label><div style="display:flex;gap:6px"><input type="text" id="campo-apl-dosis" inputmode="decimal" placeholder="Cantidad" style="flex:1;min-width:0"><div class="select-wrapper" style="width:104px"><select id="campo-apl-dosis-un"><option>L/ha</option><option>g/ha</option><option>kg/ha</option><option>mL/ha</option></select></div></div></div>
       </div>
       <button type="button" class="btn btn-secondary" style="margin-bottom:14px" onclick="agregarCampoAplProducto()">+ Agregar producto a la lista</button>
@@ -6336,7 +6341,46 @@ function categoriaInvParaFum(cat) { return cat === 'Adyuvante' ? 'Coadyuvante' :
 // Arma el <select> de producto para Fumigación: solo productos de Inventario
 // con stock > 0 (en cualquier bodega) y cuya categoría esté entre las elegidas.
 // Si se elige más de una categoría, se muestra la unión de todas (más opciones).
+let prodSugsLista = [];
+const CAT_INV_A_FUM = { Coadyuvante: 'Adyuvante' };
+function renderSugsProd(modo, forzar) {
+  const inp = document.getElementById('campo-apl-producto'), box = document.getElementById('campo-apl-sugs');
+  if (!inp || !box) return;
+  const q = normNom(inp.value), toks = q ? q.split(' ') : [];
+  let lista;
+  if (modo === 'fum') {
+    const cats = campoAplTiposProductoSel.map(categoriaInvParaFum);
+    lista = productosInv.filter(p => cats.length ? cats.includes(p.categoria) : p.categoria !== 'Fertilizante')
+      .map(p => ({ nombre: p.nombre, info: `${p.categoria}${stockTotalInv(p) > 0 ? '' : ' · sin stock'}${requiereAvisajeProducto(p) ? ' · 🐝 requiere avisaje' : ''}`, cat: p.categoria }));
+  } else {
+    lista = fertilizantesLista().map(n => { const pi = fertilizantesInv().find(p => p.nombre === n); return { nombre: n, info: pi ? (stockTotalInv(pi) > 0 ? 'Inventario' : 'Inventario · sin stock') : 'Lista antigua', cat: 'Fertilizante' }; });
+  }
+  lista = lista.filter(x => { const n = normNom(x.nombre); return toks.every(t => n.includes(t)); }).sort((a, b) => cmpEs(a.nombre, b.nombre)).slice(0, 40);
+  prodSugsLista = lista;
+  box.innerHTML = lista.length ? `<div style="position:absolute;left:0;right:0;top:100%;z-index:30;background:#fff;border:1px solid var(--borde);border-radius:8px;max-height:260px;overflow:auto;box-shadow:0 6px 18px rgba(0,0,0,.15)">${lista.map((x, i) => `<div onmousedown="event.preventDefault()" onclick="prodElegir('${modo}',${i})" style="padding:10px 12px;border-bottom:1px solid var(--borde);cursor:pointer"><div style="font-weight:600;font-size:14px">${escA(x.nombre)}</div><div style="font-size:11px;color:var(--acero)">${escA(x.info)}</div></div>`).join('')}</div>`
+    : (q ? `<div style="position:absolute;left:0;right:0;top:100%;z-index:30;background:#fff;border:1px solid var(--borde);border-radius:8px;padding:10px 12px;font-size:12px;color:#6B7280">Sin coincidencias${modo === 'fert' ? ' — se usará como nuevo fertilizante' : ''}.</div>` : '');
+}
+window.prodBuscar = function(modo) {
+  renderSugsProd(modo);
+  if (modo === 'fert') { const w = document.getElementById('campo-fert-ley-wrap'), v = document.getElementById('campo-apl-producto').value.trim(); if (w && w.style.display === 'none' && v) fertPintaLey(); }
+  else renderAvisoAbejasCampo();
+}
+window.prodElegir = function(modo, i) {
+  const x = prodSugsLista[i]; if (!x) return;
+  document.getElementById('campo-apl-producto').value = x.nombre;
+  document.getElementById('campo-apl-sugs').innerHTML = '';
+  if (modo === 'fum') {
+    const c = CAT_INV_A_FUM[x.cat] || x.cat;
+    if (!campoAplTiposProductoSel.includes(c) && CATEGORIAS_FUM_CAMPO.includes(c) && !campoAplTiposProductoSel.length) { campoAplTiposProductoSel.push(c); renderCampoFumCategoriaSelector(); }
+    renderAvisoAbejasCampo();
+  } else fertPintaLey();
+}
+document.addEventListener('click', e => { if (!e.target.closest || !e.target.closest('.campo-sugs-wrap')) { const b = document.getElementById('campo-apl-sugs'); if (b) b.innerHTML = ''; } });
 function renderCampoFumProductoOpciones() {
+  const b = document.getElementById('campo-apl-sugs');
+  if (b && b.innerHTML) renderSugsProd('fum'); // refresca la lista si está abierta
+}
+function _renderCampoFumProductoOpcionesViejo() {
   const sel = document.getElementById('campo-apl-producto');
   if (!sel) return;
   const valorPrevio = sel.value;
@@ -8452,6 +8496,7 @@ function fertilizantesInv() { return (typeof productosInv !== 'undefined' ? prod
 function fertilizantesLista() {
   const legacy = Array.isArray(config.fertilizantesCampo) ? config.fertilizantesCampo : FERTILIZANTES_BASE;
   const out = fertilizantesInv().map(p => p.nombre);
+  if (out.length) return out.sort(cmpEs); // ya hay fertilizantes en Inventario: la lista antigua deja de mostrarse
   legacy.forEach(n => { if (!out.some(x => x.toLowerCase() === String(n).toLowerCase())) out.push(n); });
   return out.sort(cmpEs);
 }
@@ -8871,13 +8916,15 @@ window.cargarListaEncargadosCampo = async function() {
   cont.innerHTML = '<div style="color:#9CA3AF;font-size:13px;padding:8px">Cargando...</div>';
   const pines = await getPinesCampo();
   const nombres = Object.keys(pines);
+  const operadoresPin = Object.keys(await getPines());
   cont.innerHTML = nombres.length ? nombres.map(nombre => {
     const pin = pines[nombre];
     const esInicial = pin === PIN_INICIAL;
+    const comb = operadoresPin.includes(nombre);
     return `<div class="config-item" style="flex-wrap:wrap;gap:8px">
       <span style="flex:1;min-width:140px">${nombre}</span>
-      <span class="badge ${esInicial?'badge-km':'badge-hr'}" style="font-family:var(--mono);font-size:13px;padding:4px 10px">${esInicial ? '⏳ '+pin : '✅ personalizado'}</span>
-      <button class="btn btn-secondary" style="padding:6px 12px;font-size:12px" onclick="resetearPinEncargadoCampo('${nombre}')">Resetear</button>
+      ${comb ? '<span class="badge badge-hr" style="font-size:12px;padding:4px 10px">⛽ + 🌱 mismo PIN de combustible</span>' : `<span class="badge ${esInicial?'badge-km':'badge-hr'}" style="font-family:var(--mono);font-size:13px;padding:4px 10px">${esInicial ? '⏳ '+pin : '✅ personalizado'}</span>
+      <button class="btn btn-secondary" style="padding:6px 12px;font-size:12px" onclick="resetearPinEncargadoCampo('${nombre}')">Resetear</button>`}
       <button class="btn btn-danger" onclick="eliminarEncargadoCampo('${nombre}')">Quitar acceso</button>
     </div>`;
   }).join('') : '<div style="color:#9CA3AF;font-size:13px;padding:8px">Sin encargados de campo agregados.</div>';
@@ -8890,12 +8937,14 @@ window.agregarEncargadoCampo = async function() {
   if (!nombre) { toast('Selecciona o ingresa el nombre del encargado', false); return; }
   const pines = await getPinesCampo();
   if (pines[nombre] != null) { toast('Ya existe un encargado con ese nombre', false); return; }
-  pines[nombre] = PIN_INICIAL;
+  const esOperador = Object.keys(await getPines()).includes(nombre);
+  // Si ya es operador de combustible, entra con su mismo PIN y ve ambos; el PIN de campo queda inutilizable aparte.
+  pines[nombre] = esOperador ? 'op-' + Math.random().toString(36).slice(2, 12) + Date.now().toString(36) : PIN_INICIAL;
   try {
     await setDoc(doc(db, 'config', 'pines_campo'), pines);
     if (inp) inp.value = '';
     cargarListaEncargadosCampo();
-    toast(`✓ ${nombre} agregado con PIN inicial ${PIN_INICIAL} (se le pedirá cambiarlo al ingresar)`, true);
+    toast(esOperador ? `✓ ${nombre} ahora ve Combustible y Cuaderno de Campo con su mismo PIN` : `✓ ${nombre} agregado con PIN inicial ${PIN_INICIAL} (se le pedirá cambiarlo al ingresar)`, true);
   } catch(e) { toast('Error: ' + e.message, false); }
 }
 
