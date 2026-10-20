@@ -6897,9 +6897,9 @@ window.imprimirCuaderno = function() {
     #print-cuaderno h2{font-size:15px;margin:18px 0 6px;padding-bottom:4px;border-bottom:2px solid #2D7D46;break-after:avoid} #print-cuaderno h2 span{font-weight:400;font-size:12px;color:#2D7D46;margin-left:8px}
     #print-cuaderno table{width:100%;border-collapse:collapse;font-size:11.5px} #print-cuaderno th{background:#eee;text-align:left;padding:5px 6px;border:1px solid #bbb}
     #print-cuaderno td{padding:5px 6px;border:1px solid #ccc;vertical-align:top} #print-cuaderno tr{break-inside:avoid}
-    #print-cuaderno td.f{white-space:nowrap} #print-cuaderno td.t{font-weight:700;width:96px} #print-cuaderno .c{font-size:9px;font-weight:400;color:#1D4ED8} #print-cuaderno td.o,#print-cuaderno td.r{width:80px;color:#444}
+    #print-cuaderno td.f{white-space:nowrap} #print-cuaderno td.t{font-weight:700;width:120px} #print-cuaderno .c{font-size:9px;font-weight:400;color:#1D4ED8} #print-cuaderno td.o,#print-cuaderno td.r{width:110px;color:#444}
     #print-cuaderno td span,#print-cuaderno td div{color:#111 !important;background:none !important}
-    @media print{ body > *:not(#print-cuaderno){display:none !important} #print-cuaderno{position:static;overflow:visible} #print-cuaderno .bar{display:none} #print-cuaderno .hoja{padding:0;max-width:none} @page{margin:12mm} }
+    @media print{ body > *:not(#print-cuaderno){display:none !important} #print-cuaderno{position:static;overflow:visible} #print-cuaderno .bar{display:none} #print-cuaderno .hoja{padding:0;max-width:none} @page{size:A4 landscape;margin:10mm} }
   </style>
   <div class="bar"><button style="background:#2D7D46;color:#fff" onclick="window.print()">📄 Guardar PDF / Imprimir</button><button style="background:#25D366;color:#fff" onclick="compartirPdfCuaderno()">📤 Compartir (WhatsApp)</button><button style="background:#ddd" onclick="cerrarImpresionCuaderno()">Cerrar</button></div>
   <div class="hoja"><h1>Cuaderno de Campo · Los Maitenes</h1>
@@ -6916,7 +6916,7 @@ window.compartirPdfCuaderno = async function() {
     toast('Generando PDF…', true);
     if (!(window.jspdf && window.jspdf.jsPDF)) await cargarScriptUna('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js');
     if (!(window.jspdf.jsPDF.API && window.jspdf.jsPDF.API.autoTable)) await cargarScriptUna('https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js');
-    const pdf = new window.jspdf.jsPDF({ unit: 'mm', format: 'a4' });
+    const pdf = new window.jspdf.jsPDF({ unit: 'mm', format: 'a4', orientation: 'landscape' });
     pdf.setFontSize(15); pdf.text('Cuaderno de Campo · Los Maitenes', 12, 14);
     pdf.setFontSize(9); pdf.setTextColor(90); pdf.text(d.sub.replace(/[^\x20-\x7E\u00A0-\u024F·]/g, ''), 12, 19);
     let y = 24;
@@ -6924,10 +6924,10 @@ window.compartirPdfCuaderno = async function() {
       pdf.autoTable({ startY: y, head: [[{ content: sec.nombre + (sec.cult ? '   ·   ' + sec.cult : ''), colSpan: 5, styles: { fillColor: [45, 125, 70], textColor: 255, fontSize: 10 } }], ['Fecha', 'Labor', 'Detalle', 'Obs.', 'Registró']],
         body: sec.rows, margin: { left: 12, right: 12 }, styles: { fontSize: 8, cellPadding: 1.6, overflow: 'linebreak' },
         headStyles: { fillColor: [235, 235, 235], textColor: 20 },
-        columnStyles: { 0: { cellWidth: 20 }, 1: { cellWidth: 26, fontStyle: 'bold' }, 3: { cellWidth: 24 }, 4: { cellWidth: 22 } },
+        columnStyles: { 0: { cellWidth: 22 }, 1: { cellWidth: 40, fontStyle: 'bold' }, 3: { cellWidth: 45 }, 4: { cellWidth: 30 } },
         didParseCell: h => { if (h.section === 'head' && h.row.index === 0) { h.cell.styles.fillColor = [45, 125, 70]; h.cell.styles.textColor = 255; } } });
       y = pdf.lastAutoTable.finalY + 8;
-      if (y > 270) { pdf.addPage(); y = 14; }
+      if (y > 175) { pdf.addPage(); y = 14; }
     });
     const blob = pdf.output('blob');
     const file = new File([blob], d.fname, { type: 'application/pdf' });
