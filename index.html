@@ -6006,9 +6006,21 @@ function renderTipoLaborSelector() {
 
   const tiposFijos = TIPOS_LABOR_CAMPO.filter(t => !t.oculto && (!t.soloAnual || esAnual) && !tiposLaborCampoDeshabilitados.includes(t.id))
     .map(t => ({ id: t.id, label: iconoLaborHtml(t) }));
-  const tiposPersonalizados = tiposLaborCampoConfig
+  // Un tipo personalizado llamado Siembra / Fertilización / Fumigación usa el formulario completo de ese tipo
+  // (cultivo, variedad, dosis de semilla, fertilizante…) en vez del formulario genérico.
+  const ALIAS_BASE = { 'siembra': 'siembra', 'fertilizacion': 'fertilizacion', 'fumigacion': 'fumigacion' };
+  const tiposPersonalizados = [];
+  tiposLaborCampoConfig
     .filter(t => !t.cultivos || t.cultivos.length === 0 || (cultivoRef && t.cultivos.includes(cultivoRef)))
-    .map(t => ({ id: 'custom:' + t.nombre, label: '🧩 ' + t.nombre }));
+    .forEach(t => {
+      const base = ALIAS_BASE[normNom(t.nombre)];
+      if (base) {
+        if (base === 'siembra' && !esAnual) return;
+        if (!tiposFijos.some(f => f.id === base) && !tiposPersonalizados.some(f => f.id === base)) tiposPersonalizados.push({ id: base, label: iconoLaborHtml(TIPOS_LABOR_CAMPO.find(x => x.id === base)) });
+        return;
+      }
+      tiposPersonalizados.push({ id: 'custom:' + t.nombre, label: '🧩 ' + t.nombre });
+    });
 
   const tipos = [...tiposFijos, ...tiposPersonalizados];
   wrap.innerHTML = tipos.map(t => { const k = campoColaLabores.indexOf(t.id); return `<div class="cultivo-chip ${k >= 0 ? 'sel' : ''}" onclick='toggleTipoLaborCampo(${JSON.stringify(t.id)})'>${campoColaLabores.length > 1 && k >= 0 ? (k + 1) + '. ' : ''}${t.label}</div>`; }).join('');
@@ -6215,8 +6227,8 @@ function renderCamposLaborTipo() {
       <div class="centros-selector" id="campo-siembra-cultivo-selector"></div>
       ${!cultivosCampoConfig.length ? '<div class="hint" style="margin-bottom:10px">No hay cultivos configurados todavía — pídele al admin que los agregue en "Config. Potreros".</div>' : ''}
       <div class="grid-2">
-        <div class="field"><label>Variedad (opcional)</label><input type="text" id="campo-siembra-variedad"></div>
-        <div class="field"><label>Dosis (opcional)</label><input type="text" id="campo-siembra-dosis" placeholder="Ej: 180 kg/ha, 8 semillas/m..."></div>
+        <div class="field"><label>Variedad</label><input type="text" id="campo-siembra-variedad" placeholder="Ej: nombre del híbrido o variedad"></div>
+        <div class="field"><label>Dosis de semilla</label><input type="text" id="campo-siembra-dosis" placeholder="Ej: 180 kg/ha, 8 semillas/m..."></div>
         <div class="field"><label>Hectáreas sembradas (opcional)</label><input type="number" id="campo-siembra-hectareas" min="0" step="0.1"></div>
       </div>
       <div class="cultivos-label" style="margin-top:6px">¿Se aplicó fertilización junto con la siembra?</div>
@@ -6260,7 +6272,7 @@ function renderCamposLaborTipo() {
   } else if (tipo === 'trabajo_suelo') {
     cont.innerHTML = `
       <div class="grid-2">
-        <div class="field"><label>Labor realizada</label><input type="text" id="campo-suelo-labor" placeholder="Ej: Rastra, arado, subsolado..."></div>
+        <div class="field"><label>Labor realizada (opcional)</label><input type="text" id="campo-suelo-labor" placeholder="Ej: Rastra, arado, subsolado..."></div>
         <div class="field"><label>Equipo utilizado (opcional)</label><div class="select-wrapper"><select id="campo-suelo-equipo"><option value="">—</option>${config.equipos.map(e=>`<option value="${e}">${e}</option>`).join('')}</select></div></div>
       </div>`;
   } else if (tipo === 'riego') {
@@ -6292,7 +6304,7 @@ function renderCamposLaborTipo() {
         <button type="button" class="btn btn-secondary" style="margin-bottom:14px" onclick="agregarCampoAplProducto()">+ Agregar producto a la lista</button>`;
       renderCampoAplProductosLista();
     } else {
-      cont.innerHTML = `<div class="field"><label>Detalle de "${nombreTipo}"</label><input type="text" id="campo-custom-detalle" placeholder="Describe lo realizado..."></div>`;
+      cont.innerHTML = `<div class="field"><label>Detalle de "${nombreTipo}" (opcional)</label><input type="text" id="campo-custom-detalle" placeholder="Describe lo realizado..."></div>`;
     }
   }
   const ops = opcionesLabor(tipo);
@@ -6587,9 +6599,7 @@ window.registrarLaborCampo = async function() {
     payloadBase.objetivo = document.getElementById('campo-apl-objetivo').value.trim() || null;
     payloadBase.equipo = document.getElementById('campo-apl-equipo').value || null;
   } else if (tipo === 'trabajo_suelo') {
-    const labor = document.getElementById('campo-suelo-labor').value.trim();
-    if (!labor) { toast('Ingresa la labor realizada', false); return; }
-    payloadBase.labor = labor;
+    payloadBase.labor = document.getElementById('campo-suelo-labor').value.trim() || '';
     payloadBase.equipo = document.getElementById('campo-suelo-equipo').value || null;
   } else if (tipo === 'riego') {
     const metodo = document.getElementById('campo-riego-metodo').value.trim();
@@ -6618,9 +6628,7 @@ window.registrarLaborCampo = async function() {
       if (!productos.length) { toast('Agrega al menos un producto con su dosis', false); return; }
       payloadBase.productos = productos;
     } else {
-      const detalle = document.getElementById('campo-custom-detalle').value.trim();
-      if (!detalle) { toast('Describe lo realizado', false); return; }
-      payloadBase.detalle = detalle;
+      payloadBase.detalle = document.getElementById('campo-custom-detalle').value.trim() || '';
     }
   }
 
@@ -6781,7 +6789,7 @@ function detalleLaborCampo(l) {
       : `${l.producto} — ${l.dosis}`;
     const mojaStr = l.mojamiento != null ? ` · Mojamiento: ${l.mojamiento} L/ha` : '';
     base = `${prefTipo}${prodStr}${mojaStr}${l.objetivo?' · '+l.objetivo:''}${l.equipo?' · '+l.equipo:''}`;
-  } else if (l.tipo === 'trabajo_suelo') base = `${l.labor}${l.equipo?' · '+l.equipo:''}`;
+  } else if (l.tipo === 'trabajo_suelo') base = `${l.labor || ''}${l.equipo?(l.labor?' · ':'')+l.equipo:''}`;
   else if (l.tipo === 'riego') base = `${l.metodo}${l.duracion?' · '+l.duracion+' hr':''}`;
   else if (l.tipo === 'cosecha') {
     const rend = (p && p.hectareas) ? ` · ${(l.kg/p.hectareas).toFixed(0)} kg/ha` : '';
@@ -6790,7 +6798,7 @@ function detalleLaborCampo(l) {
   else if (l.tipo === 'personalizado') {
     base = Array.isArray(l.productos) && l.productos.length
       ? l.productos.map(pr => `${pr.producto} (${pr.dosis})`).join(', ')
-      : l.detalle;
+      : (l.detalle || '');
   }
 
   if (Array.isArray(l.aperos) && l.aperos.length) base += ` · 🔧 ${l.aperos.join(' + ')}`;
