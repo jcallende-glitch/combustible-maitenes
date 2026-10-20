@@ -6855,6 +6855,92 @@ window.setCampoHistorialOrden = function(orden) {
   renderHistorialLabores();
 }
 
+// ─── Cuaderno imprimible / PDF ───────────────────────────
+window.cerrarImpresionCuaderno = function() { const e = document.getElementById('print-cuaderno'); if (e) e.remove(); if (window.__tituloPrevio) document.title = window.__tituloPrevio; };
+window.imprimirCuaderno = function() {
+  const fAnio = document.getElementById('campo-filtro-anio')?.value || '';
+  const haySel = camposLaborPotrerosSel.length > 0;
+  let data = [...(haySel ? laboresCampoRegistros : laboresCampoTodos)].filter(l => !fAnio || l.anio === fAnio);
+  if (!data.length) { toast('No hay labores para imprimir con este filtro', false); return; }
+  const txt = h => String(h == null ? '' : h).replace(/<img[^>]*>/g, '').replace(/<div[^>]*><\/div>/g, '');
+  const tipoPlano = l => l.tipo === 'personalizado' ? escA(l.nombreTipo) : escA(((TIPOS_LABOR_CAMPO.find(t => t.id === l.tipo) || {}).label || l.tipo || '').replace(/^[^\p{L}]+/u, ''));
+  const pdfSecs = [];
+  const claves = {};
+  data.forEach(l => { const k = l.potrero + '|' + (l.lote || ''); (claves[k] = claves[k] || []).push(l); });
+  const secciones = Object.keys(claves).sort((a, b) => cmpEs(a.replace('|', ' '), b.replace('|', ' '))).map(k => {
+    const filas = claves[k].sort((a, b) => (a.fecha || '9999').localeCompare(b.fecha || '9999') || cmpIntraDia(a, b));
+    const l0 = filas[0], nombre = l0.lote ? `${l0.potrero} · ${l0.lote}` : l0.potrero;
+    const u = l0.lote ? l0.potrero + SEP_LOTE + l0.lote : l0.potrero;
+    const cult = cultivoDeUnidadSel(u);
+    const grupos = [], vistos = {};
+    filas.forEach(l => { if (!l.comboId) { grupos.push([l]); return; } if (vistos[l.comboId]) vistos[l.comboId].push(l); else { vistos[l.comboId] = [l]; grupos.push(vistos[l.comboId]); } });
+    const planoDe = h => { const d = document.createElement('div'); d.innerHTML = String(h || '').replace(/<br\s*\/?>|<\/div>/gi, '\n'); return (d.textContent || '').replace(/[₀-₉]/g, c => String(c.charCodeAt(0) - 8320)).replace(/[^\x20-\x7E\n\u00A0-\u024F\u2013\u2014\u00B7]/g, '').replace(/[ \t]+/g, ' ').replace(/\n\s*\n+/g, '\n').trim(); };
+    pdfSecs.push({ nombre, cult: planoDe(cult), rows: grupos.map(g => [g[0].fecha || '-', planoDe(g.map(tipoPlano).join(' + ') + (g.length > 1 ? ' (combinada)' : '')), g.map(l => (g.length > 1 ? tipoPlano(l) + ': ' : '') + planoDe(detalleLaborCampo(l))).join('\n'), planoDe(g.map(l => l.obs || '').filter(Boolean).join(' · ')), planoDe(g[0].operador || '')]) });
+    const trs = grupos.map(g => `<tr>
+      <td class="f">${g[0].fecha || '—'}</td>
+      <td class="t">${g.map(tipoPlano).join(' + ')}${g.length > 1 ? '<div class="c">combinada</div>' : ''}</td>
+      <td>${g.map(l => (g.length > 1 ? `<b>${tipoPlano(l)}:</b> ` : '') + txt(detalleLaborCampo(l))).join('<br>')}</td>
+      <td class="o">${g.map(l => escA(l.obs || '')).filter(Boolean).join(' · ')}</td>
+      <td class="r">${escA(g[0].operador || '')}</td></tr>`).join('');
+    return `<section><h2>📍 ${escA(nombre)}${cult ? ` <span>🌱 ${escA(cult)}</span>` : ''}</h2>
+      <table><thead><tr><th>Fecha</th><th>Labor</th><th>Detalle</th><th>Obs.</th><th>Registró</th></tr></thead><tbody>${trs}</tbody></table></section>`;
+  }).join('');
+  const hoy = new Date().toLocaleDateString('es-CL');
+  const ov = document.createElement('div');
+  ov.id = 'print-cuaderno';
+  ov.innerHTML = `<style>
+    #print-cuaderno{position:fixed;inset:0;z-index:99999;background:#fff;color:#111;overflow:auto;font-family:Arial,Helvetica,sans-serif}
+    #print-cuaderno .bar{position:sticky;top:0;background:#111;padding:10px 12px;display:flex;gap:8px;justify-content:flex-end}
+    #print-cuaderno .bar button{padding:10px 16px;border-radius:8px;border:0;font-weight:700;font-size:14px}
+    #print-cuaderno .hoja{padding:18px 22px;max-width:1000px;margin:0 auto}
+    #print-cuaderno h1{font-size:20px;margin:0 0 2px} #print-cuaderno .sub{font-size:12px;color:#555;margin-bottom:14px}
+    #print-cuaderno h2{font-size:15px;margin:18px 0 6px;padding-bottom:4px;border-bottom:2px solid #2D7D46;break-after:avoid} #print-cuaderno h2 span{font-weight:400;font-size:12px;color:#2D7D46;margin-left:8px}
+    #print-cuaderno table{width:100%;border-collapse:collapse;font-size:11.5px} #print-cuaderno th{background:#eee;text-align:left;padding:5px 6px;border:1px solid #bbb}
+    #print-cuaderno td{padding:5px 6px;border:1px solid #ccc;vertical-align:top} #print-cuaderno tr{break-inside:avoid}
+    #print-cuaderno td.f{white-space:nowrap} #print-cuaderno td.t{font-weight:700;width:96px} #print-cuaderno .c{font-size:9px;font-weight:400;color:#1D4ED8} #print-cuaderno td.o,#print-cuaderno td.r{width:80px;color:#444}
+    #print-cuaderno td span,#print-cuaderno td div{color:#111 !important;background:none !important}
+    @media print{ body > *:not(#print-cuaderno){display:none !important} #print-cuaderno{position:static;overflow:visible} #print-cuaderno .bar{display:none} #print-cuaderno .hoja{padding:0;max-width:none} @page{margin:12mm} }
+  </style>
+  <div class="bar"><button style="background:#2D7D46;color:#fff" onclick="window.print()">📄 Guardar PDF / Imprimir</button><button style="background:#25D366;color:#fff" onclick="compartirPdfCuaderno()">📤 Compartir (WhatsApp)</button><button style="background:#ddd" onclick="cerrarImpresionCuaderno()">Cerrar</button></div>
+  <div class="hoja"><h1>Cuaderno de Campo · Los Maitenes</h1>
+  <div class="sub">${fAnio ? 'Temporada ' + fAnio : 'Todos los años'} · ${haySel ? 'Potreros elegidos' : 'Todos los potreros'} · Impreso el ${hoy}</div>${secciones}</div>`;
+  document.body.appendChild(ov);
+  window.__pdfCuaderno = { secs: pdfSecs, sub: `${fAnio ? 'Temporada ' + fAnio : 'Todos los años'} · ${haySel ? 'Potreros elegidos' : 'Todos los potreros'} · Impreso el ${hoy}`, fname: 'Cuaderno de Campo Los Maitenes' + (fAnio ? ' ' + fAnio : '') + '.pdf' };
+  window.__tituloPrevio = document.title;
+  document.title = 'Cuaderno de Campo Los Maitenes' + (fAnio ? ' ' + fAnio : '');
+}
+function cargarScriptUna(src) { return new Promise((ok, mal) => { const e = document.createElement('script'); e.src = src; e.onload = ok; e.onerror = () => mal(new Error('No se pudo cargar ' + src)); document.head.appendChild(e); }); }
+window.compartirPdfCuaderno = async function() {
+  const d = window.__pdfCuaderno; if (!d) return;
+  try {
+    toast('Generando PDF…', true);
+    if (!(window.jspdf && window.jspdf.jsPDF)) await cargarScriptUna('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js');
+    if (!(window.jspdf.jsPDF.API && window.jspdf.jsPDF.API.autoTable)) await cargarScriptUna('https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js');
+    const pdf = new window.jspdf.jsPDF({ unit: 'mm', format: 'a4' });
+    pdf.setFontSize(15); pdf.text('Cuaderno de Campo · Los Maitenes', 12, 14);
+    pdf.setFontSize(9); pdf.setTextColor(90); pdf.text(d.sub.replace(/[^\x20-\x7E\u00A0-\u024F·]/g, ''), 12, 19);
+    let y = 24;
+    d.secs.forEach(sec => {
+      pdf.autoTable({ startY: y, head: [[{ content: sec.nombre + (sec.cult ? '   ·   ' + sec.cult : ''), colSpan: 5, styles: { fillColor: [45, 125, 70], textColor: 255, fontSize: 10 } }], ['Fecha', 'Labor', 'Detalle', 'Obs.', 'Registró']],
+        body: sec.rows, margin: { left: 12, right: 12 }, styles: { fontSize: 8, cellPadding: 1.6, overflow: 'linebreak' },
+        headStyles: { fillColor: [235, 235, 235], textColor: 20 },
+        columnStyles: { 0: { cellWidth: 20 }, 1: { cellWidth: 26, fontStyle: 'bold' }, 3: { cellWidth: 24 }, 4: { cellWidth: 22 } },
+        didParseCell: h => { if (h.section === 'head' && h.row.index === 0) { h.cell.styles.fillColor = [45, 125, 70]; h.cell.styles.textColor = 255; } } });
+      y = pdf.lastAutoTable.finalY + 8;
+      if (y > 270) { pdf.addPage(); y = 14; }
+    });
+    const blob = pdf.output('blob');
+    const file = new File([blob], d.fname, { type: 'application/pdf' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file], title: d.fname });
+    } else {
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = d.fname; document.body.appendChild(a); a.click(); a.remove();
+      toast('PDF descargado', true);
+    }
+  } catch (e) { if (e && e.name === 'AbortError') return; toast('Error al generar el PDF: ' + e.message, false); }
+}
+window.addEventListener('afterprint', () => { if (window.__tituloPrevio) document.title = window.__tituloPrevio; });
+
 window.renderHistorialLabores = function() {
   const fAnio = document.getElementById('campo-filtro-anio')?.value || '';
   let data = [...laboresCampoRegistros];
@@ -12783,6 +12869,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
           <div class="select-wrapper"><select id="campo-filtro-anio" onchange="renderHistorialLabores()"></select></div>
           <div class="cultivo-chip sel" id="campo-orden-asc" onclick="setCampoHistorialOrden('asc')">↑ Más antiguo primero</div>
           <div class="cultivo-chip" id="campo-orden-desc" onclick="setCampoHistorialOrden('desc')">↓ Más reciente primero</div>
+          <button type="button" class="btn btn-secondary" style="padding:8px 14px;font-size:13px" onclick="imprimirCuaderno()">📄 PDF / Imprimir</button>
         </div>
         <div id="campo-historial-container"></div>
       </div>
