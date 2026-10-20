@@ -6941,6 +6941,8 @@ window.compartirPdfCuaderno = async function() {
 }
 window.addEventListener('afterprint', () => { if (window.__tituloPrevio) document.title = window.__tituloPrevio; });
 
+// Quien tiene acceso al Cuaderno (admin, encargados de campo, operadores con acceso a campo) puede editar y eliminar registros
+const puedeEditarCampo = () => isAdmin || isCampo || campoTambien;
 window.renderHistorialLabores = function() {
   const fAnio = document.getElementById('campo-filtro-anio')?.value || '';
   let data = [...laboresCampoRegistros];
@@ -6966,7 +6968,7 @@ window.renderHistorialLabores = function() {
   const botones = l => `<button class="btn btn-secondary" style="padding:6px 9px;margin-right:4px" title="Editar" onclick="editarLaborCampo('${l.id}')">✏️</button><button class="btn btn-secondary" style="padding:6px 9px;margin-right:4px" title="Agregar otra labor del mismo día enlazada a esta" onclick="agregarLaborAFila('${l.id}')">➕</button><button class="btn btn-danger" onclick="eliminarLaborCampo('${l.id}')">✕</button>`;
   const sentido = campoHistorialOrden === 'asc' ? 1 : -1;
   const ordenInfo = g => { if (!g[0].fecha) return ''; const it = itemsDelDia(g[0]); if (it.length < 2) return ''; const pos = it.findIndex(x => x.some(y => y.id === g[0].id)) + 1; return `<div style="font-size:10px;color:#6B7280;margin-top:3px">${pos}º de ${it.length} del día</div>`; };
-  const botonesOrden = g => { if (!isAdmin || !g[0].fecha || itemsDelDia(g[0]).length < 2) return ''; return `<div style="margin-top:4px"><button class="btn btn-secondary" style="padding:3px 8px;margin-right:3px" title="Subir" onclick="moverLaborDia('${g[0].id}',${-1 * sentido})">▲</button><button class="btn btn-secondary" style="padding:3px 8px" title="Bajar" onclick="moverLaborDia('${g[0].id}',${1 * sentido})">▼</button></div>`; };
+  const botonesOrden = g => { if (!puedeEditarCampo() || !g[0].fecha || itemsDelDia(g[0]).length < 2) return ''; return `<div style="margin-top:4px"><button class="btn btn-secondary" style="padding:3px 8px;margin-right:3px" title="Subir" onclick="moverLaborDia('${g[0].id}',${-1 * sentido})">▲</button><button class="btn btn-secondary" style="padding:3px 8px" title="Bajar" onclick="moverLaborDia('${g[0].id}',${1 * sentido})">▼</button></div>`; };
   const filaHtml = g => {
     if (g.length === 1) { const l = g[0]; return `<tr>
       <td class="td-mono">${l.fecha || '—'}</td>
@@ -6974,7 +6976,7 @@ window.renderHistorialLabores = function() {
       <td style="font-size:12px">${detalleLaborCampo(l)}</td>
       <td style="font-size:12px;color:#6B7280">${l.obs || '—'}</td>
       <td style="font-size:12px">${l.operador}</td>
-      ${isAdmin ? `<td style="white-space:nowrap">${botones(l)}${botonesOrden(g)}</td>` : ''}
+      ${puedeEditarCampo() ? `<td style="white-space:nowrap">${botones(l)}${botonesOrden(g)}</td>` : ''}
     </tr>`; }
     // Labores hechas juntas (varias seleccionadas a la vez): una sola fila con todos los tipos
     return `<tr style="background:#F5F9FF">
@@ -6983,7 +6985,7 @@ window.renderHistorialLabores = function() {
       <td style="font-size:12px">${g.map(l => `<div style="margin-bottom:6px"><span style="font-weight:700">${tipoTxt(l)}:</span> ${detalleLaborCampo(l)}</div>`).join('')}</td>
       <td style="font-size:12px;color:#6B7280">${g.map(l => l.obs).filter(Boolean).join(' · ') || '—'}</td>
       <td style="font-size:12px">${g[0].operador}</td>
-      ${isAdmin ? `<td style="white-space:nowrap">${g.map(l => `<div style="margin-bottom:4px"><span style="font-size:10px;color:#6B7280">${tipoTxt(l).replace(/<[^>]+>/g, '').slice(0, 14)}</span> ${botones(l)}</div>`).join('')}${botonesOrden(g)}</td>` : ''}
+      ${puedeEditarCampo() ? `<td style="white-space:nowrap">${g.map(l => `<div style="margin-bottom:4px"><span style="font-size:10px;color:#6B7280">${tipoTxt(l).replace(/<[^>]+>/g, '').slice(0, 14)}</span> ${botones(l)}</div>`).join('')}${botonesOrden(g)}</td>` : ''}
     </tr>`;
   };
   const tabla = filas => {
@@ -6994,7 +6996,7 @@ window.renderHistorialLabores = function() {
       if (vistos[k]) vistos[k].push(l); else { vistos[k] = [l]; grupos.push(vistos[k]); }
     });
     return `<div class="table-wrap"><table>
-    <thead><tr><th>Fecha</th><th>Tipo</th><th>Detalle</th><th>Obs.</th><th>Registró</th>${isAdmin?'<th></th>':''}</tr></thead>
+    <thead><tr><th>Fecha</th><th>Tipo</th><th>Detalle</th><th>Obs.</th><th>Registró</th>${puedeEditarCampo()?'<th></th>':''}</tr></thead>
     <tbody>${grupos.map(filaHtml).join('')}</tbody>
   </table></div>`;
   };
