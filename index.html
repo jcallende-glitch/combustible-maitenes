@@ -2779,7 +2779,7 @@ function entrarConResultado(result) {
   campoTambien = !!result.campoTambien;
   currentUser = result.nombre; isAdmin = result.admin; isSupervisor = result.supervisor || false; isSubadmin = result.subadmin || false; isCampo = result.campo || false;
   document.getElementById('user-label').textContent = isAdmin ? `⚙ ${result.nombre}` : (isSupervisor ? `👁 ${result.nombre}` : (isSubadmin ? `🕒 ${result.nombre}` : (isCampo ? `🌱 ${result.nombre}` : result.nombre)));
-  ['tab-registro','tab-historial','tab-mantencion','tab-admin','tab-config','tab-analytics','tab-informes','tab-eficiencia','tab-config-equipos','btn-cisterna-header','tab-asistencia','tab-config-trabajadores','tab-inv-movimientos','tab-campo','tab-config-potreros','tab-config-gps','tab-autorizaciones'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
+  ['tab-registro','tab-historial','tab-mantencion','tab-admin','tab-cisterna','tab-config','tab-analytics','tab-informes','tab-eficiencia','tab-config-equipos','btn-cisterna-header','tab-asistencia','tab-config-trabajadores','tab-inv-movimientos','tab-campo','tab-config-potreros','tab-config-gps','tab-autorizaciones'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
   document.getElementById('pin-input').value = '';
   document.getElementById('btn-secciones-header').style.display = isAdmin ? 'inline-flex' : 'none';
   if (isSubadmin) {
@@ -2837,7 +2837,7 @@ function entrarCombustibleOperador() {
 
 // ─── SELECTOR DE SECCIÓN (solo admin) ───────────────────────
 const SECCIONES_TABS = {
-  combustible: ['tab-registro','tab-historial','tab-mantencion','tab-admin','tab-config'],
+  combustible: ['tab-registro','tab-historial','tab-mantencion','tab-admin','tab-cisterna','tab-config'],
   equipos: ['tab-eficiencia','tab-analytics','tab-informes','tab-config-equipos'],
   asistencia: ['tab-asistencia','tab-config-trabajadores'],
   campo: ['tab-campo','tab-config-potreros','tab-config-gps'],
@@ -3183,6 +3183,57 @@ window.registrarCisterna = async function() {
     cerrarCargaCisterna(); toast(`✓ ${lt.toLocaleString('es-CL')} L cargados`, true);
   } catch(e) { toast('Error: '+e.message, false); }
   btn.disabled = false; btn.textContent = 'Confirmar carga';
+}
+
+// ─── CONTROL ENTRE CARGAS DE CISTERNA ─────────────────────
+let cargasCisterna = [], unsubCargasCis = null;
+window.initControlCisterna = function() {
+  if (!unsubCargasCis) {
+    unsubCargasCis = onSnapshot(query(collection(db, 'cargas_cisterna'), orderBy('ts', 'asc')), snap => {
+      cargasCisterna = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      renderControlCisterna();
+    }, e => console.warn('cargas_cisterna', e));
+  }
+  renderControlCisterna();
+}
+// Momento real de un registro: fecha + hora si existen (cargas ingresadas a posteriori), si no el instante en que se guardó
+const tsRegistroCis = r => { if (r.fecha && r.hora) { const t = new Date(r.fecha + 'T' + r.hora + ':00').getTime(); if (isFinite(t)) return t; } return r.ts || 0; };
+window.renderControlCisterna = function() {
+  const tb = document.getElementById('cis-tabla'); if (!tb) return;
+  const rs = document.getElementById('cis-resumen');
+  const margen = parseFloat(document.getElementById('cis-margen')?.value) || 3;
+  const cargas = [...cargasCisterna].filter(c => c.litros > 0).sort((a, b) => (a.ts || 0) - (b.ts || 0));
+  if (cargas.length < 2) { rs.innerHTML = ''; tb.innerHTML = `<div class="empty">Se necesitan al menos 2 cargas de cisterna para comparar${cargas.length ? '' : ' (todavía no hay ninguna registrada)'}.</div>`; return; }
+  const regs = registros.map(r => ({ r, t: tsRegistroCis(r) })).filter(x => x.r.litros > 0).sort((a, b) => a.t - b.t);
+  const f0 = n => Math.round(n).toLocaleString('es-CL');
+  const fF = ts => new Date(ts).toLocaleDateString('es-CL', { day: '2-digit', month: 'short' }) + ' ' + new Date(ts).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' });
+  const totAntes = t => { let u = null; for (const x of regs) { if (x.t <= t) { if (x.r.totalizador != null && isFinite(x.r.totalizador)) u = x.r.totalizador; } else break; } return u; };
+  const filas = [];
+  for (let i = 0; i + 1 < cargas.length; i++) {
+    const A = cargas[i], B = cargas[i + 1];
+    const enPer = regs.filter(x => x.t > A.ts && x.t <= B.ts);
+    const consumido = enPer.reduce((a, x) => a + (Number(x.r.litros) || 0), 0);
+    const tA = totAntes(A.ts), tB = totAntes(B.ts);
+    const totDelta = (tA != null && tB != null) ? tB - tA : null;
+    const dif = B.litros - consumido, pct = B.litros ? dif / B.litros * 100 : 0;
+    const porEq = {}; enPer.forEach(x => { porEq[x.r.equipo] = (porEq[x.r.equipo] || 0) + (Number(x.r.litros) || 0); });
+    filas.push({ A, B, n: enPer.length, consumido, totDelta, dif, pct, porEq });
+  }
+  const estado = p => Math.abs(p) <= margen ? ['#DCFCE7', '#15803D', '✓ Cuadra'] : Math.abs(p) <= margen * 2.5 ? ['#FEF9C3', '#A16207', '⚠ Revisar'] : ['#FEE2E2', '#B91C1C', '✗ Diferencia alta'];
+  const ult = cargas[cargas.length - 1];
+  const enCurso = regs.filter(x => x.t > ult.ts).reduce((a, x) => a + (Number(x.r.litros) || 0), 0);
+  const totDif = filas.reduce((a, f) => a + f.dif, 0), totCis = filas.reduce((a, f) => a + f.B.litros, 0);
+  rs.innerHTML = `<div style="background:var(--fondo);border-radius:8px;padding:10px 12px;font-size:13px;margin:10px 0">
+    <div><strong>Período en curso</strong> (desde la carga del ${fF(ult.ts)} de ${f0(ult.litros)} L): ya se registraron <strong>${f0(enCurso)} L</strong>. Para volver a llenar se esperarían ≈ ${f0(enCurso)} L.</div>
+    <div style="margin-top:4px">Total comparado: cisterna ${f0(totCis)} L − registrado ${f0(totCis - totDif)} L = <strong style="color:${Math.abs(totDif / totCis * 100) <= margen ? '#15803D' : '#B91C1C'}">${totDif >= 0 ? '+' : '−'}${f0(Math.abs(totDif))} L (${(totDif / totCis * 100).toFixed(1).replace('.', ',')}%)</strong></div>
+    <div style="font-size:11px;color:#6B7280;margin-top:4px">Diferencia positiva: la cisterna cargó más de lo registrado (consumo sin registrar, pérdida o estanque que no quedó lleno). Negativa: se registró más de lo que repuso la cisterna.</div></div>`;
+  tb.innerHTML = `<div class="table-wrap"><table><thead><tr><th>Entre cargas</th><th>Cisterna siguiente</th><th>Registrado en app</th><th>Totalizador</th><th>Diferencia</th><th>Estado</th></tr></thead><tbody>${filas.slice().reverse().map(f => { const [bg, col, txt] = estado(f.pct); return `<tr>
+    <td style="font-size:12px;white-space:nowrap">${fF(f.A.ts)}<br>→ ${fF(f.B.ts)}<div style="font-size:10px;color:#6B7280">${f.n} carga(s) de equipos</div></td>
+    <td style="font-weight:700">${f0(f.B.litros)} L</td>
+    <td style="font-weight:700">${f0(f.consumido)} L<details style="font-weight:400;font-size:11px;color:#6B7280"><summary style="cursor:pointer">por equipo</summary>${Object.entries(f.porEq).sort((a, b) => b[1] - a[1]).map(([e, l]) => `${escA(e)}: ${f0(l)} L`).join('<br>')}</details></td>
+    <td>${f.totDelta != null ? f0(f.totDelta) + ' L' : '—'}</td>
+    <td style="font-weight:700;color:${col}">${f.dif >= 0 ? '+' : '−'}${f0(Math.abs(f.dif))} L<div style="font-size:11px">${f.pct.toFixed(1).replace('.', ',')}%</div></td>
+    <td><span style="background:${bg};color:${col};border-radius:6px;padding:3px 8px;font-weight:700;font-size:11px;white-space:nowrap">${txt}</span></td></tr>`; }).join('')}</tbody></table></div>`;
 }
 
 // ─── REGISTRO ─────────────────────────────────────────────
@@ -4532,6 +4583,7 @@ function loadHistorial() {
   unsubReg = onSnapshot(q, snap => {
     registros = snap.docs.map(d=>({id:d.id,...d.data()}));
     populateFiltros(); renderTabla();
+    try { renderControlCisterna(); } catch (e) {}
     if (typeof renderRendAperoEficiencia === 'function') renderRendAperoEficiencia();
     if (isAdmin || isSupervisor) { populateFiltrosAnalytics(); renderAnalytics(); renderInformes(); populateFiltrosEficiencia(); renderEficienciaAnalisis(); renderPanelReintegroJCAR(); }
   });
@@ -10027,7 +10079,7 @@ window.setTab = function(id,el) {
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
   document.getElementById('tc-'+id).classList.add('active');
   if(el)el.classList.add('active');
-  if(['historial','admin','analytics','informes','eficiencia','config','config-equipos'].includes(id)) loadHistorial();
+  if(['historial','admin','analytics','informes','eficiencia','config','config-equipos','cisterna'].includes(id)) loadHistorial();
   if(id==='config') { renderConfigListas(); renderPanelAperos(); renderPanelEquipoOperador(); renderPanelPermisosPruebas(); renderPanelPresetsOperador(); renderPanelHorario(); renderPanelMantencionesConfig(); renderPanelParametros(); renderPanelCorreccionHorometro(); renderPanelTotalizadorManual(); renderPanelSaldoManual(); renderPanelRecalculoOpcion(); renderLimpiezaEquiposSelector(); renderRecalcEquiposSelector(); renderPanelReintegroJCAR(); cargarHistorialReintegrosJCAR(); if(isAdmin) cargarPines(); actualizarToggleESP32(); }
   if(id==='eficiencia') renderRendAperoEficiencia();
   if(id==='config-equipos') { renderConfigListas(); renderPanelAperos(); }
@@ -10039,6 +10091,7 @@ window.setTab = function(id,el) {
   if(id==='config-gps') { jdpCargarZonas().then(() => { renderListaZonasSinCultivo(); renderVelEquipos(); }); }
   if(id==='inv-ingresos') { renderItemsIngresoInv(); { const r = document.getElementById('inv-ingreso-recibe'); if (r) { const v = r.value; r.innerHTML = opcionesAplicador('— nadie en particular —'); r.value = v; } } }
   if(id==='inv-movimientos') { initMovimientosInv(); }
+  if(id==='cisterna') { initControlCisterna(); }
   if(id==='autorizaciones') { try { renderPanelAplicadores(); } catch (e) {} }
   if(id==='autorizaciones') { renderConfigListas(); renderPanelEquipoOperador(); renderPanelPermisosPruebas(); renderPanelPresetsOperador(); renderPanelHorario(); if(isAdmin) cargarPines(); cargarListaSubadmins(); cargarListaEncargadosCampo(); }
   if(id==='registro' && isAdmin) escucharSolicitudesAdmin();
@@ -12438,6 +12491,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     <button class="tab" id="tab-informes" style="display:none" onclick="setTab('informes',this)">Informes</button>
     <button class="tab" id="tab-eficiencia" style="display:none" onclick="setTab('eficiencia',this)">Eficiencia</button>
     <button class="tab" id="tab-config-equipos" style="display:none" onclick="setTab('config-equipos',this)">⚙️ Config. equipos</button>
+    <button class="tab" id="tab-cisterna" style="display:none" onclick="setTab('cisterna',this)">🚛 Control cisterna</button>
     <button class="tab" id="tab-config" style="display:none" onclick="setTab('config',this)">Configurar</button>
     <button class="tab" id="tab-autorizaciones" style="display:none" onclick="setTab('autorizaciones',this)">🔐 Autorizaciones</button>
     <button class="tab" id="tab-asistencia" style="display:none" onclick="setTab('asistencia',this)">🕒 Asistencia</button>
@@ -12760,6 +12814,16 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         <div class="config-lista" id="lista-aperos"></div>
       </div>
 
+    </div>
+
+    <div id="tc-cisterna" class="tab-content">
+      <div class="panel">
+        <div class="panel-title">🚛 Control entre cargas de cisterna</div>
+        <div class="hint" style="margin-bottom:10px">Supone que el estanque queda lleno después de cada carga. Entonces, lo que carga la cisterna siguiente debería coincidir con lo que las máquinas sacaron entre ambas cargas. Se compara con lo registrado en la app y con el avance del totalizador.</div>
+        <div class="field" style="max-width:260px"><label>Margen aceptable (%)</label><input type="number" id="cis-margen" min="0" max="50" step="0.5" value="3" onchange="renderControlCisterna()"></div>
+        <div id="cis-resumen"></div>
+        <div id="cis-tabla"></div>
+      </div>
     </div>
 
     <div id="tc-config" class="tab-content">
