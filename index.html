@@ -1706,16 +1706,30 @@ function envivoDibujarRuta(tr, puntos) {
     }
     rectas.forEach(r => {
       if (r.len < 20 || r.sub.length < 3) { // giro o tramo corto: línea tal cual
-        L.polyline(c.pts.slice(r.a, r.b + 1).map(q => [q.lat, q.lng]), { color: '#15803D', weight: 2, opacity: 0.9, dashArray: '3 3', interactive: false }).addTo(envivoRutaCapa);
+        const hc = (c.pts[r.b].t - c.pts[r.a].t) / 3600000, vc = hc > 0 ? (r.len / 1000) / hc : null;
+        L.polyline(c.pts.slice(r.a, r.b + 1).map(q => [q.lat, q.lng]), { color: hilColorVel(vc), weight: 2.5, opacity: 0.9, dashArray: '3 3', interactive: false }).addTo(envivoRutaCapa);
         return;
       }
       const [A, B] = envivoRecta(r.sub);
       const dx = B[0] - A[0], dy = B[1] - A[1], L2 = Math.hypot(dx, dy) || 1e-9, nx = -dy / L2 * w / 2, ny = dx / L2 * w / 2;
-      const poly = [[A[0] + nx, A[1] + ny], [B[0] + nx, B[1] + ny], [B[0] - nx, B[1] - ny], [A[0] - nx, A[1] - ny]].map(q => P0.ll(q[0], q[1]));
       const tA = c.pts[r.a].t, tB = c.pts[r.b].t, km = L2 / 1000, h = (tB - tA) / 3600000;
-      L.polygon(poly, { stroke: false, fillColor: '#22C55E', fillOpacity: 0.45 }).addTo(envivoRutaCapa)
-        .bindTooltip(`<b>${c.pot}</b><br>${L2.toFixed(0)} m · ancho ${String(w).replace('.', ',')} m<br>${h > 0 ? (km / h).toFixed(1) + ' km/h' : ''} · ${new Date(tA).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' })}`, { sticky: true });
-      L.polyline([P0.ll(A[0], A[1]), P0.ll(B[0], B[1])], { color: '#14532D', weight: 1.5, opacity: 0.9, interactive: false }).addTo(envivoRutaCapa); // eje de la pasada
+      const hora = new Date(tA).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' });
+      // La banda se parte en trozos entre puntos GPS consecutivos: cada trozo con su velocidad de ese momento (suavizada con sus vecinos)
+      const ux = dx / L2, uy = dy / L2, np = r.b - r.a + 1;
+      const ts = [], vi = [];
+      let prev = 0;
+      for (let k = 0; k < np; k++) { const q = XY[r.a + k]; prev = Math.max(prev, Math.min(L2, (q[0] - A[0]) * ux + (q[1] - A[1]) * uy)); ts.push(prev); }
+      ts[0] = 0; ts[np - 1] = L2;
+      for (let k = 0; k + 1 < np; k++) { const dtH = (c.pts[r.a + k + 1].t - c.pts[r.a + k].t) / 3600000, dm = Math.hypot(XY[r.a + k + 1][0] - XY[r.a + k][0], XY[r.a + k + 1][1] - XY[r.a + k][1]); vi.push(dtH > 0 ? (dm / 1000) / dtH : null); }
+      const vs = vi.map((v, k) => { const w = [vi[k - 1], v, vi[k + 1]].filter(x => x != null && isFinite(x)); return w.length ? w.reduce((a, b) => a + b, 0) / w.length : null; });
+      for (let k = 0; k + 1 < np; k++) {
+        const t0 = ts[k], t1 = ts[k + 1]; if (t1 - t0 < 0.05) continue;
+        const pa = [A[0] + ux * t0, A[1] + uy * t0], pb = [A[0] + ux * t1, A[1] + uy * t1];
+        const poly = [[pa[0] + nx, pa[1] + ny], [pb[0] + nx, pb[1] + ny], [pb[0] - nx, pb[1] - ny], [pa[0] - nx, pa[1] - ny]].map(q => P0.ll(q[0], q[1]));
+        L.polygon(poly, { stroke: false, fillColor: hilColorVel(vs[k]), fillOpacity: 0.55 }).addTo(envivoRutaCapa)
+          .bindTooltip(`<b>${c.pot}</b><br>ancho ${String(w).replace('.', ',')} m · pasada de ${L2.toFixed(0)} m<br>${vs[k] != null ? vs[k].toFixed(1).replace('.', ',') + ' km/h aquí' : ''}${h > 0 ? ' · prom. ' + (km / h).toFixed(1).replace('.', ',') + ' km/h' : ''} · ${hora}`, { sticky: true });
+      }
+      L.polyline([P0.ll(A[0], A[1]), P0.ll(B[0], B[1])], { color: '#111827', weight: 1, opacity: 0.55, interactive: false }).addTo(envivoRutaCapa); // eje de la pasada
     });
   });
   // encuadra el trabajo en potreros (si hay); si no, todo el recorrido
@@ -1770,7 +1784,7 @@ function envivoRenderRuta() {
     <div style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--acero);margin-top:6px;flex-wrap:wrap">
       <span>Ancho de trabajo en potreros sin ancho propio:</span>
       <input type="number" min="1" max="60" step="0.5" value="${envivoAncho || 5}" style="width:60px;padding:3px 5px" onchange="envivoCambiarAncho(this.value)"> m
-      <span>· 🟩 banda = ancho de trabajo (con su eje) · 🟦 traslado · 🟧 detenido (menos de ${ENVIVO_VMIN_KMH} km/h) · más oscuro = pasó 2 veces</span></div>
+      <span>· banda = ancho de trabajo (con su eje), color según velocidad (km/h): ${HIL_COLORES.map(c => `<span style="display:inline-block;width:12px;height:12px;background:${c[1]};border-radius:2px;vertical-align:-2px;margin:0 3px 0 6px"></span>${c[2]}`).join('')} · 🟦 traslado · 🟧 detenido (menos de ${ENVIVO_VMIN_KMH} km/h) · más oscuro = pasó 2 veces</span></div>
   </div>`;
 }
 window.envivoCambiarAncho = function(v) { const n = parseFloat(v); envivoAncho = n > 0 ? n : null; envivoRenderRuta(); };
