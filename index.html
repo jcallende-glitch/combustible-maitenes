@@ -2762,6 +2762,7 @@ function showScreen(name) {
   document.getElementById('screen-' + name).style.display = 'flex';
 }
 
+let sesionPinIA = ''; // solo en memoria: se usa para autorizar la lectura de documentos con IA
 window.intentarLogin = async function() {
   const pin = document.getElementById('pin-input').value.trim();
   if (!pin) { toast('Ingresa tu PIN', false); return; }
@@ -2770,6 +2771,7 @@ window.intentarLogin = async function() {
   const result = await verificarPin(pin);
   btn.disabled = false; btn.textContent = 'Ingresar';
   if (!result.ok) { toast('PIN incorrecto', false); document.getElementById('pin-input').value=''; return; }
+  sesionPinIA = pin;
   const chk = document.getElementById('recordar-cel');
   if (result.admin && chk && chk.checked) await recordarDispositivo(result.nombre);
   entrarConResultado(result);
@@ -5901,7 +5903,7 @@ window.eliminarSubadmin = async function(nombre) {
 const iconoLaborHtml = t => t.svg ? t.svg + ' ' + t.label.replace(/^[^\p{L}]+/u, '') : t.label; // fertilización (trompo abonador) y fumigación (barra fumigadora) usan dibujo propio
 const TIPOS_LABOR_CAMPO = [
   { id: 'siembra', label: '🌱 Siembra', soloAnual: true },
-  { id: 'fertilizacion', label: '🧂 Fertilización', svg: '<svg viewBox="0 0 24 24" width="1.5em" height="1.5em" style="vertical-align:-0.4em" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h14l-4.5 8h-5z"/><path d="M9 11.5h6"/><ellipse cx="12" cy="14.5" rx="3.2" ry="1"/><circle cx="6" cy="17.5" r=".7" fill="currentColor"/><circle cx="9" cy="20" r=".7" fill="currentColor"/><circle cx="12" cy="18" r=".7" fill="currentColor"/><circle cx="15" cy="20.5" r=".7" fill="currentColor"/><circle cx="18" cy="17.5" r=".7" fill="currentColor"/></svg>' },
+  { id: 'fertilizacion', label: '🧂 Fertilización', svg: '<svg viewBox="0 0 32 32" width="1.8em" height="1.8em" style="vertical-align:-0.5em" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5h8l-1 3.5h-6z"/><path d="M11 7C7.5 9 6 12 6 16v10a2.5 2.5 0 0 0 2.5 2.5h15A2.5 2.5 0 0 0 26 26V16c0-4-1.5-7-5-9"/><text x="16" y="23.2" text-anchor="middle" font-size="8.6" font-weight="800" font-family="Arial,Helvetica,sans-serif" fill="currentColor" stroke="none">NPK</text></svg>' },
   { id: 'fumigacion', label: '🧴 Fumigación', svg: '<svg viewBox="0 0 24 24" width="1.5em" height="1.5em" style="vertical-align:-0.4em" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2.5h6v4H9z"/><path d="M1.5 9h21"/><path d="M3.5 9v2M3.5 11.5l-1.4 5M3.5 11.5l1.4 5"/><path d="M8 9v2M8 11.5l-1.4 5M8 11.5l1.4 5"/><path d="M12 9v2M12 11.5l-1.4 5M12 11.5l1.4 5"/><path d="M16 9v2M16 11.5l-1.4 5M16 11.5l1.4 5"/><path d="M20.5 9v2M20.5 11.5l-1.4 5M20.5 11.5l1.4 5"/></svg>' },
   { id: 'aplicacion', label: '🧴 Aplicación', oculto: true }, // legado: ya no se ofrece al registrar, se mantiene para leer historial viejo
   { id: 'trabajo_suelo', label: '🚜 Trabajo de suelo' },
@@ -10782,6 +10784,17 @@ let unsubProductosInv = null;
 let unsubIngresosInv = null;
 let productosInvSubscrito = false;
 let filtroCategoriaInv = "Todos";
+let filtroGrupoInv = "ambos"; // "agro" = agroquímicos, "fert" = fertilizantes, "ambos"
+const enGrupoInv = p => filtroGrupoInv === "ambos" || (filtroGrupoInv === "fert") === (p.categoria === "Fertilizante");
+window.setGrupoInv = function(g) {
+  filtroGrupoInv = g;
+  if (g === "fert") filtroCategoriaInv = "Todos";
+  document.querySelectorAll('#inv-grupo-selector button').forEach(b => { const on = b.dataset.g === g; b.classList.toggle('btn-verde', on); b.classList.toggle('btn-secondary', !on); });
+  document.querySelectorAll('#inv-chips-cat-wrap .cultivo-chip').forEach((c, i) => c.classList.toggle('sel', i === 0));
+  const chips = document.getElementById("inv-chips-cat-wrap");
+  if (chips) chips.style.display = (g === "fert" || vistaAgrupadaInv) ? "none" : "flex";
+  renderInventarioTabla(); renderStatsInv();
+}
 let filtroBodegaInv = ""; // "" = ambas bodegas (predeterminado)
 let vistaAgrupadaInv = false;
 let busquedaInv = "";
@@ -10928,9 +10941,10 @@ function getEstadoInvBodega(p, bodega) {
 }
 
 function renderStatsInv() {
-  const total = productosInv.length;
+  const lista = productosInv.filter(enGrupoInv);
+  const total = lista.length;
   let alertas = 0, agotados = 0, bajos = 0;
-  productosInv.forEach(p => {
+  lista.forEach(p => {
     const e = getEstadoInv(p);
     if (e !== "ok") alertas++;
     if (e === "agotado") agotados++;
@@ -10948,7 +10962,7 @@ window.toggleVistaInv = function() {
   const btn = document.getElementById("inv-btn-vista");
   if (btn) btn.textContent = vistaAgrupadaInv ? "📋 Vista normal" : "🔬 Agrupar por ingrediente activo";
   const chips = document.getElementById("inv-chips-cat-wrap");
-  if (chips) chips.style.display = vistaAgrupadaInv ? "none" : "flex";
+  if (chips) chips.style.display = (vistaAgrupadaInv || filtroGrupoInv === "fert") ? "none" : "flex";
   renderInventarioTabla();
 }
 
@@ -11008,6 +11022,7 @@ function renderInventarioTabla() {
   const verCod = puedeVerCodigoInternoInv();
   const colCount = (verCod ? 6 : 5) + bodegasVisiblesInv().length;
   let data = productosInv.filter(p => {
+    if (!enGrupoInv(p)) return false;
     const catOk = filtroCategoriaInv === "Todos" || p.categoria === filtroCategoriaInv;
     const busOk = !busquedaInv || p.nombre.toLowerCase().includes(busquedaInv) || (p.ingredienteActivo||"").toLowerCase().includes(busquedaInv) || (verCod && (p.codigoInterno||"").toLowerCase().includes(busquedaInv));
     const stockOk = (!soloConStockInv || stockTotalInv(p) > 0) && (!filtroBodegaInv || stockInv(p, filtroBodegaInv) > 0);
@@ -11511,10 +11526,11 @@ function renderItemsIngresoInv() {
   if (!cont) return;
   cont.innerHTML = itemsIngresoInv.map((it, idx) => {
     const enInventario = it.nombre && productosInv.some(p => p.nombre.toLowerCase() === it.nombre.toLowerCase());
-    return `<div class="config-item" style="flex-direction:column;align-items:stretch;gap:8px">
+    return `<div class="config-item" style="flex-direction:column;align-items:stretch;gap:8px${it._ia ? ';border-left:4px solid #10B981' : ''}">
+      ${it._ia ? '<div style="font-size:10px;color:#047857">✨ leído del documento: verifícalo</div>' : ''}
       <div style="display:flex;gap:8px;align-items:flex-start">
         <div style="flex:1;position:relative">
-          <input type="text" id="inv-item-nombre-${idx}" value="${it.nombre}" placeholder="Nombre del producto" oninput="onNombreItemIngresoInvChange(${idx})" autocomplete="off">
+          <input type="text" id="inv-item-nombre-${idx}" value="${escA(it.nombre)}" placeholder="Nombre del producto" oninput="onNombreItemIngresoInvChange(${idx})" autocomplete="off">
           <div id="inv-item-autocomplete-${idx}" style="position:absolute;z-index:10;background:var(--blanco);width:100%;box-shadow:0 8px 24px rgba(0,0,0,.15);border-radius:6px"></div>
           ${it.nombre ? `<div style="font-size:10px;margin-top:3px;color:${enInventario?"var(--verde)":"#B45309"}">${enInventario?"✓ Ya está en inventario (suma stock)":"⚠️ Producto nuevo — quedará pendiente de registrar"}</div>` : ""}
         </div>
@@ -11523,7 +11539,7 @@ function renderItemsIngresoInv() {
       <div class="grid-2" style="grid-template-columns:1fr 1fr 1fr;gap:8px">
         <div class="field" style="margin-bottom:0"><label>Cantidad</label><input type="number" value="${it.cantidad}" oninput="actualizarItemIngresoInv(${idx},'cantidad',Number(this.value))"></div>
         <div class="field" style="margin-bottom:0"><label>Unidad</label><div class="select-wrapper"><select onchange="actualizarItemIngresoInv(${idx},'unidad',this.value)">${UNIDADES_INV.map(u=>`<option ${u===it.unidad?"selected":""}>${u}</option>`).join("")}</select></div></div>
-        <div class="field" style="margin-bottom:0"><label>Valor neto unit. $</label><input type="number" value="${it.precioUnitario||0}" oninput="actualizarItemIngresoInv(${idx},'precioUnitario',Number(this.value))"></div>
+        <div class="field" style="margin-bottom:0"><label${it._ia && !(it.precioUnitario > 0) ? ' style="color:#B91C1C"' : ''}>Valor neto unit. $${it._ia && !(it.precioUnitario > 0) ? ' (falta)' : ''}</label><input type="number" value="${it.precioUnitario||0}" oninput="actualizarItemIngresoInv(${idx},'precioUnitario',Number(this.value))"></div>
       </div>
     </div>`;
   }).join("");
@@ -11559,7 +11575,44 @@ window.elegirSugerenciaItemInv = function(idx, nombre) {
 let fotosIngresoInv = [];
 window.renderFotosIngresoInv = function() {
   const c = document.getElementById('inv-ingreso-fotos'); if (!c) return;
+  { const b = document.getElementById('btn-leer-doc-ia'); if (b) b.style.display = fotosIngresoInv.length ? '' : 'none'; }
   c.innerHTML = fotosIngresoInv.map((f, i) => `<div style="position:relative"><img src="${f}" style="width:72px;height:72px;object-fit:cover;border-radius:8px"><span onclick="ingresoFotoQuitar(${i})" style="position:absolute;top:-6px;right:-6px;background:#B91C1C;color:#fff;border-radius:50%;width:20px;height:20px;text-align:center;line-height:20px;font-size:12px;cursor:pointer">✕</span></div>`).join('');
+}
+// ── Lectura del documento con IA: rellena el formulario; las personas confirman, corrigen y completan ──
+const URL_LECTOR_DOC = '/api/leer-documento';
+let camposIAIngreso = { items: [] }; // índices de ítems leídos por IA
+window.leerDocumentoIngresoInv = async function() {
+  if (!fotosIngresoInv.length) { toast('Primero agrega la foto del documento', false); return; }
+  if (!sesionPinIA) { sesionPinIA = (prompt('Ingresa tu PIN para usar la lectura con IA') || '').trim(); if (!sesionPinIA) return; }
+  const btn = document.getElementById('btn-leer-doc-ia'), aviso = document.getElementById('inv-ingreso-ia-aviso');
+  btn.disabled = true; btn.textContent = '⏳ Leyendo el documento… (unos segundos)';
+  aviso.innerHTML = '';
+  try {
+    const resp = await fetch(URL_LECTOR_DOC, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ usuario: currentUser, pin: sesionPinIA, imagenes: fotosIngresoInv }) });
+    if (resp.status === 404) throw new Error('La lectura automática todavía no está activada en este sitio.');
+    const d = await resp.json().catch(() => ({}));
+    if (resp.status === 401) { sesionPinIA = ''; throw new Error('PIN no válido para la lectura con IA'); }
+    if (!resp.ok || !d.ok) throw new Error(d.error || 'No se pudo leer el documento');
+    const doc_ = d.documento || {};
+    if (doc_.legible === false || !(doc_.items || []).length) { aviso.innerHTML = '<div style="color:#B91C1C;font-size:12px;margin-top:6px">No se pudo leer el documento. Prueba con una foto más nítida y de frente, o llena los campos a mano.</div>'; return; }
+    const norm = normNom;
+    const vacios = [];
+    const setSiVacio = (id, v, etiqueta) => { const el = document.getElementById(id); if (!el) return; if (v && !el.value.trim()) el.value = v; else if (!v) vacios.push(etiqueta); };
+    setSiVacio('inv-ingreso-proveedor', (doc_.proveedor || '').trim(), 'proveedor');
+    setSiVacio('inv-ingreso-nrodoc', String(doc_.numero_documento || '').trim(), 'N° de documento');
+    itemsIngresoInv = doc_.items.map(it => {
+      const nom = String(it.nombre_comercial || '').trim(), n = norm(nom);
+      const exacto = productosInv.find(p => norm(p.nombre) === n) || productosInv.find(p => n.length > 3 && (norm(p.nombre).includes(n) || n.includes(norm(p.nombre))));
+      return { nombre: exacto ? exacto.nombre : nom, cantidad: Number(it.cantidad) || 1, unidad: UNIDADES_INV.includes(it.unidad) ? it.unidad : ((exacto && exacto.unidad) || 'L'), precioUnitario: Number(it.valor_neto_unitario) || 0, _ia: true, _unidadIA: UNIDADES_INV.includes(it.unidad) };
+    });
+    renderItemsIngresoInv();
+    const sinPrecio = itemsIngresoInv.filter(i => !(i.precioUnitario > 0)).length;
+    aviso.innerHTML = `<div style="background:#ECFDF5;color:#047857;border-radius:8px;padding:8px 10px;font-size:12px;margin-top:8px">✨ Leí ${itemsIngresoInv.length} producto(s)${doc_.fecha ? ' · fecha del documento ' + escA(doc_.fecha) : ''}${doc_.total_neto ? ' · total neto leído $' + Math.round(doc_.total_neto).toLocaleString('es-CL') : ''}.
+      <strong>Revisa cada dato, corrige lo que esté mal y completa lo que falte</strong> antes de confirmar.
+      ${vacios.length ? '<br>No pude leer: ' + vacios.join(', ') + '.' : ''}${sinPrecio ? `<br>⚠️ ${sinPrecio} producto(s) sin valor neto.` : ''}${doc_.observaciones ? '<br>Nota de la lectura: ' + escA(doc_.observaciones) : ''}</div>`;
+    toast('✓ Documento leído: revisa y confirma', true);
+  } catch (e) { aviso.innerHTML = `<div style="color:#B91C1C;font-size:12px;margin-top:6px">${escA(e.message)}</div>`; toast(e.message, false); }
+  finally { btn.disabled = false; btn.textContent = '✨ Leer el documento y rellenar los campos'; }
 }
 window.ingresoFotoQuitar = i => { fotosIngresoInv.splice(i, 1); renderFotosIngresoInv(); }
 window.ingresoFotoElegir = async function(inp) {
@@ -11610,7 +11663,7 @@ window.confirmarIngresoInv = async function() {
   const proveedor = document.getElementById("inv-ingreso-proveedor").value.trim();
   const nroDocumento = document.getElementById("inv-ingreso-nrodoc").value.trim();
   const bodegaDestino = document.getElementById("inv-ingreso-bodega").value;
-  const items = itemsIngresoInv.filter(it => it.nombre && it.nombre.trim() && it.cantidad > 0);
+  const items = itemsIngresoInv.filter(it => it.nombre && it.nombre.trim() && it.cantidad > 0).map(it => ({ nombre: it.nombre, cantidad: it.cantidad, unidad: it.unidad, precioUnitario: it.precioUnitario || 0 }));
   if (!nroDocumento) { toast("Ingresa el N° de factura o guía de despacho (es la referencia del valor). Si solo devuelves producto a la bodega, usa ↩️ Devolución", false); return; }
   if (!items.length) { toast("Agrega al menos un producto con nombre y cantidad", false); return; }
   const conocidos = items.filter(it => productosInv.some(p => p.nombre.toLowerCase() === it.nombre.trim().toLowerCase()));
@@ -11629,6 +11682,7 @@ window.confirmarIngresoInv = async function() {
       fecha: new Date().toISOString(), ts: Date.now(), por: currentUser || "",
     });
     fotosIngresoInv = []; renderFotosIngresoInv(); cerrarModalInv('modal-inv-ingreso-confirm');
+    { const av = document.getElementById('inv-ingreso-ia-aviso'); if (av) av.innerHTML = ''; }
     itemsIngresoInv = [{nombre:'',cantidad:1,unidad:'L',precioUnitario:0}];
     document.getElementById("inv-ingreso-proveedor").value = "";
     document.getElementById("inv-ingreso-nrodoc").value = "";
@@ -13481,7 +13535,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       </div>
 
       <div class="panel">
-        <div class="panel-title">🧪 Fertilizantes y elementos de la ley</div>
+        <div class="panel-title"><svg viewBox="0 0 32 32" width="1.8em" height="1.8em" style="vertical-align:-0.5em" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5h8l-1 3.5h-6z"/><path d="M11 7C7.5 9 6 12 6 16v10a2.5 2.5 0 0 0 2.5 2.5h15A2.5 2.5 0 0 0 26 26V16c0-4-1.5-7-5-9"/><text x="16" y="23.2" text-anchor="middle" font-size="8.6" font-weight="800" font-family="Arial,Helvetica,sans-serif" fill="currentColor" stroke="none">NPK</text></svg> Fertilizantes y elementos de la ley</div>
         <div class="hint" style="margin-bottom:10px;color:#1D4ED8">Los fertilizantes (con su ley y stock) se administran en <strong>Inventario</strong>, categoría "Fertilizante". Aquí quedan los elementos de la ley y los fertilizantes antiguos que no están en Inventario.</div>
         <div class="hint" style="margin-bottom:10px">Fertilizantes que aparecen para elegir al registrar una Fertilización en el Cuaderno de Campo. Agrega los que uses.</div>
         <div class="config-add">
@@ -13517,6 +13571,11 @@ tbody td{padding:10px 12px;vertical-align:middle;}
 
     <!-- INVENTARIO AGROQUÍMICOS -->
     <div id="tc-inv-inventario" class="tab-content">
+      <div style="display:flex;gap:8px;margin-bottom:12px" id="inv-grupo-selector">
+        <button type="button" class="btn btn-secondary" style="flex:1;justify-content:center;padding:12px 6px" data-g="agro" onclick="setGrupoInv('agro')">🧪 Agroquímicos</button>
+        <button type="button" class="btn btn-secondary" style="flex:1;justify-content:center;padding:12px 6px" data-g="fert" onclick="setGrupoInv('fert')"><svg viewBox="0 0 32 32" width="1.8em" height="1.8em" style="vertical-align:-0.5em" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5h8l-1 3.5h-6z"/><path d="M11 7C7.5 9 6 12 6 16v10a2.5 2.5 0 0 0 2.5 2.5h15A2.5 2.5 0 0 0 26 26V16c0-4-1.5-7-5-9"/><text x="16" y="23.2" text-anchor="middle" font-size="8.6" font-weight="800" font-family="Arial,Helvetica,sans-serif" fill="currentColor" stroke="none">NPK</text></svg> Fertilizantes</button>
+        <button type="button" class="btn btn-verde" style="flex:1;justify-content:center;padding:12px 6px" data-g="ambos" onclick="setGrupoInv('ambos')">📦 Ambos</button>
+      </div>
       <div class="stats-grid" style="grid-template-columns:repeat(4,1fr)">
         <div class="stat-card"><div class="stat-label">Productos</div><div class="stat-value" id="inv-stat-total">0</div></div>
         <div class="stat-card"><div class="stat-label">Alertas</div><div class="stat-value" id="inv-stat-alertas" style="color:var(--amarillo)">0</div></div>
@@ -13579,6 +13638,8 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         <div class="field"><label>📷 Foto de la factura o guía (opcional, hasta 3)</label>
           <label class="btn btn-secondary" style="width:100%;justify-content:center;cursor:pointer">📷 Tomar o elegir foto<input type="file" accept="image/*" multiple style="display:none" onchange="ingresoFotoElegir(this)"></label>
           <div id="inv-ingreso-fotos" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px"></div>
+          <button type="button" class="btn btn-verde" id="btn-leer-doc-ia" style="width:100%;justify-content:center;margin-top:8px;display:none" onclick="leerDocumentoIngresoInv()">✨ Leer el documento y rellenar los campos</button>
+          <div id="inv-ingreso-ia-aviso"></div>
           <div class="hint" style="margin-top:6px">La foto queda guardada como respaldo del ingreso. Los productos, cantidades y valores se anotan abajo y se confirman antes de guardar.</div></div>
         <div class="field"><label>Recibe en bodega (opcional)</label><div class="select-wrapper"><select id="inv-ingreso-recibe"></select></div></div>
         <div id="inv-items-ingreso"></div>
