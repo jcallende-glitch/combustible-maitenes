@@ -7,6 +7,7 @@
 
 const FIRESTORE_PIN_URL = 'https://firestore.googleapis.com/v1/projects/combustible-los-maitenes/databases/(default)/documents/config/pines?key=AIzaSyAVsios3N97MQVPJLC94qEOXGJNmKzK9RI';
 const MODELO = 'claude-sonnet-5-5';
+// Sonnet 5.5 no acepta temperature ni tool_choice forzado (tool/any): se usa tool_choice auto + instrucción en el prompt.
 const MAX_BYTES_TOTAL = 6 * 1024 * 1024;
 
 const HERRAMIENTA = {
@@ -69,7 +70,7 @@ export const config = { path: '/api/leer-documento' };
 
 export default async function handler(request) {
   if (request.method !== 'POST') return json({ error: 'Método no permitido' }, 405);
-  const env = { ANTHROPIC_API_KEY: Netlify.env.get('ANTHROPIC_API_KEY'), ADMIN_PIN: Netlify.env.get('ADMIN_PIN') };
+  const env = { ANTHROPIC_API_KEY: (Netlify.env.get('ANTHROPIC_API_KEY') || '').trim(), ADMIN_PIN: (Netlify.env.get('ADMIN_PIN') || '').trim() };
   if (!env.ANTHROPIC_API_KEY) return json({ error: 'La lectura automática no está configurada (falta la clave de IA).' }, 503);
   let body;
   try { body = await request.json(); } catch (e) { return json({ error: 'Solicitud inválida' }, 400); }
@@ -91,12 +92,20 @@ export default async function handler(request) {
     resp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-api-key': env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({ model: MODELO, max_tokens: 3000, temperature: 0, tools: [HERRAMIENTA], tool_choice: { type: 'tool', name: 'registrar_documento' }, messages: [{ role: 'user', content: contenido }] }),
+      body: JSON.stringify({ model: MODELO, max_tokens: 6000, thinking: { type: 'between_tools' }, tools: [HERRAMIENTA], tool_choice: { type: 'auto' }, messages: [{ role: 'user', content: contenido }] }),
     });
   } catch (e) { return json({ error: 'No se pudo contactar el servicio de IA' }, 502); }
-  if (!resp.ok) return json({ error: 'El servicio de IA respondió con error (' + resp.status + ')' }, 502);
+  if (!resp.ok) {
+    let detalle = '';
+    try { const e = await resp.json(); detalle = (e && e.error && e.error.message) ? ': ' + e.error.message : ''; } catch (e) {}
+    return json({ error: 'El servicio de IA respondió con error (' + resp.status + ')' + detalle }, 502);
+  }
   const data = await resp.json();
-  const uso = (data.content || []).find(b => b.type === 'tool_use');
-  if (!uso) return json({ error: 'No se pudo leer el documento' }, 502);
-  return json({ ok: true, documento: uso.input });
+  const uso = (data.content || []).find(b => b.type === 'tool_use' && b.name === 'registrar_documento');
+  if (uso) return json({ ok: true, documento: uso.input });
+  // Respaldo: si el modelo respondió con texto en vez de usar la herramienta, intenta extraer el JSON.
+  const texto = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
+  const m = texto.match(/\{[\s\S]*\}/);
+  if (m) { try { const doc = JSON.parse(m[0]); if (doc && Array.isArray(doc.items)) return json({ ok: true, documento: doc }); } catch (e) {} }
+  return json({ error: 'No se pudo leer el documento' }, 502);
 }
