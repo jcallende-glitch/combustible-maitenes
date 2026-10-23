@@ -1436,6 +1436,35 @@ let envivoMapa = null, envivoCapa = null, envivoUnsub = null, envivoDatos = [], 
 // Equipos con JDLink: última ubicación desde Operations Center (cada 2 min mientras la hoja está abierta)
 let envivoJD = [], envivoJDTimer = null, envivoJDEstado = '';
 let envivoRutaCapa = null, envivoRutaEq = null, envivoRutaDatos = null, envivoAncho = null, envivoRutaDias = 0;
+// Fuente de la ubicación: 'auto' (el dato más reciente), 'jdlink' o 'celular'. Se puede fijar en general y por equipo.
+// Si el equipo no tiene la fuente elegida, se usa la otra. Se recuerda en este teléfono/computador.
+let envivoFuentePref = 'auto', envivoFuenteEq = {};
+try { envivoFuentePref = localStorage.getItem('envivoFuentePref') || 'auto'; envivoFuenteEq = JSON.parse(localStorage.getItem('envivoFuenteEq') || '{}') || {}; } catch (e) {}
+const envivoPrefDe = eq => envivoFuenteEq[eq] || envivoFuentePref;
+const envivoNomFuente = f => f === 'jdlink' ? '📡 JDLink' : f === 'celular' ? '📱 Celular' : 'Automática';
+function envivoGuardarFuente() { try { localStorage.setItem('envivoFuentePref', envivoFuentePref); localStorage.setItem('envivoFuenteEq', JSON.stringify(envivoFuenteEq)); } catch (e) {} }
+function renderEnvivoFuenteBar() {
+  const bar = document.getElementById('envivo-fuente-bar'); if (!bar) return;
+  const nEq = Object.keys(envivoFuenteEq).length;
+  bar.innerHTML = `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:12px">
+    <span style="font-weight:700">Fuente de la ubicación:</span>
+    ${['auto', 'jdlink', 'celular'].map(f => `<button class="btn-pin" style="font-size:12px;padding:4px 10px${envivoFuentePref === f ? ';background:var(--amarillo);color:#111;font-weight:700' : ''}" onclick="envivoSetFuente('${f}')">${envivoNomFuente(f)}</button>`).join('')}
+  </div>
+  <div style="font-size:11px;color:var(--acero);margin-top:3px">${envivoFuentePref === 'auto' ? 'Automática: usa el dato más reciente.' : 'Prefiere ' + envivoNomFuente(envivoFuentePref) + '.'} Si un equipo no tiene esa fuente, se usa la otra.${nEq ? ` · ${nEq} equipo(s) con fuente propia (${Object.entries(envivoFuenteEq).map(([e, f]) => escA(e) + ': ' + (f === 'jdlink' ? '📡' : '📱')).join(', ')}) <a href="#" onclick="event.preventDefault();envivoQuitarFuentesEq()">quitar</a>` : ''}</div>`;
+}
+window.envivoSetFuente = function(f) {
+  envivoFuentePref = f; envivoGuardarFuente(); renderEnvivoFuenteBar(); renderEnVivo();
+  if (envivoRutaEq) envivoCargarRuta(envivoRutaEq);
+}
+window.envivoFuenteEquipo = function(eq, f) {
+  if (f) envivoFuenteEq[eq] = f; else delete envivoFuenteEq[eq];
+  envivoGuardarFuente(); renderEnvivoFuenteBar(); renderEnVivo();
+  if (envivoRutaEq === eq) envivoCargarRuta(eq);
+}
+window.envivoQuitarFuentesEq = function() {
+  envivoFuenteEq = {}; envivoGuardarFuente(); renderEnvivoFuenteBar(); renderEnVivo();
+  if (envivoRutaEq) envivoCargarRuta(envivoRutaEq);
+}
 async function traerUbicacionesJD() {
   try {
     const token = await getTokenValido();
@@ -1501,6 +1530,7 @@ window.abrirEnVivo = function() {
   }
   setTimeout(() => envivoMapa.invalidateSize(), 150);
   envivoEncuadrado = false;
+  renderEnvivoFuenteBar();
   if (!envivoUnsub) envivoUnsub = onSnapshot(collection(db, 'ubicacion_actual'), snap => {
     envivoDatos = snap.docs.map(d => d.data()).filter(x => x.lat != null);
     renderEnVivo();
@@ -1527,8 +1557,15 @@ function renderEnVivo() {
   envivoCapa.clearLayers();
   const ahora = Date.now();
   const celu = envivoDatos.map(x => ({ ...x, fuente: 'celular' }));
-  const jd = envivoJD.filter(j => !celu.some(c => c.equipo === j.equipo && (c.ts || 0) >= (j.ts || 0)));
-  const lista = [...celu.filter(c => !jd.some(j => j.equipo === c.equipo)), ...jd].sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  const lista = [];
+  new Set([...celu.map(c => c.equipo), ...envivoJD.map(j => j.equipo)]).forEach(eq => {
+    const cs = celu.filter(c => c.equipo === eq), j = envivoJD.find(x => x.equipo === eq);
+    const cMax = cs.reduce((m, c) => Math.max(m, c.ts || 0), 0), pref = envivoPrefDe(eq), ambas = !!(cs.length && j);
+    const usarJD = !cs.length ? true : !j ? false : pref === 'jdlink' ? true : pref === 'celular' ? false : (j.ts || 0) > cMax;
+    if (usarJD) lista.push({ ...j, _ambas: ambas, _pref: pref }); else cs.forEach(c => lista.push({ ...c, _ambas: ambas, _pref: pref }));
+  });
+  lista.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  const otraFuente = x => x._ambas ? ` <span style="color:var(--acero)">· también ${x.fuente === 'jdlink' ? '📱' : '📡'}</span>` : '';
   lista.forEach(x => {
     const viejo = ahora - (x.ts || 0) > 10 * 60000;
     const col = viejo ? '#9CA3AF' : x.aplicando ? '#22C55E' : (x.kmh || 0) >= 1 ? '#3B82F6' : '#E5E7EB';
@@ -1537,7 +1574,7 @@ function renderEnVivo() {
       : `<div style="width:18px;height:18px;border-radius:50%;background:${col};border:3px solid #111"></div>`;
     const icon = L.divIcon({ className: '', html: `<div style="display:flex;flex-direction:column;align-items:center">${flecha}<div style="background:rgba(0,0,0,.75);color:#fff;font-size:11px;font-weight:700;padding:1px 6px;border-radius:6px;white-space:nowrap;margin-top:2px">${x.equipo}${!viejo && x.kmh != null ? ` · ${Math.round(x.kmh)} km/h` : ''}</div></div>`, iconSize: [120, 50], iconAnchor: [60, 15] });
     L.marker([x.lat, x.lng], { icon }).addTo(envivoCapa).bindPopup(
-      `<strong>${x.equipo}</strong> · ${x.operador || ''}<br>${haceTexto(ahora - (x.ts || 0))}${x.kmh != null ? ` · ${x.kmh} km/h` : ''}<br>${x.fuente === 'jdlink' ? '📡 JDLink' : (x.aplicando ? '🟢 Aplicando' : 'Sin aplicar')}${x.potrero ? ` en ${x.potrero}` : ''}${x.aqui && x.aqui !== x.potrero ? `<br>Está en: ${x.aqui}` : ''}${x.bateria != null ? `<br>🔋 ${x.bateria}%${x.llave ? ' (cargando)' : ''}` : ''}`);
+      `<strong>${x.equipo}</strong> · ${x.operador || ''}<br>${haceTexto(ahora - (x.ts || 0))}${x.kmh != null ? ` · ${x.kmh} km/h` : ''}<br>${x.fuente === 'jdlink' ? '📡 JDLink' : '📱 Celular · ' + (x.aplicando ? '🟢 Aplicando' : 'Sin aplicar')}${otraFuente(x)}${x.potrero ? ` en ${x.potrero}` : ''}${x.aqui && x.aqui !== x.potrero ? `<br>Está en: ${x.aqui}` : ''}${x.bateria != null ? `<br>🔋 ${x.bateria}%${x.llave ? ' (cargando)' : ''}` : ''}`);
   });
   if (!envivoEncuadrado && lista.some(x => ahora - (x.ts || 0) < 12 * 3600000)) {
     envivoEncuadrado = true;
@@ -1548,7 +1585,7 @@ function renderEnVivo() {
   document.getElementById('envivo-lista').innerHTML = lista.length ? `<table style="width:100%;min-width:0;font-size:13px;border-collapse:collapse">
     <thead><tr><th style="text-align:left;padding:6px">Equipo</th><th style="text-align:left;padding:6px">Estado</th><th style="text-align:left;padding:6px">Dónde</th><th style="text-align:left;padding:6px">Último dato</th></tr></thead><tbody>
     ${lista.map(x => { const viejo = ahora - (x.ts || 0) > 10 * 60000; return `<tr style="cursor:pointer;border-top:1px solid var(--borde)" onclick="envivoIr(${x.lat},${x.lng});envivoVerRuta('${String(x.equipo).replace(/'/g, "\\'")}')">
-      <td style="padding:6px"><strong>${x.equipo}</strong><div style="font-size:11px;color:var(--acero)">${x.fuente === 'jdlink' ? '📡 JDLink' : '📱 ' + (x.operador || '')}</div></td>
+      <td style="padding:6px"><strong>${x.equipo}</strong><div style="font-size:11px;color:var(--acero)">${x.fuente === 'jdlink' ? '📡 JDLink' : '📱 ' + (x.operador || '')}${otraFuente(x)}${envivoFuenteEq[x.equipo] ? ' · 📌' : ''}</div></td>
       <td style="padding:6px">${viejo ? '⚫ sin señal' : x.aplicando ? '🟢 aplicando' : (x.kmh || 0) >= 1 ? `🔵 ${x.kmh} km/h` : '⚪ detenido'}</td>
       <td style="padding:6px">${x.aqui || '—'}${x.potrero && x.potrero !== x.aqui ? `<div style="font-size:11px;color:var(--acero)">aplicación: ${x.potrero}</div>` : ''}</td>
       <td style="padding:6px;color:${viejo ? '#B91C1C' : 'inherit'}">${haceTexto(ahora - (x.ts || 0))}</td></tr>`; }).join('')}
@@ -1571,47 +1608,53 @@ function envivoAnchoPotrero(nombre) {
   return envivoAncho || 5;
 }
 let envivoFuenteN = null;
-async function envivoPuntosDelDia(eq, dias) {
-  envivoFuenteN = null;
-  const desde = new Date(); desde.setHours(0, 0, 0, 0); desde.setDate(desde.getDate() - (dias || 0));
-  const t0 = desde.getTime(), t1 = Date.now();
-  let puntos = [], fuente = null;
+async function envivoPuntosCelular(eq, t0, t1) {
   try {
     const d0 = envivoDiaStr(t0 - 86400000), d1 = envivoDiaStr(t1);
     const snap = await getDocs(query(collection(db, 'recorridos_tractor', eq.replace(/\s+/g, '_'), 'lotes'), where('dia', '>=', d0), where('dia', '<=', d1)));
     let pts = [];
     snap.docs.forEach(d => (d.data().puntos || []).forEach(p => pts.push(p)));
     pts = pts.filter(p => p.t >= t0 && p.t <= t1 && (p.acc == null || p.acc <= 40)).sort((a, b) => a.t - b.t);
-    if (pts.length) { puntos = pts.map(p => ({ t: p.t, lat: p.lat, lng: p.lng })); fuente = 'celular'; }
-  } catch (e) { console.warn('ruta celular', e); }
-  if (!fuente) {
-    const it = envivoJD.find(j => j.equipo === eq && j._m);
-    if (it) {
-      try {
-        const m = it._m, id = m.organizationRole?.principalId || m.principalId || m.id, links = m.links || [];
-        const lBc = links.find(l => /breadcrumb/i.test(l.rel || ''));
-        const diag = { llamadas: [], errores: {}, muestras: {} };
-        let pj = [], nBc = 0, nLoc = 0;
-        for (let a0 = t0; a0 < t1; a0 += 24 * 3600000) { // JDLink: de a 24 h
-          const r = await jdpTraerRango(lBc ? lBc.uri : `/machines/${id}/breadcrumbs`, a0, Math.min(t1, a0 + 24 * 3600000), diag, 'bc');
-          if (r.ok) { const x = jdpExtraerPuntos(r.valores); nBc += x.length; pj = pj.concat(x); }
-        }
-        // También el historial de ubicaciones: se juntan las dos fuentes (sin repetir) para cubrir huecos
-        const lLoc = links.find(l => /locationhistory/i.test(l.rel || ''));
-        for (let a0 = t0; a0 < t1; a0 += 24 * 3600000) {
-          try {
-            const r2 = await jdpTraerRango(lLoc ? lLoc.uri : `/machines/${id}/locationHistory`, a0, Math.min(t1, a0 + 24 * 3600000), diag, 'loc');
-            if (r2.ok) { const x = jdpExtraerPuntos(r2.valores); nLoc += x.length; pj = pj.concat(x); }
-          } catch (e) {}
-        }
-        envivoFuenteN = { bc: nBc, loc: nLoc, llam: diag.llamadas.length };
-        { const vistos = new Set(); pj = pj.filter(q => { const k = Math.round(q.t / 1000); if (vistos.has(k)) return false; vistos.add(k); return true; }); }
-        pj = pj.filter(p => p.t >= t0).sort((a, b) => a.t - b.t);
-        if (pj.length) { puntos = pj.map(p => ({ t: p.t, lat: p.lat, lng: p.lng })); fuente = 'jdlink'; }
-      } catch (e) { console.warn('ruta jdlink', e); }
+    return pts.map(p => ({ t: p.t, lat: p.lat, lng: p.lng }));
+  } catch (e) { console.warn('ruta celular', e); return []; }
+}
+async function envivoPuntosJD(eq, t0, t1) {
+  const it = envivoJD.find(j => j.equipo === eq && j._m);
+  if (!it) return [];
+  try {
+    const m = it._m, id = m.organizationRole?.principalId || m.principalId || m.id, links = m.links || [];
+    const lBc = links.find(l => /breadcrumb/i.test(l.rel || ''));
+    const diag = { llamadas: [], errores: {}, muestras: {} };
+    let pj = [], nBc = 0, nLoc = 0;
+    for (let a0 = t0; a0 < t1; a0 += 24 * 3600000) { // JDLink: de a 24 h
+      const r = await jdpTraerRango(lBc ? lBc.uri : `/machines/${id}/breadcrumbs`, a0, Math.min(t1, a0 + 24 * 3600000), diag, 'bc');
+      if (r.ok) { const x = jdpExtraerPuntos(r.valores); nBc += x.length; pj = pj.concat(x); }
     }
+    // También el historial de ubicaciones: se juntan las dos fuentes (sin repetir) para cubrir huecos
+    const lLoc = links.find(l => /locationhistory/i.test(l.rel || ''));
+    for (let a0 = t0; a0 < t1; a0 += 24 * 3600000) {
+      try {
+        const r2 = await jdpTraerRango(lLoc ? lLoc.uri : `/machines/${id}/locationHistory`, a0, Math.min(t1, a0 + 24 * 3600000), diag, 'loc');
+        if (r2.ok) { const x = jdpExtraerPuntos(r2.valores); nLoc += x.length; pj = pj.concat(x); }
+      } catch (e) {}
+    }
+    envivoFuenteN = { bc: nBc, loc: nLoc, llam: diag.llamadas.length };
+    { const vistos = new Set(); pj = pj.filter(q => { const k = Math.round(q.t / 1000); if (vistos.has(k)) return false; vistos.add(k); return true; }); }
+    pj = pj.filter(p => p.t >= t0).sort((a, b) => a.t - b.t);
+    return pj.map(p => ({ t: p.t, lat: p.lat, lng: p.lng }));
+  } catch (e) { console.warn('ruta jdlink', e); return []; }
+}
+async function envivoPuntosDelDia(eq, dias) {
+  envivoFuenteN = null;
+  const desde = new Date(); desde.setHours(0, 0, 0, 0); desde.setDate(desde.getDate() - (dias || 0));
+  const t0 = desde.getTime(), t1 = Date.now();
+  const pref = envivoPrefDe(eq);
+  const orden = pref === 'jdlink' ? ['jdlink', 'celular'] : ['celular', 'jdlink']; // automática: primero el celular (más puntos), si no hay, JDLink
+  for (const f of orden) {
+    const puntos = f === 'celular' ? await envivoPuntosCelular(eq, t0, t1) : await envivoPuntosJD(eq, t0, t1);
+    if (puntos.length) return { puntos, fuente: f, pref, t0, t1 };
   }
-  return { puntos, fuente, t0, t1 };
+  return { puntos: [], fuente: null, pref, t0, t1 };
 }
 function envivoCalcular(puntos) {
   const pots = (potrerosConfig || []).filter(p => poligonoValido(p.poligono)).map(p => ({ nombre: p.nombre, poly: jdpNormPoligono(p.poligono) }));
@@ -1741,15 +1784,20 @@ const envivoH = ms => { const m = Math.round(ms / 60000); return m >= 60 ? `${Ma
 function envivoRenderRuta() {
   const box = document.getElementById('envivo-ruta');
   if (!box || !envivoRutaDatos) return;
-  const { eq, puntos, fuente, dias } = envivoRutaDatos;
+  const { eq, puntos, fuente, dias, pref } = envivoRutaDatos;
   const f1 = n => n.toFixed(1).replace('.', ',');
+  const eqJs = String(eq).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  const tieneJD = envivoJD.some(j => j.equipo === eq && j._m), propia = envivoFuenteEq[eq] || '';
+  const fuenteEq = tieneJD ? `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px;font-size:11px"><span style="color:var(--acero)">Fuente para ${escA(eq)}:</span>
+      ${[['', 'Igual que arriba'], ['celular', '📱 Celular'], ['jdlink', '📡 JDLink']].map(([v, t]) => `<button class="btn-pin" style="font-size:11px;padding:3px 8px${propia === v ? ';background:var(--amarillo);color:#111;font-weight:700' : ''}" onclick="envivoFuenteEquipo('${eqJs}','${v}')">${t}</button>`).join('')}</div>` : '';
+  const respaldo = pref && pref !== 'auto' && fuente && fuente !== pref ? `<div style="font-size:11px;color:#B45309;margin-top:4px">No hay datos de ${envivoNomFuente(pref)} en este período: se muestra ${envivoNomFuente(fuente)}.</div>` : '';
   const fDia = ms => new Date(ms).toLocaleDateString('es-CL', { weekday: 'short', day: '2-digit', month: '2-digit' });
   const botones = `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px">
       <button class="btn-pin" style="font-size:12px;padding:4px 10px" onclick="envivoMasDias(1)" ${dias >= 7 ? 'disabled' : ''}>＋ Sumar día anterior</button>
       ${dias > 0 ? `<button class="btn-pin" style="font-size:12px;padding:4px 10px" onclick="envivoMasDias(-1)">− Quitar el más antiguo</button>` : ''}
       <span style="font-size:11px;color:var(--acero)">${dias === 0 ? 'Solo hoy' : 'Hoy + ' + dias + (dias === 1 ? ' día atrás' : ' días atrás')} (máx. 7)</span></div>`;
   if (!puntos.length) {
-    box.innerHTML = `<div style="background:var(--fondo);border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:13px"><strong>${eq}</strong>: sin recorrido en ${dias === 0 ? 'hoy' : 'este período'}. <button class="btn-pin" style="font-size:11px;padding:3px 8px" onclick="envivoCerrarRuta()">Cerrar</button>${botones}</div>`;
+    box.innerHTML = `<div style="background:var(--fondo);border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:13px"><strong>${eq}</strong>: sin recorrido en ${dias === 0 ? 'hoy' : 'este período'}. <button class="btn-pin" style="font-size:11px;padding:3px 8px" onclick="envivoCerrarRuta()">Cerrar</button>${botones}${fuenteEq}</div>`;
     return;
   }
   // un cálculo por día calendario; el total suma todos
@@ -1777,8 +1825,10 @@ function envivoRenderRuta() {
       <button class="btn-pin" style="font-size:11px;padding:3px 8px" onclick="envivoCerrarRuta()">Cerrar</button></div>
     <div style="font-size:22px;font-weight:800;margin:4px 0">${haH != null ? f1(haH) + ' ha/h' : '— ha/h'}<span style="font-size:12px;font-weight:400;color:var(--acero)"> de avance, sin contar paradas</span></div>
     <div style="font-size:12px;color:var(--acero)">⏱ Trabajando ${envivoH(tot.trabajo)} · ⚪ detenido ${envivoH(tot.detenido)} · 🚜 traslados ${envivoH(tot.mov - tot.trabajo)}<br>≈ <strong style="color:var(--negro)">${f1(tot.ha)} ha</strong> en ${f1(tot.kmTrabajo)} km de trabajo · ${f1(tot.km)} km recorridos</div>
+    ${respaldo}
     ${botones}
-    <div style="font-size:11px;color:var(--acero);margin-top:4px">🔎 Datos recibidos: ${diagTxt}</div>
+    ${fuenteEq}
+    <div style="font-size:11px;color:var(--acero);margin-top:4px">🔎 Datos recibidos (${envivoNomFuente(fuente)}): ${diagTxt}</div>
     ${filasDia ? `<table style="width:100%;min-width:0;font-size:12px;margin-top:6px;border-collapse:collapse"><thead><tr><th style="text-align:left;padding:3px 4px">Día</th><th style="${th}">Trabajando</th><th style="${th}">Detenido</th><th style="${th}">ha</th><th style="${th}">ha/h</th></tr></thead><tbody>${filasDia}</tbody></table>` : ''}
     ${filasPot ? `<table style="width:100%;min-width:0;font-size:12px;margin-top:6px;border-collapse:collapse"><thead><tr><th style="text-align:left;padding:3px 4px">Potrero · ancho${dd.length > 1 ? ' (todos los días)' : ''}</th><th style="${th}">Tiempo</th><th style="${th}">ha</th><th style="${th}">ha/h</th></tr></thead><tbody>${filasPot}</tbody></table>` : ''}
     <div style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--acero);margin-top:6px;flex-wrap:wrap">
@@ -1806,9 +1856,9 @@ async function envivoCargarRuta(eq) {
       try { const sz = await getDoc(doc(db, 'config', 'zonas_sin_cultivo')); if (sz.exists() && sz.data().anchosCultivo) envivoAnchosCultivo = sz.data().anchosCultivo; } catch (e) {}
     }
     const dias = envivoRutaDias;
-    const { puntos, fuente } = await envivoPuntosDelDia(eq, dias);
+    const { puntos, fuente, pref } = await envivoPuntosDelDia(eq, dias);
     if (envivoRutaEq !== eq || envivoRutaDias !== dias) return; // cambió mientras cargaba
-    envivoRutaDatos = { eq, puntos, fuente, dias };
+    envivoRutaDatos = { eq, puntos, fuente, dias, pref };
     envivoRenderRuta();
   } catch (e) { box.innerHTML = `<div style="color:#C0392B;font-size:13px;padding:8px">Error: ${e.message}</div>`; }
 }
@@ -10820,14 +10870,18 @@ function productoInvPorNombre(nombre) {
   return productosInv.find(p => normNom(p.nombre) === n) || productosInv.find(p => normNom(p.nombre).replace(/ /g, '') === nS)
     || productosInv.find(p => (p.nombresAnteriores || []).some(a => normNom(a) === n)) || null;
 }
-// Propone el nombre completo conservando cómo está escrito en el inventario: "Tiburón" + "TIBURON 500 SC" → "Tiburón 500 SC"
+// Palabras del documento que el nombre del inventario no tiene (ignora tildes, mayúsculas y errores de tipeo).
+function palabrasExtraDocInv(nombreInv, nombreDoc) {
+  const ti = normNom(nombreInv).split(' ').filter(Boolean);
+  return String(nombreDoc || '').trim().split(/\s+/).filter(t => {
+    const ks = normNom(t).split(' ').filter(Boolean);
+    return ks.length && !ks.every(k => ti.some(x => x === k || (k.length > 3 && levRatioInv(k, x) >= 0.75)));
+  });
+}
+// Nombre completo propuesto: el del inventario + lo que agrega el documento. "Linurex Tiburon" + "TIBURON 500 SC" → "Linurex Tiburon 500 SC"
 function nombreCompletoSugeridoInv(nombreInv, nombreDoc) {
-  const ti = normNom(nombreInv).split(' ').filter(Boolean), docTok = String(nombreDoc || '').trim().split(/\s+/);
-  const dn = docTok.map(t => normNom(t));
-  let k = 0, i = 0;
-  while (i < ti.length && k < docTok.length) { if (!dn[k]) { k++; continue; } if (dn[k] !== ti[i]) break; i++; k++; }
-  if (i === ti.length && k < docTok.length) return (nombreInv.trim() + ' ' + docTok.slice(k).join(' ')).trim();
-  return String(nombreDoc || '').trim();
+  const extra = palabrasExtraDocInv(nombreInv, nombreDoc);
+  return extra.length ? (String(nombreInv || '').trim() + ' ' + extra.join(' ')).trim() : String(nombreInv || '').trim();
 }
 // Devuelve [{p, s}] ordenado por parecido (s: 1 = igual, 0.92 = uno contiene al otro, resto = similitud).
 function similaresInv(nombre, max = 3) {
@@ -10856,7 +10910,7 @@ function estadoItemIngresoHtml(it, idx) {
     let renombre = '';
     if (it._nuevoNombreInv) {
       renombre = `<div style="font-size:11px;margin-top:4px;color:#1D4ED8">✏️ Al guardar, «${escA(p.nombre)}» pasará a llamarse <strong>«${escA(it._nuevoNombreInv)}»</strong> <a href="#" onclick="event.preventDefault();mantenerNombreItemInv(${idx})" style="color:var(--acero)">deshacer</a></div>`;
-    } else if (nomDoc && !it._nombreDecidido && normNom(nomDoc) !== normNom(p.nombre)) {
+    } else if (nomDoc && !it._nombreDecidido && palabrasExtraDocInv(p.nombre, nomDoc).length) {
       const sugerido = nombreCompletoSugeridoInv(p.nombre, nomDoc);
       renombre = `<div style="font-size:11px;margin-top:4px;color:var(--acero)">En el documento dice «${escA(nomDoc)}». ¿Cómo lo dejas en el inventario?</div>
         <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px">
@@ -14000,6 +14054,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
   </div>
   <div id="envivo-mapa" style="flex:1;min-height:0"></div>
   <div style="max-height:38vh;overflow:auto;background:var(--blanco);border-top:1px solid var(--borde);padding:8px 12px">
+    <div id="envivo-fuente-bar" style="margin-bottom:6px"></div>
     <div style="font-size:11px;color:var(--acero);margin-bottom:4px">🟢 aplicando · 🔵 en movimiento · ⚪ detenido · gris: sin datos hace más de 10 min. Toca un equipo para ir a él y ver su recorrido de hoy con las ha/h de avance.</div>
     <div id="envivo-ruta"></div>
     <div id="envivo-lista"></div>
