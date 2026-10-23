@@ -6826,7 +6826,7 @@ window.renderCostoInsumos = function() {
   const fAnio = document.getElementById('campo-filtro-anio')?.value || '';
   const base = (camposLaborPotrerosSel.length ? laboresCampoRegistros : laboresCampoTodos).filter(l => (!fAnio || l.anio === fAnio) && Array.isArray(l.productos) && l.productos.length && !l.pendiente);
   if (!base.length) { cont.innerHTML = ''; return; }
-  const inv = {}; productosInv.forEach(p => { inv[normNom(p.nombre)] = p; });
+  const inv = {}; productosInv.forEach(p => { inv[normNom(p.nombre)] = p; }); productosInv.forEach(p => (p.nombresAnteriores || []).forEach(a => { const k = normNom(a); if (k && !inv[k]) inv[k] = p; }));
   const pots = {}, sinPrecio = new Set(), sinDosis = new Set(), sinInv = new Set();
   base.forEach(l => {
     const ha = haDeLabor(l), key = l.lote ? l.potrero + SEP_LOTE + l.lote : l.potrero;
@@ -10801,6 +10801,104 @@ let busquedaInv = "";
 let soloConStockInv = false;
 let inventarioInicializado = false;
 let itemsIngresoInv = [{nombre:'',cantidad:1,unidad:'L',precioUnitario:0}];
+// ── Búsqueda de productos del inventario por nombre (sin tildes, mayúsculas ni signos) ──
+function levRatioInv(a, b) {
+  if (a === b) return 1;
+  if (!a.length || !b.length) return 0;
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    prev = cur;
+  }
+  return 1 - prev[b.length] / Math.max(a.length, b.length);
+}
+function productoInvPorNombre(nombre) {
+  const n = normNom(nombre);
+  if (!n) return null;
+  const nS = n.replace(/ /g, '');
+  return productosInv.find(p => normNom(p.nombre) === n) || productosInv.find(p => normNom(p.nombre).replace(/ /g, '') === nS)
+    || productosInv.find(p => (p.nombresAnteriores || []).some(a => normNom(a) === n)) || null;
+}
+// Propone el nombre completo conservando cómo está escrito en el inventario: "Tiburón" + "TIBURON 500 SC" → "Tiburón 500 SC"
+function nombreCompletoSugeridoInv(nombreInv, nombreDoc) {
+  const ti = normNom(nombreInv).split(' ').filter(Boolean), docTok = String(nombreDoc || '').trim().split(/\s+/);
+  const dn = docTok.map(t => normNom(t));
+  let k = 0, i = 0;
+  while (i < ti.length && k < docTok.length) { if (!dn[k]) { k++; continue; } if (dn[k] !== ti[i]) break; i++; k++; }
+  if (i === ti.length && k < docTok.length) return (nombreInv.trim() + ' ' + docTok.slice(k).join(' ')).trim();
+  return String(nombreDoc || '').trim();
+}
+// Devuelve [{p, s}] ordenado por parecido (s: 1 = igual, 0.92 = uno contiene al otro, resto = similitud).
+function similaresInv(nombre, max = 3) {
+  const n = normNom(nombre);
+  if (n.length < 3) return [];
+  const nS = n.replace(/ /g, ''), tok = n.split(' ').filter(t => t.length > 2);
+  return productosInv.map(p => {
+    const q = normNom(p.nombre), qS = q.replace(/ /g, '');
+    if (!q) return { p, s: 0 };
+    if (q === n || qS === nS) return { p, s: 1 };
+    if (n.length > 3 && q.length > 3 && (q.includes(n) || n.includes(q))) return { p, s: 0.92 };
+    const qt = q.split(' ').filter(t => t.length > 2);
+    const comunes = tok.filter(t => qt.includes(t)).length;
+    const porPalabras = (tok.length && qt.length) ? comunes / Math.min(tok.length, qt.length) * 0.85 : 0;
+    const primera = (tok[0] && qt[0]) ? levRatioInv(tok[0], qt[0]) * 0.85 : 0;
+    return { p, s: Math.max(levRatioInv(nS, qS), porPalabras, primera) };
+  }).filter(x => x.s >= 0.6).sort((a, b) => b.s - a.s).slice(0, max);
+}
+function estadoItemIngresoHtml(it, idx) {
+  if (!it.nombre || !it.nombre.trim()) return '';
+  const p = productoInvPorNombre(it.nombre);
+  const doc_ = it._nombreDoc && normNom(it._nombreDoc) !== normNom(it.nombre) ? `<div style="font-size:10px;color:var(--acero);margin-top:2px">En el documento: ${escA(it._nombreDoc)}</div>` : '';
+  if (p) {
+    const uni = p.unidad && it.unidad && p.unidad !== it.unidad ? `<div style="font-size:10px;margin-top:2px;color:#B45309">⚠️ En inventario se lleva en ${escA(p.unidad)}: revisa la unidad y la cantidad</div>` : '';
+    const nomDoc = (it._nombreDoc || '').trim();
+    let renombre = '';
+    if (it._nuevoNombreInv) {
+      renombre = `<div style="font-size:11px;margin-top:4px;color:#1D4ED8">✏️ Al guardar, «${escA(p.nombre)}» pasará a llamarse <strong>«${escA(it._nuevoNombreInv)}»</strong> <a href="#" onclick="event.preventDefault();mantenerNombreItemInv(${idx})" style="color:var(--acero)">deshacer</a></div>`;
+    } else if (nomDoc && !it._nombreDecidido && normNom(nomDoc) !== normNom(p.nombre)) {
+      const sugerido = nombreCompletoSugeridoInv(p.nombre, nomDoc);
+      renombre = `<div style="font-size:11px;margin-top:4px;color:var(--acero)">En el documento dice «${escA(nomDoc)}». ¿Cómo lo dejas en el inventario?</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px">
+          <button type="button" class="btn-secondary" style="padding:4px 10px;font-size:12px;width:auto" onclick="mantenerNombreItemInv(${idx})">Mantener «${escA(p.nombre)}»</button>
+          <button type="button" class="btn-secondary" style="padding:4px 10px;font-size:12px;width:auto" onclick="renombrarItemInv(${idx})">Cambiar a «${escA(sugerido)}»</button>
+        </div>`;
+    }
+    return `<div style="font-size:10px;margin-top:3px;color:var(--verde)">✓ Ya está en inventario${normNom(p.nombre) !== normNom(it.nombre) || p.nombre !== it.nombre ? ' como «' + escA(p.nombre) + '»' : ''} (suma stock)</div>${renombre || doc_}${uni}`;
+  }
+  const sug = similaresInv(it.nombre);
+  const botones = sug.length ? `<div style="font-size:11px;margin-top:4px;color:var(--acero)">¿Es alguno de estos del inventario?</div><div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px">${sug.map(x => `<button type="button" class="btn-secondary" style="padding:4px 10px;font-size:12px;width:auto" onmousedown="event.preventDefault()" onclick="usarProductoInvItem(${idx},'${x.p.id}')">📦 ${escA(x.p.nombre)}</button>`).join('')}</div>` : '';
+  return `${botones}${doc_}<div style="font-size:10px;margin-top:4px;color:#B45309">⚠️ ${sug.length ? 'Si no es ninguno, quedará' : 'Producto nuevo — quedará'} pendiente de registrar</div>`;
+}
+window.refrescarEstadoItemIngresoInv = function(idx) {
+  const el = document.getElementById('inv-item-estado-' + idx);
+  if (el && itemsIngresoInv[idx]) el.innerHTML = estadoItemIngresoHtml(itemsIngresoInv[idx], idx);
+}
+window.mantenerNombreItemInv = function(idx) {
+  const it = itemsIngresoInv[idx]; if (!it) return;
+  delete it._nuevoNombreInv;
+  it._nombreDecidido = true; // ya decidido: no vuelve a preguntar
+  renderItemsIngresoInv();
+}
+window.renombrarItemInv = function(idx) {
+  const it = itemsIngresoInv[idx]; if (!it) return;
+  const p = productoInvPorNombre(it.nombre); if (!p) return;
+  const nuevo = (prompt('Nuevo nombre del producto en el inventario (puedes corregirlo):', nombreCompletoSugeridoInv(p.nombre, it._nombreDoc || it.nombre)) || '').trim();
+  if (!nuevo) return;
+  const otro = productosInv.find(x => x.id !== p.id && normNom(x.nombre) === normNom(nuevo));
+  if (otro) { toast('Ya existe otro producto llamado «' + otro.nombre + '»', false); return; }
+  if (normNom(nuevo) === normNom(p.nombre) && nuevo === p.nombre) { mantenerNombreItemInv(idx); return; }
+  it._nuevoNombreInv = nuevo;
+  renderItemsIngresoInv();
+}
+window.usarProductoInvItem = function(idx, id) {
+  const p = productosInv.find(x => x.id === id), it = itemsIngresoInv[idx];
+  if (!p || !it) return;
+  it.nombre = p.nombre;
+  delete it._nuevoNombreInv; delete it._nombreDecidido;
+  if (!it._unidadIA && p.unidad) it.unidad = p.unidad;
+  renderItemsIngresoInv();
+}
 
 // Suscripción a productos del inventario, compartida entre la pestaña
 // Inventario y el selector de producto del Cuaderno de Campo (Fumigación).
@@ -11525,14 +11623,13 @@ function renderItemsIngresoInv() {
   const cont = document.getElementById("inv-items-ingreso");
   if (!cont) return;
   cont.innerHTML = itemsIngresoInv.map((it, idx) => {
-    const enInventario = it.nombre && productosInv.some(p => p.nombre.toLowerCase() === it.nombre.toLowerCase());
     return `<div class="config-item" style="flex-direction:column;align-items:stretch;gap:8px${it._ia ? ';border-left:4px solid #10B981' : ''}">
       ${it._ia ? '<div style="font-size:10px;color:#047857">✨ leído del documento: verifícalo</div>' : ''}
       <div style="display:flex;gap:8px;align-items:flex-start">
         <div style="flex:1;position:relative">
           <input type="text" id="inv-item-nombre-${idx}" value="${escA(it.nombre)}" placeholder="Nombre del producto" oninput="onNombreItemIngresoInvChange(${idx})" autocomplete="off">
           <div id="inv-item-autocomplete-${idx}" style="position:absolute;z-index:10;background:var(--blanco);width:100%;box-shadow:0 8px 24px rgba(0,0,0,.15);border-radius:6px"></div>
-          ${it.nombre ? `<div style="font-size:10px;margin-top:3px;color:${enInventario?"var(--verde)":"#B45309"}">${enInventario?"✓ Ya está en inventario (suma stock)":"⚠️ Producto nuevo — quedará pendiente de registrar"}</div>` : ""}
+          <div id="inv-item-estado-${idx}">${estadoItemIngresoHtml(it, idx)}</div>
         </div>
         <button class="btn-danger" onclick="quitarItemIngresoInv(${idx})">🗑</button>
       </div>
@@ -11562,9 +11659,15 @@ window.onNombreItemIngresoInvChange = function(idx) {
   actualizarItemIngresoInv(idx, "nombre", val);
   const cont = document.getElementById("inv-item-autocomplete-"+idx);
   if (!cont) return;
+  refrescarEstadoItemIngresoInv(idx);
   if (val.length < 2) { cont.innerHTML = ""; return; }
-  const matches = CATALOGO_INV.filter(c => c.nombre.toLowerCase().includes(val.toLowerCase())).slice(0, 6);
-  cont.innerHTML = matches.map(s => `<div onclick="elegirSugerenciaItemInv(${idx},'${s.nombre.replace(/'/g,"\\'")}')" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--borde);background:var(--blanco);font-size:13px"><strong>${s.nombre}</strong> <span style="color:var(--acero);font-size:11px">· ${s.ingredienteActivo}</span></div>`).join("");
+  const nv = normNom(val);
+  const deInv = productosInv.filter(p => normNom(p.nombre).includes(nv));
+  for (const x of similaresInv(val, 4)) if (!deInv.includes(x.p)) deInv.push(x.p);
+  const enInvNorm = new Set(deInv.map(p => normNom(p.nombre)));
+  const matches = CATALOGO_INV.filter(c => normNom(c.nombre).includes(nv) && !enInvNorm.has(normNom(c.nombre))).slice(0, Math.max(0, 6 - Math.min(deInv.length, 4)));
+  cont.innerHTML = deInv.slice(0, 4).map(p => `<div onmousedown="event.preventDefault()" onclick="usarProductoInvItem(${idx},'${p.id}')" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--borde);background:var(--blanco);font-size:13px">📦 <strong>${escA(p.nombre)}</strong> <span style="color:var(--verde);font-size:11px">· en inventario</span></div>`).join("")
+    + matches.map(s => `<div onmousedown="event.preventDefault()" onclick="elegirSugerenciaItemInv(${idx},'${s.nombre.replace(/'/g,"\\'")}')" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--borde);background:var(--blanco);font-size:13px"><strong>${s.nombre}</strong> <span style="color:var(--acero);font-size:11px">· ${s.ingredienteActivo}</span></div>`).join("");
 }
 window.elegirSugerenciaItemInv = function(idx, nombre) {
   actualizarItemIngresoInv(idx, "nombre", nombre);
@@ -11602,14 +11705,17 @@ window.leerDocumentoIngresoInv = async function() {
     setSiVacio('inv-ingreso-nrodoc', String(doc_.numero_documento || '').trim(), 'N° de documento');
     itemsIngresoInv = doc_.items.map(it => {
       const nom = String(it.nombre_comercial || '').trim(), n = norm(nom);
-      const exacto = productosInv.find(p => norm(p.nombre) === n) || productosInv.find(p => n.length > 3 && (norm(p.nombre).includes(n) || n.includes(norm(p.nombre))));
-      return { nombre: exacto ? exacto.nombre : nom, cantidad: Number(it.cantidad) || 1, unidad: UNIDADES_INV.includes(it.unidad) ? it.unidad : ((exacto && exacto.unidad) || 'L'), precioUnitario: Number(it.valor_neto_unitario) || 0, _ia: true, _unidadIA: UNIDADES_INV.includes(it.unidad) };
+      const cands = n ? similaresInv(nom, 3) : [];
+      const exacto = cands.length && (cands[0].s === 1 || (cands[0].s >= 0.92 && !(cands[1] && cands[1].s >= 0.92))) ? cands[0].p : null;
+      return { nombre: exacto ? exacto.nombre : nom, _nombreDoc: nom, cantidad: Number(it.cantidad) || 1, unidad: UNIDADES_INV.includes(it.unidad) ? it.unidad : ((exacto && exacto.unidad) || 'L'), precioUnitario: Number(it.valor_neto_unitario) || 0, _ia: true, _unidadIA: UNIDADES_INV.includes(it.unidad) };
     });
     renderItemsIngresoInv();
     const sinPrecio = itemsIngresoInv.filter(i => !(i.precioUnitario > 0)).length;
+    const reconocidos = itemsIngresoInv.filter(i => productoInvPorNombre(i.nombre)).length;
+    const conParecido = itemsIngresoInv.filter(i => !productoInvPorNombre(i.nombre) && similaresInv(i.nombre).length).length;
     aviso.innerHTML = `<div style="background:#ECFDF5;color:#047857;border-radius:8px;padding:8px 10px;font-size:12px;margin-top:8px">✨ Leí ${itemsIngresoInv.length} producto(s)${doc_.fecha ? ' · fecha del documento ' + escA(doc_.fecha) : ''}${doc_.total_neto ? ' · total neto leído $' + Math.round(doc_.total_neto).toLocaleString('es-CL') : ''}.
       <strong>Revisa cada dato, corrige lo que esté mal y completa lo que falte</strong> antes de confirmar.
-      ${vacios.length ? '<br>No pude leer: ' + vacios.join(', ') + '.' : ''}${sinPrecio ? `<br>⚠️ ${sinPrecio} producto(s) sin valor neto.` : ''}${doc_.observaciones ? '<br>Nota de la lectura: ' + escA(doc_.observaciones) : ''}</div>`;
+      ${vacios.length ? '<br>No pude leer: ' + vacios.join(', ') + '.' : ''}${reconocidos ? `<br>📦 ${reconocidos} reconocido(s) en el inventario.` : ''}${conParecido ? `<br>🔎 ${conParecido} con nombre parecido a uno del inventario: elige el correcto abajo.` : ''}${sinPrecio ? `<br>⚠️ ${sinPrecio} producto(s) sin valor neto.` : ''}${doc_.observaciones ? '<br>Nota de la lectura: ' + escA(doc_.observaciones) : ''}</div>`;
     toast('✓ Documento leído: revisa y confirma', true);
   } catch (e) { aviso.innerHTML = `<div style="color:#B91C1C;font-size:12px;margin-top:6px">${escA(e.message)}</div>`; toast(e.message, false); }
   finally { btn.disabled = false; btn.textContent = '✨ Leer el documento y rellenar los campos'; }
@@ -11651,8 +11757,9 @@ window.guardarIngresoInv = function() {
       <div><strong>Autoriza:</strong> ${escA(currentUser || '')}${(document.getElementById('inv-ingreso-recibe') || {}).value ? ' · <strong>Recibe:</strong> ' + escA(document.getElementById('inv-ingreso-recibe').value) : ''}</div>
       <div><strong>Foto del documento:</strong> ${fotosIngresoInv.length ? fotosIngresoInv.length + ' adjunta(s)' : '<span style="color:#B45309">sin foto</span>'}</div></div>
     <div class="table-wrap"><table><thead><tr><th>Nombre comercial</th><th>Cantidad</th><th>Neto unit.</th><th>Neto total</th></tr></thead><tbody>${items.map(it => {
-      const conocido = productosInv.some(p => p.nombre.toLowerCase() === it.nombre.trim().toLowerCase()), v = Number(it.precioUnitario) || 0;
-      return `<tr><td style="font-weight:600">${escA(it.nombre.trim())}<div style="font-size:10px;font-weight:400;color:${conocido ? 'var(--verde)' : '#B45309'}">${conocido ? '✓ suma al stock' : '⚠️ producto nuevo: queda pendiente de registrar'}</div></td><td style="white-space:nowrap">${Number(it.cantidad).toLocaleString('es-CL')} ${it.unidad}</td><td style="${v ? '' : 'color:#B91C1C;font-weight:700'}">${v ? $(v) : 'sin valor'}</td><td>${v ? $(v * Number(it.cantidad)) : '—'}</td></tr>`;
+      const pInv = productoInvPorNombre(it.nombre), conocido = !!pInv, v = Number(it.precioUnitario) || 0;
+      const ren = conocido && it._nuevoNombreInv ? it._nuevoNombreInv : '';
+      return `<tr><td style="font-weight:600">${escA(ren || (conocido ? pInv.nombre : it.nombre.trim()))}<div style="font-size:10px;font-weight:400;color:${conocido ? 'var(--verde)' : '#B45309'}">${conocido ? '✓ suma al stock' : '⚠️ producto nuevo: queda pendiente de registrar'}</div>${ren ? `<div style="font-size:10px;font-weight:400;color:#1D4ED8">✏️ se renombra (antes «${escA(pInv.nombre)}»)</div>` : ''}</td><td style="white-space:nowrap">${Number(it.cantidad).toLocaleString('es-CL')} ${it.unidad}</td><td style="${v ? '' : 'color:#B91C1C;font-weight:700'}">${v ? $(v) : 'sin valor'}</td><td>${v ? $(v * Number(it.cantidad)) : '—'}</td></tr>`;
     }).join('')}</tbody><tfoot><tr><td colspan="3" style="font-weight:800">Total neto</td><td style="font-weight:800">${$(total)}</td></tr></tfoot></table></div>
     ${sinValor ? `<div style="font-size:12px;color:#B91C1C;margin-top:6px">⚠️ ${sinValor} producto(s) sin valor neto: no se actualizará su precio en Inventario.</div>` : ''}
     <div class="hint" style="margin:8px 0">Revisa que los nombres, cantidades y valores coincidan con el documento. Si hay un error, vuelve a corregir.</div>`;
@@ -11663,22 +11770,33 @@ window.confirmarIngresoInv = async function() {
   const proveedor = document.getElementById("inv-ingreso-proveedor").value.trim();
   const nroDocumento = document.getElementById("inv-ingreso-nrodoc").value.trim();
   const bodegaDestino = document.getElementById("inv-ingreso-bodega").value;
-  const items = itemsIngresoInv.filter(it => it.nombre && it.nombre.trim() && it.cantidad > 0).map(it => ({ nombre: it.nombre, cantidad: it.cantidad, unidad: it.unidad, precioUnitario: it.precioUnitario || 0 }));
+  const renombres = {}; // id producto → { antes, nuevo }
+  const items = itemsIngresoInv.filter(it => it.nombre && it.nombre.trim() && it.cantidad > 0).map(it => {
+    const pInv = productoInvPorNombre(it.nombre);
+    const nuevo = pInv && it._nuevoNombreInv ? it._nuevoNombreInv.trim() : '';
+    if (nuevo) renombres[pInv.id] = { antes: pInv.nombre, nuevo };
+    const nombre = nuevo || (pInv ? pInv.nombre : it.nombre.trim());
+    return { nombre, cantidad: it.cantidad, unidad: it.unidad, precioUnitario: it.precioUnitario || 0, _pid: pInv ? pInv.id : '', ...(it._nombreDoc && normNom(it._nombreDoc) !== normNom(nombre) ? { nombreDoc: it._nombreDoc } : {}) };
+  });
   if (!nroDocumento) { toast("Ingresa el N° de factura o guía de despacho (es la referencia del valor). Si solo devuelves producto a la bodega, usa ↩️ Devolución", false); return; }
   if (!items.length) { toast("Agrega al menos un producto con nombre y cantidad", false); return; }
-  const conocidos = items.filter(it => productosInv.some(p => p.nombre.toLowerCase() === it.nombre.trim().toLowerCase()));
-  const nuevos = items.filter(it => !productosInv.some(p => p.nombre.toLowerCase() === it.nombre.trim().toLowerCase()));
+  const conocidos = items.filter(it => it._pid);
+  const nuevos = items.filter(it => !it._pid).map(({ _pid, ...r }) => r);
   try {
     for (const it of conocidos) {
-      const p = productosInv.find(x => x.nombre.toLowerCase() === it.nombre.trim().toLowerCase());
+      const p = productosInv.find(x => x.id === it._pid);
+      if (!p) continue;
       const nuevoMapa = stockMapInv(p);
       nuevoMapa[bodegaDestino] = r2((nuevoMapa[bodegaDestino]||0) + Number(it.cantidad));
-      await updateDoc(doc(dbInv, "productos", p.id), { stock: nuevoMapa, precio: it.precioUnitario || p.precio || 0 });
+      const cambios = { stock: nuevoMapa, precio: it.precioUnitario || p.precio || 0 };
+      const rn = renombres[p.id];
+      if (rn && rn.nuevo !== p.nombre) { cambios.nombre = rn.nuevo; cambios.nombresAnteriores = [...new Set([...(p.nombresAnteriores || []), p.nombre])]; }
+      await updateDoc(doc(dbInv, "productos", p.id), cambios);
     }
     const fotoIds = [];
     for (const f of fotosIngresoInv) { const r = await addDoc(collection(dbInv, "docs_fotos"), { tipo: 'ingreso', data: f, ts: Date.now(), por: currentUser || "" }); fotoIds.push(r.id); }
     await addDoc(collection(dbInv, "ingresos"), {
-      proveedor, nroDocumento, bodega: bodegaDestino, items, itemsPendientes: nuevos, fotoIds, recibe: (document.getElementById('inv-ingreso-recibe') || {}).value || '',
+      proveedor, nroDocumento, bodega: bodegaDestino, items: items.map(({ _pid, ...r }) => r), itemsPendientes: nuevos, fotoIds, recibe: (document.getElementById('inv-ingreso-recibe') || {}).value || '',
       fecha: new Date().toISOString(), ts: Date.now(), por: currentUser || "",
     });
     fotosIngresoInv = []; renderFotosIngresoInv(); cerrarModalInv('modal-inv-ingreso-confirm');
