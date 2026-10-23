@@ -6397,6 +6397,7 @@ let campoAplProductosSel = [];
 
 // Aperos de la labor (opcional, 1 o más). Se ofrecen los de Configurar; si la labor tiene equipo elegido, solo los de ese equipo.
 let campoAperosSel = [];
+const operadoresDeEquipo = eq => Object.keys(equipoOperadorConfig || {}).filter(o => equiposDe(o).includes(eq));
 function renderCampoQuien() {
   const w = document.getElementById('campo-labor-quien'); if (!w) return;
   w.style.display = campoTipoLaborSeleccionado ? '' : 'none';
@@ -6404,9 +6405,26 @@ function renderCampoQuien() {
   if (!se || !so) return;
   const ve = se.value, vo = so.value;
   const eqs = (config.equipos || []).filter(e => e !== 'Otro (especificar)'), ops = (config.operadores || []).filter(o => !/especificar/i.test(o));
-  se.innerHTML = '<option value="">—</option>' + eqs.map(e => `<option value="${escA(e)}" ${e === ve ? 'selected' : ''}>${escA(e)}</option>`).join('');
-  so.innerHTML = '<option value="">—</option>' + ops.map(o => `<option value="${escA(o)}" ${o === vo ? 'selected' : ''}>${escA(o)}</option>`).join('');
+  // Sugeridos: los equipos del operador elegido y los operadores del equipo elegido van primero, con ★
+  const eqSug = vo ? equiposDe(vo).filter(e => eqs.includes(e)) : [], opSug = ve ? operadoresDeEquipo(ve).filter(o => ops.includes(o)) : [];
+  const ordenar = (lista, sug) => [...sug, ...lista.filter(x => !sug.includes(x))];
+  se.innerHTML = '<option value="">—</option>' + ordenar(eqs, eqSug).map(e => `<option value="${escA(e)}" ${e === ve ? 'selected' : ''}>${eqSug.includes(e) ? '★ ' : ''}${escA(e)}</option>`).join('');
+  so.innerHTML = '<option value="">—</option>' + ordenar(ops, opSug).map(o => `<option value="${escA(o)}" ${o === vo ? 'selected' : ''}>${opSug.includes(o) ? '★ ' : ''}${escA(o)}</option>`).join('');
+  const h = document.getElementById('campo-labor-quien-hint');
+  if (h) h.innerHTML = vo && !ve && eqSug.length > 1 ? `★ ${escA(vo)} tiene ${eqSug.length} equipos asignados: elige con cuál trabajó.` : (ve && !vo && opSug.length > 1 ? `★ ${escA(ve)} tiene ${opSug.length} operadores asignados: elige quién lo usó.` : '');
 }
+document.addEventListener('change', e => {
+  if (!e.target) return;
+  if (e.target.id === 'campo-labor-equipo') {
+    const eq = e.target.value, ops = eq ? operadoresDeEquipo(eq) : [], so = document.getElementById('campo-labor-operador');
+    if (so && ops.length === 1) { so.value = ops[0]; }
+    renderCampoAperos();
+  } else if (e.target.id === 'campo-labor-operador') {
+    const op = e.target.value, eqs = op ? equiposDe(op) : [], se = document.getElementById('campo-labor-equipo');
+    if (se && eqs.length === 1) { se.value = eqs[0]; }
+    renderCampoAperos();
+  }
+});
 function renderCampoAperos() {
   renderCampoQuien();
   const wrap = document.getElementById('campo-labor-aperos');
@@ -6425,7 +6443,6 @@ window.toggleCampoApero = function(a) {
   if (i >= 0) campoAperosSel.splice(i, 1); else campoAperosSel.push(a);
   renderCampoAperos();
 }
-document.addEventListener('change', e => { if (e.target && (e.target.id === 'campo-labor-equipo')) renderCampoAperos(); });
 
 function renderCamposLaborTipo() {
   const cont = document.getElementById('campo-labor-campos');
@@ -6523,6 +6540,83 @@ function renderCamposLaborTipo() {
   }
   const ops = opcionesLabor(tipo);
   if (ops.length) { cont.insertAdjacentHTML('beforeend', '<div class="field" id="campo-opcion-wrap"></div>'); renderOpcionLabor(); }
+  try { aplicarCopiaCampo(tipo); } catch (e) { console.warn('copia', e); }
+}
+// ── Copiar una labor anterior: precarga tipo(s), productos, dosis, equipo, operador y aperos. La fecha y los potreros no se tocan ──
+let campoCopiaPorTipo = {};
+const idTipoDeLabor = l => l.tipo === 'personalizado' ? 'custom:' + l.nombreTipo : l.tipo;
+function tipoCopiable(id) { return !!TIPOS_LABOR_CAMPO.find(t => t.id === id) || (String(id).startsWith('custom:') && tiposLaborCampoConfig.some(t => t.nombre === String(id).slice(7))); }
+function aplicarCopiaCampo(tipo) {
+  const l = campoCopiaPorTipo[tipo]; if (!l) return;
+  const v = (id, val) => { const el = document.getElementById(id); if (el && val != null) el.value = val; };
+  if (tipo === 'siembra') {
+    if (l.cultivo && cultivosCampoConfig.includes(l.cultivo)) { campoSiembraCultivoSel = l.cultivo; renderCampoSiembraCultivoSelector(); }
+    v('campo-siembra-variedad', l.variedad); v('campo-siembra-dosis', l.dosis);
+  } else if (tipo === 'fertilizacion') {
+    campoAplProductosSel = (l.productos || []).map(p => ({ ...p })); renderCampoAplProductosLista(); v('campo-fert-momento', l.momento);
+  } else if (tipo === 'fumigacion') {
+    campoAplTiposProductoSel = [...(l.tiposProducto || [])]; campoAplProductosSel = (l.productos || []).map(p => ({ ...p }));
+    v('campo-fum-mojamiento', l.mojamiento); renderCampoFumCategoriaSelector(); renderCampoFumProductoOpciones(); renderCampoAplProductosLista();
+  } else if (tipo === 'trabajo_suelo') {
+    v('campo-suelo-labor', l.labor); if (l.opcion) { campoOpcionSel = l.opcion; renderOpcionLabor(); }
+  } else if (tipo === 'riego') { v('campo-riego-metodo', l.metodo); v('campo-riego-duracion', l.duracion); }
+  else if (tipo === 'otro') v('campo-otro-detalle', l.detalle);
+  else if (tipo.startsWith('custom:')) {
+    if (Array.isArray(l.productos) && document.getElementById('campo-apl-productos-lista')) { campoAplProductosSel = l.productos.map(p => ({ ...p })); renderCampoAplProductosLista(); }
+    else v('campo-custom-detalle', l.detalle);
+    if (l.opcion) { campoOpcionSel = l.opcion; renderOpcionLabor(); }
+  }
+}
+window.abrirCopiarLabor = function() {
+  const todos = [...(laboresCampoTodos || [])].filter(l => l.fecha && !l.pendiente).sort((a, b) => b.fecha.localeCompare(a.fecha) || (b.ts || 0) - (a.ts || 0));
+  const grupos = [], vistos = {};
+  todos.forEach(l => {
+    const k = (l.comboId || l.id) + '|' + l.fecha + '|' + l.potrero + '|' + (l.lote || '');
+    if (vistos[k]) vistos[k].push(l); else { vistos[k] = [l]; grupos.push(vistos[k]); }
+  });
+  window.__copiaGrupos = grupos.slice(0, 50).map(g => g.sort(cmpIntraDia));
+  let ov = document.getElementById('modal-copiar-labor');
+  if (!ov) { ov = document.createElement('div'); ov.id = 'modal-copiar-labor'; ov.style.cssText = 'position:fixed;inset:0;z-index:4000;background:rgba(0,0,0,.55);display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:16px'; document.body.appendChild(ov); }
+  ov.innerHTML = `<div style="background:var(--blanco,#fff);border-radius:12px;max-width:560px;width:100%;padding:16px;margin:auto">
+    <div class="panel-title">📋 Copiar una labor anterior</div>
+    <div class="hint" style="margin-bottom:8px">Elige una: se precargan el tipo, productos y dosis, tractor, operador y aperos. <strong>La fecha y los potrero(s) los mantienes tú.</strong> Revisa y guarda.</div>
+    <input type="search" id="copiar-labor-filtro" placeholder="🔍 Filtrar por potrero, producto, equipo u operador…" oninput="filtrarCopiarLabor()" style="width:100%;margin-bottom:8px">
+    <div id="copiar-labor-lista"></div>
+    <button class="btn btn-secondary btn-full" style="margin-top:8px" onclick="cerrarCopiarLabor()">Cancelar</button></div>`;
+  filtrarCopiarLabor();
+}
+window.cerrarCopiarLabor = function() { const ov = document.getElementById('modal-copiar-labor'); if (ov) ov.remove(); }
+window.filtrarCopiarLabor = function() {
+  const q = normNom((document.getElementById('copiar-labor-filtro') || {}).value || '');
+  const plano = h => String(h || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  const html = (window.__copiaGrupos || []).map((g, i) => {
+    const tipos = g.map(nombreTipoDocCampo).join(' + '), pot = g[0].lote ? `${g[0].potrero} · ${g[0].lote}` : g[0].potrero;
+    const det = g.map(l => plano(detalleLaborCampo(l))).filter(x => x && x !== '—').join(' | ');
+    if (q && !normNom([tipos, pot, det].join(' ')).includes(q)) return '';
+    return `<div onclick="copiarLaborAnterior(${i})" style="border:1px solid var(--borde);border-radius:8px;padding:8px 10px;margin-bottom:6px;cursor:pointer;background:var(--blanco)">
+      <div style="display:flex;justify-content:space-between;gap:8px"><strong style="font-size:13px">${escA(tipos)}${g.length > 1 ? ' <span style="color:#1D4ED8">🔗</span>' : ''}</strong><span style="font-size:11px;color:var(--acero);white-space:nowrap">${escA(g[0].fecha)}</span></div>
+      <div style="font-size:12px;color:#374151">📍 ${escA(pot)}</div>
+      <div style="font-size:11px;color:var(--acero);margin-top:2px">${escA(det.length > 170 ? det.slice(0, 170) + '…' : det)}</div></div>`;
+  }).join('');
+  const el = document.getElementById('copiar-labor-lista');
+  if (el) el.innerHTML = html || '<div class="empty" style="padding:10px;font-size:13px">No hay labores que coincidan.</div>';
+}
+window.copiarLaborAnterior = function(i) {
+  const g = (window.__copiaGrupos || [])[i]; if (!g) return;
+  const cola = [], mapa = {};
+  g.forEach(l => { const t = idTipoDeLabor(l); if (tipoCopiable(t) && !cola.includes(t)) { cola.push(t); mapa[t] = l; } });
+  if (!cola.length) { toast('Ese tipo de labor ya no está disponible para copiar', false); return; }
+  cerrarCopiarLabor();
+  campoCopiaPorTipo = mapa; campoColaLabores = cola; campoComboId = null; campoOpcionSel = null;
+  campoTipoLaborSeleccionado = null; // fuerza volver a dibujar el formulario aunque sea el mismo tipo
+  activarTipoLabor();
+  const l0 = g[0], se = document.getElementById('campo-labor-equipo'), so = document.getElementById('campo-labor-operador');
+  const poner = (el, val) => { if (!el || !val) return; if (![...el.options].some(o => o.value === val)) el.insertAdjacentHTML('beforeend', `<option value="${escA(val)}">${escA(val)}</option>`); el.value = val; };
+  poner(se, g.map(l => l.equipo).find(Boolean)); poner(so, g.map(l => l.operadorLabor).find(Boolean));
+  campoAperosSel = [...new Set(g.flatMap(l => l.aperos || []))];
+  renderCampoAperos();
+  const w = document.getElementById('campo-labor-form-wrap'); if (w) w.scrollIntoView({ behavior: 'smooth' });
+  toast('📋 Copiada: revisa la fecha y guarda' + (cola.length > 1 ? ' (' + cola.length + ' labores enlazadas)' : ''), true);
 }
 const OPCIONES_SUELO = ['Profunda', 'Superficial'];
 function opcionesLabor(tipo) {
@@ -6894,6 +6988,7 @@ window.registrarLaborCampo = async function() {
     campoColaLabores.shift();
     const siguiente = campoColaLabores[0] || null;
     if (!siguiente) { campoComboId = null; campoMultiId = null; campoMultiDia = false; const ff = document.getElementById('campo-labor-fecha-fin'); if (ff) ff.value = ''; }
+    if (!siguiente) campoCopiaPorTipo = {};
     campoTipoLaborSeleccionado = siguiente; campoAperosSel = []; renderCampoAperos();
     // Se mantienen los potreros elegidos: es común registrar varias labores
     // seguidas para el mismo grupo de potreros (ej. fertilización y luego fumigación).
@@ -13581,6 +13676,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
 
       <div class="panel" id="campo-labor-form-wrap" style="display:none">
         <div class="panel-title">Registrar labor</div>
+        <button type="button" class="btn btn-secondary btn-full" style="margin-bottom:10px" onclick="abrirCopiarLabor()">📋 Copiar una labor anterior (últimas 50)</button>
         <div class="cultivos-label">Tipo de labor</div>
         <div class="centros-selector" id="campo-tipo-labor-selector"></div>
         <div id="campo-cola-info"></div>
@@ -13591,6 +13687,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
             <div class="field" style="margin-bottom:0"><label>🚜 Tractor / equipo</label><div class="select-wrapper"><select id="campo-labor-equipo"></select></div></div>
             <div class="field" style="margin-bottom:0"><label>👷 Operador</label><div class="select-wrapper"><select id="campo-labor-operador"></select></div></div>
           </div>
+          <div id="campo-labor-quien-hint" style="font-size:12px;color:#92400E;margin-top:4px"></div>
           <div class="hint" style="margin-top:4px">Queda guardado junto con la fecha y el potrero, para después cruzarlo con el recorrido que registró JDLink o el teléfono y saber qué parte del potrero se trabajó ese día.</div>
         </div>
         <div id="campo-labor-aperos"></div>
