@@ -6397,11 +6397,22 @@ let campoAplProductosSel = [];
 
 // Aperos de la labor (opcional, 1 o más). Se ofrecen los de Configurar; si la labor tiene equipo elegido, solo los de ese equipo.
 let campoAperosSel = [];
+function renderCampoQuien() {
+  const w = document.getElementById('campo-labor-quien'); if (!w) return;
+  w.style.display = campoTipoLaborSeleccionado ? '' : 'none';
+  const se = document.getElementById('campo-labor-equipo'), so = document.getElementById('campo-labor-operador');
+  if (!se || !so) return;
+  const ve = se.value, vo = so.value;
+  const eqs = (config.equipos || []).filter(e => e !== 'Otro (especificar)'), ops = (config.operadores || []).filter(o => !/especificar/i.test(o));
+  se.innerHTML = '<option value="">—</option>' + eqs.map(e => `<option value="${escA(e)}" ${e === ve ? 'selected' : ''}>${escA(e)}</option>`).join('');
+  so.innerHTML = '<option value="">—</option>' + ops.map(o => `<option value="${escA(o)}" ${o === vo ? 'selected' : ''}>${escA(o)}</option>`).join('');
+}
 function renderCampoAperos() {
+  renderCampoQuien();
   const wrap = document.getElementById('campo-labor-aperos');
   if (!wrap) return;
   if (!campoTipoLaborSeleccionado) { wrap.innerHTML = ''; return; }
-  const eqEl = document.getElementById('campo-suelo-equipo') || document.getElementById('campo-apl-equipo');
+  const eqEl = document.getElementById('campo-labor-equipo');
   const eq = eqEl ? eqEl.value : '';
   const lista = (aperosConfig || []).filter(a => !eq || !a.equipos || a.equipos.length === 0 || a.equipos.includes(eq)).map(a => a.nombre);
   campoAperosSel = campoAperosSel.filter(a => lista.includes(a));
@@ -6414,7 +6425,7 @@ window.toggleCampoApero = function(a) {
   if (i >= 0) campoAperosSel.splice(i, 1); else campoAperosSel.push(a);
   renderCampoAperos();
 }
-document.addEventListener('change', e => { if (e.target && (e.target.id === 'campo-suelo-equipo' || e.target.id === 'campo-apl-equipo')) renderCampoAperos(); });
+document.addEventListener('change', e => { if (e.target && (e.target.id === 'campo-labor-equipo')) renderCampoAperos(); });
 
 function renderCamposLaborTipo() {
   const cont = document.getElementById('campo-labor-campos');
@@ -6477,7 +6488,6 @@ function renderCamposLaborTipo() {
     cont.innerHTML = `
       <div class="grid-2">
         <div class="field"><label>Labor realizada (opcional)</label><input type="text" id="campo-suelo-labor" placeholder="Ej: Rastra, arado, subsolado..."></div>
-        <div class="field"><label>Equipo utilizado (opcional)</label><div class="select-wrapper"><select id="campo-suelo-equipo"><option value="">—</option>${config.equipos.map(e=>`<option value="${e}">${e}</option>`).join('')}</select></div></div>
       </div>`;
   } else if (tipo === 'riego') {
     cont.innerHTML = `
@@ -6757,6 +6767,9 @@ window.registrarLaborCampo = async function() {
     if (!fechaFin) payloadBase.diasTrabajo = [fecha];
   }
   if (campoAperosSel.length) payloadBase.aperos = [...campoAperosSel];
+  { const e = (document.getElementById('campo-labor-equipo') || {}).value, o = (document.getElementById('campo-labor-operador') || {}).value;
+    if (e) payloadBase.equipo = e;
+    if (o) payloadBase.operadorLabor = o; }
   if (campoColaLabores.length > 1 && !campoComboId) campoComboId = 'c' + Date.now().toString(36);
   if (campoComboId) payloadBase.comboId = campoComboId;
   if (campoFotosSel.length) payloadBase.fotos = [...campoFotosSel];
@@ -6825,10 +6838,8 @@ window.registrarLaborCampo = async function() {
     payloadBase.tiposProducto = [...campoAplTiposProductoSel];
     payloadBase.productos = productos;
     payloadBase.objetivo = document.getElementById('campo-apl-objetivo').value.trim() || null;
-    payloadBase.equipo = document.getElementById('campo-apl-equipo').value || null;
   } else if (tipo === 'trabajo_suelo') {
     payloadBase.labor = document.getElementById('campo-suelo-labor').value.trim() || '';
-    payloadBase.equipo = document.getElementById('campo-suelo-equipo').value || null;
   } else if (tipo === 'riego') {
     const metodo = document.getElementById('campo-riego-metodo').value.trim();
     if (!metodo) { toast('Ingresa el método de riego', false); return; }
@@ -7044,6 +7055,11 @@ window.verFotoLabor = function(id, i) {
   const w = window.open('', '_blank'); if (w) w.document.write(`<body style="margin:0;background:#000"><img src="${l.fotos[i]}" style="width:100%;height:auto"></body>`);
 }
 function detalleLaborCampo(l) {
+  const base = detalleLaborBase(l);
+  const extra = [(l.tipo !== 'aplicacion' && l.tipo !== 'trabajo_suelo' && l.equipo) ? '🚜 ' + escA(l.equipo) : '', l.operadorLabor ? '👷 ' + escA(l.operadorLabor) : ''].filter(Boolean).join(' · ');
+  return extra ? base + (base && base !== '—' ? ' · ' : '') + extra : base;
+}
+function detalleLaborBase(l) {
   const p = potrerosConfig.find(x => x.nombre === l.potrero);
   let base = '—';
   if (l.tipo === 'siembra') {
@@ -7064,7 +7080,7 @@ function detalleLaborCampo(l) {
       ? l.productos.map(pr => `${pr.producto} (${pr.dosis})`).join(', ')
       : `${l.producto} — ${l.dosis}`;
     const mojaStr = l.mojamiento != null ? ` · Mojamiento: ${l.mojamiento} L/ha` : '';
-    base = `${prefTipo}${prodStr}${mojaStr}${l.objetivo?' · '+l.objetivo:''}${l.equipo?' · '+l.equipo:''}`;
+    base = `${prefTipo}${prodStr}${mojaStr}${l.objetivo?' · '+l.objetivo:''}${l.equipo?' · '+escA(l.equipo):''}`;
   } else if (l.tipo === 'trabajo_suelo') base = `${l.labor || ''}${l.equipo?(l.labor?' · ':'')+l.equipo:''}`;
   else if (l.tipo === 'riego') base = `${l.metodo}${l.duracion?' · '+l.duracion+' hr':''}`;
   else if (l.tipo === 'cosecha') {
@@ -7334,7 +7350,7 @@ function pintarEdicionLabor() {
   } else if (t === 'cosecha') {
     esp = elInput('Kilos cosechados', 'kg', 'number', 'min="0"') + elInput('Humedad %', 'humedad', 'number', 'min="0" step="0.1"');
   } else if (t === 'trabajo_suelo') {
-    esp = elInput('Labor realizada', 'labor') + selEq;
+    esp = elInput('Labor realizada', 'labor');
   } else if (t === 'otro') {
     esp = elInput('Detalle', 'detalle');
   }
@@ -7345,7 +7361,7 @@ function pintarEdicionLabor() {
       + `<button class="btn btn-secondary" style="margin-bottom:8px" onclick="elProdAdd()">+ Producto</button>`;
     if (t === 'fertilizacion') esp += elInput('Momento o etapa', 'momento');
     if (t === 'fumigacion' || t === 'aplicacion') esp += elInput('Mojamiento (L/ha)', 'mojamiento', 'number', 'min="0"') + `<div class="cultivos-label">Categorías de producto</div>` + chips(t === 'fumigacion' ? CATEGORIAS_FUM_CAMPO : tiposProductoCampoConfig, 'tiposProducto');
-    if (t === 'aplicacion') esp += elInput('Objetivo', 'objetivo') + selEq;
+    if (t === 'aplicacion') esp += elInput('Objetivo', 'objetivo');
   }
   if (t === 'personalizado' && !Array.isArray(EL.l.productos)) esp += elInput('Detalle', 'detalle');
   const potOpts = [...potrerosConfig].sort((a, b) => cmpEs(a.nombre, b.nombre)).map(p => `<option value="${escA(p.nombre)}" ${d.potrero === p.nombre ? 'selected' : ''}>${escA(p.nombre)}</option>`).join('');
@@ -7364,6 +7380,8 @@ function pintarEdicionLabor() {
     ${elInput(d.fechaFin || d.enCurso ? 'Fecha de inicio' : 'Fecha', 'fecha', 'date')}
     ${elInput('Fecha de término (si duró varios días)', 'fechaFin', 'date')}
     <div class="centros-selector" style="margin:-2px 0 8px"><div class="cultivo-chip ${d.enCurso ? 'sel' : ''}" onclick="elEnCurso(${!d.enCurso})">🔄 Todavía en curso</div></div>
+    ${selEq}
+    <div class="field" style="margin-bottom:8px"><label>Operador (opcional)</label><div class="select-wrapper"><select onchange="elSet('operadorLabor', this.value)"><option value="">—</option>${[...new Set([...(config.operadores || []).filter(o => !/especificar/i.test(o)), d.operadorLabor].filter(Boolean))].map(o => `<option value="${escA(o)}" ${d.operadorLabor === o ? 'selected' : ''}>${escA(o)}</option>`).join('')}</select></div></div>
     ${esp}
     ${aperosLista.length ? `<div class="cultivos-label">Aperos</div>` + chips(aperosLista, 'aperos') : ''}
     ${parcial}
@@ -13567,6 +13585,14 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         <div class="centros-selector" id="campo-tipo-labor-selector"></div>
         <div id="campo-cola-info"></div>
         <div id="campo-labor-campos"></div>
+        <div id="campo-labor-quien" style="display:none;margin-top:10px">
+          <div class="cultivos-label">¿Quién y con qué la hizo? <span style="font-weight:400;color:#6B7280">(opcional)</span></div>
+          <div class="grid-2" style="gap:8px">
+            <div class="field" style="margin-bottom:0"><label>🚜 Tractor / equipo</label><div class="select-wrapper"><select id="campo-labor-equipo"></select></div></div>
+            <div class="field" style="margin-bottom:0"><label>👷 Operador</label><div class="select-wrapper"><select id="campo-labor-operador"></select></div></div>
+          </div>
+          <div class="hint" style="margin-top:4px">Queda guardado junto con la fecha y el potrero, para después cruzarlo con el recorrido que registró JDLink o el teléfono y saber qué parte del potrero se trabajó ese día.</div>
+        </div>
         <div id="campo-labor-aperos"></div>
         <div class="field" style="margin-top:8px"><label>Fecha</label><input type="date" id="campo-labor-fecha" onchange="actualizarHintDDS()"><div id="campo-labor-dds-hint" style="margin-top:6px"></div></div>
         <div id="campo-labor-duracion" style="margin-bottom:8px"></div>
