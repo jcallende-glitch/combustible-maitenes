@@ -5982,6 +5982,8 @@ function laborEsDeUnidad(l, u) { const i = infoUnidad(u); if (l.potrero !== i.po
 let campoLaborPotrerosDetalle = {}; // { [nombrePotrero]: { modo: 'completo'|'parcial', hectareas: number|null } }
 let campoTipoLaborSeleccionado = null;
 let campoComboId = null;
+// Labores de varios días: se guardan con fecha de inicio (fecha) y, al terminar, fechaFin. Mientras tanto quedan "en curso".
+let campoMultiDia = false, campoMultiId = null;
 let campoOpcionSel = null;
 let campoColaLabores = []; // tipos elegidos; se registran uno tras otro (la primera es la activa)
 let laboresCampoRegistros = []; // subconjunto filtrado por los potreros elegidos ahora
@@ -6024,6 +6026,7 @@ function suscribirLaboresCampo() {
   unsubLaboresCampo = onSnapshot(query(collection(db, 'labores_campo'), orderBy('ts','desc')), snap => {
     laboresCampoTodos = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     recalcularLaboresCampoSeleccion();
+    try { renderLaboresEnCurso(); } catch (e) { console.warn(e); }
   });
 }
 
@@ -6112,6 +6115,7 @@ function cultivoDeReferenciaPotrero(unidad) {
 }
 
 function renderTipoLaborSelector() {
+  try { renderCampoDuracion(); } catch (e) {}
   const wrap = document.getElementById('campo-tipo-labor-selector');
   if (!wrap) return;
   // Si hay potreros anuales entre los elegidos (o todavía no se elige ninguno),
@@ -6143,6 +6147,88 @@ function renderTipoLaborSelector() {
   const tipos = [...tiposFijos, ...tiposPersonalizados];
   wrap.innerHTML = tipos.map(t => { const k = campoColaLabores.indexOf(t.id); return `<div class="cultivo-chip ${k >= 0 ? 'sel' : ''}" onclick='toggleTipoLaborCampo(${JSON.stringify(t.id)})'>${campoColaLabores.length > 1 && k >= 0 ? (k + 1) + '. ' : ''}${t.label}</div>`; }).join('');
   renderColaInfo();
+}
+const hoyCampoStr = () => { const d = new Date(), p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`; };
+const fCorta = f => f ? `${f.slice(8, 10)}-${f.slice(5, 7)}` : '';
+const nombreTipoDocCampo = l => l.tipo === 'personalizado' ? '🧩 ' + (l.nombreTipo || '') : ((TIPOS_LABOR_CAMPO.find(t => t.id === l.tipo) || {}).label || l.tipo || '');
+const tipoDocCoincide = (l, t) => String(t).startsWith('custom:') ? (l.tipo === 'personalizado' && l.nombreTipo === String(t).slice(7)) : l.tipo === t;
+const claveEnCurso = l => l.multiId || l.comboId || l.id;
+// Fecha para el historial: un día, un rango (del 11 al 15) o "en curso"
+function fechaLaborHtml(l) {
+  if (!l.fecha) return '—';
+  if (l.enCurso) return `${l.fecha}<div style="font-size:10px;color:#B45309;font-weight:700;white-space:nowrap">🔄 en curso · día ${Math.max(1, diasEntre(l.fecha, hoyCampoStr()) + 1)}</div>`;
+  if (l.fechaFin && l.fechaFin !== l.fecha) {
+    const n = diasEntre(l.fecha, l.fechaFin) + 1, t = (l.diasTrabajo || []).length;
+    return `${l.fecha}<div>al ${l.fechaFin}</div><div style="font-size:10px;color:#6B7280">${n} días${t > 1 && t < n ? ` · ${t} trabajados` : ''}</div>`;
+  }
+  return l.fecha;
+}
+function fechaLaborTexto(l) {
+  if (!l.fecha) return '-';
+  if (l.enCurso) return `${l.fecha} (en curso)`;
+  if (l.fechaFin && l.fechaFin !== l.fecha) return `${l.fecha} al ${l.fechaFin}`;
+  return l.fecha;
+}
+function renderCampoDuracion() {
+  const w = document.getElementById('campo-labor-duracion'); if (!w) return;
+  const fin = (document.getElementById('campo-labor-fecha-fin') || {}).value || '';
+  w.innerHTML = `<div class="cultivos-label">Duración</div><div class="centros-selector">
+      <div class="cultivo-chip ${!campoMultiDia ? 'sel' : ''}" onclick="setCampoMultiDia(false)">Se hizo en el día</div>
+      <div class="cultivo-chip ${campoMultiDia ? 'sel' : ''}" onclick="setCampoMultiDia(true)">📅 Dura varios días</div></div>
+    ${campoMultiDia ? `<div class="field" style="margin-top:6px"><label>Fecha de término</label><input type="date" id="campo-labor-fecha-fin" value="${fin}">
+      <div class="hint" style="margin-top:4px">La fecha de arriba es el <strong>inicio</strong>. Si todavía no termina, deja el término vacío: queda <strong>🔄 en curso</strong> y los días siguientes aparece arriba del cuaderno para marcar que se continuó o que terminó.</div></div>` : ''}`;
+}
+window.setCampoMultiDia = function(v) { campoMultiDia = v; renderCampoDuracion(); }
+function renderLaboresEnCurso() {
+  const w = document.getElementById('campo-en-curso'); if (!w) return;
+  const en = (laboresCampoTodos || []).filter(l => l.enCurso && l.fecha);
+  if (!en.length) { w.innerHTML = ''; return; }
+  const grupos = {};
+  en.forEach(l => { const k = claveEnCurso(l); (grupos[k] = grupos[k] || []).push(l); });
+  const hoy = hoyCampoStr(), editar = puedeEditarCampo();
+  const tarjetas = Object.entries(grupos).sort((a, b) => a[1][0].fecha.localeCompare(b[1][0].fecha)).map(([k, g]) => {
+    const tipos = [...new Set(g.map(nombreTipoDocCampo))].join(' + ');
+    const pots = [...new Set(g.map(l => l.lote ? `${l.potrero} · ${l.lote}` : l.potrero))].sort(cmpEs);
+    const eqs = [...new Set(g.map(l => l.equipo).filter(Boolean))], aperos = [...new Set(g.flatMap(l => l.aperos || []))];
+    const ini = g.map(l => l.fecha).sort()[0];
+    const dias = [...new Set(g.flatMap(l => l.diasTrabajo || [l.fecha]))].sort();
+    const ult = dias[dias.length - 1], hoyListo = dias.includes(hoy), nDia = Math.max(1, diasEntre(ini, hoy) + 1);
+    return `<div style="border:1px solid #FCD34D;background:#FFFBEB;border-radius:10px;padding:10px 12px;margin-bottom:8px">
+      <div style="font-weight:800;font-size:14px">${eqs.length ? '🚜 ' + escA(eqs.join(', ')) + ' · ' : ''}${escA(tipos)}</div>
+      <div style="font-size:12px;color:#374151;margin-top:2px">📍 ${escA(pots.join(', '))}${aperos.length ? ' · 🔧 ' + escA(aperos.join(', ')) : ''}</div>
+      <div style="font-size:12px;color:#92400E;margin-top:2px">Desde ${fCorta(ini)} · <strong>día ${nDia}</strong> · último día marcado: ${fCorta(ult)}${dias.length > 1 ? ` (${dias.length} días trabajados)` : ''}</div>
+      ${editar ? `<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px">
+        <button class="btn ${hoyListo ? 'btn-secondary' : 'btn-verde'}" style="padding:6px 10px;font-size:13px;width:auto" onclick="continuarLaborEnCurso('${k}')" ${hoyListo ? 'disabled' : ''}>${hoyListo ? '✓ Hoy ya marcado' : '✓ Hoy se continuó'}</button>
+        <span style="font-size:12px;color:#6B7280">Terminó el</span><input type="date" id="fin-${k}" value="${hoy}" min="${ini}" style="width:auto;padding:5px 6px">
+        <button class="btn btn-secondary" style="padding:6px 10px;font-size:13px;width:auto" onclick="terminarLaborEnCurso('${k}')">🏁 Terminar</button></div>` : ''}
+    </div>`;
+  }).join('');
+  w.innerHTML = `<div class="panel" style="border:2px solid #F59E0B"><div class="panel-title">🔄 Labores en curso (${Object.keys(grupos).length})</div>
+    <div class="hint" style="margin-bottom:8px">Labores de varios días que todavía no terminan. Marca cada día que se trabajó y, al final, la fecha de término: en el cuaderno quedan como un rango (ej. del 11 al 15).</div>${tarjetas}</div>`;
+}
+window.continuarLaborEnCurso = async function(k, dia) {
+  const g = (laboresCampoTodos || []).filter(l => l.enCurso && claveEnCurso(l) === k); if (!g.length) return;
+  const d = dia || hoyCampoStr();
+  try {
+    const batch = writeBatch(db);
+    g.forEach(l => batch.update(doc(db, 'labores_campo', l.id), { diasTrabajo: [...new Set([...(l.diasTrabajo || [l.fecha]), d])].sort(), continuadoPor: currentUser || '', continuadoTs: Date.now() }));
+    await batch.commit();
+    toast('✓ Marcado: la labor se continuó el ' + fCorta(d), true);
+  } catch (e) { toast('Error: ' + e.message, false); }
+}
+window.terminarLaborEnCurso = async function(k) {
+  const g = (laboresCampoTodos || []).filter(l => l.enCurso && claveEnCurso(l) === k); if (!g.length) return;
+  const fin = (document.getElementById('fin-' + k) || {}).value;
+  const ini = g.map(l => l.fecha).sort()[0];
+  if (!fin) { toast('Elige la fecha de término', false); return; }
+  if (fin < ini) { toast('La fecha de término no puede ser anterior al inicio (' + fCorta(ini) + ')', false); return; }
+  if (!confirm(`¿Terminar la labor? Quedará registrada del ${fCorta(ini)} al ${fCorta(fin)}.`)) return;
+  try {
+    const batch = writeBatch(db);
+    g.forEach(l => batch.update(doc(db, 'labores_campo', l.id), { fechaFin: fin === l.fecha ? null : fin, enCurso: false, diasTrabajo: [...new Set([...(l.diasTrabajo || [l.fecha]), fin])].filter(x => x <= fin).sort(), terminadoPor: currentUser || '', terminadoTs: Date.now() }));
+    await batch.commit();
+    toast('🏁 Labor terminada: del ' + fCorta(ini) + ' al ' + fCorta(fin), true);
+  } catch (e) { toast('Error: ' + e.message, false); }
 }
 function labelTipoLaborHtml(id) { const f = TIPOS_LABOR_CAMPO.find(t => t.id === id); return f ? iconoLaborHtml(f) : labelTipoLabor(id); }
 function labelTipoLabor(id) { const f = TIPOS_LABOR_CAMPO.find(t => t.id === id); return f ? f.label : (String(id).startsWith('custom:') ? '🧩 ' + String(id).slice(7) : id); }
@@ -6645,7 +6731,31 @@ window.registrarLaborCampo = async function() {
   if (!fecha) { toast('Selecciona una fecha', false); return; }
 
   const tipo = campoTipoLaborSeleccionado;
+  let fechaFin = null;
+  if (campoMultiDia) {
+    fechaFin = (document.getElementById('campo-labor-fecha-fin') || {}).value || null;
+    if (fechaFin && fechaFin < fecha) { toast('La fecha de término no puede ser anterior a la de inicio', false); return; }
+  }
+  const multiDia = campoMultiDia && fechaFin !== fecha;
+  // ¿Ya hay una labor igual en curso en estos potreros? Ofrece marcarla como continuación en vez de duplicarla
+  if (!campoMultiId) {
+    const mismas = (laboresCampoTodos || []).filter(l => l.enCurso && l.fecha && l.fecha < fecha && tipoDocCoincide(l, tipo) && camposLaborPotrerosSel.some(u => laborEsDeUnidad(l, u)));
+    if (mismas.length) {
+      const k0 = [...new Set(mismas.map(claveEnCurso))];
+      if (confirm(`Ya hay una labor de ${labelTipoLabor(tipo)} en curso en este potrero desde el ${fCorta(mismas.map(l => l.fecha).sort()[0])}.\n\n¿Es la continuación? (Aceptar = marcarla como continuada el ${fCorta(fecha)}; Cancelar = registrar una labor nueva)`)) {
+        for (const k of k0) await continuarLaborEnCurso(k, fecha);
+        return;
+      }
+    }
+  }
   const payloadBase = { tipo, fecha, anio: fecha.slice(0,4), obs, operador: currentUser, ts: Date.now() };
+  if (multiDia) {
+    if (!campoMultiId) campoMultiId = 'm' + Date.now().toString(36);
+    payloadBase.multiId = campoMultiId;
+    payloadBase.fechaFin = fechaFin;
+    payloadBase.enCurso = !fechaFin;
+    if (!fechaFin) payloadBase.diasTrabajo = [fecha];
+  }
   if (campoAperosSel.length) payloadBase.aperos = [...campoAperosSel];
   if (campoColaLabores.length > 1 && !campoComboId) campoComboId = 'c' + Date.now().toString(36);
   if (campoComboId) payloadBase.comboId = campoComboId;
@@ -6772,14 +6882,14 @@ window.registrarLaborCampo = async function() {
     const hechas = camposLaborPotrerosSel.length;
     campoColaLabores.shift();
     const siguiente = campoColaLabores[0] || null;
-    if (!siguiente) campoComboId = null;
+    if (!siguiente) { campoComboId = null; campoMultiId = null; campoMultiDia = false; const ff = document.getElementById('campo-labor-fecha-fin'); if (ff) ff.value = ''; }
     campoTipoLaborSeleccionado = siguiente; campoAperosSel = []; renderCampoAperos();
     // Se mantienen los potreros elegidos: es común registrar varias labores
     // seguidas para el mismo grupo de potreros (ej. fertilización y luego fumigación).
     renderTipoLaborSelector();
     if (siguiente) { renderCamposLaborTipo(); actualizarHintDDS(); }
     else document.getElementById('campo-labor-campos').innerHTML = '';
-    toast((hechas > 1 ? `✓ Labor registrada en ${hechas} potreros` : '✓ Labor registrada') + (siguiente ? ` — ahora: ${labelTipoLabor(siguiente)}` : ''), true);
+    toast((hechas > 1 ? `✓ Labor registrada en ${hechas} potreros` : '✓ Labor registrada') + (multiDia && !fechaFin ? ' · 🔄 en curso: aparece arriba para continuarla' : '') + (siguiente ? ` — ahora: ${labelTipoLabor(siguiente)}` : ''), true);
   } catch(e) { toast('Error: ' + e.message, false); }
   btn.disabled = false; btn.textContent = '✓ Guardar labor';
 }
@@ -7041,9 +7151,9 @@ window.imprimirCuaderno = function() {
     const grupos = [], vistos = {};
     filas.forEach(l => { if (!l.comboId) { grupos.push([l]); return; } if (vistos[l.comboId]) vistos[l.comboId].push(l); else { vistos[l.comboId] = [l]; grupos.push(vistos[l.comboId]); } });
     const planoDe = h => { const d = document.createElement('div'); d.innerHTML = String(h || '').replace(/<br\s*\/?>|<\/div>/gi, '\n'); return (d.textContent || '').replace(/[₀-₉]/g, c => String(c.charCodeAt(0) - 8320)).replace(/[^\x20-\x7E\n\u00A0-\u024F\u2013\u2014\u00B7]/g, '').replace(/[ \t]+/g, ' ').replace(/\n\s*\n+/g, '\n').trim(); };
-    pdfSecs.push({ nombre, cult: planoDe(cult), rows: grupos.map(g => [g[0].fecha || '-', planoDe(g.map(tipoPlano).join(' + ') + (g.length > 1 ? ' (combinada)' : '')), g.map(l => (g.length > 1 ? tipoPlano(l) + ': ' : '') + planoDe(detalleLaborCampo(l))).join('\n'), planoDe(g.map(l => l.obs || '').filter(Boolean).join(' · ')), planoDe(g[0].operador || '')]) });
+    pdfSecs.push({ nombre, cult: planoDe(cult), rows: grupos.map(g => [fechaLaborTexto(g[0]), planoDe(g.map(tipoPlano).join(' + ') + (g.length > 1 ? ' (combinada)' : '')), g.map(l => (g.length > 1 ? tipoPlano(l) + ': ' : '') + planoDe(detalleLaborCampo(l))).join('\n'), planoDe(g.map(l => l.obs || '').filter(Boolean).join(' · ')), planoDe(g[0].operador || '')]) });
     const trs = grupos.map(g => `<tr>
-      <td class="f">${g[0].fecha || '—'}</td>
+      <td class="f">${fechaLaborHtml(g[0])}</td>
       <td class="t">${g.map(tipoPlano).join(' + ')}${g.length > 1 ? '<div class="c">combinada</div>' : ''}</td>
       <td>${g.map(l => (g.length > 1 ? `<b>${tipoPlano(l)}:</b> ` : '') + txt(detalleLaborCampo(l))).join('<br>')}</td>
       <td class="o">${g.map(l => escA(l.obs || '')).filter(Boolean).join(' · ')}</td>
@@ -7138,7 +7248,7 @@ window.renderHistorialLabores = function() {
   const botonesOrden = g => { if (!puedeEditarCampo() || !g[0].fecha || itemsDelDia(g[0]).length < 2) return ''; return `<div style="margin-top:4px"><button class="btn btn-secondary" style="padding:3px 8px;margin-right:3px" title="Subir" onclick="moverLaborDia('${g[0].id}',${-1 * sentido})">▲</button><button class="btn btn-secondary" style="padding:3px 8px" title="Bajar" onclick="moverLaborDia('${g[0].id}',${1 * sentido})">▼</button></div>`; };
   const filaHtml = g => {
     if (g.length === 1) { const l = g[0]; return `<tr>
-      <td class="td-mono">${l.fecha || '—'}</td>
+      <td class="td-mono">${fechaLaborHtml(l)}</td>
       <td style="font-size:13px;font-weight:600">${tipoTxt(l)}${ordenInfo(g)}</td>
       <td style="font-size:12px">${detalleLaborCampo(l)}</td>
       <td style="font-size:12px;color:#6B7280">${l.obs || '—'}</td>
@@ -7147,7 +7257,7 @@ window.renderHistorialLabores = function() {
     </tr>`; }
     // Labores hechas juntas (varias seleccionadas a la vez): una sola fila con todos los tipos
     return `<tr style="background:#F5F9FF">
-      <td class="td-mono">${g[0].fecha || '—'}</td>
+      <td class="td-mono">${fechaLaborHtml(g[0])}</td>
       <td style="font-size:13px;font-weight:600">${g.map(tipoTxt).join(' <span style="color:#1D4ED8;font-weight:800">+</span> ')}<div><span title="Labores hechas juntas" style="display:inline-block;margin-top:4px;background:#DBEAFE;color:#1D4ED8;border-radius:999px;padding:1px 8px;font-size:11px;font-weight:700">🔗 combinada</span></div>${ordenInfo(g)}</td>
       <td style="font-size:12px">${g.map(l => `<div style="margin-bottom:6px"><span style="font-weight:700">${tipoTxt(l)}:</span> ${detalleLaborCampo(l)}</div>`).join('')}</td>
       <td style="font-size:12px;color:#6B7280">${g.map(l => l.obs).filter(Boolean).join(' · ') || '—'}</td>
@@ -7206,6 +7316,7 @@ window.elToggle = function(campo, valor) {
   pintarEdicionLabor();
 }
 window.elAsig = function(campo, valor) { EL.d[campo] = valor; pintarEdicionLabor(); }
+window.elEnCurso = function(v) { EL.d.enCurso = v; if (v) EL.d.fechaFin = null; pintarEdicionLabor(); }
 window.elSetPot = function(v) { EL.d.potrero = v; EL.d.lote = null; pintarEdicionLabor(); }
 function pintarEdicionLabor() {
   const d = EL.d, t = d.tipo;
@@ -7250,7 +7361,9 @@ function pintarEdicionLabor() {
     <div class="panel-title">✏️ Editar labor · ${escA(tipoLabel)}</div>
     <div class="field" style="margin-bottom:8px"><label>Potrero</label><div class="select-wrapper"><select onchange="elSetPot(this.value)">${potOpts}</select></div></div>
     ${loteSel}
-    ${elInput('Fecha', 'fecha', 'date')}
+    ${elInput(d.fechaFin || d.enCurso ? 'Fecha de inicio' : 'Fecha', 'fecha', 'date')}
+    ${elInput('Fecha de término (si duró varios días)', 'fechaFin', 'date')}
+    <div class="centros-selector" style="margin:-2px 0 8px"><div class="cultivo-chip ${d.enCurso ? 'sel' : ''}" onclick="elEnCurso(${!d.enCurso})">🔄 Todavía en curso</div></div>
     ${esp}
     ${aperosLista.length ? `<div class="cultivos-label">Aperos</div>` + chips(aperosLista, 'aperos') : ''}
     ${parcial}
@@ -7266,7 +7379,11 @@ window.guardarEdicionLabor = async function() {
   const d = EL.d, t = d.tipo;
   if (t === 'siembra' && !d.cultivo) { toast('Elige el cultivo', false); return; }
   if (!d.fecha && t !== 'siembra') { toast('Selecciona una fecha', false); return; }
+  if (d.fechaFin && d.fecha && d.fechaFin < d.fecha) { toast('La fecha de término no puede ser anterior a la de inicio', false); return; }
   const patch = { ...d };
+  patch.fechaFin = d.fechaFin && d.fechaFin !== d.fecha ? d.fechaFin : null;
+  patch.enCurso = !!d.enCurso && !patch.fechaFin;
+  if ((patch.fechaFin || patch.enCurso) && !patch.multiId) patch.multiId = 'm' + Date.now().toString(36);
   delete patch.id;
   patch.fecha = d.fecha || null;
   patch.anio = d.fecha ? String(d.fecha).slice(0, 4) : (d.anio || String(new Date().getFullYear()));
@@ -13427,6 +13544,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     <!-- CUADERNO DE CAMPO -->
     <div id="tc-campo" class="tab-content">
       <button type="button" class="btn btn-secondary btn-full" style="margin-bottom:10px" onclick="abrirPrueba('cuaderno2')">🎤 Probar el cuaderno v2 por dictado (prueba, no toca este cuaderno)</button>
+      <div id="campo-en-curso"></div>
       <div class="panel">
         <div class="panel-title">🌱 Potreros trabajados</div>
         <div class="hint" style="margin-bottom:10px">El campo es una sola unidad: elige uno o más potreros — por nombre, en el mapa, o ambos — y todo lo de abajo se basa en esa elección.</div>
@@ -13451,6 +13569,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         <div id="campo-labor-campos"></div>
         <div id="campo-labor-aperos"></div>
         <div class="field" style="margin-top:8px"><label>Fecha</label><input type="date" id="campo-labor-fecha" onchange="actualizarHintDDS()"><div id="campo-labor-dds-hint" style="margin-top:6px"></div></div>
+        <div id="campo-labor-duracion" style="margin-bottom:8px"></div>
         <div class="field"><label>📷 Foto del cultivo (opcional, hasta 3)</label>
           <label class="btn btn-secondary btn-full" style="display:block;text-align:center;cursor:pointer">Agregar foto<input type="file" accept="image/*" multiple style="display:none" onchange="campoFotoElegir(this)"></label>
           <div id="campo-fotos-prev" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px"></div></div>
