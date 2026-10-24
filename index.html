@@ -6779,7 +6779,7 @@ async function climaDias(lat, lng, d0, d1) {
 }
 // Guarda el clima de todos los días de esas labores (no bloquea; si falla, queda para el botón 🌤️)
 async function guardarClimaLabores(ids, avisar) {
-  const ls = ids.map(id => laboresCampoTodos.find(x => x.id === id)).filter(l => l && l.fecha && potreroEsHuerto(l.potrero)); // por ahora solo huertos
+  const ls = ids.map(id => laboresCampoTodos.find(x => x.id === id)).filter(l => l && l.fecha); // huertos y cultivos anuales
   const hoy = hoyCampoStr(), porPot = {};
   ls.forEach(l => { (porPot[l.potrero] = porPot[l.potrero] || []).push(l); });
   let n = 0;
@@ -6954,6 +6954,196 @@ window.guardarHilerasLabor = async function() {
   const cambios = { hilerasDia: out, hilerasCalculadoTs: Date.now() };
   if (HILC.eq && !HILC.l.equipo && !Object.keys(equiposPorDia(HILC.l)).length) cambios.equipo = HILC.eq;
   try { await updateDoc(doc(db, 'labores_campo', HILC.id), cambios); toast('✓ Hileras por día guardadas en el cuaderno', true); cerrarHilerasLabor(); }
+  catch (e) { toast('Error: ' + e.message, false); }
+}
+// ── Cultivos anuales: cobertura por día (ha realmente cubiertas, horas y ha/h) según el recorrido del tractor ──
+let COBC = null, cobcMapa = null;
+const potreroConPoligono = n => { const p = potrerosConfig.find(x => x.nombre === n); return !!(p && poligonoValido(p.poligono)); };
+function anchoDeLabor(l) {
+  const a = (l.aperos || []).map(n => (aperosConfig || []).find(x => x.nombre === n)).filter(x => x && Number(x.ancho) > 0).map(x => Number(x.ancho));
+  return a.length ? Math.max(...a) : null;
+}
+async function puntosDiaEquipo(eq, dia) {
+  const t0 = new Date(dia + 'T00:00:00').getTime(), t1 = t0 + 86400000 - 1;
+  const orden = envivoPrefDe(eq) === 'jdlink' ? ['jdlink', 'celular'] : ['celular', 'jdlink'];
+  for (const f of orden) {
+    if (f === 'jdlink' && !envivoJD.some(j => j.equipo === eq && j._m)) { try { await traerUbicacionesJD(); } catch (e) {} }
+    const pts = f === 'celular' ? await envivoPuntosCelular(eq, t0, t1) : await envivoPuntosJD(eq, t0, t1);
+    if (pts.length) return { pts, fuente: f };
+  }
+  return { pts: [], fuente: null };
+}
+// Tramos de trabajo (en movimiento y dentro del potrero) de un día, de uno o más tractores
+async function trabajoDelDia(pot, eqs, dia) {
+  const pc = potrerosConfig.find(x => x.nombre === pot);
+  if (!pc || !poligonoValido(pc.poligono)) return { error: 'el potrero no tiene polígono' };
+  const poly = jdpNormPoligono(pc.poligono), segs = [], fuentes = new Set();
+  let ms = 0, mm = 0, puntos = 0;
+  for (const eq of eqs) {
+    const { pts, fuente } = await puntosDiaEquipo(eq, dia);
+    if (fuente) fuentes.add(fuente);
+    const p = pts.slice().sort((a, b) => a.t - b.t); puntos += p.length;
+    for (let i = 1; i < p.length; i++) {
+      const a = p[i - 1], b = p[i], dt = b.t - a.t;
+      if (dt <= 0 || dt > ENVIVO_HUECO_MS) continue;
+      const m = jdpDistKm(a, b) * 1000, kmh = m / (dt / 1000) * 3.6;
+      if (kmh < ENVIVO_VMIN_KMH || kmh > ENVIVO_VMAX_KMH) continue;
+      if (!jdpPuntoEnPoligono((a.lat + b.lat) / 2, (a.lng + b.lng) / 2, poly)) continue;
+      ms += dt; mm += m; segs.push([a.lat, a.lng, b.lat, b.lng, a.t, b.t]);
+    }
+  }
+  return { segs, ms, mm, puntos, fuente: [...fuentes].join('+') || null, equipos: eqs };
+}
+// Superficie realmente cubierta (sin contar dos veces donde se traslapó) por día y en total
+function cobUnion(segsPorDia, w) {
+  const dias = Object.keys(segsPorDia); let lat0 = 0, lng0 = 0, n = 0;
+  dias.forEach(d => segsPorDia[d].forEach(s => { lat0 += s[0]; lng0 += s[1]; n++; }));
+  if (!n) return { porDia: {}, total: 0 };
+  const P = envivoProy(lat0 / n, lng0 / n), conv = {};
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  dias.forEach(d => { conv[d] = segsPorDia[d].map(s => { const a = P.xy({ lat: s[0], lng: s[1] }), b = P.xy({ lat: s[2], lng: s[3] }); x0 = Math.min(x0, a[0], b[0]); x1 = Math.max(x1, a[0], b[0]); y0 = Math.min(y0, a[1], b[1]); y1 = Math.max(y1, a[1], b[1]); return [a[0], a[1], b[0], b[1]]; }); });
+  x0 -= w; y0 -= w; x1 += w; y1 += w;
+  let cell = 1; const area = (x1 - x0) * (y1 - y0);
+  if (area / (cell * cell) > 6e6) cell = Math.sqrt(area / 6e6);
+  const W = Math.ceil((x1 - x0) / cell) + 1, H = Math.ceil((y1 - y0) / cell) + 1, tot = new Uint8Array(W * H), out = {}, h = w / 2;
+  let totN = 0;
+  dias.forEach(d => {
+    const g = new Uint8Array(W * H); let c = 0;
+    conv[d].forEach(([ax, ay, bx, by]) => {
+      const L = Math.hypot(bx - ax, by - ay); if (L < 0.01) return;
+      const np = Math.ceil(L / 10);
+      for (let p = 0; p < np; p++) {
+        const sx = ax + (bx - ax) * p / np, sy = ay + (by - ay) * p / np, ex = ax + (bx - ax) * (p + 1) / np, ey = ay + (by - ay) * (p + 1) / np;
+        const Lp = Math.hypot(ex - sx, ey - sy), ux = (ex - sx) / Lp, uy = (ey - sy) / Lp;
+        const gx0 = Math.max(0, Math.floor((Math.min(sx, ex) - h - x0) / cell)), gx1 = Math.min(W - 1, Math.floor((Math.max(sx, ex) + h - x0) / cell));
+        const gy0 = Math.max(0, Math.floor((Math.min(sy, ey) - h - y0) / cell)), gy1 = Math.min(H - 1, Math.floor((Math.max(sy, ey) + h - y0) / cell));
+        for (let gy = gy0; gy <= gy1; gy++) for (let gx = gx0; gx <= gx1; gx++) {
+          const rx = x0 + (gx + 0.5) * cell - sx, ry = y0 + (gy + 0.5) * cell - sy, al = rx * ux + ry * uy, ac = -rx * uy + ry * ux;
+          if (al < 0 || al > Lp || Math.abs(ac) > h) continue;
+          const id = gy * W + gx;
+          if (!g[id]) { g[id] = 1; c++; if (!tot[id]) { tot[id] = 1; totN++; } }
+        }
+      }
+    });
+    out[d] = c * cell * cell / 10000;
+  });
+  return { porDia: out, total: totN * cell * cell / 10000 };
+}
+const cobN = (v, d) => v == null ? '–' : (Math.round(v * Math.pow(10, d == null ? 1 : d)) / Math.pow(10, d == null ? 1 : d)).toLocaleString('es-CL', { maximumFractionDigits: d == null ? 1 : d });
+window.verCoberturaLabor = function(id) {
+  const l = laboresCampoTodos.find(x => x.id === id); if (!l) return;
+  const aw = anchoDeLabor(l), pw = envivoAnchoPotrero(l.potrero);
+  COBC = { id, l, res: {}, cache: {}, ancho: l.coberturaAncho || aw || pw };
+  let ov = document.getElementById('modal-cob-labor');
+  if (!ov) { ov = document.createElement('div'); ov.id = 'modal-cob-labor'; ov.style.cssText = 'position:fixed;inset:0;z-index:4000;background:rgba(0,0,0,.55);display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:16px'; document.body.appendChild(ov); }
+  const eqs = (config.equipos || []).filter(e => e !== 'Otro (especificar)');
+  const dias = diasDeLabor(l);
+  const origen = l.coberturaAncho ? 'el de la última vez' : aw ? 'el del apero (' + escA((l.aperos || []).join(' + ')) + ')' : 'el ancho por defecto del potrero; cámbialo si es otro';
+  ov.innerHTML = `<div style="background:var(--blanco,#fff);border-radius:12px;max-width:560px;width:100%;padding:16px;margin:auto">
+    <div class="panel-title">🗺️ Superficie trabajada por día</div>
+    <div style="font-size:13px;margin-bottom:6px"><strong>${escA(l.potrero)}</strong> · ${escA(nombreTipoDocCampo(l))} · ${dias.length === 1 ? fCorta(dias[0]) : 'del ' + fCorta(dias[0]) + ' al ' + fCorta(dias[dias.length - 1]) + ' (' + dias.length + ' días)'}</div>
+    ${(() => { const epd = equiposPorDia(l), ds = Object.keys(epd).filter(d => epd[d].some(x => x.equipo)).sort(); return ds.length ? `<div style="font-size:12px;margin-bottom:6px;color:#374151">Tractores anotados: ${ds.map(d => fCorta(d) + ' ' + epd[d].map(x => x.equipo).filter(Boolean).map(escA).join(' + ')).join(' · ')}</div>` : ''; })()}
+    <div style="display:flex;gap:8px;margin-bottom:8px">
+      <div class="field" style="flex:1;margin:0"><label>🚜 Tractor (días sin tractor anotado)</label><div class="select-wrapper"><select id="cobc-equipo"><option value="">— elige —</option>${eqs.map(e => `<option value="${escA(e)}" ${l.equipo === e ? 'selected' : ''}>${escA(e)}</option>`).join('')}</select></div></div>
+      <div class="field" style="width:110px;margin:0"><label>Ancho (m)</label><input type="number" id="cobc-ancho" min="0.5" step="0.1" value="${COBC.ancho}"></div></div>
+    <div class="hint" style="margin-bottom:8px">Ancho: ${origen}. Busca el recorrido del tractor (📱 celular o 📡 JDLink, según la fuente elegida en Ubicación equipos) en el potrero cada día y marca la franja trabajada al ancho del apero. Las ha cuentan solo una vez donde se traslapó. h = tiempo en movimiento dentro del potrero, sin paradas.</div>
+    <button class="btn btn-verde btn-full" onclick="calcularCoberturaLabor()">🔎 Calcular</button>
+    <div id="cobc-res" style="margin-top:10px"></div>
+    <div id="cobc-leyenda" style="margin-top:8px;font-size:12px"></div>
+    <div id="cobc-mapa" style="height:340px;border-radius:8px;overflow:hidden;margin-top:6px;display:none"></div>
+    <div style="display:flex;gap:8px;margin-top:10px">
+      <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="cerrarCoberturaLabor()">Cerrar</button>
+      <button class="btn btn-verde" style="flex:1" id="cobc-guardar" onclick="guardarCoberturaLabor()" disabled>💾 Guardar en el cuaderno</button></div></div>`;
+  if (l.coberturaDia) { COBC.res = JSON.parse(JSON.stringify(l.coberturaDia)); COBC.total = l.coberturaHaTotal; COBC.guardado = true; pintarCoberturaLabor(); }
+}
+window.cerrarCoberturaLabor = function() { if (cobcMapa) { try { cobcMapa.remove(); } catch (e) {} cobcMapa = null; } const ov = document.getElementById('modal-cob-labor'); if (ov) ov.remove(); COBC = null; }
+function pintarCoberturaLabor() {
+  const box = document.getElementById('cobc-res'); if (!box || !COBC) return;
+  const dias = Object.keys(COBC.res).sort();
+  const filas = dias.map(d => {
+    const r = COBC.res[d];
+    if (r.error) return `<tr style="border-top:1px solid var(--borde)"><td style="padding:5px 4px">${fCorta(d)}</td><td colspan="5" style="color:#B91C1C">${escA(r.error)}</td></tr>`;
+    if (r.ha == null) return `<tr style="border-top:1px solid var(--borde)"><td style="padding:5px 4px">${fCorta(d)}</td><td colspan="5" style="color:var(--acero)">…</td></tr>`;
+    return `<tr style="border-top:1px solid var(--borde)"><td style="padding:5px 4px;white-space:nowrap">${fCorta(d)}${r.equipos && r.equipos.length ? `<div style="font-size:10px;color:var(--acero)">${r.equipos.map(escA).join(' + ')}${r.fuente ? ' · ' + (r.fuente === 'celular' ? '📱' : r.fuente === 'jdlink' ? '📡' : r.fuente) : ''}</div>` : ''}</td>
+      <td style="text-align:right;padding:5px 4px">${r.ha ? cobN(r.ha) : '<span style="color:var(--acero)">sin trabajo</span>'}</td><td style="text-align:right;padding:5px 4px">${r.horas ? cobN(r.horas, 2) : '–'}</td><td style="text-align:right;padding:5px 4px;font-weight:700">${r.haH ? cobN(r.haH, 2) : '–'}</td><td style="text-align:right;padding:5px 4px;font-size:11px;color:var(--acero)">${r.traslape != null && r.ha ? cobN(r.traslape, 0) + ' %' : ''}</td></tr>`;
+  }).join('');
+  const rs = dias.map(d => COBC.res[d]).filter(r => r && r.ha != null && !r.error);
+  const hT = rs.reduce((a, r) => a + (r.horas || 0), 0), pc = potrerosConfig.find(x => x.nombre === COBC.l.potrero);
+  const tot = COBC.total != null && rs.length ? `<div style="margin-top:6px;font-size:13px"><strong>Total ${cobN(COBC.total)} ha</strong>${pc && pc.hectareas ? ` (${cobN(COBC.total / pc.hectareas * 100, 0)} % de las ${cobN(pc.hectareas)} ha del potrero)` : ''}${hT > 0.05 ? ` · ${cobN(hT, 2)} h · <strong>${cobN(COBC.total / hT, 2)} ha/h</strong> promedio` : ''}</div>` : '';
+  box.innerHTML = `${COBC.guardado ? '<div style="font-size:11px;color:var(--acero);margin-bottom:4px">Guardado en el cuaderno. Puedes volver a calcular.</div>' : ''}<table style="width:100%;min-width:0;font-size:12px;border-collapse:collapse"><thead><tr><th style="text-align:left;padding:4px">Día</th><th style="text-align:right;padding:4px">ha</th><th style="text-align:right;padding:4px">h</th><th style="text-align:right;padding:4px">ha/h</th><th style="text-align:right;padding:4px" title="Parte de la franja que se pasó dos veces">traslape</th></tr></thead><tbody>${filas}</tbody></table>${tot}`;
+}
+window.calcularCoberturaLabor = async function() {
+  if (!COBC) return;
+  const eq = (document.getElementById('cobc-equipo') || {}).value, w = parseFloat((document.getElementById('cobc-ancho') || {}).value);
+  if (!(w > 0.4)) { toast('Indica el ancho de trabajo (m)', false); return; }
+  const dias = diasDeLabor(COBC.l).slice(0, 31), epd = equiposPorDia(COBC.l);
+  const eqsDe = d => { const a = [...new Set((epd[d] || []).map(x => x.equipo).filter(Boolean))]; return a.length ? a : (eq ? [eq] : []); };
+  if (dias.some(d => !eqsDe(d).length)) { toast('Elige el tractor para los días que no tienen uno anotado', false); return; }
+  COBC.eq = eq; COBC.ancho = w; COBC.res = {}; COBC.guardado = false; COBC.total = null;
+  dias.forEach(d => COBC.res[d] = {});
+  pintarCoberturaLabor();
+  const segsPorDia = {}, datos = {};
+  for (const d of dias) {
+    if (!COBC) return;
+    const eqs = eqsDe(d), k = d + '|' + eqs.join('+');
+    try {
+      if (!COBC.cache[k]) COBC.cache[k] = await trabajoDelDia(COBC.l.potrero, eqs, d);
+      datos[d] = COBC.cache[k];
+      if (datos[d].error) COBC.res[d] = { error: datos[d].error };
+      else segsPorDia[d] = datos[d].segs;
+    } catch (e) { COBC.res[d] = { error: e.message }; }
+  }
+  const U = cobUnion(segsPorDia, w);
+  dias.forEach(d => {
+    const x = datos[d]; if (!x || x.error) return;
+    const ha = Math.round((U.porDia[d] || 0) * 100) / 100, bruta = x.mm * w / 10000, horas = Math.round(x.ms / 36000) / 100;
+    COBC.res[d] = { ha, haBruta: Math.round(bruta * 100) / 100, horas, haH: horas > 0.05 && ha ? Math.round(ha / horas * 100) / 100 : null, traslape: bruta > 0 ? Math.max(0, Math.round((1 - ha / bruta) * 100)) : null, equipos: x.equipos, fuente: x.fuente, puntos: x.puntos };
+    if (!x.puntos) COBC.res[d].error = 'sin recorrido de ' + x.equipos.join(' + ') + ' ese día';
+  });
+  COBC.total = Math.round(U.total * 100) / 100; COBC.segs = segsPorDia;
+  pintarCoberturaLabor();
+  const b = document.getElementById('cobc-guardar'); if (b) b.disabled = false;
+  try { dibujarCoberturaLabor(); } catch (e) { console.warn('mapa cobertura', e); }
+}
+function dibujarCoberturaLabor() {
+  if (!COBC || !COBC.segs) return;
+  const caja = document.getElementById('cobc-mapa'), ley = document.getElementById('cobc-leyenda');
+  const pc = potrerosConfig.find(x => x.nombre === COBC.l.potrero);
+  if (!caja || typeof L === 'undefined' || !pc || !poligonoValido(pc.poligono)) return;
+  const poly = jdpNormPoligono(pc.poligono), w = COBC.ancho;
+  caja.style.display = '';
+  if (cobcMapa) { try { cobcMapa.remove(); } catch (e) {} cobcMapa = null; }
+  cobcMapa = L.map(caja, { zoomControl: true, preferCanvas: true });
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { attribution: 'Tiles &copy; Esri', maxZoom: 21, maxNativeZoom: 19 }).addTo(cobcMapa);
+  L.polygon(poly, { color: '#FACC15', weight: 2, fillOpacity: 0, interactive: false }).addTo(cobcMapa);
+  cobcMapa.fitBounds(poly, { padding: [10, 10] });
+  const P = envivoProy(poly[0][0], poly[0][1]), items = [];
+  Object.keys(COBC.res).sort().forEach((d, i) => {
+    const col = HILC_COLORES[i % HILC_COLORES.length], segs = COBC.segs[d] || [], r = COBC.res[d] || {};
+    // corridas continuas → se simplifican (1 m) y se dibujan como franjas al ancho de trabajo
+    const runs = []; let cur = null;
+    segs.forEach(s => { if (cur && cur.t === s[4]) { cur.pts.push([s[2], s[3]]); cur.t = s[5]; } else { cur = { pts: [[s[0], s[1]], [s[2], s[3]]], t: s[5] }; runs.push(cur); } });
+    runs.forEach(run => {
+      const XY = run.pts.map(q => P.xy({ lat: q[0], lng: q[1] })), idx = envivoDP(XY, 1);
+      for (let k = 0; k + 1 < idx.length; k++) {
+        const A = XY[idx[k]], B = XY[idx[k + 1]], dx = B[0] - A[0], dy = B[1] - A[1], Ls = Math.hypot(dx, dy); if (Ls < 0.3) continue;
+        const nx = -dy / Ls * w / 2, ny = dx / Ls * w / 2;
+        L.polygon([[A[0] + nx, A[1] + ny], [B[0] + nx, B[1] + ny], [B[0] - nx, B[1] - ny], [A[0] - nx, A[1] - ny]].map(q => P.ll(q[0], q[1])), { stroke: false, fillColor: col, fillOpacity: 0.5, interactive: false }).addTo(cobcMapa);
+      }
+    });
+    items.push(`<span style="display:inline-flex;align-items:center;gap:4px;margin:0 10px 4px 0"><span style="width:14px;height:14px;border-radius:3px;background:${col}"></span>${fCorta(d)}${r.ha ? ' · ' + cobN(r.ha) + ' ha' + (r.haH ? ' · ' + cobN(r.haH, 2) + ' ha/h' : '') : ' · sin datos'}</span>`);
+  });
+  if (ley) ley.innerHTML = items.join('');
+  setTimeout(() => { try { cobcMapa && cobcMapa.invalidateSize(); } catch (e) {} }, 150);
+}
+window.guardarCoberturaLabor = async function() {
+  if (!COBC) return;
+  const out = {};
+  Object.entries(COBC.res).forEach(([d, r]) => { if (r && !r.error && r.ha) out[d] = { ha: r.ha, haBruta: r.haBruta || null, horas: r.horas || null, haH: r.haH || null, traslape: r.traslape != null ? r.traslape : null, equipos: r.equipos || null, fuente: r.fuente || null }; });
+  if (!Object.keys(out).length) { toast('No hay superficie trabajada para guardar', false); return; }
+  const cambios = { coberturaDia: out, coberturaHaTotal: COBC.total, coberturaAncho: COBC.ancho, coberturaCalculadoTs: Date.now() };
+  if (COBC.eq && !COBC.l.equipo && !Object.keys(equiposPorDia(COBC.l)).length) cambios.equipo = COBC.eq;
+  try { await updateDoc(doc(db, 'labores_campo', COBC.id), cambios); toast('✓ Superficie por día guardada en el cuaderno', true); cerrarCoberturaLabor(); }
   catch (e) { toast('Error: ' + e.message, false); }
 }
 window.copiarLaborAnterior = function(i) {
@@ -7560,11 +7750,13 @@ function detalleLaborCampo(l) {
   const base = detalleLaborBase(l);
   const hil = l.hilerasDia && Object.keys(l.hilerasDia).length ? '🌳 ' + Object.keys(l.hilerasDia).sort().map(d => { const r = l.hilerasDia[d]; const c = x => String(x).replace('.', ','); return `${fCorta(d)}: entrecalles ${escA(r.hechas)}${r.ha ? ` (${c(r.ha)} ha${r.horas ? ' · ' + c(r.horas) + ' h' : ''}${r.haH ? ' · ' + c(r.haH) + ' ha/h' : ''})` : ''}${r.faltan ? ` (faltaron ${escA(r.faltan)})` : ''}`; }).join(' · ')
     + (() => { const rs = Object.values(l.hilerasDia), t = rs.reduce((a, r) => a + (r.ha && r.horas ? r.ha : 0), 0), h = rs.reduce((a, r) => a + (r.ha && r.horas ? r.horas : 0), 0); return rs.length > 1 && h > 0.05 ? ` · promedio ${String(Math.round(t / h * 100) / 100).replace('.', ',')} ha/h` : ''; })() : '';
+  const cob = l.coberturaDia && Object.keys(l.coberturaDia).length ? '🗺️ ' + Object.keys(l.coberturaDia).sort().map(d => { const r = l.coberturaDia[d]; return `${fCorta(d)}: ${cobN(r.ha)} ha${r.horas ? ' · ' + cobN(r.horas, 2) + ' h' : ''}${r.haH ? ' · ' + cobN(r.haH, 2) + ' ha/h' : ''}`; }).join(' · ')
+    + (() => { const rs = Object.values(l.coberturaDia), h = rs.reduce((a, r) => a + (r.horas || 0), 0); return rs.length > 1 && l.coberturaHaTotal ? ` · total ${cobN(l.coberturaHaTotal)} ha${h > 0.05 ? ' · promedio ' + cobN(l.coberturaHaTotal / h, 2) + ' ha/h' : ''}` : ''; })() + (l.coberturaAncho ? ` (ancho ${cobN(l.coberturaAncho)} m)` : '') : '';
   const cl = climaTexto(l);
   const epd = equiposPorDia(l), diasEq = Object.keys(epd).sort();
   const cuadrilla = diasEq.length > 1 || (diasEq.length === 1 && diasEq[0] !== l.fecha)
     ? `<div style="font-size:11px;color:#374151;margin-top:2px">📅 ${diasEq.map(d => `${fCorta(d)}: ${epd[d].map(x => [x.equipo, x.operador].filter(Boolean).join(' (') + (x.equipo && x.operador ? ')' : '')).map(escA).join(' + ')}`).join(' · ')}</div>` : '';
-  const extra = [(!cuadrilla && l.tipo !== 'aplicacion' && l.tipo !== 'trabajo_suelo' && l.equipo) ? '🚜 ' + escA(l.equipo) : '', (!cuadrilla && l.operadorLabor) ? '👷 ' + escA(l.operadorLabor) : '', l.hilerasManual ? '🌳 hileras ' + escA(l.hilerasManual) : '', hil].filter(Boolean).join(' · ')
+  const extra = [(!cuadrilla && l.tipo !== 'aplicacion' && l.tipo !== 'trabajo_suelo' && l.equipo) ? '🚜 ' + escA(l.equipo) : '', (!cuadrilla && l.operadorLabor) ? '👷 ' + escA(l.operadorLabor) : '', l.hilerasManual ? '🌳 hileras ' + escA(l.hilerasManual) : '', hil, cob].filter(Boolean).join(' · ')
     + cuadrilla + (cl ? `<div style="font-size:11px;color:#0369A1;margin-top:2px">🌤️ ${escA(cl)}</div>` : '');
   return extra ? (base && base !== '—' ? base + (extra.startsWith('<div') ? '' : ' · ') : '') + extra : base;
 }
@@ -7767,7 +7959,7 @@ window.renderHistorialLabores = function() {
   });
   const tipoLabel = {}; TIPOS_LABOR_CAMPO.forEach(t => tipoLabel[t.id] = iconoLaborHtml(t));
   const tipoTxt = l => l.tipo === 'personalizado' ? '🧩 ' + escA(l.nombreTipo) : (tipoLabel[l.tipo] || l.tipo);
-  const botones = l => `${l.fecha && potreroEsHuerto(l.potrero) ? `<button class="btn btn-secondary" style="padding:6px 9px;margin-right:4px" title="Clima de los días de la labor (temperatura, lluvia y radiación)" onclick="actualizarClimaLabor('${l.id}')">🌤️</button>` : ''}${potreroEsHuerto(l.potrero) && l.fecha ? `<button class="btn btn-secondary" style="padding:6px 9px;margin-right:4px" title="Hileras trabajadas por día (según el recorrido del tractor)" onclick="verHilerasLabor('${l.id}')">🌳</button>` : ''}<button class="btn btn-secondary" style="padding:6px 9px;margin-right:4px" title="Editar" onclick="editarLaborCampo('${l.id}')">✏️</button><button class="btn btn-secondary" style="padding:6px 9px;margin-right:4px" title="Agregar otra labor del mismo día enlazada a esta" onclick="agregarLaborAFila('${l.id}')">➕</button><button class="btn btn-danger" onclick="eliminarLaborCampo('${l.id}')">✕</button>`;
+  const botones = l => `${l.fecha ? `<button class="btn btn-secondary" style="padding:6px 9px;margin-right:4px" title="Clima de los días de la labor (temperatura, lluvia y radiación)" onclick="actualizarClimaLabor('${l.id}')">🌤️</button>` : ''}${potreroEsHuerto(l.potrero) && l.fecha ? `<button class="btn btn-secondary" style="padding:6px 9px;margin-right:4px" title="Hileras trabajadas por día (según el recorrido del tractor)" onclick="verHilerasLabor('${l.id}')">🌳</button>` : ''}${l.fecha && !potreroEsHuerto(l.potrero) && potreroConPoligono(l.potrero) && (l.equipo || Object.keys(equiposPorDia(l)).length || (l.aperos || []).length) ? `<button class="btn btn-secondary" style="padding:6px 9px;margin-right:4px" title="Superficie trabajada por día (según el recorrido del tractor)" onclick="verCoberturaLabor('${l.id}')">🗺️</button>` : ''}<button class="btn btn-secondary" style="padding:6px 9px;margin-right:4px" title="Editar" onclick="editarLaborCampo('${l.id}')">✏️</button><button class="btn btn-secondary" style="padding:6px 9px;margin-right:4px" title="Agregar otra labor del mismo día enlazada a esta" onclick="agregarLaborAFila('${l.id}')">➕</button><button class="btn btn-danger" onclick="eliminarLaborCampo('${l.id}')">✕</button>`;
   const sentido = campoHistorialOrden === 'asc' ? 1 : -1;
   const ordenInfo = g => { if (!g[0].fecha) return ''; const it = itemsDelDia(g[0]); if (it.length < 2) return ''; const pos = it.findIndex(x => x.some(y => y.id === g[0].id)) + 1; return `<div style="font-size:10px;color:#6B7280;margin-top:3px">${pos}º de ${it.length} del día</div>`; };
   const botonesOrden = g => { if (!puedeEditarCampo() || !g[0].fecha || itemsDelDia(g[0]).length < 2) return ''; return `<div style="margin-top:4px"><button class="btn btn-secondary" style="padding:3px 8px;margin-right:3px" title="Subir" onclick="moverLaborDia('${g[0].id}',${-1 * sentido})">▲</button><button class="btn btn-secondary" style="padding:3px 8px" title="Bajar" onclick="moverLaborDia('${g[0].id}',${1 * sentido})">▼</button></div>`; };
