@@ -270,7 +270,7 @@ mapa.addControl(new maplibregl.NavigationControl({ showZoom: false, visualizePit
 // Grosor en metros reales: píxeles por metro a zoom 0 (k) × 2^zoom
 const anchoEnMetros = ['interpolate', ['exponential', 2], ['zoom'], 0, ['*', ['get', 'w'], ['get', 'k']], 24, ['*', ['get', 'w'], ['get', 'k'], 16777216]];
 const kLat = lat => 512 / (40075016.686 * Math.cos(lat * Math.PI / 180));
-const FUENTES = ['potreros', 'zonas', 'caminos', 'guias', 'otros', 'aplicado', 'repetido', 'recorrido', 'precision'];
+const FUENTES = ['potreros', 'zonas', 'caminos', 'guias', 'otros', 'aplicadoPrev', 'aplicado', 'repetido', 'recorrido', 'precision'];
 const datosFuente = {};
 let mapaListo = false;
 function setFuente(id, fc) { datosFuente[id] = fc; if (mapaListo) mapa.getSource(id).setData(fc); }
@@ -283,6 +283,7 @@ mapa.on('load', () => {
   mapa.addLayer({ id: 'caminos', type: 'line', source: 'caminos', paint: { 'line-color': '#E5E7EB', 'line-width': 3, 'line-dasharray': [3, 2] } });
   mapa.addLayer({ id: 'guias', type: 'line', source: 'guias', paint: { 'line-color': ['case', ['get', 'sig'], '#FACC15', '#FFFFFF'], 'line-opacity': ['case', ['get', 'sig'], 0.9, 0.35], 'line-width': ['case', ['get', 'sig'], 4, 1], 'line-dasharray': [2, 2] } });
   mapa.addLayer({ id: 'otros', type: 'line', source: 'otros', layout: { 'line-cap': 'butt', 'line-join': 'round' }, paint: { 'line-color': '#22D3EE', 'line-opacity': 0.4, 'line-width': anchoEnMetros } });
+  mapa.addLayer({ id: 'aplicadoPrev', type: 'line', source: 'aplicadoPrev', layout: { 'line-cap': 'butt', 'line-join': 'round' }, paint: { 'line-color': '#C084FC', 'line-opacity': 0.5, 'line-width': anchoEnMetros } });
   mapa.addLayer({ id: 'aplicado', type: 'line', source: 'aplicado', layout: { 'line-cap': 'butt', 'line-join': 'round' }, paint: { 'line-color': '#22C55E', 'line-opacity': 0.45, 'line-width': anchoEnMetros } });
   mapa.addLayer({ id: 'repetido', type: 'line', source: 'repetido', layout: { 'line-cap': 'butt', 'line-join': 'round' }, paint: { 'line-color': '#EF4444', 'line-opacity': 0.7, 'line-width': anchoEnMetros } });
   mapa.addLayer({ id: 'recorrido', type: 'line', source: 'recorrido', paint: { 'line-color': '#FFFFFF', 'line-opacity': 0.35, 'line-width': 1 } });
@@ -446,6 +447,18 @@ function agregarAplicado(p) {
   ultimoAplicado = p;
 }
 let trazosOtros = [], kmOtros = 0, equiposOtros = [];
+// Totalizador 2: hectáreas aplicadas desde el último reinicio (para calibrar). Independiente del potrero; queda en el celular.
+let parcial = ls.get('tractor_parcial', null) || { m2: 0, km: 0, ms: 0, desde: Date.now() };
+function sumarParcial(dKm, dMs) {
+  if (!(dKm > 0)) return;
+  parcial.km += dKm; parcial.m2 += dKm * 1000 * anchoActual(); if (dMs > 0 && dMs < 30000) parcial.ms += dMs;
+  ls.set('tractor_parcial', parcial);
+}
+window.reiniciarParcial = function () {
+  if (!confirm('¿Reiniciar el totalizador 2 (T2) a 0 ha? El total de la aplicación no cambia.')) return;
+  parcial = { m2: 0, km: 0, ms: 0, desde: Date.now() }; ls.set('tractor_parcial', parcial);
+  pintarAplicacion(); if (typeof hudPintar === 'function') hudPintar();
+};
 // ── Hileras, lo aplicado y lo repetido ───────────────────────────
 // En frutales (potrero con cultivo) el tractor pasa por entrecalles paralelas separadas
 // por el ancho del cultivo. La app estima la dirección y la posición de las entrecalles
@@ -453,7 +466,7 @@ let trazosOtros = [], kmOtros = 0, equiposOtros = [];
 // cada pasada derecha sobre su entrecalle: así el error del GPS del celular (±3–5 m)
 // no ensucia el mapa. Lo que se vuelve a pasar por una entrecalle ya aplicada se pinta rojo.
 let hileras = ls.get('tractor_hileras', {});          // { potrero: { az, off, sp, lat0, lng0, m, fija, ts } }
-let repetidoM = 0, repitiendoAhora = false, avisoRepetir = 0;
+let repetidoM = 0, repitiendoAhora = false, avisoRepetir = 0, hayDiasAnteriores = false;
 const MIN_M_HILERAS = 500;                            // metros rectos reales (≈ 2 pasadas largas) para dejar fija la estimación
 const VERSION_HILERAS = 2;
 // ── GRILLA DE HILERAS (compartida: app, reparto y modo tractor) ─────────
@@ -647,7 +660,9 @@ function redibujarAplicado() { if (!redibujoT) redibujoT = setTimeout(() => { re
 function calcularCobertura() {
   const a = activa(), w = anchoActual();
   const linea = (coords, props) => ({ type: 'Feature', properties: { w, k: kLat(coords[0][1]), ...props }, geometry: { type: 'LineString', coordinates: coords } });
-  const verde = [], rojo = [], cian = [], guias = [];
+  const verde = [], rojo = [], cian = [], guias = [], violeta = [];
+  const hoy0 = new Date().setHours(0, 0, 0, 0);
+  const destYo = t => (t && t < hoy0) ? violeta : verde; // lo de días anteriores se pinta aparte
   repetidoM = 0; repitiendoAhora = false;
   let g = a && esFrutal(a.potrero) ? hileras[a.potrero] : null;
   if (g && !(g.v === VERSION_HILERAS || g.v === 3)) g = null; // estimaciones viejas (fijadas con muy pocos datos): se rehacen
@@ -726,7 +741,7 @@ function calcularCobertura() {
       const a0 = Math.min(...ps.s), a1 = Math.max(...ps.s);
       const c = cub[ps.k] || (cub[ps.k] = []);
       const { nuevas, rep } = restar(c, a0, a1);
-      nuevas.forEach(([x0, x1]) => (ps.quien === 'yo' ? verde : cian).push(linea(segLL(ps.k, x0, x1), {})));
+      nuevas.forEach(([x0, x1]) => (ps.quien === 'yo' ? destYo(ps.t1) : cian).push(linea(segLL(ps.k, x0, x1), {})));
       rep.filter(([x0, x1]) => x1 - x0 >= 8).forEach(([x0, x1]) => {
         (ps.quien === 'yo' ? rojo : cian).push(linea(segLL(ps.k, x0, x1), {}));
         if (ps.quien === 'yo') { repetidoM += x1 - x0; if (ps === ultima && ultimaPos && Date.now() - ps.t1 < 20000) { const sv = pr.sd(ultimaPos.lat, ultimaPos.lng)[0]; if (sv >= x0 - 8 && sv <= x1 + 8) repitiendoAhora = true; } }
@@ -735,11 +750,16 @@ function calcularCobertura() {
     });
     // Cabeceras y vueltas (no alineadas): se dibujan tal cual
     const crudos = (trs, destino) => trs.forEach(tr => {
-      const dirs = direcciones(tr); let seg = [];
-      tr.forEach((q, i) => { const al = dirs[i] != null && difAxial(dirs[i], g.az) < 25; if (!al) seg.push(aLngLat(q)); else { if (seg.length >= 2) destino.push(linea(seg, {})); seg = []; } });
-      if (seg.length >= 2) destino.push(linea(seg, {}));
+      const dirs = direcciones(tr); let seg = [], dst = null;
+      const cerrar = () => { if (seg.length >= 2) (dst || verde).push(linea(seg, {})); seg = []; };
+      tr.forEach((q, i) => {
+        const al = dirs[i] != null && difAxial(dirs[i], g.az) < 25;
+        const d = destino === 'yo' ? destYo(q[2]) : destino;
+        if (!al) { if (dst && d !== dst) cerrar(); dst = d; seg.push(aLngLat(q)); } else cerrar();
+      });
+      cerrar();
     });
-    crudos(tramosAplicados, verde); crudos(trazosOtros, cian);
+    crudos(tramosAplicados, 'yo'); crudos(trazosOtros, cian);
     // Guías: entrecalles del potrero (las sin aplicar en blanco; la más cercana sin aplicar en amarillo)
     const pg = potrerosGeo.find(x => x.nombre === a.potrero);
     if (pg) {
@@ -781,15 +801,20 @@ function calcularCobertura() {
         const ll = aLngLat(q);
         if (r) { segR.push(...(segR.length || !prev ? [] : [prev]), ll); if (prev && segR.length >= 2) repetidoM += distM([q[0], q[1]], [prev[1], prev[0]]); }
         else if (segR.length) { if (segR.length >= 2) rojo.push(linea(segR, {})); segR = []; }
+        const dv = destYo(t);
+        if (segV.length && segV._d && segV._d !== dv) { if (segV.length >= 2) segV._d.push(linea(segV, {})); const ult = segV[segV.length - 1]; segV = [ult]; }
+        segV._d = dv;
         segV.push(ll); prev = ll;
         const c = clave(x, y); if (!idx.has(c)) idx.set(c, []); idx.get(c).push({ x, y, t });
       });
-      if (segV.length >= 2) verde.push(linea(segV, {}));
+      if (segV.length >= 2) (segV._d || verde).push(linea(segV, {}));
       if (segR.length >= 2) { rojo.push(linea(segR, {})); const u = tr[tr.length - 1]; if (Date.now() - (u[2] || 0) < 20000) repitiendoAhora = true; }
     });
   }
   setFuente('otros', { type: 'FeatureCollection', features: cian });
   setFuente('aplicado', { type: 'FeatureCollection', features: verde });
+  setFuente('aplicadoPrev', { type: 'FeatureCollection', features: violeta });
+  hayDiasAnteriores = violeta.length > 0;
   setFuente('repetido', { type: 'FeatureCollection', features: rojo });
   setFuente('guias', { type: 'FeatureCollection', features: guias });
   if (repitiendoAhora && aplicando && Date.now() - avisoRepetir > 30000) {
@@ -831,15 +856,22 @@ function pintarAplicacion() {
     const pctT = pg && pg.ha ? Math.min(100, haTot / pg.ha * 100) : null;
     info.innerHTML = `🌾 <strong>${a.potrero}</strong><div class="sub">Desde ${fechaCorta(a.inicio)} · este tractor ${kmAplicacion.toFixed(1).replace('.', ',')} km${kmOtros ? ` · otros (${equiposOtros.join(', ')}) ${kmOtros.toFixed(1).replace('.', ',')} km` : ''} · ≈ ${haTot.toFixed(1).replace('.', ',')} ha${pctT != null ? ` (~${pctT.toFixed(0)}% de ${pg.ha.toFixed(1).replace('.', ',')} ha)` : ''}</div>`;
     resumenAp = { haTot, pct: pctT, haPot: pg && pg.ha ? pg.ha : null };
+    info.innerHTML += textoParcial();
     btn.textContent = '🌾 Cambiar / terminar';
   } else {
     resumenAp = null;
-    info.innerHTML = 'Sin potrero iniciado<div class="sub">Toca "Iniciar potrero" antes de aplicar</div>';
+    info.innerHTML = 'Sin potrero iniciado<div class="sub">Toca "Iniciar potrero" antes de aplicar</div>' + (parcial.m2 > 0 ? textoParcial() : '');
     btn.textContent = '🌾 Iniciar potrero';
   }
   const g = a ? hileras[a.potrero] : null;
-  document.getElementById('stats').innerHTML = `Ancho ${String(ancho).replace('.', ',')} m${a && a.ancho ? ' (según cultivo)' : ''}${a ? ' · 🟩 aplicado · 🟦 otros' : ''}${repetidoM >= 5 ? ` · <span style="color:var(--rojo);font-weight:700">🟥 ${Math.round(repetidoM)} m repetidos</span>` : ''}${a && esFrutal(a.potrero) ? (g ? (g.fija ? ' · hileras ✓' : ' · hileras estimándose…') : ' · hileras: haz una pasada recta') : ''}`;
+  document.getElementById('stats').innerHTML = `Ancho ${String(ancho).replace('.', ',')} m${a && a.ancho ? ' (según cultivo)' : ''}${a ? ' · 🟩 hoy' + (hayDiasAnteriores ? ' · 🟪 días anteriores' : '') + ' · 🟦 otros' : ''}${repetidoM >= 5 ? ` · <span style="color:var(--rojo);font-weight:700">🟥 ${Math.round(repetidoM)} m repetidos</span>` : ''}${a && esFrutal(a.potrero) ? (g ? (g.fija ? ' · hileras ✓' : ' · hileras estimándose…') : ' · hileras: haz una pasada recta') : ''}`;
   a && (a.km = +kmAplicacion.toFixed(2));
+}
+
+function textoParcial() {
+  const ha = parcial.m2 / 10000, min = Math.round(parcial.ms / 60000);
+  const desde = new Date(parcial.desde), hoy = new Date().toDateString() === desde.toDateString();
+  return `<div class="sub" style="margin-top:3px">🔢 <strong style="color:#FACC15">T2: ${ha.toFixed(2).replace('.', ',')} ha</strong> · ${parcial.km.toFixed(2).replace('.', ',')} km · ${min} min aplicando · desde ${hoy ? '' : fechaCorta(parcial.desde) + ' '}${desde.toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' })} <button type="button" onclick="reiniciarParcial()" style="margin-left:4px;padding:2px 8px;font-size:12px;border-radius:6px;border:1px solid #9CA3AF;background:#fff">↺ 0</button></div>`;
 }
 
 // ── Elegir potrero, continuar o empezar nueva aplicación ─────────
@@ -967,7 +999,12 @@ function onPos(pos) {
   if (!p.ap) delete p.ap; // los índices de IndexedDB no aceptan null
   guardarPunto(p).then(actualizarPendientes).catch(e => console.warn('No se pudo guardar el punto', e));
   recorridoLinea.addLatLng(ll);
-  if (p.a) { agregarAplicado(p); redibujarAplicado(); pintarAplicacion(); guardarAplicaciones(); }
+  if (p.a) {
+    const km0 = kmAplicacion, t0 = ultimoAplicado ? ultimoAplicado.t : null;
+    agregarAplicado(p);
+    sumarParcial(kmAplicacion - km0, t0 ? p.t - t0 : 0);
+    redibujarAplicado(); pintarAplicacion(); guardarAplicaciones();
+  }
 }
 window.__simPos = onPos; // usado solo en pruebas
 function onPosError(err) {
@@ -1241,7 +1278,7 @@ async function preguntarPotreroAnterior(eq) {
 // Tras 10 s sin tocar la pantalla (con un potrero iniciado) se oculta todo salvo el mapa y un
 // cuadro arriba con un dato grande a elegir. Cualquier toque vuelve a la vista normal.
 const FOCO_MS = 10000;
-const HUD_DATOS = [ { id: 'vel', t: '🚜 Velocidad' }, { id: 'pre', t: '📍 Precisión' }, { id: 'pct', t: '🌾 % potrero' }, { id: 'ha', t: '≈ Hectáreas' } ];
+const HUD_DATOS = [ { id: 'vel', t: '🚜 Velocidad' }, { id: 'pre', t: '📍 Precisión' }, { id: 'pct', t: '🌾 % potrero' }, { id: 'ha', t: '≈ Hectáreas' }, { id: 'ha2', t: '🔢 T2 (ha)' } ];
 let hudDato = ls.get('tractor_hud', 'vel'), focoActivo = false, ultimoToque = Date.now(), resumenAp = null;
 const nf = (n, d) => n.toFixed(d).replace('.', ',');
 function hudPintar() {
@@ -1251,6 +1288,7 @@ function hudPintar() {
   if (hudDato === 'vel') { val = pos && pos.v != null ? nf(pos.v * 3.6, 1) : '—'; sub = 'km/h'; }
   else if (hudDato === 'pre') { val = pos ? '±' + pos.acc : '—'; sub = 'metros de precisión del GPS'; }
   else if (hudDato === 'pct') { val = resumenAp && resumenAp.pct != null ? Math.round(resumenAp.pct) + '%' : '—'; sub = resumenAp && resumenAp.haPot ? `de ${nf(resumenAp.haPot, 1)} ha de ${a ? a.potrero : ''}` : 'del potrero'; }
+  else if (hudDato === 'ha2') { val = nf(parcial.m2 / 10000, 2); sub = 'ha T2 desde ' + new Date(parcial.desde).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' }) + ' (reinícialo abajo con ↺ 0)'; }
   else { val = resumenAp ? nf(resumenAp.haTot, 1) : '—'; sub = 'ha aplicadas' + (a ? ' en ' + a.potrero : ''); }
   hud.className = aplicando ? 'ap' : '';
   hud.innerHTML = `<div class="h-val">${val}</div><div class="h-sub">${sub} · ${aplicando ? '▶ aplicando' : '⏸ sin aplicar'}</div>
