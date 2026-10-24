@@ -6718,16 +6718,43 @@ async function hilerasDelDia(pot, eq, dia) {
     cur.push([p.lat, p.lng, p.t, false, v != null && isFinite(v) && v < 40 ? v : null]);
   });
   if (cur.length) tramos.push(cur);
-  const pasadas = tramos.filter(tr => tr.length >= 3).flatMap(tr => hilPasadas(tr, g)).filter(ps => Math.abs(ps.s1 - ps.s0) >= 15);
+  // Corrimiento del GPS de ese día: cuánto se alejan (en promedio) las pasadas del centro de las entrecalles.
+  // La grilla fija se mueve esa distancia (como mucho media entrecalle) antes de contar; la numeración no cambia.
+  const corr = corrimientoGps(g, tramos);
+  const gc = Math.abs(corr) >= 0.3 ? desplazarGrilla(g, corr) : g;
+  const pasadas = tramos.filter(tr => tr.length >= 3).flatMap(tr => hilPasadas(tr, gc)).filter(ps => Math.abs(ps.s1 - ps.s0) >= 15);
   const ks = [...new Set(pasadas.map(ps => ps.k))];
-  const hechas = ks.map(k => hilNumero(g, k)).filter(Boolean).sort((a, b) => a - b);
+  const hechas = ks.map(k => hilNumero(gc, k)).filter(Boolean).sort((a, b) => a - b);
   const faltan = [];
-  if (ks.length) { const kmin = Math.min(...ks), kmax = Math.max(...ks); for (let k = kmin; k <= kmax; k++) if (!ks.includes(k) && hilNumero(g, k)) faltan.push(hilNumero(g, k)); }
+  if (ks.length) { const kmin = Math.min(...ks), kmax = Math.max(...ks); for (let k = kmin; k <= kmax; k++) if (!ks.includes(k) && hilNumero(gc, k)) faltan.push(hilNumero(gc, k)); }
   // Horas trabajando: tiempo en movimiento dentro del potrero (sin paradas ni huecos de más de 3 min)
   let msMov = 0;
   for (let i = 1; i < dentro.length; i++) { const dt = dentro[i].t - dentro[i - 1].t; if (dt <= 0 || dt > 180000) continue; const v = jdpDistKm(dentro[i - 1], dentro[i]) / (dt / 3600000); if (v >= 1 && v < 40) msMov += dt; }
   const ha = haDeEntrecalles(g, poly, hechas), horas = Math.round(msMov / 36000) / 100;
-  return { fuente, puntos: dentro.length, hechas, faltan: faltan.sort((a, b) => a - b), total: g.nHileras || null, ha, horas, haH: horas > 0.05 && ha ? Math.round(ha / horas * 100) / 100 : null };
+  return { fuente, puntos: dentro.length, hechas, faltan: faltan.sort((a, b) => a - b), total: g.nHileras || null, ha, horas, haH: horas > 0.05 && ha ? Math.round(ha / horas * 100) / 100 : null, corrM: Math.round(corr * 10) / 10 };
+}
+// Media circular del desvío lateral de los puntos alineados con las hileras respecto al centro de su entrecalle
+function corrimientoGps(g, tramos) {
+  const G = grillaDe(g); if (!G) return 0;
+  let c = 0, s2 = 0, n = 0;
+  tramos.forEach(tr => {
+    if (tr.length < 3) return;
+    const dirs = hilDirecciones(tr);
+    tr.forEach((q, i) => {
+      if (dirs[i] == null || hilDifAxial(dirs[i], g.az) >= 20) return;
+      const [sv, d] = G.sd(q[0], q[1]), k = G.k(sv, d);
+      if (g.v === 3 && gNumero(g, k) == null) return;
+      const b = G.bordes(k, sv), w = Math.abs(b[1] - b[0]) || G.sp || 5;
+      const f = 2 * Math.PI * (d - G.centro(k, sv)) / w;
+      c += Math.cos(f); s2 += Math.sin(f); n++;
+    });
+  });
+  if (n < 30 || Math.hypot(c, s2) / n < 0.3) return 0; // pocos puntos o sin un corrimiento claro
+  return Math.atan2(s2, c) / (2 * Math.PI) * (G.sp || g.sp || 5);
+}
+function desplazarGrilla(g, dm) {
+  if (g.v === 3) return { ...g, filas: (g.filas || []).map(f => Array.isArray(f) ? f.map(x => x + dm) : { ...f, d: (f.d || []).map(x => x + dm) }) };
+  return { ...g, off: (g.off || 0) + dm };
 }
 // ── Clima de cada día de la labor (Open-Meteo, gratis y sin clave): temperatura, precipitación y radiación solar ──
 function centroPotrero(nombre) {
@@ -6796,7 +6823,7 @@ async function hilerasDelDiaVarios(pot, eqs, dia) {
   const pc = potrerosConfig.find(x => x.nombre === pot), g = jdpHilerasCfg && jdpHilerasCfg[pot];
   const ha = hechas.length && pc && g ? haDeEntrecalles(g, jdpNormPoligono(pc.poligono), hechas) : 0;
   const horas = Math.round(rs.reduce((a, r) => a + (r.horas || 0), 0) * 100) / 100;
-  return { fuente: [...new Set(rs.map(r => r.fuente).filter(Boolean))].join('+') || null, puntos: rs.reduce((a, r) => a + (r.puntos || 0), 0), hechas, faltan, total: (rs.find(r => r.total) || {}).total || null, ha, horas, haH: horas > 0.05 && ha ? Math.round(ha / horas * 100) / 100 : null, equipos: eqs };
+  return { fuente: [...new Set(rs.map(r => r.fuente).filter(Boolean))].join('+') || null, puntos: rs.reduce((a, r) => a + (r.puntos || 0), 0), hechas, faltan, total: (rs.find(r => r.total) || {}).total || null, ha, horas, haH: horas > 0.05 && ha ? Math.round(ha / horas * 100) / 100 : null, equipos: eqs, corrM: rs.map(r => r.corrM).filter(x => x != null).join(' / ') || null };
 }
 let HILC = null; // { id, l, res: {dia: resultado} }
 window.verHilerasLabor = function(id) {
@@ -6811,7 +6838,7 @@ window.verHilerasLabor = function(id) {
     <div style="font-size:13px;margin-bottom:6px"><strong>${escA(l.potrero)}</strong> · ${escA(nombreTipoDocCampo(l))} · ${dias.length === 1 ? fCorta(dias[0]) : 'del ' + fCorta(dias[0]) + ' al ' + fCorta(dias[dias.length - 1]) + ' (' + dias.length + ' días)'}</div>
     ${(() => { const epd = equiposPorDia(l), ds = Object.keys(epd).filter(d => epd[d].some(x => x.equipo)).sort(); return ds.length ? `<div style="font-size:12px;margin-bottom:6px;color:#374151">Tractores anotados: ${ds.map(d => fCorta(d) + ' ' + epd[d].map(x => x.equipo).filter(Boolean).map(escA).join(' + ')).join(' · ')}</div>` : ''; })()}
     <div class="field" style="margin-bottom:8px"><label>🚜 Tractor para los días sin tractor anotado</label><div class="select-wrapper"><select id="hilc-equipo"><option value="">— elige —</option>${eqs.map(e => `<option value="${escA(e)}" ${l.equipo === e ? 'selected' : ''}>${escA(e)}</option>`).join('')}</select></div></div>
-    <div class="hint" style="margin-bottom:8px">Busca el recorrido de ese tractor (📱 celular o 📡 JDLink, según la fuente elegida en Ubicación equipos) dentro del potrero cada día, y lo cruza con las hileras numeradas del huerto. Es aproximado.</div>
+    <div class="hint" style="margin-bottom:8px">Busca el recorrido de ese tractor (📱 celular o 📡 JDLink, según la fuente elegida en Ubicación equipos) dentro del potrero cada día y lo cruza con las hileras numeradas del huerto. Antes de cruzar, corrige el corrimiento del GPS de cada día (las pasadas se alinean al centro de las entrecalles). Es aproximado: si el GPS se corrió más de media entrecalle, la numeración puede quedar desplazada en una.</div>
     <button class="btn btn-verde btn-full" onclick="calcularHilerasLabor()">🔎 Calcular</button>
     <div id="hilc-res" style="margin-top:10px"></div>
     <div id="hilc-leyenda" style="margin-top:8px;font-size:12px"></div>
@@ -6897,7 +6924,7 @@ function pintarHilerasLabor(guardado) {
     const r = HILC.res[d];
     const ent = r.error ? `<span style="color:#B91C1C">${escA(r.error)}</span>` : r.hechas ? (typeof r.hechas === 'string' ? r.hechas : rangosNum(r.hechas)) || '<span style="color:var(--acero)">sin pasadas en el potrero</span>' : '…';
     const falt = r.faltan && r.faltan.length ? (typeof r.faltan === 'string' ? r.faltan : rangosNum(r.faltan)) : '';
-    return `<tr style="border-top:1px solid var(--borde)"><td style="padding:5px 4px;white-space:nowrap">${fCorta(d)}${r.equipos && r.equipos.length ? `<div style="font-size:10px;color:var(--acero)">${r.equipos.map(escA).join(' + ')}</div>` : ''}</td><td style="padding:5px 4px">${ent}${r.total ? `<span style="color:var(--acero);font-size:11px"> de ${r.total}</span>` : ''}</td><td style="padding:5px 4px;text-align:right;white-space:nowrap;font-weight:700">${r.ha ? String(r.ha).replace('.', ',') : '—'}</td><td style="padding:5px 4px;text-align:right;white-space:nowrap">${r.horas ? String(r.horas).replace('.', ',') : '—'}</td><td style="padding:5px 4px;text-align:right;white-space:nowrap;font-weight:700;color:#047857">${r.haH ? String(r.haH).replace('.', ',') : '—'}</td><td style="padding:5px 4px;color:#B91C1C">${escA(falt)}</td><td style="padding:5px 4px;font-size:11px">${r.fuente === 'jdlink' ? '📡' : r.fuente === 'celular' ? '📱' : r.puntos === 0 ? 'sin datos' : ''}</td></tr>`;
+    return `<tr style="border-top:1px solid var(--borde)"><td style="padding:5px 4px;white-space:nowrap">${fCorta(d)}${r.equipos && r.equipos.length ? `<div style="font-size:10px;color:var(--acero)">${r.equipos.map(escA).join(' + ')}</div>` : ''}${r.corrM != null && r.corrM !== '' && r.corrM !== 0 ? `<div style="font-size:10px;color:#1D4ED8" title="Corrimiento del GPS corregido ese día">GPS corrido ${String(r.corrM).replace(/-/g, '').replace(/\./g, ',')} m</div>` : ''}</td><td style="padding:5px 4px">${ent}${r.total ? `<span style="color:var(--acero);font-size:11px"> de ${r.total}</span>` : ''}</td><td style="padding:5px 4px;text-align:right;white-space:nowrap;font-weight:700">${r.ha ? String(r.ha).replace('.', ',') : '—'}</td><td style="padding:5px 4px;text-align:right;white-space:nowrap">${r.horas ? String(r.horas).replace('.', ',') : '—'}</td><td style="padding:5px 4px;text-align:right;white-space:nowrap;font-weight:700;color:#047857">${r.haH ? String(r.haH).replace('.', ',') : '—'}</td><td style="padding:5px 4px;color:#B91C1C">${escA(falt)}</td><td style="padding:5px 4px;font-size:11px">${r.fuente === 'jdlink' ? '📡' : r.fuente === 'celular' ? '📱' : r.puntos === 0 ? 'sin datos' : ''}</td></tr>`;
   }).join('');
   box.innerHTML = `${guardado ? '<div style="font-size:11px;color:var(--acero);margin-bottom:4px">Guardado en el cuaderno. Puedes volver a calcular.</div>' : ''}<table style="width:100%;min-width:0;font-size:12px;border-collapse:collapse"><thead><tr><th style="text-align:left;padding:4px">Día</th><th style="text-align:left;padding:4px">Entrecalles trabajadas</th><th style="text-align:right;padding:4px">ha</th><th style="text-align:right;padding:4px">h</th><th style="text-align:right;padding:4px">ha/h</th><th style="text-align:left;padding:4px">Faltaron</th><th></th></tr></thead><tbody>${filas}</tbody>${(() => { const rs = Object.values(HILC.res), t = rs.reduce((a, r) => a + (Number(r && r.ha) || 0), 0), h = rs.reduce((a, r) => a + (Number(r && r.horas) || 0), 0), hh = rs.reduce((a, r) => a + (r && r.ha && r.horas ? Number(r.horas) : 0), 0); const pc = potrerosConfig.find(x => x.nombre === HILC.l.potrero); const c = x => String(x).replace('.', ','); return t ? `<tfoot><tr style="border-top:2px solid var(--borde)"><td style="padding:5px 4px;font-weight:800">Total</td><td style="padding:5px 4px;color:var(--acero);font-size:11px">${pc && pc.hectareas ? 'potrero: ' + c(pc.hectareas) + ' ha' : ''}</td><td style="padding:5px 4px;text-align:right;font-weight:800">${c(Math.round(t * 10) / 10)}</td><td style="padding:5px 4px;text-align:right;font-weight:800">${h ? c(Math.round(h * 10) / 10) : '—'}</td><td style="padding:5px 4px;text-align:right;font-weight:800;color:#047857">${hh > 0.05 ? c(Math.round(t / hh * 100) / 100) : '—'}</td><td colspan="2"></td></tr></tfoot>` : ''; })()}</table>
     <div style="font-size:11px;color:var(--acero);margin-top:3px">ha = entrecalles trabajadas completas × su ancho (aprox.; si una entrecalle se pasó dos días, cuenta en ambos). h = tiempo en movimiento dentro del potrero, sin paradas. ha/h del total = todas las ha ÷ todas las horas.</div>`;
@@ -6922,7 +6949,7 @@ window.calcularHilerasLabor = async function() {
 window.guardarHilerasLabor = async function() {
   if (!HILC) return;
   const out = {};
-  Object.entries(HILC.res).forEach(([d, r]) => { if (r && !r.error && r.hechas && r.hechas.length) out[d] = { hechas: typeof r.hechas === 'string' ? r.hechas : rangosNum(r.hechas), n: Array.isArray(r.hechas) ? r.hechas.length : (r.n || null), ha: r.ha || null, horas: r.horas || null, haH: r.haH || null, equipos: r.equipos || null, faltan: Array.isArray(r.faltan) ? rangosNum(r.faltan) : (r.faltan || ''), total: r.total || null, fuente: r.fuente || null }; });
+  Object.entries(HILC.res).forEach(([d, r]) => { if (r && !r.error && r.hechas && r.hechas.length) out[d] = { hechas: typeof r.hechas === 'string' ? r.hechas : rangosNum(r.hechas), n: Array.isArray(r.hechas) ? r.hechas.length : (r.n || null), ha: r.ha || null, horas: r.horas || null, haH: r.haH || null, equipos: r.equipos || null, corrM: r.corrM != null ? r.corrM : null, faltan: Array.isArray(r.faltan) ? rangosNum(r.faltan) : (r.faltan || ''), total: r.total || null, fuente: r.fuente || null }; });
   if (!Object.keys(out).length) { toast('No hay entrecalles para guardar', false); return; }
   const cambios = { hilerasDia: out, hilerasCalculadoTs: Date.now() };
   if (HILC.eq && !HILC.l.equipo && !Object.keys(equiposPorDia(HILC.l)).length) cambios.equipo = HILC.eq;
