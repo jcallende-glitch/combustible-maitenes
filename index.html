@@ -6483,7 +6483,8 @@ function renderCamposLaborTipo() {
       <div class="field" id="campo-fert-ley-wrap" style="display:none"><label>Ley del fertilizante (%) — N, P₂O₅, K₂O y microelementos</label><div id="campo-fert-ley" style="display:flex;flex-wrap:wrap;gap:6px"></div></div>
       <div class="field"><label>Dosis</label>
         <div style="display:flex;gap:8px"><input type="text" id="campo-apl-dosis" inputmode="decimal" placeholder="Cantidad" style="flex:1;min-width:0">
-        <div class="select-wrapper" style="width:120px"><select id="campo-apl-dosis-un"><option>kg/ha</option><option>L/ha</option><option>g/ha</option><option>kg total</option><option>L total</option></select></div></div></div>
+        <div class="select-wrapper" style="width:120px"><select id="campo-apl-dosis-un" onchange="actualizarMoja100()"><option>kg/ha</option><option>L/ha</option><option>g/ha</option><option>kg total</option><option>L total</option><option>cc/100 L</option><option>g/100 L</option><option>kg/100 L</option></select></div></div></div>
+      <div class="field" id="campo-moja100-wrap" style="display:none"><label>Mojamiento (L/ha) — necesario para las dosis por 100 L</label><input type="number" id="campo-moja100" min="0" step="1" placeholder="Ej: 1000" oninput="actualizarMoja100()"></div><div id="campo-moja100-hint" style="display:none;font-size:12px;color:#1D4ED8;margin:-4px 0 10px"></div>
       <button type="button" class="btn btn-secondary" style="margin-bottom:10px" onclick="agregarCampoAplProducto()">+ Agregar este producto a la lista</button>
       <div class="field"><label>Momento o etapa (opcional)</label><input type="text" id="campo-fert-momento" placeholder="Ej: preabonadura, cobertera, a la siembra..."></div>`;
     renderCampoAplProductosLista();
@@ -6491,14 +6492,15 @@ function renderCamposLaborTipo() {
     campoAplTiposProductoSel = [];
     campoAplProductosSel = [];
     cont.innerHTML = `
-      <div class="field"><label>Mojamiento (L/ha)</label><input type="number" id="campo-fum-mojamiento" min="0" step="1" placeholder="Ej: 200"></div>
+      <div class="field"><label>Mojamiento (L/ha)</label><input type="number" id="campo-fum-mojamiento" min="0" step="1" placeholder="Ej: 200" oninput="actualizarMoja100()"></div>
       <div class="cultivos-label">Categoría (elige una o más)</div>
       <div class="centros-selector" id="campo-fum-categoria-selector"></div>
       <div class="cultivos-label" style="margin-top:10px">Productos aplicados</div>
       <div id="campo-apl-productos-lista"></div>
       <div>
         <div class="field campo-sugs-wrap" style="position:relative"><label>Producto (escribe para buscar; sin elegir categoría busca en todos)</label><input type="text" id="campo-apl-producto" autocomplete="off" placeholder="🔍 Ej: Kerb, Glifosato..." oninput="prodBuscar('fum')" onfocus="prodBuscar('fum')" onchange="renderAvisoAbejasCampo()"><div id="campo-apl-sugs"></div></div>
-        <div class="field"><label>Dosis</label><div style="display:flex;gap:6px"><input type="text" id="campo-apl-dosis" inputmode="decimal" placeholder="Cantidad" style="flex:1;min-width:0"><div class="select-wrapper" style="width:104px"><select id="campo-apl-dosis-un"><option>L/ha</option><option>g/ha</option><option>kg/ha</option><option>mL/ha</option></select></div></div></div>
+        <div class="field"><label>Dosis</label><div style="display:flex;gap:6px"><input type="text" id="campo-apl-dosis" inputmode="decimal" placeholder="Cantidad" style="flex:1;min-width:0"><div class="select-wrapper" style="width:104px"><select id="campo-apl-dosis-un" onchange="actualizarMoja100()"><option>L/ha</option><option>g/ha</option><option>kg/ha</option><option>mL/ha</option><option>cc/100 L</option><option>g/100 L</option><option>kg/100 L</option></select></div></div></div>
+        <div id="campo-moja100-hint" style="display:none;font-size:12px;color:#1D4ED8;margin:-4px 0 10px"></div>
       </div>
       <button type="button" class="btn btn-secondary" style="margin-bottom:14px" onclick="agregarCampoAplProducto()">+ Agregar producto a la lista</button>
       <div id="campo-fum-avisaje"></div>`;
@@ -6534,7 +6536,8 @@ function renderCamposLaborTipo() {
         <div id="campo-apl-productos-lista"></div>
         <div class="grid-2">
           <div class="field"><label>Producto</label><input type="text" id="campo-apl-producto" placeholder="Ej: Urea, Nitrato de potasio..."></div>
-          <div class="field"><label>Dosis</label><div style="display:flex;gap:6px"><input type="text" id="campo-apl-dosis" inputmode="decimal" placeholder="Cantidad" style="flex:1;min-width:0"><div class="select-wrapper" style="width:104px"><select id="campo-apl-dosis-un"><option>kg/ha</option><option>L/ha</option><option>g/ha</option><option>mL/ha</option></select></div></div></div>
+          <div class="field"><label>Dosis</label><div style="display:flex;gap:6px"><input type="text" id="campo-apl-dosis" inputmode="decimal" placeholder="Cantidad" style="flex:1;min-width:0"><div class="select-wrapper" style="width:104px"><select id="campo-apl-dosis-un" onchange="actualizarMoja100()"><option>kg/ha</option><option>L/ha</option><option>g/ha</option><option>mL/ha</option><option>cc/100 L</option><option>g/100 L</option><option>kg/100 L</option></select></div></div></div>
+        <div class="field" id="campo-moja100-wrap" style="display:none"><label>Mojamiento (L/ha) — necesario para las dosis por 100 L</label><input type="number" id="campo-moja100" min="0" step="1" placeholder="Ej: 1000" oninput="actualizarMoja100()"></div><div id="campo-moja100-hint" style="display:none;font-size:12px;color:#1D4ED8;margin:-4px 0 10px"></div>
         </div>
         <button type="button" class="btn btn-secondary" style="margin-bottom:14px" onclick="agregarCampoAplProducto()">+ Agregar producto a la lista</button>`;
       renderCampoAplProductosLista();
@@ -6557,7 +6560,7 @@ function aplicarCopiaCampo(tipo) {
     if (l.cultivo && cultivosCampoConfig.includes(l.cultivo)) { campoSiembraCultivoSel = l.cultivo; renderCampoSiembraCultivoSelector(); }
     v('campo-siembra-variedad', l.variedad); v('campo-siembra-dosis', l.dosis);
   } else if (tipo === 'fertilizacion') {
-    campoAplProductosSel = (l.productos || []).map(p => ({ ...p })); renderCampoAplProductosLista(); v('campo-fert-momento', l.momento);
+    campoAplProductosSel = (l.productos || []).map(p => ({ ...p })); v('campo-moja100', l.mojamiento); renderCampoAplProductosLista(); v('campo-fert-momento', l.momento);
   } else if (tipo === 'fumigacion') {
     campoAplTiposProductoSel = [...(l.tiposProducto || [])]; campoAplProductosSel = (l.productos || []).map(p => ({ ...p }));
     v('campo-fum-mojamiento', l.mojamiento); renderCampoFumCategoriaSelector(); renderCampoFumProductoOpciones(); renderCampoAplProductosLista();
@@ -6566,7 +6569,7 @@ function aplicarCopiaCampo(tipo) {
   } else if (tipo === 'riego') { v('campo-riego-metodo', l.metodo); v('campo-riego-duracion', l.duracion); }
   else if (tipo === 'otro') v('campo-otro-detalle', l.detalle);
   else if (tipo.startsWith('custom:')) {
-    if (Array.isArray(l.productos) && document.getElementById('campo-apl-productos-lista')) { campoAplProductosSel = l.productos.map(p => ({ ...p })); renderCampoAplProductosLista(); }
+    if (Array.isArray(l.productos) && document.getElementById('campo-apl-productos-lista')) { campoAplProductosSel = l.productos.map(p => ({ ...p })); v('campo-moja100', l.mojamiento); renderCampoAplProductosLista(); }
     else v('campo-custom-detalle', l.detalle);
     if (l.opcion) { campoOpcionSel = l.opcion; renderOpcionLabor(); }
   }
@@ -7002,14 +7005,50 @@ function _renderCampoFumProductoOpcionesViejo() {
     opciones.map(p => `<option value="${p.nombre.replace(/"/g,'&quot;')}" ${p.nombre===valorPrevio?'selected':''}>${requiereAvisajeProducto(p)?'🐝 ':''}${p.nombre} (${p.categoria})${stockTotalInv(p) > 0 ? '' : ' · sin stock'}${requiereAvisajeProducto(p)?' · requiere avisaje':''}</option>`).join('');
 }
 
-function renderCampoAplProductosLista() {
+// ── Dosis por 100 L de agua (cc/100 L, g/100 L, kg/100 L): con el mojamiento (L/ha) se pasa a dosis por hectárea ──
+const esDosis100 = d => /\/\s*100\s*l/i.test(String(d || ''));
+function dosis100PorHa(dosis, moja) {
+  const m = String(dosis || '').trim().match(/^([\d.,]+)\s*(cc|ml|g|grs?|kg|l)\s*\/\s*100\s*l/i);
+  const mj = Number(moja);
+  if (!m || !(mj > 0)) return null;
+  const v = parseFloat(m[1].replace(',', '.')) * mj / 100, u = m[2].toLowerCase();
+  if (!isFinite(v)) return null;
+  if (u === 'cc' || u === 'ml') return { v: v / 1000, u: 'L/ha', fam: 'v' };
+  if (u === 'l') return { v, u: 'L/ha', fam: 'v' };
+  if (u === 'kg') return { v, u: 'kg/ha', fam: 'm' };
+  return { v: v / 1000, u: 'kg/ha', fam: 'm' };
+}
+const fmtDosis = x => (Math.round(x * 100) / 100).toLocaleString('es-CL');
+function dosisTxt(dosis, moja) {
+  if (!esDosis100(dosis)) return dosis;
+  const q = dosis100PorHa(dosis, moja);
+  return q ? `${dosis} ≈ ${fmtDosis(q.v)} ${q.u}` : dosis;
+}
+function mojaCampoActual() {
+  for (const id of ['campo-fum-mojamiento', 'campo-moja100', 'campo-apl-mojamiento']) { const el = document.getElementById(id); if (el && el.value !== '') return parseFloat(el.value); }
+  return null;
+}
+window.actualizarMoja100 = function() {
+  const un = document.getElementById('campo-apl-dosis-un');
+  const usa = campoAplProductosSel.some(p => esDosis100(p.dosis)) || !!(un && /\/100 L$/.test(un.value));
+  const w = document.getElementById('campo-moja100-wrap'); if (w) w.style.display = usa ? '' : 'none';
+  const h = document.getElementById('campo-moja100-hint');
+  if (h) {
+    const mj = mojaCampoActual();
+    h.style.display = usa ? '' : 'none';
+    h.innerHTML = usa ? (mj > 0 ? `💧 Dosis por 100 L de agua: se convierten a dosis por hectárea con el mojamiento de ${fmtDosis(mj)} L/ha.` : '💧 Dosis por 100 L de agua: indica el <strong>mojamiento (L/ha)</strong> para calcular la dosis por hectárea.') : '';
+  }
+  renderCampoAplProductosLista(true);
+}
+function renderCampoAplProductosLista(sinMoja) {
   const cont = document.getElementById('campo-apl-productos-lista');
   if (!cont) return;
   cont.innerHTML = campoAplProductosSel.length ? campoAplProductosSel.map((p, i) => `
     <div class="config-item" style="padding:8px 12px;margin-bottom:6px">
-      <span style="font-size:13px"><strong>${p.producto}</strong> — ${p.dosis}</span>
+      <span style="font-size:13px"><strong>${p.producto}</strong> — ${escA(dosisTxt(p.dosis, mojaCampoActual()))}</span>
       <button class="btn btn-danger" onclick="eliminarCampoAplProducto(${i})">✕</button>
     </div>`).join('') : '';
+  if (!sinMoja) try { actualizarMoja100(); } catch (e) {}
 }
 
 // Dosis del formulario: si es solo un número y hay selector de unidad (fertilización), se une ("150 kg/ha")
@@ -7131,6 +7170,11 @@ window.registrarLaborCampo = async function() {
     const productos = [...campoAplProductosSel];
     if (prodPendiente && dosisPendiente) productos.push({ producto: prodPendiente, dosis: dosisPendiente, ley: leerLeyForm() });
     if (!productos.length) { toast('Indica qué fertilizante se aplicó y la dosis', false); return; }
+    if (productos.some(p => esDosis100(p.dosis))) {
+      const mj = parseFloat((document.getElementById('campo-moja100') || {}).value);
+      if (!(mj > 0)) { toast('Indica el mojamiento (L/ha): hay dosis por 100 L', false); return; }
+      payloadBase.mojamiento = mj;
+    }
     payloadBase.productos = productos;
     // Recuerda la ley en la lista (admin) para no volver a pedirla
     if (isAdmin) {
@@ -7201,6 +7245,11 @@ window.registrarLaborCampo = async function() {
       const productos = [...campoAplProductosSel];
       if (prodPendiente && dosisPendiente) productos.push({ producto: prodPendiente, dosis: dosisPendiente });
       if (!productos.length) { toast('Agrega al menos un producto con su dosis', false); return; }
+      if (productos.some(p => esDosis100(p.dosis))) {
+        const mj = parseFloat((document.getElementById('campo-moja100') || {}).value);
+        if (!(mj > 0)) { toast('Indica el mojamiento (L/ha): hay dosis por 100 L', false); return; }
+        payloadBase.mojamiento = mj;
+      }
       payloadBase.productos = productos;
     } else {
       payloadBase.detalle = document.getElementById('campo-custom-detalle').value.trim() || '';
@@ -7283,7 +7332,8 @@ function haDeLabor(l) {
   const p = potrerosConfig.find(x => x.nombre === l.potrero);
   return p && p.hectareas ? p.hectareas : null;
 }
-function kgHaDeProducto(pr, ha) {
+function kgHaDeProducto(pr, ha, moja) {
+  if (esDosis100(pr.dosis)) { const q = dosis100PorHa(pr.dosis, moja); return q && q.fam === 'm' ? q.v : null; }
   const m = String(pr.dosis || '').trim().match(/^([\d.,]+)\s*(kg\/ha|kg total|kg|g\/ha|l\/ha|l total|l)\b/i);
   if (!m) return null;
   const v = parseFloat(m[1].replace(',', '.')); if (!isFinite(v)) return null;
@@ -7296,7 +7346,7 @@ function kgHaDeProducto(pr, ha) {
 function calcFertLabor(l) {
   const ha = haDeLabor(l); let kgHa = 0, ok = 0, sin = 0; const un = {};
   (l.productos || []).forEach(pr => {
-    const k = kgHaDeProducto(pr, ha);
+    const k = kgHaDeProducto(pr, ha, l.mojamiento);
     if (k == null) { sin++; return; }
     ok++; kgHa += k;
     const ley = leyDeProducto(pr);
@@ -7313,7 +7363,8 @@ function resumenFertLabor(l) {
     + (c.sin ? `<div style="color:#92400E;font-size:11px">${c.sin} producto(s) sin cálculo (dosis en litros o falta ha)</div>` : '');
 }
 // ── Costo de insumos por potrero (precio de la última compra registrado en Inventario; solo administradores) ──
-function dosisACantidad(dosis, ha) {
+function dosisACantidad(dosis, ha, moja) {
+  if (esDosis100(dosis)) { const q = dosis100PorHa(dosis, moja); return q && ha ? { fam: q.fam, base: q.v * ha } : null; }
   const m = String(dosis || '').trim().toLowerCase().match(/^([\d.,]+)\s*(kg|grs?|g|lts?|litros?|l|cc|ml)\b\s*(\/\s*ha|total)?/);
   if (!m) return null;
   const v = parseFloat(m[1].replace(',', '.')); if (!isFinite(v) || !m[3]) return null; // sin "/ha" ni "total" no se asume nada
@@ -7345,7 +7396,7 @@ window.renderCostoInsumos = function() {
       const p = inv[normNom(pr.producto)];
       if (!p) { sinInv.add(pr.producto); return; }
       if (!(p.precio > 0)) { sinPrecio.add(p.nombre); return; }
-      const c = dosisACantidad(pr.dosis, ha), q = c ? cantidadEnUnidadProducto(c, p.unidad) : null;
+      const c = dosisACantidad(pr.dosis, ha, l.mojamiento), q = c ? cantidadEnUnidadProducto(c, p.unidad) : null;
       if (q == null) { sinDosis.add(pr.producto + ' (' + (pr.dosis || '—') + ')'); return; }
       const costo = q * p.precio; g.costo += costo;
       const x = g.prods[p.nombre] || (g.prods[p.nombre] = { q: 0, costo: 0, u: p.unidad || 'L' }); x.q += q; x.costo += costo;
@@ -7356,7 +7407,7 @@ window.renderCostoInsumos = function() {
   const total = lista.reduce((a, g) => a + g.costo, 0);
   const aviso = (txt, arr) => arr.size ? `<div style="font-size:11px;color:#92400E;margin-top:6px">⚠️ ${txt}: ${[...arr].slice(0, 12).map(escA).join(', ')}${arr.size > 12 ? '…' : ''}</div>` : '';
   cont.innerHTML = `<div class="panel"><div class="panel-title">💲 Costo de insumos por potrero</div>
-    <div class="hint" style="margin-bottom:10px">Dosis aplicadas en el Cuaderno × precio de cada producto en Inventario (última compra). Solo se cuentan dosis con "/ha" o "total". ${fAnio ? 'Temporada ' + fAnio + '.' : 'Todos los años.'} ${camposLaborPotrerosSel.length ? 'Solo los potreros elegidos.' : ''}</div>
+    <div class="hint" style="margin-bottom:10px">Dosis aplicadas en el Cuaderno × precio de cada producto en Inventario (última compra). Solo se cuentan dosis con "/ha", "total" o "/100 L" (con mojamiento). ${fAnio ? 'Temporada ' + fAnio + '.' : 'Todos los años.'} ${camposLaborPotrerosSel.length ? 'Solo los potreros elegidos.' : ''}</div>
     ${lista.length ? `<div class="table-wrap"><table><thead><tr><th>Potrero</th><th>ha</th><th>Costo</th><th>$/ha</th></tr></thead><tbody>${lista.map(g => `<tr><td style="font-weight:600">${escA(g.label)}<div style="font-size:11px;font-weight:400;color:#6B7280">${Object.entries(g.prods).sort((a, b) => b[1].costo - a[1].costo).map(([n, x]) => `${escA(n)} ${fmtN(x.q)} ${x.u} (${$(x.costo)})`).join(' · ')}</div></td><td>${g.ha ? fmtN(g.ha) : '—'}</td><td style="font-weight:700;white-space:nowrap">${$(g.costo)}</td><td style="white-space:nowrap">${g.ha ? $(g.costo / g.ha) : '—'}</td></tr>`).join('')}</tbody><tfoot><tr><td style="font-weight:800">Total</td><td></td><td style="font-weight:800">${$(total)}</td><td></td></tr></tfoot></table></div>` : '<div class="empty" style="padding:8px;font-size:13px">Ningún producto con precio y dosis calculable todavía.</div>'}
     ${aviso('Sin precio en Inventario (agrégalo en el producto)', sinPrecio)}${aviso('No están en Inventario', sinInv)}${aviso('Dosis sin unidad "/ha" o "total", no se costearon', sinDosis)}</div>`;
 }
@@ -7408,10 +7459,10 @@ function detalleLaborBase(l) {
     const fertStr = l.fertilizacion ? ` · 🧪 Fertilización: ${l.fertMezcla ? l.fertMezcla + (l.fertDosis?' ('+l.fertDosis+')':'') : 'ver fertilización enlazada'}` : (l.fertilizacion === false ? ' · Sin fertilización' : '');
     base = `${l.cultivo}${l.variedad?' · '+l.variedad:''}${l.dosis?' · Dosis: '+l.dosis:''}${l.hectareas?' · '+l.hectareas+' ha':''}${fertStr}${(!l.fecha||l.pendiente)?' · <span style="color:#92400E">pendiente de siembra</span>':''}`;
   } else if (l.tipo === 'fertilizacion') {
-    base = (Array.isArray(l.productos) && l.productos.length ? l.productos.map(pr => `${pr.producto} (${pr.dosis})`).join(', ') : '—') + (l.momento ? ` · ${escA(l.momento)}` : '') + resumenFertLabor(l);
+    base = (Array.isArray(l.productos) && l.productos.length ? l.productos.map(pr => `${pr.producto} (${escA(dosisTxt(pr.dosis, l.mojamiento))})`).join(', ') : '—') + (l.mojamiento != null ? ` · Mojamiento: ${l.mojamiento} L/ha` : '') + (l.momento ? ` · ${escA(l.momento)}` : '') + resumenFertLabor(l);
   } else if (l.tipo === 'fumigacion') {
     const prefTipo = l.tiposProducto && l.tiposProducto.length ? '['+l.tiposProducto.join(', ')+'] ' : '';
-    const prodStr = Array.isArray(l.productos) && l.productos.length ? l.productos.map(pr => `${pr.producto} (${pr.dosis})`).join(', ') : '—';
+    const prodStr = Array.isArray(l.productos) && l.productos.length ? l.productos.map(pr => `${pr.producto} (${escA(dosisTxt(pr.dosis, l.mojamiento))})`).join(', ') : '—';
     const mojaStr = l.mojamiento != null ? ` · Mojamiento: ${l.mojamiento} L/ha` : '';
     const abejaStr = Array.isArray(l.avisajeApicola) && l.avisajeApicola.length
       ? (l.avisajeRealizado ? ' · <span style="color:#2D7D46">🐝 aviso a apicultores dado</span>' : ' · <span style="color:#C0392B">🐝 requería aviso: NO registrado</span>') : '';
@@ -7419,7 +7470,7 @@ function detalleLaborBase(l) {
   } else if (l.tipo === 'aplicacion') {
     const prefTipo = l.tiposProducto && l.tiposProducto.length ? '['+l.tiposProducto.join(', ')+'] ' : '';
     const prodStr = Array.isArray(l.productos) && l.productos.length
-      ? l.productos.map(pr => `${pr.producto} (${pr.dosis})`).join(', ')
+      ? l.productos.map(pr => `${pr.producto} (${escA(dosisTxt(pr.dosis, l.mojamiento))})`).join(', ')
       : `${l.producto} — ${l.dosis}`;
     const mojaStr = l.mojamiento != null ? ` · Mojamiento: ${l.mojamiento} L/ha` : '';
     base = `${prefTipo}${prodStr}${mojaStr}${l.objetivo?' · '+l.objetivo:''}${l.equipo?' · '+escA(l.equipo):''}`;
@@ -7431,7 +7482,7 @@ function detalleLaborBase(l) {
   } else if (l.tipo === 'otro') base = l.detalle;
   else if (l.tipo === 'personalizado') {
     base = Array.isArray(l.productos) && l.productos.length
-      ? l.productos.map(pr => `${pr.producto} (${pr.dosis})`).join(', ')
+      ? l.productos.map(pr => `${pr.producto} (${escA(dosisTxt(pr.dosis, l.mojamiento))})`).join(', ')
       : (l.detalle || '');
   }
 
@@ -7702,6 +7753,7 @@ function pintarEdicionLabor() {
     esp += `<div class="cultivos-label">Productos</div>` + d.productos.map((p, i) => `<div style="display:flex;gap:6px;margin-bottom:6px"><input type="text" placeholder="Producto" style="flex:2" value="${escA(p.producto || '')}" oninput="elProd(${i},'producto',this.value)"><input type="text" placeholder="Dosis" style="flex:1" value="${escA(p.dosis || '')}" oninput="elProd(${i},'dosis',this.value)"><button class="btn btn-danger" onclick="elProdDel(${i})">✕</button></div>`).join('')
       + `<button class="btn btn-secondary" style="margin-bottom:8px" onclick="elProdAdd()">+ Producto</button>`;
     if (t === 'fertilizacion') esp += elInput('Momento o etapa', 'momento');
+    if ((t === 'fertilizacion' || t === 'personalizado') && (d.mojamiento != null || d.productos.some(p => esDosis100(p.dosis)))) esp += elInput('Mojamiento (L/ha) — para dosis por 100 L', 'mojamiento', 'number', 'min="0"');
     if (t === 'fumigacion' || t === 'aplicacion') esp += elInput('Mojamiento (L/ha)', 'mojamiento', 'number', 'min="0"') + `<div class="cultivos-label">Categorías de producto</div>` + chips(t === 'fumigacion' ? CATEGORIAS_FUM_CAMPO : tiposProductoCampoConfig, 'tiposProducto');
     if (t === 'aplicacion') esp += elInput('Objetivo', 'objetivo');
   }
