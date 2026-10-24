@@ -6180,6 +6180,16 @@ function renderCampoDuracion() {
       <div class="hint" style="margin-top:4px">La fecha de arriba es el <strong>inicio</strong>. Si todavía no termina, deja el término vacío: queda <strong>🔄 en curso</strong> y los días siguientes aparece arriba del cuaderno para marcar que se continuó o que terminó.</div></div>` : ''}`;
 }
 window.setCampoMultiDia = function(v) { campoMultiDia = v; renderCampoDuracion(); }
+// Equipo(s) y operador(es) de cada día de una labor: { 'AAAA-MM-DD': [{ equipo, operador }] }. El día de inicio usa los de la labor.
+function equiposPorDia(l) {
+  const out = {}, dd = l.diasDetalle || {};
+  Object.keys(dd).forEach(d => { const a = (dd[d] || []).filter(x => x && (x.equipo || x.operador)); if (a.length) out[d] = a; });
+  if (l.fecha && !out[l.fecha] && (l.equipo || l.operadorLabor)) out[l.fecha] = [{ equipo: l.equipo || '', operador: l.operadorLabor || '' }];
+  return out;
+}
+const parKey = x => (x.equipo || '') + '|' + (x.operador || '');
+const parTxt = x => [x.equipo ? '🚜 ' + x.equipo : '', x.operador ? '👷 ' + x.operador : ''].filter(Boolean).join(' · ') || 'sin equipo';
+let enCursoOtro = {}; // tarjetas con el formulario "otro equipo u operador" abierto
 function renderLaboresEnCurso() {
   const w = document.getElementById('campo-en-curso'); if (!w) return;
   const en = (laboresCampoTodos || []).filter(l => l.enCurso && l.fecha);
@@ -6194,28 +6204,88 @@ function renderLaboresEnCurso() {
     const ini = g.map(l => l.fecha).sort()[0];
     const dias = [...new Set(g.flatMap(l => l.diasTrabajo || [l.fecha]))].sort();
     const ult = dias[dias.length - 1], hoyListo = dias.includes(hoy), nDia = Math.max(1, diasEntre(ini, hoy) + 1);
+    const porDia = {}; g.forEach(l => Object.entries(equiposPorDia(l)).forEach(([d, a]) => { const m = porDia[d] || (porDia[d] = {}); a.forEach(x => m[parKey(x)] = x); }));
+    const conocidos = {}; Object.keys(porDia).sort().forEach(d => Object.values(porDia[d]).forEach(x => conocidos[parKey(x)] = x));
+    const deHoy = porDia[hoy] ? Object.values(porDia[hoy]) : [];
+    const eqsTodos = [...new Set([...eqs, ...Object.values(conocidos).map(x => x.equipo).filter(Boolean)])];
+    const historialEq = Object.keys(porDia).sort().map(d => `${fCorta(d)}: ${Object.values(porDia[d]).map(x => escA(parTxt(x))).join(' + ')}`).join('<br>');
+    const kJs = String(k).replace(/'/g, "\\'");
+    const chipsHoy = Object.values(conocidos).filter(x => !deHoy.some(y => parKey(y) === parKey(x))).map(x => `<button class="btn btn-verde" style="padding:6px 10px;font-size:12px;width:auto" onclick='continuarConPar(${JSON.stringify(k)},${JSON.stringify(x).replace(/'/g, "&#39;")})'>✓ ${escA(parTxt(x))}</button>`).join('');
+    const eqOpts = (config.equipos || []).filter(e => e !== 'Otro (especificar)'), opOpts = (config.operadores || []).filter(o => !/especificar/i.test(o));
+    const formOtro = enCursoOtro[k] ? `<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px;background:#fff;border-radius:8px;padding:6px">
+        <div class="select-wrapper" style="flex:1;min-width:130px"><select id="ec-eq-${k}" onchange="enCursoEqCambio('${kJs}')"><option value="">🚜 equipo —</option>${eqOpts.map(e => `<option value="${escA(e)}">${escA(e)}</option>`).join('')}</select></div>
+        <div class="select-wrapper" style="flex:1;min-width:130px"><select id="ec-op-${k}" onchange="enCursoOpCambio('${kJs}')"><option value="">👷 operador —</option>${opOpts.map(o => `<option value="${escA(o)}">${escA(o)}</option>`).join('')}</select></div>
+        <button class="btn btn-verde" style="padding:6px 10px;font-size:12px;width:auto" onclick="continuarConOtro('${kJs}')">✓ Guardar</button></div>` : '';
     return `<div style="border:1px solid #FCD34D;background:#FFFBEB;border-radius:10px;padding:10px 12px;margin-bottom:8px">
-      <div style="font-weight:800;font-size:14px">${eqs.length ? '🚜 ' + escA(eqs.join(', ')) + ' · ' : ''}${escA(tipos)}</div>
+      <div style="font-weight:800;font-size:14px">${eqsTodos.length ? '🚜 ' + escA(eqsTodos.join(', ')) + ' · ' : ''}${escA(tipos)}</div>
       <div style="font-size:12px;color:#374151;margin-top:2px">📍 ${escA(pots.join(', '))}${aperos.length ? ' · 🔧 ' + escA(aperos.join(', ')) : ''}</div>
       <div style="font-size:12px;color:#92400E;margin-top:2px">Desde ${fCorta(ini)} · <strong>día ${nDia}</strong> · último día marcado: ${fCorta(ult)}${dias.length > 1 ? ` (${dias.length} días trabajados)` : ''}</div>
-      ${editar ? `<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px">
-        <button class="btn ${hoyListo ? 'btn-secondary' : 'btn-verde'}" style="padding:6px 10px;font-size:13px;width:auto" onclick="continuarLaborEnCurso('${k}')" ${hoyListo ? 'disabled' : ''}>${hoyListo ? '✓ Hoy ya marcado' : '✓ Hoy se continuó'}</button>
+      ${historialEq ? `<div style="font-size:11px;color:#374151;margin-top:4px;line-height:1.5">${historialEq}</div>` : ''}
+      ${editar ? `<div style="margin-top:8px;font-size:12px;font-weight:700">Hoy (${fCorta(hoy)}): ${hoyListo ? (deHoy.length ? deHoy.map(x => `<span style="display:inline-block;background:#DCFCE7;color:#166534;border-radius:999px;padding:2px 8px;margin:2px 4px 2px 0;font-weight:600">✓ ${escA(parTxt(x))} <a href="#" onclick='event.preventDefault();quitarParHoy(${JSON.stringify(k)},${JSON.stringify(parKey(x)).replace(/'/g, "&#39;")})' style="color:#991B1B;text-decoration:none">✕</a></span>`).join('') : '<span style="color:#166534">✓ marcado</span>') : '<span style="color:#92400E;font-weight:400">¿se continuó? ¿con quién?</span>'}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px">
+        ${chipsHoy}
+        ${!Object.keys(conocidos).length && !hoyListo ? `<button class="btn btn-verde" style="padding:6px 10px;font-size:12px;width:auto" onclick="continuarLaborEnCurso('${kJs}')">✓ Hoy se continuó</button>` : ''}
+        <button class="btn btn-secondary" style="padding:6px 10px;font-size:12px;width:auto" onclick="enCursoToggleOtro('${kJs}')">${enCursoOtro[k] ? '✕ Cancelar' : '➕ Otro equipo u operador'}</button></div>
+      ${formOtro}
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px">
         <span style="font-size:12px;color:#6B7280">Terminó el</span><input type="date" id="fin-${k}" value="${hoy}" min="${ini}" style="width:auto;padding:5px 6px">
         <button class="btn btn-secondary" style="padding:6px 10px;font-size:13px;width:auto" onclick="terminarLaborEnCurso('${k}')">🏁 Terminar</button></div>` : ''}
     </div>`;
   }).join('');
   w.innerHTML = `<div class="panel" style="border:2px solid #F59E0B"><div class="panel-title">🔄 Labores en curso (${Object.keys(grupos).length})</div>
-    <div class="hint" style="margin-bottom:8px">Labores de varios días que todavía no terminan. Marca cada día que se trabajó y, al final, la fecha de término: en el cuaderno quedan como un rango (ej. del 11 al 15).</div>${tarjetas}</div>`;
+    <div class="hint" style="margin-bottom:8px">Labores de varios días que todavía no terminan. Cada día que se trabaje, toca con qué equipo y operador se continuó (los de días anteriores aparecen listos, o agrega uno nuevo; puede ser más de uno). Al final, la fecha de término: en el cuaderno quedan como un rango (ej. del 11 al 15).</div>${tarjetas}</div>`;
 }
-window.continuarLaborEnCurso = async function(k, dia) {
+window.continuarLaborEnCurso = async function(k, dia, par) {
   const g = (laboresCampoTodos || []).filter(l => l.enCurso && claveEnCurso(l) === k); if (!g.length) return;
   const d = dia || hoyCampoStr();
   try {
     const batch = writeBatch(db);
-    g.forEach(l => batch.update(doc(db, 'labores_campo', l.id), { diasTrabajo: [...new Set([...(l.diasTrabajo || [l.fecha]), d])].sort(), continuadoPor: currentUser || '', continuadoTs: Date.now() }));
+    g.forEach(l => {
+      const cambios = { diasTrabajo: [...new Set([...(l.diasTrabajo || [l.fecha]), d])].sort(), continuadoPor: currentUser || '', continuadoTs: Date.now() };
+      if (par && (par.equipo || par.operador)) {
+        const det = { ...(l.diasDetalle || {}) };
+        if (!det[l.fecha] && (l.equipo || l.operadorLabor)) det[l.fecha] = [{ equipo: l.equipo || '', operador: l.operadorLabor || '' }];
+        det[d] = [...(det[d] || []).filter(x => parKey(x) !== parKey(par)), { equipo: par.equipo || '', operador: par.operador || '' }];
+        cambios.diasDetalle = det;
+      }
+      batch.update(doc(db, 'labores_campo', l.id), cambios);
+    });
     await batch.commit();
-    toast('✓ Marcado: la labor se continuó el ' + fCorta(d), true);
+    toast('✓ Marcado: la labor se continuó el ' + fCorta(d) + (par && (par.equipo || par.operador) ? ' con ' + parTxt(par) : ''), true);
     setTimeout(() => guardarClimaLabores(g.map(l => l.id)).catch(e => console.warn('clima', e)), 2000);
+  } catch (e) { toast('Error: ' + e.message, false); }
+}
+window.continuarConPar = function(k, par) { continuarLaborEnCurso(k, null, par); }
+window.enCursoToggleOtro = function(k) { enCursoOtro[k] = !enCursoOtro[k]; renderLaboresEnCurso(); }
+window.enCursoEqCambio = function(k) {
+  const eq = (document.getElementById('ec-eq-' + k) || {}).value, so = document.getElementById('ec-op-' + k);
+  const ops = eq ? operadoresDeEquipo(eq) : [];
+  if (so && ops.length === 1) so.value = ops[0];
+}
+window.enCursoOpCambio = function(k) {
+  const op = (document.getElementById('ec-op-' + k) || {}).value, se = document.getElementById('ec-eq-' + k);
+  const eqs = op ? equiposDe(op) : [];
+  if (se && eqs.length === 1) se.value = eqs[0];
+}
+window.continuarConOtro = async function(k) {
+  const equipo = (document.getElementById('ec-eq-' + k) || {}).value || '', operador = (document.getElementById('ec-op-' + k) || {}).value || '';
+  if (!equipo && !operador) { toast('Elige el equipo y/o el operador', false); return; }
+  enCursoOtro[k] = false;
+  await continuarLaborEnCurso(k, null, { equipo, operador });
+}
+window.quitarParHoy = async function(k, clave) {
+  const g = (laboresCampoTodos || []).filter(l => l.enCurso && claveEnCurso(l) === k); if (!g.length) return;
+  const d = hoyCampoStr();
+  try {
+    const batch = writeBatch(db);
+    g.forEach(l => {
+      const det = { ...(l.diasDetalle || {}) };
+      det[d] = (det[d] || []).filter(x => parKey(x) !== clave);
+      const cambios = { diasDetalle: det };
+      if (!det[d].length) { delete det[d]; if (d !== l.fecha) cambios.diasTrabajo = (l.diasTrabajo || [l.fecha]).filter(x => x !== d); }
+      batch.update(doc(db, 'labores_campo', l.id), cambios);
+    });
+    await batch.commit();
   } catch (e) { toast('Error: ' + e.message, false); }
 }
 window.terminarLaborEnCurso = async function(k) {
@@ -6715,6 +6785,19 @@ function climaTexto(l) {
   const ll = num(xs.map(x => x.lluvia)).reduce((a, b) => a + b, 0), rads = num(xs.map(x => x.rad));
   return `Clima ${ds.length} días: ${f(tmin)}–${f(tmax)} °C · lluvia ${f(Math.round(ll * 10) / 10)} mm en total · rad. ${f(rads.length ? Math.round(rads.reduce((a, b) => a + b, 0) / rads.length * 10) / 10 : null)} MJ/m² por día`;
 }
+// Varios tractores el mismo día: se juntan sus entrecalles y se suman sus horas
+async function hilerasDelDiaVarios(pot, eqs, dia) {
+  const rs = [];
+  for (const e of eqs) rs.push(await hilerasDelDia(pot, e, dia));
+  if (rs.length === 1) return { ...rs[0], equipos: eqs };
+  if (rs.every(r => r.error)) return { ...rs[0], equipos: eqs };
+  const hechas = [...new Set(rs.flatMap(r => r.hechas || []))].sort((a, b) => a - b), faltan = [];
+  if (hechas.length) for (let n = hechas[0]; n <= hechas[hechas.length - 1]; n++) if (!hechas.includes(n)) faltan.push(n);
+  const pc = potrerosConfig.find(x => x.nombre === pot), g = jdpHilerasCfg && jdpHilerasCfg[pot];
+  const ha = hechas.length && pc && g ? haDeEntrecalles(g, jdpNormPoligono(pc.poligono), hechas) : 0;
+  const horas = Math.round(rs.reduce((a, r) => a + (r.horas || 0), 0) * 100) / 100;
+  return { fuente: [...new Set(rs.map(r => r.fuente).filter(Boolean))].join('+') || null, puntos: rs.reduce((a, r) => a + (r.puntos || 0), 0), hechas, faltan, total: (rs.find(r => r.total) || {}).total || null, ha, horas, haH: horas > 0.05 && ha ? Math.round(ha / horas * 100) / 100 : null, equipos: eqs };
+}
 let HILC = null; // { id, l, res: {dia: resultado} }
 window.verHilerasLabor = function(id) {
   const l = laboresCampoTodos.find(x => x.id === id); if (!l) return;
@@ -6726,7 +6809,8 @@ window.verHilerasLabor = function(id) {
   ov.innerHTML = `<div style="background:var(--blanco,#fff);border-radius:12px;max-width:560px;width:100%;padding:16px;margin:auto">
     <div class="panel-title">🌳 Hileras trabajadas por día</div>
     <div style="font-size:13px;margin-bottom:6px"><strong>${escA(l.potrero)}</strong> · ${escA(nombreTipoDocCampo(l))} · ${dias.length === 1 ? fCorta(dias[0]) : 'del ' + fCorta(dias[0]) + ' al ' + fCorta(dias[dias.length - 1]) + ' (' + dias.length + ' días)'}</div>
-    <div class="field" style="margin-bottom:8px"><label>🚜 Tractor que hizo la labor</label><div class="select-wrapper"><select id="hilc-equipo"><option value="">— elige —</option>${eqs.map(e => `<option value="${escA(e)}" ${l.equipo === e ? 'selected' : ''}>${escA(e)}</option>`).join('')}</select></div></div>
+    ${(() => { const epd = equiposPorDia(l), ds = Object.keys(epd).filter(d => epd[d].some(x => x.equipo)).sort(); return ds.length ? `<div style="font-size:12px;margin-bottom:6px;color:#374151">Tractores anotados: ${ds.map(d => fCorta(d) + ' ' + epd[d].map(x => x.equipo).filter(Boolean).map(escA).join(' + ')).join(' · ')}</div>` : ''; })()}
+    <div class="field" style="margin-bottom:8px"><label>🚜 Tractor para los días sin tractor anotado</label><div class="select-wrapper"><select id="hilc-equipo"><option value="">— elige —</option>${eqs.map(e => `<option value="${escA(e)}" ${l.equipo === e ? 'selected' : ''}>${escA(e)}</option>`).join('')}</select></div></div>
     <div class="hint" style="margin-bottom:8px">Busca el recorrido de ese tractor (📱 celular o 📡 JDLink, según la fuente elegida en Ubicación equipos) dentro del potrero cada día, y lo cruza con las hileras numeradas del huerto. Es aproximado.</div>
     <button class="btn btn-verde btn-full" onclick="calcularHilerasLabor()">🔎 Calcular</button>
     <div id="hilc-res" style="margin-top:10px"></div>
@@ -6813,7 +6897,7 @@ function pintarHilerasLabor(guardado) {
     const r = HILC.res[d];
     const ent = r.error ? `<span style="color:#B91C1C">${escA(r.error)}</span>` : r.hechas ? (typeof r.hechas === 'string' ? r.hechas : rangosNum(r.hechas)) || '<span style="color:var(--acero)">sin pasadas en el potrero</span>' : '…';
     const falt = r.faltan && r.faltan.length ? (typeof r.faltan === 'string' ? r.faltan : rangosNum(r.faltan)) : '';
-    return `<tr style="border-top:1px solid var(--borde)"><td style="padding:5px 4px;white-space:nowrap">${fCorta(d)}</td><td style="padding:5px 4px">${ent}${r.total ? `<span style="color:var(--acero);font-size:11px"> de ${r.total}</span>` : ''}</td><td style="padding:5px 4px;text-align:right;white-space:nowrap;font-weight:700">${r.ha ? String(r.ha).replace('.', ',') : '—'}</td><td style="padding:5px 4px;text-align:right;white-space:nowrap">${r.horas ? String(r.horas).replace('.', ',') : '—'}</td><td style="padding:5px 4px;text-align:right;white-space:nowrap;font-weight:700;color:#047857">${r.haH ? String(r.haH).replace('.', ',') : '—'}</td><td style="padding:5px 4px;color:#B91C1C">${escA(falt)}</td><td style="padding:5px 4px;font-size:11px">${r.fuente === 'jdlink' ? '📡' : r.fuente === 'celular' ? '📱' : r.puntos === 0 ? 'sin datos' : ''}</td></tr>`;
+    return `<tr style="border-top:1px solid var(--borde)"><td style="padding:5px 4px;white-space:nowrap">${fCorta(d)}${r.equipos && r.equipos.length ? `<div style="font-size:10px;color:var(--acero)">${r.equipos.map(escA).join(' + ')}</div>` : ''}</td><td style="padding:5px 4px">${ent}${r.total ? `<span style="color:var(--acero);font-size:11px"> de ${r.total}</span>` : ''}</td><td style="padding:5px 4px;text-align:right;white-space:nowrap;font-weight:700">${r.ha ? String(r.ha).replace('.', ',') : '—'}</td><td style="padding:5px 4px;text-align:right;white-space:nowrap">${r.horas ? String(r.horas).replace('.', ',') : '—'}</td><td style="padding:5px 4px;text-align:right;white-space:nowrap;font-weight:700;color:#047857">${r.haH ? String(r.haH).replace('.', ',') : '—'}</td><td style="padding:5px 4px;color:#B91C1C">${escA(falt)}</td><td style="padding:5px 4px;font-size:11px">${r.fuente === 'jdlink' ? '📡' : r.fuente === 'celular' ? '📱' : r.puntos === 0 ? 'sin datos' : ''}</td></tr>`;
   }).join('');
   box.innerHTML = `${guardado ? '<div style="font-size:11px;color:var(--acero);margin-bottom:4px">Guardado en el cuaderno. Puedes volver a calcular.</div>' : ''}<table style="width:100%;min-width:0;font-size:12px;border-collapse:collapse"><thead><tr><th style="text-align:left;padding:4px">Día</th><th style="text-align:left;padding:4px">Entrecalles trabajadas</th><th style="text-align:right;padding:4px">ha</th><th style="text-align:right;padding:4px">h</th><th style="text-align:right;padding:4px">ha/h</th><th style="text-align:left;padding:4px">Faltaron</th><th></th></tr></thead><tbody>${filas}</tbody>${(() => { const rs = Object.values(HILC.res), t = rs.reduce((a, r) => a + (Number(r && r.ha) || 0), 0), h = rs.reduce((a, r) => a + (Number(r && r.horas) || 0), 0), hh = rs.reduce((a, r) => a + (r && r.ha && r.horas ? Number(r.horas) : 0), 0); const pc = potrerosConfig.find(x => x.nombre === HILC.l.potrero); const c = x => String(x).replace('.', ','); return t ? `<tfoot><tr style="border-top:2px solid var(--borde)"><td style="padding:5px 4px;font-weight:800">Total</td><td style="padding:5px 4px;color:var(--acero);font-size:11px">${pc && pc.hectareas ? 'potrero: ' + c(pc.hectareas) + ' ha' : ''}</td><td style="padding:5px 4px;text-align:right;font-weight:800">${c(Math.round(t * 10) / 10)}</td><td style="padding:5px 4px;text-align:right;font-weight:800">${h ? c(Math.round(h * 10) / 10) : '—'}</td><td style="padding:5px 4px;text-align:right;font-weight:800;color:#047857">${hh > 0.05 ? c(Math.round(t / hh * 100) / 100) : '—'}</td><td colspan="2"></td></tr></tfoot>` : ''; })()}</table>
     <div style="font-size:11px;color:var(--acero);margin-top:3px">ha = entrecalles trabajadas completas × su ancho (aprox.; si una entrecalle se pasó dos días, cuenta en ambos). h = tiempo en movimiento dentro del potrero, sin paradas. ha/h del total = todas las ha ÷ todas las horas.</div>`;
@@ -6821,14 +6905,15 @@ function pintarHilerasLabor(guardado) {
 window.calcularHilerasLabor = async function() {
   if (!HILC) return;
   const eq = (document.getElementById('hilc-equipo') || {}).value;
-  if (!eq) { toast('Elige el tractor que hizo la labor', false); return; }
+  const dias = diasDeLabor(HILC.l).slice(0, 31), epd = equiposPorDia(HILC.l);
+  const eqsDe = d => { const a = [...new Set((epd[d] || []).map(x => x.equipo).filter(Boolean))]; return a.length ? a : (eq ? [eq] : []); };
+  if (dias.some(d => !eqsDe(d).length)) { toast('Elige el tractor para los días que no tienen uno anotado', false); return; }
   HILC.eq = eq; HILC.res = {}; HILC.guardado = false;
-  const dias = diasDeLabor(HILC.l).slice(0, 31);
   dias.forEach(d => HILC.res[d] = {});
   pintarHilerasLabor();
   for (const d of dias) {
     if (!HILC) return;
-    try { HILC.res[d] = await hilerasDelDia(HILC.l.potrero, eq, d); } catch (e) { HILC.res[d] = { error: e.message }; }
+    try { HILC.res[d] = await hilerasDelDiaVarios(HILC.l.potrero, eqsDe(d), d); } catch (e) { HILC.res[d] = { error: e.message }; }
     pintarHilerasLabor();
   }
   const b = document.getElementById('hilc-guardar'); if (b) b.disabled = false;
@@ -6837,10 +6922,10 @@ window.calcularHilerasLabor = async function() {
 window.guardarHilerasLabor = async function() {
   if (!HILC) return;
   const out = {};
-  Object.entries(HILC.res).forEach(([d, r]) => { if (r && !r.error && r.hechas && r.hechas.length) out[d] = { hechas: typeof r.hechas === 'string' ? r.hechas : rangosNum(r.hechas), n: Array.isArray(r.hechas) ? r.hechas.length : (r.n || null), ha: r.ha || null, horas: r.horas || null, haH: r.haH || null, faltan: Array.isArray(r.faltan) ? rangosNum(r.faltan) : (r.faltan || ''), total: r.total || null, fuente: r.fuente || null }; });
+  Object.entries(HILC.res).forEach(([d, r]) => { if (r && !r.error && r.hechas && r.hechas.length) out[d] = { hechas: typeof r.hechas === 'string' ? r.hechas : rangosNum(r.hechas), n: Array.isArray(r.hechas) ? r.hechas.length : (r.n || null), ha: r.ha || null, horas: r.horas || null, haH: r.haH || null, equipos: r.equipos || null, faltan: Array.isArray(r.faltan) ? rangosNum(r.faltan) : (r.faltan || ''), total: r.total || null, fuente: r.fuente || null }; });
   if (!Object.keys(out).length) { toast('No hay entrecalles para guardar', false); return; }
   const cambios = { hilerasDia: out, hilerasCalculadoTs: Date.now() };
-  if (HILC.eq && !HILC.l.equipo) cambios.equipo = HILC.eq;
+  if (HILC.eq && !HILC.l.equipo && !Object.keys(equiposPorDia(HILC.l)).length) cambios.equipo = HILC.eq;
   try { await updateDoc(doc(db, 'labores_campo', HILC.id), cambios); toast('✓ Hileras por día guardadas en el cuaderno', true); cerrarHilerasLabor(); }
   catch (e) { toast('Error: ' + e.message, false); }
 }
@@ -7126,7 +7211,8 @@ window.registrarLaborCampo = async function() {
     if (mismas.length) {
       const k0 = [...new Set(mismas.map(claveEnCurso))];
       if (confirm(`Ya hay una labor de ${labelTipoLabor(tipo)} en curso en este potrero desde el ${fCorta(mismas.map(l => l.fecha).sort()[0])}.\n\n¿Es la continuación? (Aceptar = marcarla como continuada el ${fCorta(fecha)}; Cancelar = registrar una labor nueva)`)) {
-        for (const k of k0) await continuarLaborEnCurso(k, fecha);
+        const par = { equipo: (document.getElementById('campo-labor-equipo') || {}).value || '', operador: (document.getElementById('campo-labor-operador') || {}).value || '' };
+        for (const k of k0) await continuarLaborEnCurso(k, fecha, par);
         return;
       }
     }
@@ -7448,8 +7534,11 @@ function detalleLaborCampo(l) {
   const hil = l.hilerasDia && Object.keys(l.hilerasDia).length ? '🌳 ' + Object.keys(l.hilerasDia).sort().map(d => { const r = l.hilerasDia[d]; const c = x => String(x).replace('.', ','); return `${fCorta(d)}: entrecalles ${escA(r.hechas)}${r.ha ? ` (${c(r.ha)} ha${r.horas ? ' · ' + c(r.horas) + ' h' : ''}${r.haH ? ' · ' + c(r.haH) + ' ha/h' : ''})` : ''}${r.faltan ? ` (faltaron ${escA(r.faltan)})` : ''}`; }).join(' · ')
     + (() => { const rs = Object.values(l.hilerasDia), t = rs.reduce((a, r) => a + (r.ha && r.horas ? r.ha : 0), 0), h = rs.reduce((a, r) => a + (r.ha && r.horas ? r.horas : 0), 0); return rs.length > 1 && h > 0.05 ? ` · promedio ${String(Math.round(t / h * 100) / 100).replace('.', ',')} ha/h` : ''; })() : '';
   const cl = climaTexto(l);
-  const extra = [(l.tipo !== 'aplicacion' && l.tipo !== 'trabajo_suelo' && l.equipo) ? '🚜 ' + escA(l.equipo) : '', l.operadorLabor ? '👷 ' + escA(l.operadorLabor) : '', l.hilerasManual ? '🌳 hileras ' + escA(l.hilerasManual) : '', hil].filter(Boolean).join(' · ')
-    + (cl ? `<div style="font-size:11px;color:#0369A1;margin-top:2px">🌤️ ${escA(cl)}</div>` : '');
+  const epd = equiposPorDia(l), diasEq = Object.keys(epd).sort();
+  const cuadrilla = diasEq.length > 1 || (diasEq.length === 1 && diasEq[0] !== l.fecha)
+    ? `<div style="font-size:11px;color:#374151;margin-top:2px">📅 ${diasEq.map(d => `${fCorta(d)}: ${epd[d].map(x => [x.equipo, x.operador].filter(Boolean).join(' (') + (x.equipo && x.operador ? ')' : '')).map(escA).join(' + ')}`).join(' · ')}</div>` : '';
+  const extra = [(!cuadrilla && l.tipo !== 'aplicacion' && l.tipo !== 'trabajo_suelo' && l.equipo) ? '🚜 ' + escA(l.equipo) : '', (!cuadrilla && l.operadorLabor) ? '👷 ' + escA(l.operadorLabor) : '', l.hilerasManual ? '🌳 hileras ' + escA(l.hilerasManual) : '', hil].filter(Boolean).join(' · ')
+    + cuadrilla + (cl ? `<div style="font-size:11px;color:#0369A1;margin-top:2px">🌤️ ${escA(cl)}</div>` : '');
   return extra ? (base && base !== '—' ? base + (extra.startsWith('<div') ? '' : ' · ') : '') + extra : base;
 }
 function detalleLaborBase(l) {
