@@ -465,8 +465,15 @@ window.reiniciarParcial = function () {
 // con las primeras pasadas rectas (o usa las ya guardadas para ese potrero) y dibuja
 // cada pasada derecha sobre su entrecalle: así el error del GPS del celular (±3–5 m)
 // no ensucia el mapa. Lo que se vuelve a pasar por una entrecalle ya aplicada se pinta rojo.
-let hileras = ls.get('tractor_hileras', {});          // { potrero: { az, off, sp, lat0, lng0, m, fija, ts } }
-let repetidoM = 0, repitiendoAhora = false, avisoRepetir = 0, hayDiasAnteriores = false;
+let hileras = ls.get('tractor_hileras', {});          // { potrero: { az, off, sp, lat0, lng0, m, fija, ts } } — estimación del tractor (con sus pasadas)
+// Hileras definidas en la app (Config. Potreros → 🌳 Hileras, sobre la imagen satelital): solo para NUMERAR las entrecalles
+// de forma aproximada. El dibujo y el ajuste de las pasadas usan siempre la estimación del tractor, que calza con su GPS.
+let hilerasRef = ls.get('tractor_hileras_ref', {});
+Object.keys(hileras).forEach(k => { const g = hileras[k]; if (g && (g.manual || g.v === 3)) { hilerasRef[k] = g; delete hileras[k]; } });
+ls.set('tractor_hileras', hileras); ls.set('tractor_hileras_ref', hilerasRef);
+let repetidoM = 0, repitiendoAhora = false, avisoRepetir = 0, hayDiasAnteriores = false, reestimando = false;
+const VIGENCIA_HILERAS_MS = 2 * 3600000; // cada 2 horas (y cada día nuevo) se vuelven a estimar las hileras
+const hilerasVencidas = g => { const t = g.tsEst || g.ts || 0; return Date.now() - t > VIGENCIA_HILERAS_MS || new Date(t).toDateString() !== new Date().toDateString(); };
 const MIN_M_HILERAS = 500;                            // metros rectos reales (≈ 2 pasadas largas) para dejar fija la estimación
 const VERSION_HILERAS = 2;
 // ── GRILLA DE HILERAS (compartida: app, reparto y modo tractor) ─────────
@@ -626,16 +633,34 @@ function estimarHileras(potrero, tramos, sp) {
 }
 function guardarHileras(potrero, g) {
   hileras[potrero] = g; ls.set('tractor_hileras', hileras);
-  if (g.fija && navigator.onLine) setDoc(doc(db, 'config', 'hileras'), { [potrero]: g }, { merge: true }).catch(e => console.warn('hileras', e));
+  // Se comparte entre tractores en config/hileras_tractor (no se toca la numeración de la app en config/hileras)
+  if (g.fija && navigator.onLine) setDoc(doc(db, 'config', 'hileras_tractor'), { [potrero]: g }, { merge: true }).catch(e => console.warn('hileras', e));
 }
 window.rehacerHileras = function () {
   const a = activa(); if (!a) return;
-  if (hileras[a.potrero] && (hileras[a.potrero].manual || hileras[a.potrero].v === 3)) { alert('Las hileras de este potrero están definidas en la app (Cuaderno de Campo → Config. Potreros → 🌳 Hileras). Corrígelas allá.'); return; }
-  if (!confirm(`¿Volver a estimar las hileras de ${a.potrero}? Se calculan de nuevo con las próximas pasadas rectas.`)) return;
+  if (!confirm(`¿Volver a estimar las hileras de ${a.potrero}? Se calculan de nuevo con las próximas pasadas rectas.${hilerasRef[a.potrero] ? '\n(La numeración de la app no cambia.)' : ''}`)) return;
   delete hileras[a.potrero]; ls.set('tractor_hileras', hileras);
-  if (navigator.onLine) setDoc(doc(db, 'config', 'hileras'), { [a.potrero]: null }, { merge: true }).catch(() => {});
+  if (navigator.onLine) {
+    setDoc(doc(db, 'config', 'hileras_tractor'), { [a.potrero]: null }, { merge: true }).catch(() => {});
+    // estimación antigua del tractor guardada donde ahora va la numeración: se borra solo si no es una grilla de la app
+    if (!hilerasRef[a.potrero]) setDoc(doc(db, 'config', 'hileras'), { [a.potrero]: null }, { merge: true }).catch(() => {});
+  }
   cerrarCapa('capa-ajustes'); redibujarAplicado();
 };
+function entrecalleActual() {
+  try {
+    const a = activa();
+    if (!a || !ultimaPos || !hilerasRef[a.potrero] || potreroEn(ultimaPos.lat, ultimaPos.lng) !== a.potrero) return null;
+    return numeroEntrecalleAprox(a.potrero, ultimaPos.lat, ultimaPos.lng);
+  } catch (e) { return null; }
+}
+// Número aproximado de la entrecalle (según la grilla de la app) en un punto
+function numeroEntrecalleAprox(potrero, lat, lng) {
+  const ref = hilerasRef[potrero], G = ref ? grillaDe(ref) : null;
+  if (!G) return null;
+  const [sv, d] = G.sd(lat, lng);
+  return gNumero(ref, G.k(sv, d));
+}
 // Une intervalos [a,b] y devuelve las partes de [a,b] que ya estaban cubiertas
 function restar(cub, a, b) {
   const nuevas = [], rep = [];
@@ -667,11 +692,21 @@ function calcularCobertura() {
   let g = a && esFrutal(a.potrero) ? hileras[a.potrero] : null;
   if (g && !(g.v === VERSION_HILERAS || g.v === 3)) g = null; // estimaciones viejas (fijadas con muy pocos datos): se rehacen
   // Se estima mientras no esté fija; ya fija, se sigue afinando cada 1 min si hay más pasadas.
-  // Las hileras definidas en Config. Potreros (manual / v3) no se tocan.
-  if (a && esFrutal(a.potrero) && !(g && (g.manual || g.v === 3)) && (!(g && g.fija) || Date.now() - (g.ts || 0) > 60000)) {
-    const est = estimarHileras(a.potrero, [...tramosAplicados, ...trazosOtros], w);
-    if (est && (!g || !g.fija || est.m >= g.m)) { g = est; guardarHileras(a.potrero, est); }
-    else if (g) g.ts = Date.now();
+  // (Las hileras de la app, sobre la imagen satelital, solo se usan para numerar.)
+  if (g && (g.manual || g.v === 3)) g = null;
+  // El GPS del celular se corre de un día a otro (y durante el día): la estimación vale 2 horas y solo usa las
+  // pasadas de las últimas 2 horas. Vencida (o de otro día), se sigue usando hasta que haya una nueva fija.
+  reestimando = false;
+  if (a && esFrutal(a.potrero)) {
+    const vencida = g && g.fija && hilerasVencidas(g);
+    if (!(g && g.fija) || vencida || Date.now() - (g.ts || 0) > 60000) {
+      const desde = Date.now() - VIGENCIA_HILERAS_MS;
+      const recientes = [...tramosAplicados, ...trazosOtros].map(tr => tr.filter(q => (q[2] || 0) >= desde)).filter(tr => tr.length >= 2);
+      const est = estimarHileras(a.potrero, recientes, w);
+      if (est) est.tsEst = Date.now();
+      if (est && (!g || (!g.fija && est.m >= (g.m || 0)) || (vencida && est.m >= 200) || (!vencida && g.fija && est.fija && est.m >= g.m))) { g = est; guardarHileras(a.potrero, est); }
+      else if (g) { g.ts = Date.now(); if (vencida) reestimando = true; }
+    }
   }
   if (g) {
     const G = grillaDe(g), pr = G, sp = G.sp || w;
@@ -864,7 +899,7 @@ function pintarAplicacion() {
     btn.textContent = '🌾 Iniciar potrero';
   }
   const g = a ? hileras[a.potrero] : null;
-  document.getElementById('stats').innerHTML = `Ancho ${String(ancho).replace('.', ',')} m${a && a.ancho ? ' (según cultivo)' : ''}${a ? ' · 🟩 hoy' + (hayDiasAnteriores ? ' · 🟪 días anteriores' : '') + ' · 🟦 otros' : ''}${repetidoM >= 5 ? ` · <span style="color:var(--rojo);font-weight:700">🟥 ${Math.round(repetidoM)} m repetidos</span>` : ''}${a && esFrutal(a.potrero) ? (g ? (g.fija ? ' · hileras ✓' : ' · hileras estimándose…') : ' · hileras: haz una pasada recta') : ''}`;
+  document.getElementById('stats').innerHTML = `Ancho ${String(ancho).replace('.', ',')} m${a && a.ancho ? ' (según cultivo)' : ''}${a ? ' · 🟩 hoy' + (hayDiasAnteriores ? ' · 🟪 días anteriores' : '') + ' · 🟦 otros' : ''}${repetidoM >= 5 ? ` · <span style="color:var(--rojo);font-weight:700">🟥 ${Math.round(repetidoM)} m repetidos</span>` : ''}${a && esFrutal(a.potrero) ? (g ? (g.fija ? (reestimando ? ' · hileras ✓ (re-estimando con las pasadas de ahora…)' : ' · hileras ✓') : ' · hileras estimándose…') : ' · hileras: haz una pasada recta') : ''}${(() => { const n = entrecalleActual(); return n ? ` · <strong>≈ entrecalle ${n}</strong>` : ''; })()}`;
   a && (a.km = +kmAplicacion.toFixed(2));
 }
 
@@ -972,6 +1007,7 @@ function onPos(pos) {
     v: c.speed != null ? +c.speed.toFixed(1) : null, h: c.heading != null && !isNaN(c.heading) ? Math.round(c.heading) : null,
     c: cargando, a: aplicando && a ? 1 : 0, ap: aplicando && a ? a.id : null, pot: null, e: 0 };
   ultimaPos = p;
+  if (Date.now() - (window.__ultStats || 0) > 3000) { window.__ultStats = Date.now(); try { pintarAplicacion(); } catch (e) {} } // actualiza "≈ entrecalle N"
   const chip = document.getElementById('b-gps');
   chip.textContent = `📍 ±${p.acc} m`;
   chip.className = 'chip ' + (p.acc <= 8 ? 'ok' : p.acc <= 20 ? 'med' : 'mal');
@@ -1164,7 +1200,7 @@ async function actualizarDatosCampo(manual) {
   if (!navigator.onLine) { if (manual) est.textContent = 'Sin internet: se usan los potreros guardados en el celular.'; return; }
   try {
     if (manual) est.textContent = 'Descargando potreros…';
-    const [sd, sz, sh] = await conTimeout(Promise.all([getDoc(doc(db, 'config', 'datos')), getDoc(doc(db, 'config', 'zonas_sin_cultivo')), getDoc(doc(db, 'config', 'hileras'))]), 20000);
+    const [sd, sz, sh, st] = await conTimeout(Promise.all([getDoc(doc(db, 'config', 'datos')), getDoc(doc(db, 'config', 'zonas_sin_cultivo')), getDoc(doc(db, 'config', 'hileras')), getDoc(doc(db, 'config', 'hileras_tractor')).catch(() => null)]), 20000);
     const d = sd.exists() ? sd.data() : {};
     datosCampo = {
       equipos: d.equipos || [],
@@ -1176,7 +1212,19 @@ async function actualizarDatosCampo(manual) {
       ts: Date.now()
     };
     ls.set('tractor_datos_campo', datosCampo);
-    if (sh.exists()) { const hr = sh.data(); Object.keys(hr).forEach(k => { if (hr[k] && hr[k].fija) hileras[k] = hr[k]; else if (hr[k] === null && hileras[k] && hileras[k].fija) delete hileras[k]; }); ls.set('tractor_hileras', hileras); }
+    if (sh.exists()) {
+      const hr = sh.data();
+      Object.keys(hr).forEach(k => {
+        const g = hr[k];
+        if (g && (g.manual || g.v === 3)) hilerasRef[k] = g;               // grilla de la app → solo numeración
+        else { delete hilerasRef[k]; if (g && g.fija && !hileras[k]) hileras[k] = g; } // estimación antigua del tractor
+      });
+    }
+    if (st && st.exists()) {
+      const ht = st.data();
+      Object.keys(ht).forEach(k => { const g = ht[k]; if (g && g.fija && !hileras[k]) hileras[k] = g; }); // solo como punto de partida: cada celular afina la suya
+    }
+    ls.set('tractor_hileras', hileras); ls.set('tractor_hileras_ref', hilerasRef);
     if (sesion && !tienePermiso(sesion)) quitarSesion('Ya no tienes acceso al modo tractor. Pídeselo al administrador.');
     dibujarCampo(); if (document.getElementById('capa-ajustes').style.display === 'flex') llenarEquipos(); mostrarEstadoDatos(); pintarAplicacion();
     if (manual) est.textContent += ' ✓ Actualizado.';
@@ -1278,7 +1326,7 @@ async function preguntarPotreroAnterior(eq) {
 // Tras 10 s sin tocar la pantalla (con un potrero iniciado) se oculta todo salvo el mapa y un
 // cuadro arriba con un dato grande a elegir. Cualquier toque vuelve a la vista normal.
 const FOCO_MS = 10000;
-const HUD_DATOS = [ { id: 'vel', t: '🚜 Velocidad' }, { id: 'pre', t: '📍 Precisión' }, { id: 'pct', t: '🌾 % potrero' }, { id: 'ha', t: '≈ Hectáreas' }, { id: 'ha2', t: '🔢 T2 (ha)' } ];
+const HUD_DATOS = [ { id: 'vel', t: '🚜 Velocidad' }, { id: 'pre', t: '📍 Precisión' }, { id: 'pct', t: '🌾 % potrero' }, { id: 'ha', t: '≈ Hectáreas' }, { id: 'ha2', t: '🔢 T2 (ha)' }, { id: 'ent', t: '🌳 Entrecalle' } ];
 let hudDato = ls.get('tractor_hud', 'vel'), focoActivo = false, ultimoToque = Date.now(), resumenAp = null;
 const nf = (n, d) => n.toFixed(d).replace('.', ',');
 function hudPintar() {
@@ -1288,6 +1336,7 @@ function hudPintar() {
   if (hudDato === 'vel') { val = pos && pos.v != null ? nf(pos.v * 3.6, 1) : '—'; sub = 'km/h'; }
   else if (hudDato === 'pre') { val = pos ? '±' + pos.acc : '—'; sub = 'metros de precisión del GPS'; }
   else if (hudDato === 'pct') { val = resumenAp && resumenAp.pct != null ? Math.round(resumenAp.pct) + '%' : '—'; sub = resumenAp && resumenAp.haPot ? `de ${nf(resumenAp.haPot, 1)} ha de ${a ? a.potrero : ''}` : 'del potrero'; }
+  else if (hudDato === 'ent') { const n = entrecalleActual(); val = n ? '≈ ' + n : '—'; sub = n ? 'entrecalle aproximada (numeración de la app)' : 'sin numeración para este potrero'; }
   else if (hudDato === 'ha2') { val = nf(parcial.m2 / 10000, 2); sub = 'ha T2 desde ' + new Date(parcial.desde).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' }) + ' (reinícialo abajo con ↺ 0)'; }
   else { val = resumenAp ? nf(resumenAp.haTot, 1) : '—'; sub = 'ha aplicadas' + (a ? ' en ' + a.potrero : ''); }
   hud.className = aplicando ? 'ap' : '';
