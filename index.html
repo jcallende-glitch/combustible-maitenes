@@ -6650,7 +6650,11 @@ async function hilerasDelDia(pot, eq, dia) {
   const hechas = ks.map(k => hilNumero(g, k)).filter(Boolean).sort((a, b) => a - b);
   const faltan = [];
   if (ks.length) { const kmin = Math.min(...ks), kmax = Math.max(...ks); for (let k = kmin; k <= kmax; k++) if (!ks.includes(k) && hilNumero(g, k)) faltan.push(hilNumero(g, k)); }
-  return { fuente, puntos: dentro.length, hechas, faltan: faltan.sort((a, b) => a - b), total: g.nHileras || null };
+  // Horas trabajando: tiempo en movimiento dentro del potrero (sin paradas ni huecos de más de 3 min)
+  let msMov = 0;
+  for (let i = 1; i < dentro.length; i++) { const dt = dentro[i].t - dentro[i - 1].t; if (dt <= 0 || dt > 180000) continue; const v = jdpDistKm(dentro[i - 1], dentro[i]) / (dt / 3600000); if (v >= 1 && v < 40) msMov += dt; }
+  const ha = haDeEntrecalles(g, poly, hechas), horas = Math.round(msMov / 36000) / 100;
+  return { fuente, puntos: dentro.length, hechas, faltan: faltan.sort((a, b) => a - b), total: g.nHileras || null, ha, horas, haH: horas > 0.05 && ha ? Math.round(ha / horas * 100) / 100 : null };
 }
 // ── Clima de cada día de la labor (Open-Meteo, gratis y sin clave): temperatura, precipitación y radiación solar ──
 function centroPotrero(nombre) {
@@ -6723,27 +6727,99 @@ window.verHilerasLabor = function(id) {
     <div class="hint" style="margin-bottom:8px">Busca el recorrido de ese tractor (📱 celular o 📡 JDLink, según la fuente elegida en Ubicación equipos) dentro del potrero cada día, y lo cruza con las hileras numeradas del huerto. Es aproximado.</div>
     <button class="btn btn-verde btn-full" onclick="calcularHilerasLabor()">🔎 Calcular</button>
     <div id="hilc-res" style="margin-top:10px"></div>
+    <div id="hilc-leyenda" style="margin-top:8px;font-size:12px"></div>
+    <div id="hilc-mapa" style="height:340px;border-radius:8px;overflow:hidden;margin-top:6px;display:none"></div>
     <div style="display:flex;gap:8px;margin-top:10px">
       <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="cerrarHilerasLabor()">Cerrar</button>
       <button class="btn btn-verde" style="flex:1" id="hilc-guardar" onclick="guardarHilerasLabor()" disabled>💾 Guardar en el cuaderno</button></div></div>`;
-  if (l.hilerasDia) { HILC.res = JSON.parse(JSON.stringify(l.hilerasDia)); pintarHilerasLabor(true); }
+  if (l.hilerasDia) { HILC.res = JSON.parse(JSON.stringify(l.hilerasDia)); HILC.guardado = true; pintarHilerasLabor(true); dibujarHilerasLabor(); }
 }
-window.cerrarHilerasLabor = function() { const ov = document.getElementById('modal-hil-labor'); if (ov) ov.remove(); HILC = null; }
+window.cerrarHilerasLabor = function() { if (hilcMapa) { try { hilcMapa.remove(); } catch (e) {} hilcMapa = null; } const ov = document.getElementById('modal-hil-labor'); if (ov) ov.remove(); HILC = null; }
+// ── Mapa del huerto: entrecalles trabajadas, un color por día; faltantes en rojo punteado ──
+let hilcMapa = null;
+const HILC_COLORES = ['#2563EB', '#16A34A', '#F59E0B', '#9333EA', '#0891B2', '#DB2777', '#65A30D', '#EA580C', '#4F46E5', '#0D9488'];
+function numerosDeRangos(v) {
+  if (Array.isArray(v)) return v;
+  const out = [];
+  String(v || '').split(',').forEach(p => { const m = p.trim().match(/^(\d+)\s*[–-]\s*(\d+)$/); if (m) { for (let n = +m[1]; n <= +m[2] && out.length < 2000; n++) out.push(n); } else if (/^\d+$/.test(p.trim())) out.push(+p.trim()); });
+  return out;
+}
+// Superficie (ha) de entrecalles completas dentro del potrero: largo dentro del polígono × ancho de la entrecalle
+function haDeEntrecalles(g, poly, nums) {
+  const G = grillaDe(g); if (!G || !nums || !nums.length) return 0;
+  let m2 = 0;
+  [...new Set(nums)].forEach(n => {
+    const k = gKdeNumero(g, n);
+    gTramos(G, poly, s => G.centro(k, s), 3).forEach(t => {
+      for (let s0 = t.s0; s0 < t.s1; s0 += 5) { const s1 = Math.min(t.s1, s0 + 5), b = G.bordes(k, (s0 + s1) / 2); m2 += (s1 - s0) * Math.abs(b[1] - b[0]); }
+    });
+  });
+  return Math.round(m2 / 1000) / 10;
+}
+function gKdeNumero(g, n) {
+  if (g.v === 3) { const N = (g.filas || []).length - 1; return g.dir === -1 ? N - n : n - 1; }
+  return g.dir === -1 ? g.kIni - (n - 1) : g.kIni + (n - 1);
+}
+async function dibujarHilerasLabor() {
+  if (!HILC) return;
+  const caja = document.getElementById('hilc-mapa'), ley = document.getElementById('hilc-leyenda');
+  if (!caja || typeof L === 'undefined') return;
+  const pc = potrerosConfig.find(x => x.nombre === HILC.l.potrero);
+  if (!jdpHilerasCfg) await jdpCargarHilerasCfg();
+  const g = jdpHilerasCfg && jdpHilerasCfg[HILC.l.potrero], G = g ? grillaDe(g) : null;
+  if (!pc || !poligonoValido(pc.poligono) || !G) { caja.style.display = 'none'; return; }
+  const poly = jdpNormPoligono(pc.poligono);
+  caja.style.display = '';
+  if (hilcMapa) { try { hilcMapa.remove(); } catch (e) {} hilcMapa = null; }
+  hilcMapa = L.map(caja, { zoomControl: true });
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { attribution: 'Tiles &copy; Esri', maxZoom: 21, maxNativeZoom: 19 }).addTo(hilcMapa);
+  L.polygon(poly, { color: '#FACC15', weight: 2, fillOpacity: 0, interactive: false }).addTo(hilcMapa);
+  hilcMapa.fitBounds(poly, { padding: [10, 10] });
+  const N = g.v === 3 ? (g.filas || []).length - 1 : (g.nHileras || 0);
+  const banda = (k, color, opac, tip) => gTramos(G, poly, s => G.centro(k, s), 3).forEach(t => {
+    const izq = gLinea(G, s => G.bordes(k, s)[0], t.s0, t.s1), der = gLinea(G, s => G.bordes(k, s)[1], t.s0, t.s1);
+    L.polygon([...izq, ...der.reverse()], { stroke: false, fillColor: color, fillOpacity: opac }).addTo(hilcMapa).bindTooltip(tip, { sticky: true });
+  });
+  const linea = (k, opts, tip) => gTramos(G, poly, s => G.centro(k, s), 3).forEach(t => { const pl = L.polyline(t.pts, opts).addTo(hilcMapa); if (tip) pl.bindTooltip(tip, { sticky: true }); });
+  // todas las entrecalles numeradas, finas, con su número cada 5
+  for (let n = 1; n <= N; n++) {
+    const k = gKdeNumero(g, n);
+    linea(k, { color: '#FFFFFF', weight: 1, opacity: 0.35, interactive: false });
+    if (n === 1 || n === N || n % 5 === 0) {
+      const tr = gTramos(G, poly, s => G.centro(k, s), 3)[0];
+      if (tr) L.marker(tr.pts[0], { icon: L.divIcon({ className: '', html: `<div style="background:rgba(0,0,0,.7);color:#fff;font-size:10px;font-weight:700;padding:0 4px;border-radius:4px;transform:translate(-50%,-50%);white-space:nowrap">${n}</div>`, iconSize: [0, 0] }), interactive: false }).addTo(hilcMapa);
+    }
+  }
+  const dias = Object.keys(HILC.res).sort(), items = [];
+  let faltabaHa = false;
+  dias.forEach(d => { const r = HILC.res[d]; if (r && !r.error && r.hechas && r.ha == null) { r.ha = haDeEntrecalles(g, poly, numerosDeRangos(r.hechas)); faltabaHa = true; } });
+  if (faltabaHa) pintarHilerasLabor(HILC.guardado);
+  dias.forEach((d, i) => {
+    const r = HILC.res[d] || {}, col = HILC_COLORES[i % HILC_COLORES.length];
+    const hechas = numerosDeRangos(r.hechas), faltan = numerosDeRangos(r.faltan);
+    hechas.forEach(n => banda(gKdeNumero(g, n), col, 0.6, `<b>Entrecalle ${n}</b><br>${fCorta(d)}`));
+    faltan.forEach(n => linea(gKdeNumero(g, n), { color: '#DC2626', weight: 3, opacity: 0.95, dashArray: '6 5' }, `<b>Entrecalle ${n}</b>: sin pasar el ${fCorta(d)}`));
+    items.push(`<span style="display:inline-flex;align-items:center;gap:4px;margin:0 10px 4px 0"><span style="width:14px;height:14px;border-radius:3px;background:${col}"></span>${fCorta(d)}${hechas.length ? ' · ' + hechas.length + ' entrecalles' + (r.ha ? ' · ' + String(r.ha).replace('.', ',') + ' ha' : '') + (r.haH ? ' · ' + String(r.haH).replace('.', ',') + ' ha/h' : '') : ' · sin datos'}</span>`);
+  });
+  if (ley) ley.innerHTML = items.length ? items.join('') + '<span style="display:inline-flex;align-items:center;gap:4px"><span style="width:16px;border-top:3px dashed #DC2626"></span>faltó pasar</span>' : '';
+  setTimeout(() => { try { hilcMapa && hilcMapa.invalidateSize(); } catch (e) {} }, 150);
+}
 function pintarHilerasLabor(guardado) {
   const box = document.getElementById('hilc-res'); if (!box || !HILC) return;
   const filas = Object.keys(HILC.res).sort().map(d => {
     const r = HILC.res[d];
     const ent = r.error ? `<span style="color:#B91C1C">${escA(r.error)}</span>` : r.hechas ? (typeof r.hechas === 'string' ? r.hechas : rangosNum(r.hechas)) || '<span style="color:var(--acero)">sin pasadas en el potrero</span>' : '…';
     const falt = r.faltan && r.faltan.length ? (typeof r.faltan === 'string' ? r.faltan : rangosNum(r.faltan)) : '';
-    return `<tr style="border-top:1px solid var(--borde)"><td style="padding:5px 4px;white-space:nowrap">${fCorta(d)}</td><td style="padding:5px 4px">${ent}${r.total ? `<span style="color:var(--acero);font-size:11px"> de ${r.total}</span>` : ''}</td><td style="padding:5px 4px;color:#B91C1C">${escA(falt)}</td><td style="padding:5px 4px;font-size:11px">${r.fuente === 'jdlink' ? '📡' : r.fuente === 'celular' ? '📱' : r.puntos === 0 ? 'sin datos' : ''}</td></tr>`;
+    return `<tr style="border-top:1px solid var(--borde)"><td style="padding:5px 4px;white-space:nowrap">${fCorta(d)}</td><td style="padding:5px 4px">${ent}${r.total ? `<span style="color:var(--acero);font-size:11px"> de ${r.total}</span>` : ''}</td><td style="padding:5px 4px;text-align:right;white-space:nowrap;font-weight:700">${r.ha ? String(r.ha).replace('.', ',') : '—'}</td><td style="padding:5px 4px;text-align:right;white-space:nowrap">${r.horas ? String(r.horas).replace('.', ',') : '—'}</td><td style="padding:5px 4px;text-align:right;white-space:nowrap;font-weight:700;color:#047857">${r.haH ? String(r.haH).replace('.', ',') : '—'}</td><td style="padding:5px 4px;color:#B91C1C">${escA(falt)}</td><td style="padding:5px 4px;font-size:11px">${r.fuente === 'jdlink' ? '📡' : r.fuente === 'celular' ? '📱' : r.puntos === 0 ? 'sin datos' : ''}</td></tr>`;
   }).join('');
-  box.innerHTML = `${guardado ? '<div style="font-size:11px;color:var(--acero);margin-bottom:4px">Guardado en el cuaderno. Puedes volver a calcular.</div>' : ''}<table style="width:100%;min-width:0;font-size:12px;border-collapse:collapse"><thead><tr><th style="text-align:left;padding:4px">Día</th><th style="text-align:left;padding:4px">Entrecalles trabajadas</th><th style="text-align:left;padding:4px">Faltaron</th><th></th></tr></thead><tbody>${filas}</tbody></table>`;
+  box.innerHTML = `${guardado ? '<div style="font-size:11px;color:var(--acero);margin-bottom:4px">Guardado en el cuaderno. Puedes volver a calcular.</div>' : ''}<table style="width:100%;min-width:0;font-size:12px;border-collapse:collapse"><thead><tr><th style="text-align:left;padding:4px">Día</th><th style="text-align:left;padding:4px">Entrecalles trabajadas</th><th style="text-align:right;padding:4px">ha</th><th style="text-align:right;padding:4px">h</th><th style="text-align:right;padding:4px">ha/h</th><th style="text-align:left;padding:4px">Faltaron</th><th></th></tr></thead><tbody>${filas}</tbody>${(() => { const rs = Object.values(HILC.res), t = rs.reduce((a, r) => a + (Number(r && r.ha) || 0), 0), h = rs.reduce((a, r) => a + (Number(r && r.horas) || 0), 0), hh = rs.reduce((a, r) => a + (r && r.ha && r.horas ? Number(r.horas) : 0), 0); const pc = potrerosConfig.find(x => x.nombre === HILC.l.potrero); const c = x => String(x).replace('.', ','); return t ? `<tfoot><tr style="border-top:2px solid var(--borde)"><td style="padding:5px 4px;font-weight:800">Total</td><td style="padding:5px 4px;color:var(--acero);font-size:11px">${pc && pc.hectareas ? 'potrero: ' + c(pc.hectareas) + ' ha' : ''}</td><td style="padding:5px 4px;text-align:right;font-weight:800">${c(Math.round(t * 10) / 10)}</td><td style="padding:5px 4px;text-align:right;font-weight:800">${h ? c(Math.round(h * 10) / 10) : '—'}</td><td style="padding:5px 4px;text-align:right;font-weight:800;color:#047857">${hh > 0.05 ? c(Math.round(t / hh * 100) / 100) : '—'}</td><td colspan="2"></td></tr></tfoot>` : ''; })()}</table>
+    <div style="font-size:11px;color:var(--acero);margin-top:3px">ha = entrecalles trabajadas completas × su ancho (aprox.; si una entrecalle se pasó dos días, cuenta en ambos). h = tiempo en movimiento dentro del potrero, sin paradas. ha/h del total = todas las ha ÷ todas las horas.</div>`;
 }
 window.calcularHilerasLabor = async function() {
   if (!HILC) return;
   const eq = (document.getElementById('hilc-equipo') || {}).value;
   if (!eq) { toast('Elige el tractor que hizo la labor', false); return; }
-  HILC.eq = eq; HILC.res = {};
+  HILC.eq = eq; HILC.res = {}; HILC.guardado = false;
   const dias = diasDeLabor(HILC.l).slice(0, 31);
   dias.forEach(d => HILC.res[d] = {});
   pintarHilerasLabor();
@@ -6753,11 +6829,12 @@ window.calcularHilerasLabor = async function() {
     pintarHilerasLabor();
   }
   const b = document.getElementById('hilc-guardar'); if (b) b.disabled = false;
+  try { await dibujarHilerasLabor(); } catch (e) { console.warn('mapa hileras', e); }
 }
 window.guardarHilerasLabor = async function() {
   if (!HILC) return;
   const out = {};
-  Object.entries(HILC.res).forEach(([d, r]) => { if (r && !r.error && r.hechas && r.hechas.length) out[d] = { hechas: typeof r.hechas === 'string' ? r.hechas : rangosNum(r.hechas), n: Array.isArray(r.hechas) ? r.hechas.length : (r.n || null), faltan: Array.isArray(r.faltan) ? rangosNum(r.faltan) : (r.faltan || ''), total: r.total || null, fuente: r.fuente || null }; });
+  Object.entries(HILC.res).forEach(([d, r]) => { if (r && !r.error && r.hechas && r.hechas.length) out[d] = { hechas: typeof r.hechas === 'string' ? r.hechas : rangosNum(r.hechas), n: Array.isArray(r.hechas) ? r.hechas.length : (r.n || null), ha: r.ha || null, horas: r.horas || null, haH: r.haH || null, faltan: Array.isArray(r.faltan) ? rangosNum(r.faltan) : (r.faltan || ''), total: r.total || null, fuente: r.fuente || null }; });
   if (!Object.keys(out).length) { toast('No hay entrecalles para guardar', false); return; }
   const cambios = { hilerasDia: out, hilerasCalculadoTs: Date.now() };
   if (HILC.eq && !HILC.l.equipo) cambios.equipo = HILC.eq;
@@ -7317,7 +7394,8 @@ window.verFotoLabor = function(id, i) {
 }
 function detalleLaborCampo(l) {
   const base = detalleLaborBase(l);
-  const hil = l.hilerasDia && Object.keys(l.hilerasDia).length ? '🌳 ' + Object.keys(l.hilerasDia).sort().map(d => { const r = l.hilerasDia[d]; return `${fCorta(d)}: entrecalles ${escA(r.hechas)}${r.faltan ? ` (faltaron ${escA(r.faltan)})` : ''}`; }).join(' · ') : '';
+  const hil = l.hilerasDia && Object.keys(l.hilerasDia).length ? '🌳 ' + Object.keys(l.hilerasDia).sort().map(d => { const r = l.hilerasDia[d]; const c = x => String(x).replace('.', ','); return `${fCorta(d)}: entrecalles ${escA(r.hechas)}${r.ha ? ` (${c(r.ha)} ha${r.horas ? ' · ' + c(r.horas) + ' h' : ''}${r.haH ? ' · ' + c(r.haH) + ' ha/h' : ''})` : ''}${r.faltan ? ` (faltaron ${escA(r.faltan)})` : ''}`; }).join(' · ')
+    + (() => { const rs = Object.values(l.hilerasDia), t = rs.reduce((a, r) => a + (r.ha && r.horas ? r.ha : 0), 0), h = rs.reduce((a, r) => a + (r.ha && r.horas ? r.horas : 0), 0); return rs.length > 1 && h > 0.05 ? ` · promedio ${String(Math.round(t / h * 100) / 100).replace('.', ',')} ha/h` : ''; })() : '';
   const cl = climaTexto(l);
   const extra = [(l.tipo !== 'aplicacion' && l.tipo !== 'trabajo_suelo' && l.equipo) ? '🚜 ' + escA(l.equipo) : '', l.operadorLabor ? '👷 ' + escA(l.operadorLabor) : '', l.hilerasManual ? '🌳 hileras ' + escA(l.hilerasManual) : '', hil].filter(Boolean).join(' · ')
     + (cl ? `<div style="font-size:11px;color:#0369A1;margin-top:2px">🌤️ ${escA(cl)}</div>` : '');
