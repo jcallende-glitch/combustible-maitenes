@@ -6116,6 +6116,7 @@ function cultivoDeReferenciaPotrero(unidad) {
 
 function renderTipoLaborSelector() {
   try { renderCampoDuracion(); } catch (e) {}
+  try { renderCampoQuien(); } catch (e) {}
   const wrap = document.getElementById('campo-tipo-labor-selector');
   if (!wrap) return;
   // Si hay potreros anuales entre los elegidos (o todavía no se elige ninguno),
@@ -6214,6 +6215,7 @@ window.continuarLaborEnCurso = async function(k, dia) {
     g.forEach(l => batch.update(doc(db, 'labores_campo', l.id), { diasTrabajo: [...new Set([...(l.diasTrabajo || [l.fecha]), d])].sort(), continuadoPor: currentUser || '', continuadoTs: Date.now() }));
     await batch.commit();
     toast('✓ Marcado: la labor se continuó el ' + fCorta(d), true);
+    setTimeout(() => guardarClimaLabores(g.map(l => l.id)).catch(e => console.warn('clima', e)), 2000);
   } catch (e) { toast('Error: ' + e.message, false); }
 }
 window.terminarLaborEnCurso = async function(k) {
@@ -6228,6 +6230,7 @@ window.terminarLaborEnCurso = async function(k) {
     g.forEach(l => batch.update(doc(db, 'labores_campo', l.id), { fechaFin: fin === l.fecha ? null : fin, enCurso: false, diasTrabajo: [...new Set([...(l.diasTrabajo || [l.fecha]), fin])].filter(x => x <= fin).sort(), terminadoPor: currentUser || '', terminadoTs: Date.now() }));
     await batch.commit();
     toast('🏁 Labor terminada: del ' + fCorta(ini) + ' al ' + fCorta(fin), true);
+    setTimeout(() => guardarClimaLabores(g.map(l => l.id)).catch(e => console.warn('clima', e)), 2000);
   } catch (e) { toast('Error: ' + e.message, false); }
 }
 function labelTipoLaborHtml(id) { const f = TIPOS_LABOR_CAMPO.find(t => t.id === id); return f ? iconoLaborHtml(f) : labelTipoLabor(id); }
@@ -6401,6 +6404,7 @@ const operadoresDeEquipo = eq => Object.keys(equipoOperadorConfig || {}).filter(
 function renderCampoQuien() {
   const w = document.getElementById('campo-labor-quien'); if (!w) return;
   w.style.display = campoTipoLaborSeleccionado ? '' : 'none';
+  try { const hw = document.getElementById('campo-labor-hileras-wrap'); if (hw) hw.style.display = camposLaborPotrerosSel.some(u => potreroEsHuerto(infoUnidad(u).potrero)) ? '' : 'none'; } catch (e) {}
   const se = document.getElementById('campo-labor-equipo'), so = document.getElementById('campo-labor-operador');
   if (!se || !so) return;
   const ve = se.value, vo = so.value;
@@ -6600,6 +6604,165 @@ window.filtrarCopiarLabor = function() {
   }).join('');
   const el = document.getElementById('copiar-labor-lista');
   if (el) el.innerHTML = html || '<div class="empty" style="padding:10px;font-size:13px">No hay labores que coincidan.</div>';
+}
+// ── Hileras por día de una labor de huerto: cruza el cuaderno con el recorrido del tractor (celular o JDLink) ──
+function rangosNum(nums) {
+  const a = [...new Set(nums)].sort((x, y) => x - y), out = [];
+  for (let i = 0; i < a.length; i++) { let j = i; while (j + 1 < a.length && a[j + 1] === a[j] + 1) j++; out.push(j > i ? `${a[i]}–${a[j]}` : `${a[i]}`); i = j; }
+  return out.join(', ');
+}
+function diasDeLabor(l) {
+  if (Array.isArray(l.diasTrabajo) && l.diasTrabajo.length) return [...new Set(l.diasTrabajo)].sort();
+  const fin = l.fechaFin || (l.enCurso ? hoyCampoStr() : l.fecha), out = [];
+  let d = new Date(l.fecha + 'T12:00:00');
+  for (let i = 0; i < 31; i++) { const p = n => String(n).padStart(2, '0'), x = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`; if (x > fin) break; out.push(x); d.setDate(d.getDate() + 1); }
+  return out;
+}
+const potreroEsHuerto = nombre => { const p = potrerosConfig.find(x => x.nombre === nombre); return !!(p && p.tipo === 'frutal'); };
+async function hilerasDelDia(pot, eq, dia) {
+  const pc = potrerosConfig.find(x => x.nombre === pot);
+  if (!pc || !poligonoValido(pc.poligono)) return { error: 'el potrero no tiene polígono' };
+  if (!jdpHilerasCfg) await jdpCargarHilerasCfg();
+  const g = jdpHilerasCfg && jdpHilerasCfg[pot];
+  if (!g || !(g.v === 3 || (g.v === 2 && g.fija)) || !grillaDe(g)) return { error: 'el huerto no tiene hileras numeradas (Config. Potreros → 🌳 Hileras)' };
+  const t0 = new Date(dia + 'T00:00:00').getTime(), t1 = t0 + 86400000 - 1;
+  const orden = envivoPrefDe(eq) === 'jdlink' ? ['jdlink', 'celular'] : ['celular', 'jdlink'];
+  let pts = [], fuente = null;
+  for (const f of orden) {
+    if (f === 'jdlink' && !envivoJD.some(j => j.equipo === eq && j._m)) { try { await traerUbicacionesJD(); } catch (e) {} }
+    pts = f === 'celular' ? await envivoPuntosCelular(eq, t0, t1) : await envivoPuntosJD(eq, t0, t1);
+    if (pts.length) { fuente = f; break; }
+  }
+  if (!pts.length) return { fuente: null, puntos: 0, hechas: [], faltan: [] };
+  const poly = jdpNormPoligono(pc.poligono);
+  const dentro = pts.filter(p => jdpPuntoEnPoligono(p.lat, p.lng, poly)).sort((a, b) => a.t - b.t);
+  if (dentro.length < 15) return { fuente, puntos: dentro.length, hechas: [], faltan: [], total: g.nHileras || null };
+  const tramos = []; let cur = [];
+  dentro.forEach((p, i) => {
+    const prev = dentro[i - 1];
+    const v = prev && p.t > prev.t ? jdpDistKm(prev, p) / ((p.t - prev.t) / 3600000) : null;
+    if (cur.length && p.t - cur[cur.length - 1][2] > 120000) { tramos.push(cur); cur = []; }
+    cur.push([p.lat, p.lng, p.t, false, v != null && isFinite(v) && v < 40 ? v : null]);
+  });
+  if (cur.length) tramos.push(cur);
+  const pasadas = tramos.filter(tr => tr.length >= 3).flatMap(tr => hilPasadas(tr, g)).filter(ps => Math.abs(ps.s1 - ps.s0) >= 15);
+  const ks = [...new Set(pasadas.map(ps => ps.k))];
+  const hechas = ks.map(k => hilNumero(g, k)).filter(Boolean).sort((a, b) => a - b);
+  const faltan = [];
+  if (ks.length) { const kmin = Math.min(...ks), kmax = Math.max(...ks); for (let k = kmin; k <= kmax; k++) if (!ks.includes(k) && hilNumero(g, k)) faltan.push(hilNumero(g, k)); }
+  return { fuente, puntos: dentro.length, hechas, faltan: faltan.sort((a, b) => a - b), total: g.nHileras || null };
+}
+// ── Clima de cada día de la labor (Open-Meteo, gratis y sin clave): temperatura, precipitación y radiación solar ──
+function centroPotrero(nombre) {
+  const p = potrerosConfig.find(x => x.nombre === nombre);
+  if (p && poligonoValido(p.poligono)) { const q = jdpNormPoligono(p.poligono); return [q.reduce((a, c) => a + c[0], 0) / q.length, q.reduce((a, c) => a + c[1], 0) / q.length]; }
+  const otro = potrerosConfig.find(x => poligonoValido(x.poligono));
+  if (otro) { const q = jdpNormPoligono(otro.poligono); return [q[0][0], q[0][1]]; }
+  return [-36.83, -72.15];
+}
+async function climaDias(lat, lng, d0, d1) {
+  const base = diasEntre(d0, hoyCampoStr()) > 80 ? 'https://archive-api.open-meteo.com/v1/archive' : 'https://api.open-meteo.com/v1/forecast';
+  const url = `${base}?latitude=${lat.toFixed(4)}&longitude=${lng.toFixed(4)}&daily=temperature_2m_max,temperature_2m_min,temperature_2m_mean,precipitation_sum,shortwave_radiation_sum,wind_speed_10m_max&timezone=America%2FSantiago&start_date=${d0}&end_date=${d1}`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error('el servicio de clima respondió ' + r.status);
+  const D = (await r.json()).daily || {}, out = {}, n1 = v => v == null ? null : Math.round(v * 10) / 10;
+  (D.time || []).forEach((t, i) => {
+    const tmax = D.temperature_2m_max?.[i], tmin = D.temperature_2m_min?.[i];
+    if (tmax == null && tmin == null && D.precipitation_sum?.[i] == null) return;
+    out[t] = { tmin: n1(tmin), tmax: n1(tmax), tmed: n1(D.temperature_2m_mean?.[i] ?? (tmax != null && tmin != null ? (tmax + tmin) / 2 : null)), lluvia: n1(D.precipitation_sum?.[i]), rad: n1(D.shortwave_radiation_sum?.[i]), viento: n1(D.wind_speed_10m_max?.[i]), ...(t >= hoyCampoStr() ? { parcial: true } : {}) };
+  });
+  return out;
+}
+// Guarda el clima de todos los días de esas labores (no bloquea; si falla, queda para el botón 🌤️)
+async function guardarClimaLabores(ids, avisar) {
+  const ls = ids.map(id => laboresCampoTodos.find(x => x.id === id)).filter(l => l && l.fecha && potreroEsHuerto(l.potrero)); // por ahora solo huertos
+  const hoy = hoyCampoStr(), porPot = {};
+  ls.forEach(l => { (porPot[l.potrero] = porPot[l.potrero] || []).push(l); });
+  let n = 0;
+  for (const [pot, grupo] of Object.entries(porPot)) {
+    const dias = [...new Set(grupo.flatMap(diasDeLabor))].filter(d => d <= hoy).sort();
+    if (!dias.length) continue;
+    const [lat, lng] = centroPotrero(pot);
+    const clima = await climaDias(lat, lng, dias[0], dias[dias.length - 1]);
+    for (const l of grupo) {
+      const propio = {}; diasDeLabor(l).forEach(d => { if (clima[d]) propio[d] = clima[d]; });
+      if (!Object.keys(propio).length) continue;
+      await updateDoc(doc(db, 'labores_campo', l.id), { climaDia: propio, climaTs: Date.now() }); n++;
+    }
+  }
+  if (avisar) toast(n ? '🌤️ Clima guardado' : 'No hay datos de clima para esas fechas', !!n);
+}
+window.actualizarClimaLabor = async function(id) {
+  const l = laboresCampoTodos.find(x => x.id === id); if (!l) return;
+  const ids = laboresCampoTodos.filter(x => x.id === id || (x.potrero === l.potrero && x.fecha === l.fecha && ((l.comboId && x.comboId === l.comboId) || (l.multiId && x.multiId === l.multiId)))).map(x => x.id);
+  toast('🌤️ Buscando el clima…', true);
+  try { await guardarClimaLabores(ids, true); } catch (e) { toast('No se pudo obtener el clima: ' + e.message, false); }
+}
+function climaTexto(l) {
+  const c = l.climaDia; if (!c) return '';
+  const ds = Object.keys(c).sort(); if (!ds.length) return '';
+  const f = v => v == null ? '–' : String(v).replace('.', ',');
+  if (ds.length <= 3) return 'Clima ' + ds.map(d => { const x = c[d]; return `${fCorta(d)}: ${f(x.tmin)}–${f(x.tmax)} °C · lluvia ${f(x.lluvia)} mm · rad. ${f(x.rad)} MJ/m²${x.parcial ? ' (parcial)' : ''}`; }).join(' | ');
+  const xs = ds.map(d => c[d]), num = a => a.filter(v => v != null);
+  const tmin = Math.min(...num(xs.map(x => x.tmin))), tmax = Math.max(...num(xs.map(x => x.tmax)));
+  const ll = num(xs.map(x => x.lluvia)).reduce((a, b) => a + b, 0), rads = num(xs.map(x => x.rad));
+  return `Clima ${ds.length} días: ${f(tmin)}–${f(tmax)} °C · lluvia ${f(Math.round(ll * 10) / 10)} mm en total · rad. ${f(rads.length ? Math.round(rads.reduce((a, b) => a + b, 0) / rads.length * 10) / 10 : null)} MJ/m² por día`;
+}
+let HILC = null; // { id, l, res: {dia: resultado} }
+window.verHilerasLabor = function(id) {
+  const l = laboresCampoTodos.find(x => x.id === id); if (!l) return;
+  HILC = { id, l, res: {} };
+  let ov = document.getElementById('modal-hil-labor');
+  if (!ov) { ov = document.createElement('div'); ov.id = 'modal-hil-labor'; ov.style.cssText = 'position:fixed;inset:0;z-index:4000;background:rgba(0,0,0,.55);display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:16px'; document.body.appendChild(ov); }
+  const eqs = (config.equipos || []).filter(e => e !== 'Otro (especificar)');
+  const dias = diasDeLabor(l);
+  ov.innerHTML = `<div style="background:var(--blanco,#fff);border-radius:12px;max-width:560px;width:100%;padding:16px;margin:auto">
+    <div class="panel-title">🌳 Hileras trabajadas por día</div>
+    <div style="font-size:13px;margin-bottom:6px"><strong>${escA(l.potrero)}</strong> · ${escA(nombreTipoDocCampo(l))} · ${dias.length === 1 ? fCorta(dias[0]) : 'del ' + fCorta(dias[0]) + ' al ' + fCorta(dias[dias.length - 1]) + ' (' + dias.length + ' días)'}</div>
+    <div class="field" style="margin-bottom:8px"><label>🚜 Tractor que hizo la labor</label><div class="select-wrapper"><select id="hilc-equipo"><option value="">— elige —</option>${eqs.map(e => `<option value="${escA(e)}" ${l.equipo === e ? 'selected' : ''}>${escA(e)}</option>`).join('')}</select></div></div>
+    <div class="hint" style="margin-bottom:8px">Busca el recorrido de ese tractor (📱 celular o 📡 JDLink, según la fuente elegida en Ubicación equipos) dentro del potrero cada día, y lo cruza con las hileras numeradas del huerto. Es aproximado.</div>
+    <button class="btn btn-verde btn-full" onclick="calcularHilerasLabor()">🔎 Calcular</button>
+    <div id="hilc-res" style="margin-top:10px"></div>
+    <div style="display:flex;gap:8px;margin-top:10px">
+      <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="cerrarHilerasLabor()">Cerrar</button>
+      <button class="btn btn-verde" style="flex:1" id="hilc-guardar" onclick="guardarHilerasLabor()" disabled>💾 Guardar en el cuaderno</button></div></div>`;
+  if (l.hilerasDia) { HILC.res = JSON.parse(JSON.stringify(l.hilerasDia)); pintarHilerasLabor(true); }
+}
+window.cerrarHilerasLabor = function() { const ov = document.getElementById('modal-hil-labor'); if (ov) ov.remove(); HILC = null; }
+function pintarHilerasLabor(guardado) {
+  const box = document.getElementById('hilc-res'); if (!box || !HILC) return;
+  const filas = Object.keys(HILC.res).sort().map(d => {
+    const r = HILC.res[d];
+    const ent = r.error ? `<span style="color:#B91C1C">${escA(r.error)}</span>` : r.hechas ? (typeof r.hechas === 'string' ? r.hechas : rangosNum(r.hechas)) || '<span style="color:var(--acero)">sin pasadas en el potrero</span>' : '…';
+    const falt = r.faltan && r.faltan.length ? (typeof r.faltan === 'string' ? r.faltan : rangosNum(r.faltan)) : '';
+    return `<tr style="border-top:1px solid var(--borde)"><td style="padding:5px 4px;white-space:nowrap">${fCorta(d)}</td><td style="padding:5px 4px">${ent}${r.total ? `<span style="color:var(--acero);font-size:11px"> de ${r.total}</span>` : ''}</td><td style="padding:5px 4px;color:#B91C1C">${escA(falt)}</td><td style="padding:5px 4px;font-size:11px">${r.fuente === 'jdlink' ? '📡' : r.fuente === 'celular' ? '📱' : r.puntos === 0 ? 'sin datos' : ''}</td></tr>`;
+  }).join('');
+  box.innerHTML = `${guardado ? '<div style="font-size:11px;color:var(--acero);margin-bottom:4px">Guardado en el cuaderno. Puedes volver a calcular.</div>' : ''}<table style="width:100%;min-width:0;font-size:12px;border-collapse:collapse"><thead><tr><th style="text-align:left;padding:4px">Día</th><th style="text-align:left;padding:4px">Entrecalles trabajadas</th><th style="text-align:left;padding:4px">Faltaron</th><th></th></tr></thead><tbody>${filas}</tbody></table>`;
+}
+window.calcularHilerasLabor = async function() {
+  if (!HILC) return;
+  const eq = (document.getElementById('hilc-equipo') || {}).value;
+  if (!eq) { toast('Elige el tractor que hizo la labor', false); return; }
+  HILC.eq = eq; HILC.res = {};
+  const dias = diasDeLabor(HILC.l).slice(0, 31);
+  dias.forEach(d => HILC.res[d] = {});
+  pintarHilerasLabor();
+  for (const d of dias) {
+    if (!HILC) return;
+    try { HILC.res[d] = await hilerasDelDia(HILC.l.potrero, eq, d); } catch (e) { HILC.res[d] = { error: e.message }; }
+    pintarHilerasLabor();
+  }
+  const b = document.getElementById('hilc-guardar'); if (b) b.disabled = false;
+}
+window.guardarHilerasLabor = async function() {
+  if (!HILC) return;
+  const out = {};
+  Object.entries(HILC.res).forEach(([d, r]) => { if (r && !r.error && r.hechas && r.hechas.length) out[d] = { hechas: typeof r.hechas === 'string' ? r.hechas : rangosNum(r.hechas), n: Array.isArray(r.hechas) ? r.hechas.length : (r.n || null), faltan: Array.isArray(r.faltan) ? rangosNum(r.faltan) : (r.faltan || ''), total: r.total || null, fuente: r.fuente || null }; });
+  if (!Object.keys(out).length) { toast('No hay entrecalles para guardar', false); return; }
+  const cambios = { hilerasDia: out, hilerasCalculadoTs: Date.now() };
+  if (HILC.eq && !HILC.l.equipo) cambios.equipo = HILC.eq;
+  try { await updateDoc(doc(db, 'labores_campo', HILC.id), cambios); toast('✓ Hileras por día guardadas en el cuaderno', true); cerrarHilerasLabor(); }
+  catch (e) { toast('Error: ' + e.message, false); }
 }
 window.copiarLaborAnterior = function(i) {
   const g = (window.__copiaGrupos || [])[i]; if (!g) return;
@@ -6863,7 +7026,9 @@ window.registrarLaborCampo = async function() {
   if (campoAperosSel.length) payloadBase.aperos = [...campoAperosSel];
   { const e = (document.getElementById('campo-labor-equipo') || {}).value, o = (document.getElementById('campo-labor-operador') || {}).value;
     if (e) payloadBase.equipo = e;
-    if (o) payloadBase.operadorLabor = o; }
+    if (o) payloadBase.operadorLabor = o;
+    const hm = (document.getElementById('campo-labor-hileras') || {}).value;
+    if (hm && hm.trim() && camposLaborPotrerosSel.some(u => potreroEsHuerto(infoUnidad(u).potrero))) payloadBase.hilerasManual = hm.trim(); }
   if (campoColaLabores.length > 1 && !campoComboId) campoComboId = 'c' + Date.now().toString(36);
   if (campoComboId) payloadBase.comboId = campoComboId;
   if (campoFotosSel.length) payloadBase.fotos = [...campoFotosSel];
@@ -6968,10 +7133,10 @@ window.registrarLaborCampo = async function() {
   const btn = document.getElementById('btn-registrar-labor-campo');
   btn.disabled = true; btn.textContent = 'Guardando...';
   try {
-    const batch = writeBatch(db);
+    const batch = writeBatch(db), idsNuevos = [];
     camposLaborPotrerosSel.forEach(nombrePotrero => {
       const detalle = campoLaborPotrerosDetalle[nombrePotrero] || { modo: 'completo', hectareas: null, obs: '' };
-      const ref = doc(collection(db, 'labores_campo'));
+      const ref = doc(collection(db, 'labores_campo')); idsNuevos.push(ref.id);
       batch.set(ref, {
         ...payloadBase,
         potrero: infoUnidad(nombrePotrero).potrero,
@@ -6982,12 +7147,13 @@ window.registrarLaborCampo = async function() {
       });
     });
     await batch.commit();
+    setTimeout(() => guardarClimaLabores(idsNuevos).catch(e => console.warn('clima', e)), 2500); // espera a que lleguen los documentos nuevos
     document.getElementById('campo-labor-obs').value = '';
     campoFotosSel = []; renderCampoFotosPrev();
     const hechas = camposLaborPotrerosSel.length;
     campoColaLabores.shift();
     const siguiente = campoColaLabores[0] || null;
-    if (!siguiente) { campoComboId = null; campoMultiId = null; campoMultiDia = false; const ff = document.getElementById('campo-labor-fecha-fin'); if (ff) ff.value = ''; }
+    if (!siguiente) { campoComboId = null; campoMultiId = null; campoMultiDia = false; const ff = document.getElementById('campo-labor-fecha-fin'); if (ff) ff.value = ''; const hh = document.getElementById('campo-labor-hileras'); if (hh) hh.value = ''; }
     if (!siguiente) campoCopiaPorTipo = {};
     campoTipoLaborSeleccionado = siguiente; campoAperosSel = []; renderCampoAperos();
     // Se mantienen los potreros elegidos: es común registrar varias labores
@@ -7151,8 +7317,11 @@ window.verFotoLabor = function(id, i) {
 }
 function detalleLaborCampo(l) {
   const base = detalleLaborBase(l);
-  const extra = [(l.tipo !== 'aplicacion' && l.tipo !== 'trabajo_suelo' && l.equipo) ? '🚜 ' + escA(l.equipo) : '', l.operadorLabor ? '👷 ' + escA(l.operadorLabor) : ''].filter(Boolean).join(' · ');
-  return extra ? base + (base && base !== '—' ? ' · ' : '') + extra : base;
+  const hil = l.hilerasDia && Object.keys(l.hilerasDia).length ? '🌳 ' + Object.keys(l.hilerasDia).sort().map(d => { const r = l.hilerasDia[d]; return `${fCorta(d)}: entrecalles ${escA(r.hechas)}${r.faltan ? ` (faltaron ${escA(r.faltan)})` : ''}`; }).join(' · ') : '';
+  const cl = climaTexto(l);
+  const extra = [(l.tipo !== 'aplicacion' && l.tipo !== 'trabajo_suelo' && l.equipo) ? '🚜 ' + escA(l.equipo) : '', l.operadorLabor ? '👷 ' + escA(l.operadorLabor) : '', l.hilerasManual ? '🌳 hileras ' + escA(l.hilerasManual) : '', hil].filter(Boolean).join(' · ')
+    + (cl ? `<div style="font-size:11px;color:#0369A1;margin-top:2px">🌤️ ${escA(cl)}</div>` : '');
+  return extra ? (base && base !== '—' ? base + (extra.startsWith('<div') ? '' : ' · ') : '') + extra : base;
 }
 function detalleLaborBase(l) {
   const p = potrerosConfig.find(x => x.nombre === l.potrero);
@@ -7353,7 +7522,7 @@ window.renderHistorialLabores = function() {
   });
   const tipoLabel = {}; TIPOS_LABOR_CAMPO.forEach(t => tipoLabel[t.id] = iconoLaborHtml(t));
   const tipoTxt = l => l.tipo === 'personalizado' ? '🧩 ' + escA(l.nombreTipo) : (tipoLabel[l.tipo] || l.tipo);
-  const botones = l => `<button class="btn btn-secondary" style="padding:6px 9px;margin-right:4px" title="Editar" onclick="editarLaborCampo('${l.id}')">✏️</button><button class="btn btn-secondary" style="padding:6px 9px;margin-right:4px" title="Agregar otra labor del mismo día enlazada a esta" onclick="agregarLaborAFila('${l.id}')">➕</button><button class="btn btn-danger" onclick="eliminarLaborCampo('${l.id}')">✕</button>`;
+  const botones = l => `${l.fecha && potreroEsHuerto(l.potrero) ? `<button class="btn btn-secondary" style="padding:6px 9px;margin-right:4px" title="Clima de los días de la labor (temperatura, lluvia y radiación)" onclick="actualizarClimaLabor('${l.id}')">🌤️</button>` : ''}${potreroEsHuerto(l.potrero) && l.fecha ? `<button class="btn btn-secondary" style="padding:6px 9px;margin-right:4px" title="Hileras trabajadas por día (según el recorrido del tractor)" onclick="verHilerasLabor('${l.id}')">🌳</button>` : ''}<button class="btn btn-secondary" style="padding:6px 9px;margin-right:4px" title="Editar" onclick="editarLaborCampo('${l.id}')">✏️</button><button class="btn btn-secondary" style="padding:6px 9px;margin-right:4px" title="Agregar otra labor del mismo día enlazada a esta" onclick="agregarLaborAFila('${l.id}')">➕</button><button class="btn btn-danger" onclick="eliminarLaborCampo('${l.id}')">✕</button>`;
   const sentido = campoHistorialOrden === 'asc' ? 1 : -1;
   const ordenInfo = g => { if (!g[0].fecha) return ''; const it = itemsDelDia(g[0]); if (it.length < 2) return ''; const pos = it.findIndex(x => x.some(y => y.id === g[0].id)) + 1; return `<div style="font-size:10px;color:#6B7280;margin-top:3px">${pos}º de ${it.length} del día</div>`; };
   const botonesOrden = g => { if (!puedeEditarCampo() || !g[0].fecha || itemsDelDia(g[0]).length < 2) return ''; return `<div style="margin-top:4px"><button class="btn btn-secondary" style="padding:3px 8px;margin-right:3px" title="Subir" onclick="moverLaborDia('${g[0].id}',${-1 * sentido})">▲</button><button class="btn btn-secondary" style="padding:3px 8px" title="Bajar" onclick="moverLaborDia('${g[0].id}',${1 * sentido})">▼</button></div>`; };
@@ -7476,6 +7645,7 @@ function pintarEdicionLabor() {
     ${elInput('Fecha de término (si duró varios días)', 'fechaFin', 'date')}
     <div class="centros-selector" style="margin:-2px 0 8px"><div class="cultivo-chip ${d.enCurso ? 'sel' : ''}" onclick="elEnCurso(${!d.enCurso})">🔄 Todavía en curso</div></div>
     ${selEq}
+    ${potreroEsHuerto(d.potrero) ? elInput('🌳 Hileras / entrecalles (opcional)', 'hilerasManual') : ''}
     <div class="field" style="margin-bottom:8px"><label>Operador (opcional)</label><div class="select-wrapper"><select onchange="elSet('operadorLabor', this.value)"><option value="">—</option>${[...new Set([...(config.operadores || []).filter(o => !/especificar/i.test(o)), d.operadorLabor].filter(Boolean))].map(o => `<option value="${escA(o)}" ${d.operadorLabor === o ? 'selected' : ''}>${escA(o)}</option>`).join('')}</select></div></div>
     ${esp}
     ${aperosLista.length ? `<div class="cultivos-label">Aperos</div>` + chips(aperosLista, 'aperos') : ''}
@@ -13688,6 +13858,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
             <div class="field" style="margin-bottom:0"><label>👷 Operador</label><div class="select-wrapper"><select id="campo-labor-operador"></select></div></div>
           </div>
           <div id="campo-labor-quien-hint" style="font-size:12px;color:#92400E;margin-top:4px"></div>
+          <div class="field" id="campo-labor-hileras-wrap" style="display:none;margin:8px 0 0"><label>🌳 Hileras / entrecalles donde se aplicó (opcional)</label><input type="text" id="campo-labor-hileras" placeholder="Ej: 12–15 · ensayo 3, 4 y 7"><div class="hint" style="margin-top:3px">Útil en ensayos. Si lo dejas vacío, después se puede estimar con el recorrido del tractor (botón 🌳 en el historial).</div></div>
           <div class="hint" style="margin-top:4px">Queda guardado junto con la fecha y el potrero, para después cruzarlo con el recorrido que registró JDLink o el teléfono y saber qué parte del potrero se trabajó ese día.</div>
         </div>
         <div id="campo-labor-aperos"></div>
