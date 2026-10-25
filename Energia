@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Energía eléctrica · Los Maitenes</title>
+<style>
+  :root { --fondo:#F4F3EF; --blanco:#FFFFFF; --negro:#1A1A1A; --acero:#6B7280; --borde:#E5E2DA; --verde:#2D7D46; --amarillo:#F5A623; --rojo:#B91C1C; --azul:#2563EB; --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  @media (prefers-color-scheme: dark) { :root { --fondo:#141414; --blanco:#1F1F1F; --negro:#F3F4F6; --acero:#9CA3AF; --borde:#33332F; } header { background:#000 !important; color:#fff !important; } thead tr { background:#2A2A2A !important; color:#fff !important; } .btn-secondary { background:#2E2E2E !important; color:#F3F4F6 !important; } select, input, textarea { background:#262626 !important; color:#F3F4F6 !important; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--fondo); color: var(--negro); font-family: var(--sans); }
+  header { background: #1A1A1A; color: #fff; padding: 12px 16px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  header h1 { margin: 0; font-size: 17px; flex:1; }
+  header span { font-size: 12px; color: #D1D5DB; }
+  nav { display:flex; gap:6px; padding:10px 16px 0; max-width: 980px; margin: 0 auto; overflow-x:auto; }
+  nav button { flex:1 0 auto; padding:10px 12px; border:1px solid var(--borde); background:var(--blanco); color:var(--negro); border-radius:10px 10px 0 0; font-size:14px; font-weight:600; cursor:pointer; font-family:var(--sans); white-space:nowrap; }
+  nav button.on { background:var(--amarillo); color:#111; border-color:var(--amarillo); }
+  main { max-width: 980px; margin: 0 auto; padding: 12px 16px 60px; }
+  .panel { background: var(--blanco); border: 1px solid var(--borde); border-radius: 12px; padding: 14px; margin-bottom: 12px; }
+  .panel h2 { margin: 0 0 8px; font-size: 15px; }
+  .field { margin: 8px 0; }
+  .field label { display: block; font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--acero); margin-bottom: 4px; }
+  select, input, textarea { width: 100%; min-width: 0; padding: 10px; font-size: 15px; border: 1px solid var(--borde); border-radius: 8px; background: #fff; font-family: var(--sans); color: #111; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+  .btn { display: inline-flex; align-items: center; gap: 6px; border: none; border-radius: 8px; padding: 10px 14px; font-size: 14px; font-weight: 600; cursor: pointer; font-family: var(--sans); }
+  .btn-full { width: 100%; justify-content: center; }
+  .btn-verde { background: var(--verde); color: #fff; }
+  .btn-secondary { background: #EEECE6; color: #1A1A1A; }
+  .btn-rojo { background: #FEE2E2; color: #991B1B; }
+  .btn:disabled { opacity: .6; }
+  .hint { font-size: 12px; color: var(--acero); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  thead tr { background: #1A1A1A; color: #fff; }
+  thead th { padding: 8px 6px; text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+  tbody td { padding: 6px; border-bottom: 1px solid var(--borde); vertical-align: top; }
+  td.n, th.n { text-align: right; white-space: nowrap; }
+  .tw { overflow-x: auto; }
+  .chip { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; font-weight:700; margin:0 4px 4px 0; }
+  .chip.ok { background:#DCFCE7; color:#166534; } .chip.warn { background:#FEF3C7; color:#92400E; } .chip.err { background:#FEE2E2; color:#991B1B; } .chip.info { background:#DBEAFE; color:#1E40AF; }
+  .chk { font-size:13px; padding:6px 8px; border-radius:8px; margin-bottom:4px; display:flex; gap:6px; }
+  .chk.ok { background:#F0FDF4; color:#166534; } .chk.warn { background:#FFFBEB; color:#92400E; } .chk.err { background:#FEF2F2; color:#991B1B; } .chk.info { background:#EFF6FF; color:#1E40AF; }
+  @media (prefers-color-scheme: dark) { .chk.ok { background:#052E16; color:#86EFAC; } .chk.warn { background:#3B2A05; color:#FCD34D; } .chk.err { background:#450A0A; color:#FCA5A5; } .chk.info { background:#0B1E3F; color:#93C5FD; } }
+  .kpi { display:grid; grid-template-columns: repeat(auto-fit, minmax(130px,1fr)); gap:8px; margin:8px 0; }
+  .kpi div { background: var(--fondo); border-radius:8px; padding:8px 10px; }
+  .kpi b { display:block; font-size:18px; } .kpi small { color: var(--acero); font-size:11px; text-transform:uppercase; letter-spacing:.04em; }
+  .up { color:#B91C1C; } .down { color:#15803D; }
+  #toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: #1A1A1A; color: #fff; padding: 10px 16px; border-radius: 8px; font-size: 14px; display: none; z-index: 5000; max-width: 90vw; }
+  #toast.mal { background: #B91C1C; }
+  #acceso { display:none; position:fixed; inset:0; z-index:6000; background:rgba(0,0,0,.6); align-items:center; justify-content:center; padding:16px; }
+</style>
+</head>
+<body>
+<div id="acceso">
+  <div class="panel" style="width:100%;max-width:380px">
+    <div style="font-weight:700;font-size:16px;margin-bottom:8px">⚡ Energía eléctrica</div>
+    <div class="hint" style="margin-bottom:8px">Entra desde el menú de la app. Si tienes permiso, también puedes ingresar con tu PIN.</div>
+    <div class="field"><label>Tu PIN</label><input type="password" id="acc-pin" inputmode="numeric" autocomplete="off" style="font-size:22px;text-align:center;letter-spacing:6px" onkeydown="if(event.key==='Enter')entrarEnergia()"></div>
+    <div id="acc-msg" style="font-size:13px;color:#B91C1C;min-height:18px"></div>
+    <button class="btn btn-verde btn-full" onclick="entrarEnergia()">Ingresar</button>
+  </div>
+</div>
+<header><h1>⚡ Energía eléctrica</h1><span id="quien"></span><a href="/" style="color:#F5A623;font-size:13px">← Volver a la app</a></header>
+<nav id="nav"></nav>
+<main id="main"><div class="panel">Cargando…</div></main>
+<div id="toast"></div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getFirestore, collection, doc, getDoc, getDocs, addDoc, setDoc, updateDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+const app = initializeApp({ apiKey: "AIzaSyAVsios3N97MQVPJLC94qEOXGJNmKzK9RI", authDomain: "combustible-los-maitenes.firebaseapp.com", projectId: "combustible-los-maitenes", storageBucket: "combustible-los-maitenes.firebasestorage.app", messagingSenderId: "750216939749", appId: "1:750216939749:web:978e4173eaee8235ebac0c" });
+const db = getFirestore(app);
+
+// ── utilidades ──────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const escA = t => String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const normNom = t => String(t || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+function toast(m, ok = true) { const t = $('toast'); t.textContent = m; t.className = ok ? '' : 'mal'; t.style.display = 'block'; clearTimeout(toast._t); toast._t = setTimeout(() => t.style.display = 'none', 4000); }
+const pesos = v => v == null || !isFinite(v) ? '–' : (v < 0 ? '-$' : '$') + Math.abs(Math.round(v)).toLocaleString('es-CL');
+const num = (v, d = 0) => v == null || !isFinite(v) ? '–' : Number(v).toLocaleString('es-CL', { minimumFractionDigits: d, maximumFractionDigits: d });
+const pct = v => v == null || !isFinite(v) ? '–' : (v > 0 ? '+' : '') + num(v, 1) + ' %';
+const parseNum = v => { if (v == null) return null; let s = String(v).replace(/[$\s]/g, ''); if (!s || !/\d/.test(s)) return null; if (s.includes(',') && s.includes('.')) s = s.replace(/\./g, '').replace(',', '.'); else if (/^-?\d{1,3}(\.\d{3})+$/.test(s)) s = s.replace(/\./g, ''); else s = s.replace(',', '.'); const n = parseFloat(s); return isFinite(n) ? n : null; };
+const hoyStr = () => { const d = new Date(), p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`; };
+const ms = f => f ? new Date(f + 'T12:00:00').getTime() : null;
+const dias = (a, b) => (ms(b) - ms(a)) / 86400000;
+const fCorta = f => f ? f.slice(8, 10) + '-' + f.slice(5, 7) + '-' + f.slice(2, 4) : '–';
+const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+const mesTxt = m => m ? MESES[parseInt(m.slice(5, 7), 10) - 1] + ' ' + m.slice(2, 4) : '–';
+const mesDe = f => f ? f.slice(0, 7) : '';
+const mesMas = (m, n) => { let y = +m.slice(0, 4), k = +m.slice(5, 7) - 1 + n; y += Math.floor(k / 12); k = ((k % 12) + 12) % 12; return y + '-' + String(k + 1).padStart(2, '0'); };
+
+// ── acceso ──────────────────────────────────────────────────────────────
+const ADMINS_EQUIVALENTES = ['Camila Faundez', 'JC Allende'];
+let USER = null, permisosPruebas = {};
+const puedeVer = (n, admin) => admin || ADMINS_EQUIVALENTES.includes(n) || (Array.isArray(permisosPruebas[n]) && permisosPruebas[n].includes('energia'));
+async function cargarPermisos() { try { const sn = await getDoc(doc(db, 'config', 'datos')); if (sn.exists()) permisosPruebas = sn.data().permisosPruebas || {}; } catch (e) {} }
+window.entrarEnergia = async function () {
+  const pin = $('acc-pin').value.trim(), msg = $('acc-msg'); if (!pin) { msg.textContent = 'Ingresa tu PIN.'; return; }
+  let nombre = null;
+  try { const sp = await getDoc(doc(db, 'config', 'pines')); const op = sp.exists() ? Object.entries(sp.data()).find(([, p]) => p === pin) : null; if (op) nombre = op[0]; }
+  catch (e) { msg.textContent = 'No se pudo verificar: ' + e.message; return; }
+  if (!nombre) { msg.textContent = 'PIN incorrecto. Si eres el administrador, entra desde el menú de la app.'; $('acc-pin').value = ''; return; }
+  await cargarPermisos();
+  if (!puedeVer(nombre, false)) { msg.textContent = 'No tienes acceso a Energía eléctrica.'; return; }
+  USER = { nombre, admin: false, pin }; try { sessionStorage.setItem('energia_usuario', JSON.stringify({ nombre, admin: false })); } catch (e) {}
+  $('acceso').style.display = 'none'; iniciar();
+};
+async function revisarAcceso() {
+  await cargarPermisos();
+  let u = null;
+  try {
+    let pase = JSON.parse(localStorage.getItem('maitenes_pase') || 'null');
+    const hm = /[#&]pase=([^&]+)/.exec(location.hash || '');
+    if (hm) { try { pase = JSON.parse(decodeURIComponent(hm[1])); } catch (e) {} try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {} }
+    if (pase && pase.nombre && Date.now() - pase.ts < 10 * 60000) { u = { nombre: pase.nombre, admin: !!pase.admin }; localStorage.removeItem('maitenes_pase'); sessionStorage.setItem('energia_usuario', JSON.stringify(u)); }
+    else u = JSON.parse(sessionStorage.getItem('energia_usuario') || 'null');
+  } catch (e) {}
+  if (u && puedeVer(u.nombre, u.admin)) { USER = u; iniciar(); return; }
+  $('acceso').style.display = 'flex';
+}
+
+// ── datos ───────────────────────────────────────────────────────────────
+const S = { sum: [], lec: [], fac: [], tab: 'resumen', form: null, filtroSum: '', cmp: { sum: '', met: 'kwh' } };
+async function cargarTodo() {
+  const leer = async n => (await getDocs(collection(db, n))).docs.map(d => ({ id: d.id, ...d.data() }));
+  [S.sum, S.lec, S.fac] = await Promise.all([leer('energia_suministros'), leer('energia_lecturas'), leer('energia_facturas')]);
+  S.sum.sort((a, b) => (a.nombre || '').localeCompare(b.nombre || '', 'es'));
+}
+const sumDe = id => S.sum.find(s => s.id === id);
+const facDe = id => S.fac.filter(f => f.suministro === id).sort((a, b) => (a.periodoHasta || a.mes || '').localeCompare(b.periodoHasta || b.mes || ''));
+const lecDe = id => S.lec.filter(l => l.suministro === id).sort((a, b) => a.fecha.localeCompare(b.fecha) || (a.ts || 0) - (b.ts || 0));
+const precioKwh = f => { const base = f.neto || (f.total ? f.total / 1.19 : null); return base && f.consumoKwh > 0 ? base / f.consumoKwh : null; };
+
+// Consumo según NUESTRAS lecturas entre dos fechas (interpolación lineal entre lecturas; tolera 4 días fuera del rango)
+function valorEn(lecs, t) {
+  if (!lecs.length) return null;
+  const T = ms(t), first = lecs[0], last = lecs[lecs.length - 1];
+  if (T < ms(first.fecha)) return dias(t, first.fecha) <= 4 ? { v: first.lectura, aprox: true } : null;
+  if (T > ms(last.fecha)) return dias(last.fecha, t) <= 4 ? { v: last.lectura, aprox: true } : null;
+  for (let i = 0; i < lecs.length; i++) {
+    const a = lecs[i], b = lecs[i + 1];
+    if (ms(a.fecha) === T) return { v: a.lectura, aprox: false };
+    if (b && ms(a.fecha) < T && T <= ms(b.fecha)) { if (ms(b.fecha) === T) return { v: b.lectura, aprox: false }; if (b.reinicio) return null; const k = (T - ms(a.fecha)) / (ms(b.fecha) - ms(a.fecha)); return { v: a.lectura + (b.lectura - a.lectura) * k, aprox: ms(b.fecha) !== T && ms(a.fecha) !== T }; }
+  }
+  return null;
+}
+function consumoPropio(sumId, d0, d1) {
+  const lecs = lecDe(sumId), s = sumDe(sumId), K = (s && s.constante) || 1;
+  if (!d0 || !d1 || lecs.length < 2) return null;
+  const a = valorEn(lecs, d0), b = valorEn(lecs, d1); if (!a || !b) return null;
+  return { kwh: (b.v - a.v) * K, aprox: a.aprox || b.aprox };
+}
+
+// ── revisión automática de una factura ───────────────────────────────────
+function revisarFactura(f, excluirId) {
+  const out = [], add = (nivel, txt) => out.push({ nivel, txt });
+  const s = sumDe(f.suministro);
+  if (!s) add('err', 'Falta asignar la factura a un suministro.');
+  const previas = facDe(f.suministro).filter(x => x.id !== excluirId);
+  const hasta = f.periodoHasta || '', desde = f.periodoDesde || '';
+  if (s && hasta && previas.some(x => x.periodoHasta === hasta || (x.mes && x.mes === mesDe(hasta)))) add('err', 'Ya existe una factura de este suministro para el mismo período (posible duplicado).');
+  if (desde && hasta) { const d = dias(desde, hasta); if (d <= 0) add('err', 'El período termina antes de empezar.'); else if (d < 25 || d > 36) add('warn', `El período dura ${num(d)} días (lo normal es 28–33).`); else add('ok', `Período de ${num(d)} días.`); }
+  else add('info', 'Faltan las fechas del período.');
+  const K = f.constante || (s && s.constante) || 1;
+  if (f.lecturaAnterior != null && f.lecturaActual != null && f.consumoKwh != null) {
+    const calc = (f.lecturaActual - f.lecturaAnterior) * K, dif = f.consumoKwh - calc;
+    if (Math.abs(dif) <= Math.max(1, calc * 0.01)) add('ok', `Lecturas × constante (${num(K, K % 1 ? 2 : 0)}) = ${num(calc)} kWh, coincide con el consumo facturado.`);
+    else add('err', `Las lecturas dan ${num(calc)} kWh (${num(f.lecturaActual)} − ${num(f.lecturaAnterior)}, × ${num(K, K % 1 ? 2 : 0)}), pero se facturaron ${num(f.consumoKwh)} kWh (diferencia ${num(dif)}).`);
+  } else add('info', 'Sin lecturas o consumo para cuadrar kWh.');
+  const prev = previas.filter(x => (x.periodoHasta || '') < hasta).slice(-1)[0];
+  if (prev && prev.lecturaActual != null && f.lecturaAnterior != null) {
+    if (Math.abs(prev.lecturaActual - f.lecturaAnterior) > 1) add('warn', `La lectura anterior (${num(f.lecturaAnterior)}) no empalma con la actual de la factura previa (${num(prev.lecturaActual)}). Revisa si hubo cambio de medidor o una lectura estimada.`);
+    else add('ok', 'La lectura anterior empalma con la factura previa.');
+  }
+  if (f.cargos && f.cargos.length && f.neto) {
+    const sc = f.cargos.reduce((a, c) => a + (c.monto || 0), 0);
+    if (Math.abs(sc - f.neto) > Math.max(5, f.neto * 0.01) && Math.abs(sc - (f.total || 0)) > Math.max(5, (f.total || 0) * 0.01)) add('warn', `Los cargos suman ${pesos(sc)}, pero la factura indica neto ${pesos(f.neto)} y total ${pesos(f.total)}.`);
+    else add('ok', 'Los cargos suman lo que indica la factura.');
+  }
+  if (f.neto != null && f.iva != null && f.total != null) { if (Math.abs(f.neto + f.iva - f.total) > 5) add('warn', `Neto + IVA (${pesos(f.neto + f.iva)}) no coincide con el total (${pesos(f.total)}): puede haber saldos, multas o convenios.`); }
+  if (f.neto != null && f.iva != null && f.neto > 0 && Math.abs(f.iva / f.neto - 0.19) > 0.01) add('warn', `El IVA es ${num(f.iva / f.neto * 100, 1)} % del neto (se espera 19 %).`);
+  const precio = precioKwh(f), pp = previas.slice(-6).map(precioKwh).filter(Boolean);
+  if (precio && pp.length >= 2) { const m = pp.reduce((a, b) => a + b, 0) / pp.length, v = (precio / m - 1) * 100; if (Math.abs(v) > 15) add('warn', `El precio medio es $${num(precio, 1)}/kWh, ${pct(v)} respecto del promedio de los últimos ${pp.length} meses ($${num(m, 1)}).`); else add('ok', `Precio medio $${num(precio, 1)}/kWh, normal (${pct(v)} vs el promedio).`); }
+  else if (precio) add('info', `Precio medio $${num(precio, 1)}/kWh (aún no hay meses para comparar).`);
+  const kw3 = previas.slice(-3).map(x => x.consumoKwh).filter(x => x != null);
+  if (f.consumoKwh != null && kw3.length >= 2) { const m = kw3.reduce((a, b) => a + b, 0) / kw3.length, v = m > 0 ? (f.consumoKwh / m - 1) * 100 : null; if (v != null && Math.abs(v) > 30) add('warn', `El consumo (${num(f.consumoKwh)} kWh) es ${pct(v)} respecto del promedio de los últimos ${kw3.length} meses (${num(m)} kWh).`); else if (v != null) add('ok', `Consumo en lo normal (${pct(v)} vs los últimos ${kw3.length} meses).`); }
+  const mp = hasta ? previas.find(x => x.mes === mesMas(mesDe(hasta), -12)) : null;
+  if (mp && mp.consumoKwh && f.consumoKwh != null) { const v = (f.consumoKwh / mp.consumoKwh - 1) * 100; add(Math.abs(v) > 25 ? 'info' : 'ok', `Contra el mismo mes del año anterior (${num(mp.consumoKwh)} kWh): ${pct(v)}.`); }
+  if (f.demandaMaxKw != null && f.potenciaKw != null && f.demandaMaxKw > f.potenciaKw * 1.02) add('warn', `La demanda máxima (${num(f.demandaMaxKw, 1)} kW) supera la potencia conectada (${num(f.potenciaKw, 1)} kW): puede haber recargo.`);
+  if (f.cargos && f.cargos.length && previas.length) {
+    const vistos = new Set(previas.flatMap(x => (x.cargos || []).map(c => normNom(c.concepto))));
+    const nuevos = f.cargos.filter(c => !vistos.has(normNom(c.concepto)));
+    if (nuevos.length) add('info', 'Cargos que no aparecían antes: ' + nuevos.map(c => `${c.concepto} (${pesos(c.monto)})`).join(', ') + '.');
+    const pu = previas[previas.length - 1];
+    (f.cargos || []).forEach(c => { const o = (pu.cargos || []).find(x => normNom(x.concepto) === normNom(c.concepto)); if (o && o.precio_unitario && c.precio_unitario && Math.abs(c.precio_unitario / o.precio_unitario - 1) > 0.05) add('info', `${c.concepto}: el precio unitario cambió de ${num(o.precio_unitario, 2)} a ${num(c.precio_unitario, 2)} (${pct((c.precio_unitario / o.precio_unitario - 1) * 100)}).`); });
+  }
+  if (s && desde && hasta && f.consumoKwh != null) {
+    const p = consumoPropio(s.id, desde, hasta);
+    if (!p) add('info', 'Aún no hay lecturas propias que cubran este período para compararlo con Copelec.');
+    else { const dif = p.kwh - f.consumoKwh, v = f.consumoKwh ? dif / f.consumoKwh * 100 : null; add(Math.abs(v) > 5 ? 'warn' : 'ok', `Nuestro medidor: ${num(p.kwh)} kWh${p.aprox ? ' (aprox.: las lecturas no caen justo en las fechas del período)' : ''} vs ${num(f.consumoKwh)} kWh de Copelec: diferencia ${num(dif)} kWh (${pct(v)}).`); }
+  }
+  if (f.observaciones) add('info', 'Notas de la lectura: ' + f.observaciones);
+  return out;
+}
+const nivelMax = ch => ch.some(c => c.nivel === 'err') ? 'err' : ch.some(c => c.nivel === 'warn') ? 'warn' : 'ok';
+const chipNivel = ch => { const e = ch.filter(c => c.nivel === 'err').length, w = ch.filter(c => c.nivel === 'warn').length; return e ? `<span class="chip err">${e} error${e > 1 ? 'es' : ''}</span>` + (w ? `<span class="chip warn">${w} alerta${w > 1 ? 's' : ''}</span>` : '') : w ? `<span class="chip warn">${w} alerta${w > 1 ? 's' : ''}</span>` : '<span class="chip ok">✓ sin alertas</span>'; };
+const checksHtml = ch => ch.map(c => `<div class="chk ${c.nivel}"><span>${{ ok: '✓', warn: '⚠️', err: '⛔', info: 'ℹ️' }[c.nivel]}</span><span>${escA(c.txt)}</span></div>`).join('');
+
+// ── gráficos (SVG simple) ───────────────────────────────────────────────
+function barras(labels, series, fmt, alto = 170) {
+  const W = 640, H = alto, pl = 8, pb = 22, pt = 14, n = labels.length, g = (W - pl * 2) / Math.max(1, n), k = series.length, bw = Math.min(26, (g - 6) / k);
+  const max = Math.max(1, ...series.flatMap(s => s.valores.map(v => v || 0)));
+  let b = '';
+  labels.forEach((l, i) => {
+    series.forEach((s, j) => { const v = s.valores[i]; if (v == null) return; const h = (H - pb - pt) * v / max, x = pl + g * i + (g - bw * k) / 2 + bw * j; b += `<rect x="${x.toFixed(1)}" y="${(H - pb - h).toFixed(1)}" width="${(bw - 1).toFixed(1)}" height="${h.toFixed(1)}" rx="2" fill="${s.color}"><title>${escA(l)} · ${escA(s.nombre)}: ${escA(fmt(v))}</title></rect>`; if (k === 1 && n <= 14) b += `<text x="${(pl + g * i + g / 2).toFixed(1)}" y="${(H - pb - h - 3).toFixed(1)}" font-size="9" text-anchor="middle" fill="currentColor">${escA(fmt(v))}</text>`; });
+    b += `<text x="${(pl + g * i + g / 2).toFixed(1)}" y="${H - 6}" font-size="10" text-anchor="middle" fill="currentColor" opacity=".7">${escA(l)}</text>`;
+  });
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;color:var(--negro)" role="img">${b}<line x1="${pl}" x2="${W - pl}" y1="${H - pb}" y2="${H - pb}" stroke="currentColor" opacity=".25"/></svg>`;
+}
+const leyenda = series => '<div class="hint" style="margin:2px 0 6px">' + series.map(s => `<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${s.color};margin-right:4px"></span>${escA(s.nombre)}`).join(' &nbsp; ') + '</div>';
+
+// ── pestañas ────────────────────────────────────────────────────────────
+const TABS = [['resumen', '📊 Resumen'], ['facturas', '📄 Facturas'], ['lecturas', '🔢 Lecturas'], ['comparar', '📈 Comparar'], ['suministros', '⚙️ Suministros']];
+window.setTab = t => { S.tab = t; render(); window.scrollTo(0, 0); };
+function render() {
+  $('nav').innerHTML = TABS.map(([k, t]) => `<button class="${S.tab === k ? 'on' : ''}" onclick="setTab('${k}')">${t}</button>`).join('');
+  const f = { resumen: rResumen, facturas: rFacturas, lecturas: rLecturas, comparar: rComparar, suministros: rSuministros }[S.tab];
+  $('main').innerHTML = f();
+  if (S.tab === 'facturas' && S.form) calcularRevision();
+}
+
+// ── 📊 Resumen ───────────────────────────────────────────────────────────
+function rResumen() {
+  if (!S.sum.length) return `<div class="panel"><h2>Bienvenido</h2><p>Primero crea tus <b>suministros</b> (cada cuenta de Copelec: bombas, casa, bodega…) o sube una factura y la app los crea con los datos de la boleta.</p><button class="btn btn-verde" onclick="setTab('suministros')">⚙️ Crear suministros</button> <button class="btn btn-secondary" onclick="setTab('facturas')">📄 Subir una factura</button></div>`;
+  const hoy = hoyStr();
+  const tarjetas = S.sum.filter(s => s.activo !== false).map(s => {
+    const fs = facDe(s.id), u = fs[fs.length - 1], a = fs[fs.length - 2], lec = lecDe(s.id), ul = lec[lec.length - 1];
+    const ch = u ? revisarFactura(u, u.id) : [];
+    const vK = u && a && a.consumoKwh ? (u.consumoKwh / a.consumoKwh - 1) * 100 : null, vP = u && a && precioKwh(a) ? (precioKwh(u) / precioKwh(a) - 1) * 100 : null, vT = u && a && a.total ? (u.total / a.total - 1) * 100 : null;
+    const lecAviso = ul ? (dias(ul.fecha, hoy) > 32 ? `<span class="chip warn">Última lectura propia hace ${num(dias(ul.fecha, hoy))} días</span>` : `<span class="chip ok">Lectura propia: ${fCorta(ul.fecha)}</span>`) : '<span class="chip warn">Sin lecturas propias</span>';
+    const ult12 = fs.slice(-12);
+    return `<div class="panel"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><div><h2 style="margin:0">${escA(s.nombre)}</h2><div class="hint">Cliente ${escA(s.nCliente || '–')} · medidor ${escA(s.medidor || '–')}${s.tarifa ? ' · ' + escA(s.tarifa) : ''}${s.centro ? ' · ' + escA(s.centro) : ''}</div></div><div>${lecAviso}</div></div>
+      ${u ? `<div class="kpi"><div><small>Último período (${mesTxt(u.mes)})</small><b>${num(u.consumoKwh)} kWh</b><span class="${vK > 0 ? 'up' : 'down'}" style="font-size:12px">${a ? pct(vK) + ' vs mes anterior' : ''}</span></div><div><small>Total pagado</small><b>${pesos(u.total)}</b><span class="${vT > 0 ? 'up' : 'down'}" style="font-size:12px">${a ? pct(vT) : ''}</span></div><div><small>Precio medio</small><b>${precioKwh(u) ? '$' + num(precioKwh(u), 1) : '–'}/kWh</b><span class="${vP > 0 ? 'up' : 'down'}" style="font-size:12px">${a ? pct(vP) : ''}</span></div>${u.demandaMaxKw != null ? `<div><small>Demanda máx.</small><b>${num(u.demandaMaxKw, 1)} kW</b></div>` : ''}</div>
+      <div>${chipNivel(ch)}</div>${barras(ult12.map(x => mesTxt(x.mes)), [{ nombre: 'kWh', color: '#2D7D46', valores: ult12.map(x => x.consumoKwh) }], v => num(v))}`
+      : '<div class="hint" style="margin-top:8px">Aún no hay facturas de este suministro.</div>'}</div>`;
+  }).join('');
+  const meses = [...new Set(S.fac.map(f => f.mes).filter(Boolean))].sort().slice(-12);
+  const act = S.sum.filter(s => s.activo !== false);
+  const filaM = (m) => { const fs = S.fac.filter(f => f.mes === m); return `<tr><td>${mesTxt(m)}</td>${act.map(s => { const f = fs.find(x => x.suministro === s.id); return `<td class="n">${f ? num(f.consumoKwh) : '–'}</td><td class="n">${f ? pesos(f.total) : '–'}</td>`; }).join('')}<td class="n"><b>${num(fs.reduce((a, f) => a + (f.consumoKwh || 0), 0))}</b></td><td class="n"><b>${pesos(fs.reduce((a, f) => a + (f.total || 0), 0))}</b></td></tr>`; };
+  const tabla = meses.length ? `<div class="panel"><h2>Todos los suministros por mes</h2><div class="tw"><table><thead><tr><th>Mes</th>${act.map(s => `<th class="n" colspan="2">${escA(s.nombre)}</th>`).join('')}<th class="n" colspan="2">Total</th></tr><tr style="background:#333"><th></th>${act.map(() => '<th class="n">kWh</th><th class="n">$</th>').join('')}<th class="n">kWh</th><th class="n">$</th></tr></thead><tbody>${[...meses].reverse().map(filaM).join('')}</tbody></table></div></div>` : '';
+  return tarjetas + tabla;
+}
+
+// ── 📄 Facturas ──────────────────────────────────────────────────────────
+function formVacio() { return { id: null, suministro: S.filtroSum || (S.sum[0] && S.sum[0].id) || '', cargos: [], aviso: '' }; }
+function rFacturas() {
+  const f = S.form;
+  const subir = `<div class="panel"><h2>Subir factura de Copelec</h2>
+    <div class="hint" style="margin-bottom:8px">Sube la boleta o factura del mes (PDF o foto; hasta 3 archivos si viene en varias páginas). La app la lee con IA, te muestra lo leído y lo va revisando contra los meses anteriores y contra tus lecturas.</div>
+    <input type="file" id="fac-arch" accept=".pdf,image/*" multiple>
+    <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap"><button class="btn btn-verde" id="fac-leer" onclick="leerFactura()">🤖 Leer con IA</button><button class="btn btn-secondary" onclick="nuevaFactura()">✍️ Ingresar a mano</button></div><div id="fac-est" class="hint" style="margin-top:6px"></div></div>`;
+  const form = f ? formFactura(f) : '';
+  const lista = S.sum.map(s => { const fs = facDe(s.id).slice().reverse(); if (!fs.length) return ''; return `<div class="panel"><h2>${escA(s.nombre)}</h2><div class="tw"><table><thead><tr><th>Período</th><th class="n">kWh</th><th class="n">Total</th><th class="n">$/kWh</th><th>Revisión</th><th></th></tr></thead><tbody>${fs.map(x => { const ch = revisarFactura(x, x.id); return `<tr><td>${fCorta(x.periodoDesde)} → ${fCorta(x.periodoHasta)}<div class="hint">${mesTxt(x.mes)}${x.numeroDoc ? ' · N° ' + escA(x.numeroDoc) : ''}</div></td><td class="n">${num(x.consumoKwh)}</td><td class="n">${pesos(x.total)}</td><td class="n">${precioKwh(x) ? num(precioKwh(x), 1) : '–'}</td><td>${chipNivel(ch)}</td><td style="white-space:nowrap"><button class="btn btn-secondary" onclick="verFactura('${x.id}')">🔍</button> <button class="btn btn-secondary" onclick="editarFactura('${x.id}')">✏️</button> <button class="btn btn-rojo" onclick="borrarFactura('${x.id}')">✕</button></td></tr>`; }).join('')}</tbody></table></div></div>`; }).join('');
+  return subir + form + (lista || '<div class="panel hint">Aún no hay facturas guardadas.</div>') + '<div id="detalle-fac"></div>';
+}
+function campo(id, label, v, tipo = 'text', extra = '') { return `<div class="field"><label>${label}</label><input id="${id}" type="${tipo}" value="${escA(v == null ? '' : v)}" ${extra} oninput="calcularRevision()"></div>`; }
+function formFactura(f) {
+  const s = sumDe(f.suministro);
+  return `<div class="panel" id="form-fac"><h2>${f.id ? 'Editar factura' : 'Revisar y guardar factura'}</h2>
+    ${f.aviso ? `<div class="chk info"><span>ℹ️</span><span>${escA(f.aviso)}</span></div>` : ''}
+    <div class="field"><label>Suministro</label><select id="f-sum" onchange="calcularRevision()"><option value="">— elige —</option>${S.sum.map(x => `<option value="${x.id}" ${f.suministro === x.id ? 'selected' : ''}>${escA(x.nombre)} (${escA(x.nCliente || 's/n')})</option>`).join('')}</select>
+      ${!s && f.leido && f.leido.numero_cliente ? `<button class="btn btn-secondary" style="margin-top:6px" onclick="crearSuministroDeFactura()">＋ Crear suministro con cliente ${escA(f.leido.numero_cliente)}</button>` : ''}</div>
+    <div class="grid">${campo('f-desde', 'Período desde', f.periodoDesde, 'date')}${campo('f-hasta', 'Período hasta', f.periodoHasta, 'date')}${campo('f-doc', 'N° documento', f.numeroDoc)}${campo('f-venc', 'Vencimiento', f.vencimiento, 'date')}</div>
+    <div class="grid">${campo('f-lant', 'Lectura anterior (kWh)', f.lecturaAnterior, 'number', 'step="any"')}${campo('f-lact', 'Lectura actual (kWh)', f.lecturaActual, 'number', 'step="any"')}${campo('f-const', 'Constante medidor', f.constante != null ? f.constante : (s && s.constante) || 1, 'number', 'step="any"')}${campo('f-kwh', 'Consumo facturado (kWh)', f.consumoKwh, 'number', 'step="any"')}</div>
+    <div class="grid">${campo('f-dem', 'Demanda máx. (kW)', f.demandaMaxKw, 'number', 'step="any"')}${campo('f-pot', 'Potencia conectada (kW)', f.potenciaKw, 'number', 'step="any"')}${campo('f-neto', 'Neto $', f.neto, 'number', 'step="any"')}${campo('f-iva', 'IVA $', f.iva, 'number', 'step="any"')}${campo('f-total', 'Total $', f.total, 'number', 'step="any"')}</div>
+    <div class="field"><label>Cargos de la cuenta</label>${f.cargos.length ? `<div class="tw"><table><thead><tr><th>Concepto</th><th class="n">Cant.</th><th class="n">Precio unit.</th><th class="n">Monto</th><th></th></tr></thead><tbody>${f.cargos.map((c, i) => `<tr><td>${escA(c.concepto)}</td><td class="n">${c.cantidad != null ? num(c.cantidad, 1) : ''}</td><td class="n">${c.precio_unitario != null ? num(c.precio_unitario, 2) : ''}</td><td class="n">${pesos(c.monto)}</td><td><button class="btn btn-secondary" style="padding:2px 8px" onclick="quitarCargo(${i})">✕</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="hint">Sin detalle de cargos.</div>'}</div>
+    <div class="field"><label>Observaciones</label><input id="f-obs" value="${escA(f.observaciones || '')}" oninput="calcularRevision()"></div>
+    <div id="f-checks" style="margin:10px 0"></div>
+    <div style="display:flex;gap:8px"><button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="cancelarFactura()">Descartar</button><button class="btn btn-verde" style="flex:1;justify-content:center" onclick="guardarFactura()">💾 Guardar factura</button></div></div>`;
+}
+function leerForm() {
+  const f = S.form, v = id => ($(id) || {}).value, n = id => parseNum(v(id));
+  Object.assign(f, { suministro: v('f-sum') || '', periodoDesde: v('f-desde') || '', periodoHasta: v('f-hasta') || '', numeroDoc: v('f-doc') || '', vencimiento: v('f-venc') || '', lecturaAnterior: n('f-lant'), lecturaActual: n('f-lact'), constante: n('f-const'), consumoKwh: n('f-kwh'), demandaMaxKw: n('f-dem'), potenciaKw: n('f-pot'), neto: n('f-neto'), iva: n('f-iva'), total: n('f-total'), observaciones: v('f-obs') || '' });
+  f.mes = mesDe(f.periodoHasta || f.emision || '');
+  return f;
+}
+window.calcularRevision = function () { if (!S.form || !$('f-checks')) return; const f = leerForm(); $('f-checks').innerHTML = '<div style="font-weight:700;font-size:13px;margin-bottom:4px">Revisión automática</div>' + checksHtml(revisarFactura(f, f.id)); };
+window.nuevaFactura = function () { S.form = formVacio(); S.form.constante = null; render(); $('form-fac') && $('form-fac').scrollIntoView({ behavior: 'smooth' }); };
+window.cancelarFactura = function () { S.form = null; render(); };
+window.quitarCargo = function (i) { leerForm(); S.form.cargos.splice(i, 1); render(); };
+window.editarFactura = function (id) { const x = S.fac.find(f => f.id === id); if (!x) return; S.form = JSON.parse(JSON.stringify(x)); S.form.cargos = S.form.cargos || []; S.tab = 'facturas'; render(); $('form-fac') && $('form-fac').scrollIntoView({ behavior: 'smooth' }); };
+window.verFactura = function (id) { const x = S.fac.find(f => f.id === id); if (!x) return; const ch = revisarFactura(x, x.id), box = $('detalle-fac'); box.innerHTML = `<div class="panel"><h2>Detalle · ${escA((sumDe(x.suministro) || {}).nombre || '')} · ${mesTxt(x.mes)}</h2>${checksHtml(ch)}${x.cargos && x.cargos.length ? `<div class="tw" style="margin-top:8px"><table><thead><tr><th>Concepto</th><th class="n">Cant.</th><th class="n">Precio unit.</th><th class="n">Monto</th></tr></thead><tbody>${x.cargos.map(c => `<tr><td>${escA(c.concepto)}</td><td class="n">${c.cantidad != null ? num(c.cantidad, 1) : ''}</td><td class="n">${c.precio_unitario != null ? num(c.precio_unitario, 2) : ''}</td><td class="n">${pesos(c.monto)}</td></tr>`).join('')}</tbody></table></div>` : ''}<button class="btn btn-secondary" style="margin-top:8px" onclick="document.getElementById('detalle-fac').innerHTML=''">Cerrar</button></div>`; box.scrollIntoView({ behavior: 'smooth' }); };
+window.borrarFactura = async function (id) { if (!confirm('¿Borrar esta factura?')) return; try { await deleteDoc(doc(db, 'energia_facturas', id)); await cargarTodo(); render(); toast('Factura borrada'); } catch (e) { toast('Error: ' + e.message, false); } };
+window.guardarFactura = async function () {
+  const f = leerForm();
+  if (!f.suministro) { toast('Elige el suministro', false); return; }
+  if (!f.periodoHasta) { toast('Falta la fecha de término del período', false); return; }
+  const ch = revisarFactura(f, f.id), errs = ch.filter(c => c.nivel === 'err');
+  if (errs.length && !confirm('La revisión encontró ' + errs.length + ' error(es):\n\n' + errs.map(e => '• ' + e.txt).join('\n') + '\n\n¿Guardar de todos modos?')) return;
+  const datos = { suministro: f.suministro, mes: f.mes, periodoDesde: f.periodoDesde || null, periodoHasta: f.periodoHasta, numeroDoc: f.numeroDoc || null, vencimiento: f.vencimiento || null, lecturaAnterior: f.lecturaAnterior, lecturaActual: f.lecturaActual, constante: f.constante, consumoKwh: f.consumoKwh, demandaMaxKw: f.demandaMaxKw, potenciaKw: f.potenciaKw, neto: f.neto, iva: f.iva, total: f.total, cargos: f.cargos || [], observaciones: f.observaciones || '', emision: f.emision || null, historialLeido: f.historialLeido || null, porIA: !!f.porIA, registrado_por: USER.nombre, ts: Date.now() };
+  try {
+    if (f.id) await updateDoc(doc(db, 'energia_facturas', f.id), datos); else await addDoc(collection(db, 'energia_facturas'), datos);
+    S.form = null; await cargarTodo(); render(); toast('✓ Factura guardada');
+  } catch (e) { toast('Error: ' + e.message, false); }
+};
+window.crearSuministroDeFactura = async function () {
+  const l = S.form && S.form.leido; if (!l) return; leerForm();
+  const nombre = prompt('Nombre para este suministro (ej: Bomba pozo 1, Casa, Bodega)', l.nombre_cliente || ''); if (!nombre) return;
+  try { const r = await addDoc(collection(db, 'energia_suministros'), { nombre: nombre.trim(), nCliente: l.numero_cliente || '', medidor: l.numero_medidor || '', tarifa: l.tarifa || '', constante: l.constante_medidor || 1, direccion: l.direccion || '', centro: '', activo: true, ts: Date.now() }); await cargarTodo(); S.form.suministro = r.id; render(); toast('✓ Suministro creado'); } catch (e) { toast('Error: ' + e.message, false); }
+};
+
+// ── lectura con IA ───────────────────────────────────────────────────────
+let pinIA = '';
+function aDataUrl(file) {
+  return new Promise((ok, no) => {
+    if (file.type === 'application/pdf') { if (file.size > 4.5 * 1024 * 1024) { no(new Error(file.name + ' pesa demasiado (máx. 4,5 MB)')); return; } const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = () => no(new Error('No se pudo leer ' + file.name)); r.readAsDataURL(file); return; }
+    const img = new Image(), url = URL.createObjectURL(file);
+    img.onload = () => { const k = Math.min(1, 1800 / Math.max(img.width, img.height)), c = document.createElement('canvas'); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k); c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(url); ok(c.toDataURL('image/jpeg', 0.85)); };
+    img.onerror = () => { URL.revokeObjectURL(url); no(new Error('No se pudo abrir la imagen ' + file.name)); }; img.src = url;
+  });
+}
+window.leerFactura = async function () {
+  const files = [...($('fac-arch').files || [])], est = $('fac-est');
+  if (!files.length) { est.textContent = 'Elige el PDF o las fotos de la factura.'; return; }
+  if (files.length > 3) { est.textContent = 'Máximo 3 archivos.'; return; }
+  if (!pinIA) { if (USER.pin) pinIA = USER.pin; else pinIA = (prompt('Ingresa tu PIN para usar la lectura con IA') || '').trim(); if (!pinIA) return; }
+  $('fac-leer').disabled = true; est.textContent = '🤖 Leyendo la factura… (puede tardar hasta un minuto)';
+  try {
+    const documentos = []; for (const f of files) documentos.push(await aDataUrl(f));
+    const resp = await fetch('/api/leer-documento', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ usuario: USER.nombre, pin: pinIA, modo: 'electricidad', documentos }) });
+    if (resp.status === 401) { pinIA = ''; throw new Error('PIN no válido para la lectura con IA'); }
+    const j = await resp.json().catch(() => ({}));
+    if (!resp.ok || !j.factura) throw new Error(j.error || 'No se pudo leer la factura');
+    const d = j.factura; if (d.legible === false) throw new Error('La factura no se ve con claridad. Prueba con una foto más nítida o el PDF.');
+    const nc = normNom(d.numero_cliente || ''), s = S.sum.find(x => nc && normNom(x.nCliente) === nc) || S.sum.find(x => d.numero_medidor && normNom(x.medidor) === normNom(d.numero_medidor));
+    S.form = { id: null, leido: d, porIA: true, suministro: s ? s.id : '', periodoDesde: d.periodo_desde || '', periodoHasta: d.periodo_hasta || '', numeroDoc: d.numero_documento || '', vencimiento: d.fecha_vencimiento || '', emision: d.fecha_emision || null, lecturaAnterior: d.lectura_anterior != null ? d.lectura_anterior : null, lecturaActual: d.lectura_actual != null ? d.lectura_actual : null, constante: d.constante_medidor != null ? d.constante_medidor : (s && s.constante) || 1, consumoKwh: d.consumo_kwh != null ? d.consumo_kwh : null, demandaMaxKw: d.demanda_maxima_kw != null ? d.demanda_maxima_kw : null, potenciaKw: d.potencia_conectada_kw != null ? d.potencia_conectada_kw : null, neto: d.neto != null ? d.neto : null, iva: d.iva != null ? d.iva : null, total: d.total != null ? d.total : null, cargos: d.cargos || [], historialLeido: d.historial || null, observaciones: d.observaciones || '', aviso: s ? 'Leída con IA. Revisa las cifras contra la boleta antes de guardar.' : 'Leída con IA. No encontré un suministro con el cliente ' + (d.numero_cliente || '?') + ': elígelo o créalo.' };
+    S.form.mes = mesDe(S.form.periodoHasta || S.form.emision);
+    render(); $('form-fac') && $('form-fac').scrollIntoView({ behavior: 'smooth' });
+  } catch (e) { est.innerHTML = '<span style="color:#B91C1C">' + escA(e.message) + '</span>'; const b = $('fac-leer'); if (b) b.disabled = false; }
+};
+
+// ── 🔢 Lecturas propias ──────────────────────────────────────────────────
+function rLecturas() {
+  if (!S.sum.length) return '<div class="panel">Primero crea un suministro en ⚙️ Suministros.</div>';
+  const sid = S.filtroSum && sumDe(S.filtroSum) ? S.filtroSum : S.sum[0].id; S.filtroSum = sid;
+  const s = sumDe(sid), lecs = lecDe(sid), ul = lecs[lecs.length - 1];
+  const sel = `<select id="l-sum" onchange="S_filtro(this.value)">${S.sum.map(x => `<option value="${x.id}" ${x.id === sid ? 'selected' : ''}>${escA(x.nombre)}</option>`).join('')}</select>`;
+  const form = `<div class="panel"><h2>Anotar lectura del medidor</h2><div class="field"><label>Suministro</label>${sel}</div>
+    <div class="hint">${ul ? `Última lectura: <b>${num(ul.lectura, 1)}</b> kWh el ${fCorta(ul.fecha)}.` : 'Aún no hay lecturas de este medidor.'} Medidor ${escA(s.medidor || '–')}${s.constante && s.constante !== 1 ? ' · constante ' + s.constante : ''}.</div>
+    <div class="grid"><div class="field"><label>Fecha</label><input type="date" id="l-fecha" value="${hoyStr()}"></div><div class="field"><label>Lectura (kWh)</label><input type="number" id="l-val" step="any" inputmode="decimal" placeholder="Lo que marca el medidor"></div></div>
+    <div class="field"><label>Observación (opcional)</label><input id="l-obs" placeholder="Ej: lectura de fin de mes"></div>
+    <label style="font-size:13px;display:flex;gap:6px;align-items:center;margin:6px 0"><input type="checkbox" id="l-reinicio" style="width:auto"> El medidor se reinició o fue reemplazado</label>
+    <button class="btn btn-verde btn-full" onclick="guardarLectura()">💾 Guardar lectura</button></div>`;
+  const K = s.constante || 1;
+  const filas = lecs.map((l, i) => { const a = lecs[i - 1], d = a ? dias(a.fecha, l.fecha) : null, k = a && !l.reinicio ? (l.lectura - a.lectura) * K : null; return { l, d, k }; }).reverse();
+  const tabla = `<div class="panel"><h2>Lecturas de ${escA(s.nombre)}</h2>${filas.length ? `<div class="tw"><table><thead><tr><th>Fecha</th><th class="n">Lectura</th><th class="n">Días</th><th class="n">Consumo</th><th class="n">kWh/día</th><th></th></tr></thead><tbody>${filas.map(({ l, d, k }) => `<tr><td>${fCorta(l.fecha)}${l.reinicio ? ' <span class="chip info">reinicio</span>' : ''}${l.obs ? `<div class="hint">${escA(l.obs)}</div>` : ''}</td><td class="n">${num(l.lectura, 1)}</td><td class="n">${d != null ? num(d) : '–'}</td><td class="n">${k != null ? num(k) + ' kWh' : '–'}</td><td class="n">${k != null && d > 0 ? num(k / d, 1) : '–'}</td><td><button class="btn btn-rojo" style="padding:2px 8px" onclick="borrarLectura('${l.id}')">✕</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="hint">Sin lecturas.</div>'}</div>`;
+  const fs = facDe(sid).slice().reverse();
+  const cmp = `<div class="panel"><h2>Nuestro medidor vs Copelec</h2>${fs.length ? `<div class="tw"><table><thead><tr><th>Período facturado</th><th class="n">Copelec</th><th class="n">Nuestro</th><th class="n">Diferencia</th></tr></thead><tbody>${fs.map(f => { const p = consumoPropio(sid, f.periodoDesde, f.periodoHasta); if (!p || f.consumoKwh == null) return `<tr><td>${fCorta(f.periodoDesde)} → ${fCorta(f.periodoHasta)}</td><td class="n">${num(f.consumoKwh)}</td><td class="n hint" colspan="2">sin lecturas que cubran el período</td></tr>`; const dif = p.kwh - f.consumoKwh, v = f.consumoKwh ? dif / f.consumoKwh * 100 : null; return `<tr><td>${fCorta(f.periodoDesde)} → ${fCorta(f.periodoHasta)}</td><td class="n">${num(f.consumoKwh)}</td><td class="n">${num(p.kwh)}${p.aprox ? ' ≈' : ''}</td><td class="n ${Math.abs(v) > 5 ? 'up' : 'down'}">${num(dif)} kWh (${pct(v)})</td></tr>`; }).join('')}</tbody></table></div><div class="hint" style="margin-top:6px">Las lecturas propias se llevan a las fechas del período de Copelec (entre dos lecturas se reparte por días). Mientras más cerca estén tus lecturas del inicio y fin de cada período, más exacta es la comparación. ≈ = aproximado.</div>` : '<div class="hint">Sube facturas para comparar.</div>'}</div>`;
+  return form + tabla + cmp;
+}
+window.S_filtro = v => { S.filtroSum = v; render(); };
+window.guardarLectura = async function () {
+  const sid = $('l-sum').value, fecha = $('l-fecha').value, val = parseNum($('l-val').value), reinicio = $('l-reinicio').checked;
+  if (!sid || !fecha || val == null) { toast('Completa la fecha y la lectura', false); return; }
+  const lecs = lecDe(sid), ant = lecs.filter(l => l.fecha <= fecha).slice(-1)[0];
+  if (ant && !reinicio && val < ant.lectura && !confirm(`La lectura (${num(val, 1)}) es menor que la anterior (${num(ant.lectura, 1)} el ${fCorta(ant.fecha)}). ¿Guardar igual?`)) return;
+  if (ant && !reinicio && ant.fecha < fecha) { const d = dias(ant.fecha, fecha), s = sumDe(sid), prom = lecs.length > 2 ? (lecs[lecs.length - 1].lectura - lecs[0].lectura) / Math.max(1, dias(lecs[0].fecha, lecs[lecs.length - 1].fecha)) : null; if (prom && d > 0 && (val - ant.lectura) / d > prom * 3 && !confirm('El consumo por día de esta lectura es más de 3 veces el habitual. ¿Está bien la lectura?')) return; }
+  try { await addDoc(collection(db, 'energia_lecturas'), { suministro: sid, fecha, lectura: val, obs: $('l-obs').value.trim(), reinicio, registrado_por: USER.nombre, ts: Date.now() }); await cargarTodo(); render(); toast('✓ Lectura guardada'); } catch (e) { toast('Error: ' + e.message, false); }
+};
+window.borrarLectura = async function (id) { if (!confirm('¿Borrar esta lectura?')) return; try { await deleteDoc(doc(db, 'energia_lecturas', id)); await cargarTodo(); render(); } catch (e) { toast('Error: ' + e.message, false); } };
+
+// ── 📈 Comparar ──────────────────────────────────────────────────────────
+window.S_cmp = (k, v) => { S.cmp[k] = v; render(); };
+function rComparar() {
+  if (!S.fac.length) return '<div class="panel">Sube facturas para poder comparar.</div>';
+  const sid = S.cmp.sum, met = S.cmp.met;
+  const base = sid ? S.fac.filter(f => f.suministro === sid) : S.fac;
+  const valor = f => met === 'kwh' ? f.consumoKwh : met === 'total' ? f.total : precioKwh(f);
+  const fmt = v => met === 'kwh' ? num(v) : met === 'total' ? pesos(v) : '$' + num(v, 1);
+  const agg = (mes) => { const fs = base.filter(f => f.mes === mes); if (!fs.length) return null; if (met === 'precio') { const k = fs.reduce((a, f) => a + (f.consumoKwh || 0), 0), n = fs.reduce((a, f) => a + (f.neto || (f.total ? f.total / 1.19 : 0)), 0); return k > 0 ? n / k : null; } return fs.reduce((a, f) => a + (valor(f) || 0), 0); };
+  const ult = base.map(f => f.mes).filter(Boolean).sort().slice(-1)[0], y = ult ? +ult.slice(0, 4) : new Date().getFullYear();
+  const lab = MESES.map(m => m), v1 = MESES.map((_, i) => agg(`${y}-${String(i + 1).padStart(2, '0')}`)), v0 = MESES.map((_, i) => agg(`${y - 1}-${String(i + 1).padStart(2, '0')}`));
+  const series = [{ nombre: String(y - 1), color: '#9CA3AF', valores: v0 }, { nombre: String(y), color: '#2D7D46', valores: v1 }];
+  const t1 = v1.filter(x => x != null).reduce((a, b) => a + b, 0), idx = v1.map((x, i) => x != null && v0[i] != null ? i : -1).filter(i => i >= 0);
+  const sumA = idx.reduce((a, i) => a + v1[i], 0), sumB = idx.reduce((a, i) => a + v0[i], 0);
+  const resumen = idx.length ? `En los ${idx.length} meses con datos en ambos años: <b>${fmt(sumA)}</b> (${y}) vs <b>${fmt(sumB)}</b> (${y - 1}) → <b class="${sumA > sumB ? 'up' : 'down'}">${pct((sumA / sumB - 1) * 100)}</b>` : 'Aún no hay meses con datos en ambos años.';
+  const ult12 = [...new Set(base.map(f => f.mes).filter(Boolean))].sort().slice(-13);
+  const cont = `<div class="panel"><h2>Comparar</h2><div class="grid"><div class="field"><label>Suministro</label><select onchange="S_cmp('sum',this.value)"><option value="">Todos juntos</option>${S.sum.map(s => `<option value="${s.id}" ${s.id === sid ? 'selected' : ''}>${escA(s.nombre)}</option>`).join('')}</select></div><div class="field"><label>Qué comparar</label><select onchange="S_cmp('met',this.value)"><option value="kwh" ${met === 'kwh' ? 'selected' : ''}>Consumo (kWh)</option><option value="total" ${met === 'total' ? 'selected' : ''}>Total pagado ($)</option><option value="precio" ${met === 'precio' ? 'selected' : ''}>Precio medio ($/kWh)</option></select></div></div>
+    <h2 style="margin-top:10px">Mismo mes, año contra año</h2>${leyenda(series)}${barras(lab, series, fmt, 190)}<div style="font-size:13px;margin-top:6px">${resumen}</div></div>
+    <div class="panel"><h2>Mes contra mes (últimos 13)</h2>${barras(ult12.map(mesTxt), [{ nombre: 'Valor', color: '#F5A623', valores: ult12.map(agg) }], fmt, 170)}
+    <div class="tw" style="margin-top:6px"><table><thead><tr><th>Mes</th><th class="n">Valor</th><th class="n">vs mes anterior</th><th class="n">vs mismo mes año anterior</th></tr></thead><tbody>${[...ult12].reverse().map(m => { const a = agg(m), p = agg(mesMas(m, -1)), q = agg(mesMas(m, -12)); return `<tr><td>${mesTxt(m)}</td><td class="n">${fmt(a)}</td><td class="n">${a != null && p ? pct((a / p - 1) * 100) : '–'}</td><td class="n">${a != null && q ? pct((a / q - 1) * 100) : '–'}</td></tr>`; }).join('')}</tbody></table></div></div>`;
+  return cont;
+}
+
+// ── ⚙️ Suministros ───────────────────────────────────────────────────────
+let editSum = null;
+function rSuministros() {
+  const f = editSum;
+  const form = f ? `<div class="panel"><h2>${f.id ? 'Editar' : 'Nuevo'} suministro</h2>
+    <div class="grid"><div class="field"><label>Nombre</label><input id="s-nombre" value="${escA(f.nombre || '')}" placeholder="Ej: Bomba pozo 1"></div><div class="field"><label>N° de cliente (Copelec)</label><input id="s-cli" value="${escA(f.nCliente || '')}"></div><div class="field"><label>N° de medidor</label><input id="s-med" value="${escA(f.medidor || '')}"></div><div class="field"><label>Tarifa</label><input id="s-tar" value="${escA(f.tarifa || '')}" placeholder="BT1, AT3…"></div><div class="field"><label>Constante del medidor</label><input id="s-const" type="number" step="any" value="${f.constante || 1}"></div><div class="field"><label>Uso / centro de costo</label><input id="s-centro" value="${escA(f.centro || '')}" placeholder="Riego, casa, bodega…"></div></div>
+    <div class="field"><label>Dirección / notas</label><input id="s-dir" value="${escA(f.direccion || '')}"></div>
+    <label style="font-size:13px;display:flex;gap:6px;align-items:center;margin:6px 0"><input type="checkbox" id="s-act" style="width:auto" ${f.activo !== false ? 'checked' : ''}> Suministro activo</label>
+    <div style="display:flex;gap:8px"><button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="editSumCancel()">Cancelar</button><button class="btn btn-verde" style="flex:1;justify-content:center" onclick="guardarSuministro()">💾 Guardar</button></div></div>` : `<button class="btn btn-verde" style="margin-bottom:10px" onclick="editSumNuevo()">＋ Nuevo suministro</button>`;
+  const lista = `<div class="panel"><h2>Suministros</h2>${S.sum.length ? `<div class="tw"><table><thead><tr><th>Nombre</th><th>Cliente</th><th>Medidor</th><th>Tarifa</th><th class="n">Const.</th><th>Uso</th><th></th></tr></thead><tbody>${S.sum.map(s => `<tr><td>${escA(s.nombre)}${s.activo === false ? ' <span class="chip warn">inactivo</span>' : ''}</td><td>${escA(s.nCliente || '–')}</td><td>${escA(s.medidor || '–')}</td><td>${escA(s.tarifa || '–')}</td><td class="n">${num(s.constante || 1, 2)}</td><td>${escA(s.centro || '–')}</td><td style="white-space:nowrap"><button class="btn btn-secondary" onclick="editSumEditar('${s.id}')">✏️</button> <button class="btn btn-rojo" onclick="borrarSuministro('${s.id}')">✕</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="hint">Aún no hay suministros.</div>'}</div>`;
+  return form + lista;
+}
+window.editSumNuevo = () => { editSum = { activo: true, constante: 1 }; render(); };
+window.editSumEditar = id => { editSum = { ...sumDe(id) }; render(); };
+window.editSumCancel = () => { editSum = null; render(); };
+window.guardarSuministro = async function () {
+  const v = id => $(id).value.trim(), nombre = v('s-nombre'); if (!nombre) { toast('Falta el nombre', false); return; }
+  const d = { nombre, nCliente: v('s-cli'), medidor: v('s-med'), tarifa: v('s-tar'), constante: parseNum($('s-const').value) || 1, centro: v('s-centro'), direccion: v('s-dir'), activo: $('s-act').checked };
+  try { if (editSum.id) await updateDoc(doc(db, 'energia_suministros', editSum.id), d); else await addDoc(collection(db, 'energia_suministros'), { ...d, ts: Date.now() }); editSum = null; await cargarTodo(); render(); toast('✓ Suministro guardado'); } catch (e) { toast('Error: ' + e.message, false); }
+};
+window.borrarSuministro = async function (id) {
+  const n = S.fac.filter(f => f.suministro === id).length + S.lec.filter(l => l.suministro === id).length;
+  if (!confirm(n ? `Este suministro tiene ${n} facturas/lecturas. Se borrará solo el suministro (las facturas y lecturas quedarán sin asignar). ¿Continuar?` : '¿Borrar este suministro?')) return;
+  try { await deleteDoc(doc(db, 'energia_suministros', id)); await cargarTodo(); render(); } catch (e) { toast('Error: ' + e.message, false); }
+};
+
+async function iniciar() {
+  $('quien').textContent = USER.nombre;
+  try { await cargarTodo(); } catch (e) { $('main').innerHTML = `<div class="panel" style="color:#B91C1C">No se pudieron cargar los datos: ${escA(e.message)}<br><span class="hint">Si dice "permission", hay que permitir las colecciones energia_suministros, energia_lecturas y energia_facturas en las reglas de Firestore.</span></div>`; return; }
+  render();
+}
+window.S = S;
+revisarAcceso();
+</script>
+</body>
+</html>
