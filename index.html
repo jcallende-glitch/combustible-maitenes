@@ -5495,8 +5495,10 @@ function wzCargarTrabajador() {
     centro: ultCentro ? ultCentro.centro_costo : '',
     centroCambiar: !c && !ultCentro,
     labor: ultLabor ? ultLabor.labor : '', laborDe: ultLabor ? ultLabor.fecha : '', laborCambiar: !ultLabor,
-    maq: maqComb || (ultMaq ? ultMaq.maquinaria : ''), maqModo: maqComb ? 'comb' : (ultMaq ? 'prev' : ''), maqCambiar: false
+    maq: maqComb || (ultMaq ? ultMaq.maquinaria : ''), maqModo: maqComb ? 'comb' : (ultMaq ? 'prev' : ''), maqCambiar: false,
+    recientes: recientesAsist(trab, WZ.fecha), verRec: false
   };
+  { const h1 = document.getElementById('wiz-hreg'), h2 = document.getElementById('wiz-htrab'); if (h1) h1.value = ''; if (h2) h2.value = ''; } // las horas no pasan al siguiente trabajador
   wzRender();
 }
 
@@ -5531,8 +5533,8 @@ window.wzRender = function() {
     laborHtml = `<div style="padding:10px;background:#ECFDF5;border:1px solid #6EE7B7;border-radius:8px">✓ <b>${escA(cur.labor)}</b> <span style="font-size:12px;color:#6B7280">${cur.laborDe ? '(última: ' + cur.laborDe + ')' : ''}</span> <button type="button" style="${WZ_SMALL}" onclick="WZ.cur.laborCambiar=true;wzRender()">Cambiar</button></div>`;
   } else {
     const comunes = laboresComunesDe(cur.trab);
-    const base = TIPOS_LABOR_CAMPO.filter(t => !t.oculto && t.id !== 'otro').map(t => t.label.replace(/^[^\p{L}]+/u, '')).concat(tiposLaborCampoConfig.map(t => (t && (t.label || t.nombre)) || t));
-    WZ.opts = wzUnicos([...comunes.map(x => x[0]), ...base]);
+    const base = laboresBaseAsist();
+    WZ.opts = wzUnicos([...comunes.map(x => x[0]), ...laboresAsistExtra(), ...base]);
     laborHtml = (comunes.length ? `<div style="font-size:12px;color:#6B7280">Primero las más comunes de ${escA(cur.trab)}</div>` : '') +
       WZ.opts.map((l, i) => { const k = comunes.find(x => x[0] === l); return `<button type="button" style="${WZ_BTN}" onclick="wzLabor(${i})">${escA(l)}${k ? ' <span style="color:#9CA3AF">×' + k[1] + '</span>' : ''}</button>`; }).join('') +
       `<div style="display:flex;gap:6px;margin-top:6px"><input type="text" id="wiz-labor-otra" placeholder="Otra labor..." style="flex:1"><button type="button" style="${WZ_SMALL}" onclick="wzLabor(-1)">OK</button></div>`;
@@ -5554,6 +5556,16 @@ window.wzRender = function() {
     }
     maqHtml = `<div class="field"><label>Maquinaria</label>${inner}</div>`;
   }
+  const rec = cur.recientes || [];
+  const txtRec = x => [x.centro || x.centroComb ? puntosTexto(x.centro || x.centroComb) : '', x.labor ? escA(x.labor) : '', x.maq ? '🚜 ' + escA(x.maq) : ''].filter(Boolean).join(' · ');
+  const recHtml = rec.length ? `<div style="padding:10px;background:#FEF9C3;border:1px solid #FDE047;border-radius:8px;margin-bottom:12px">
+      <div style="font-size:12px;color:#6B7280">Lo último que hizo (${fechaBonita(rec[0].fecha)}):</div>
+      <div style="font-size:14px;margin:4px 0 6px"><b>${txtRec(rec[0])}</b></div>
+      <button type="button" style="${WZ_SMALL};background:#16A34A;color:#fff;border-color:#16A34A" onclick="wzReciente(0,true)">⚡ Igual y guardar</button>
+      <button type="button" style="${WZ_SMALL}" onclick="wzReciente(0,false)">✓ Igual, para editar</button>
+      ${rec.length > 1 ? `<button type="button" style="${WZ_SMALL}" onclick="WZ.cur.verRec=!WZ.cur.verRec;wzRender()">📜 Últimas ${rec.length} ${cur.verRec ? '▲' : '▼'}</button>` : ''}
+      ${cur.verRec ? rec.map((x, i) => `<button type="button" style="${WZ_BTN};text-align:left" onclick="wzReciente(${i},false)"><span style="color:#6B7280;font-size:12px">${fechaBonita(x.fecha)}</span><br>${txtRec(x) || '—'}</button>`).join('') : ''}
+    </div>` : '';
   w.innerHTML = `<div class="panel">
     <div style="font-size:12px;color:#6B7280;margin-bottom:6px">Último día con registro: <b>${WZ.ult ? fechaBonita(WZ.ult) : '—'}</b></div>
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">
@@ -5564,13 +5576,17 @@ window.wzRender = function() {
     </div>
     <div style="height:6px;background:#E5E7EB;border-radius:4px;margin-bottom:14px"><div style="height:6px;width:${Math.round(WZ.i / WZ.total * 100)}%;background:#16A34A;border-radius:4px"></div></div>
     <div style="font-size:22px;font-weight:700;margin-bottom:12px">${escA(cur.trab)}</div>
-    <div class="field"><label>Centro de costo</label>${centroHtml}</div>
+    <div style="padding:10px;background:#F0F9FF;border:1px solid #BAE6FD;border-radius:8px;margin-bottom:12px">
+      <div class="grid-2" style="margin-bottom:4px">
+        <div class="field" style="margin:0"><label>⏱️ Horas extra aprox. del día (si trabajó)</label><input type="number" id="wiz-hreg" min="0" step="0.5" inputmode="decimal" placeholder="0" value="${escA(hr)}"></div>
+        <div class="field" style="margin:0"><label>Según el trabajador (opcional)</label><input type="number" id="wiz-htrab" min="0" step="0.5" inputmode="decimal" placeholder="Pendiente" value="${escA(ht)}"></div>
+      </div>
+      <div>${[0, 0.5, 1, 1.5, 2, 3, 4].map(h => `<button type="button" style="${WZ_SMALL}" onclick="document.getElementById('wiz-hreg').value='${h}'">${String(h).replace('.', ',')} h</button>`).join('')}</div>
+    </div>
+    ${recHtml}
+    <div class="field"><label>Cultivo / frutal (centro de costo)</label>${centroHtml}</div>
     <div class="field"><label>Labor del día</label>${laborHtml}</div>
     ${maqHtml}
-    <div class="grid-2">
-      <div class="field"><label>Horas extra según tu registro</label><input type="number" id="wiz-hreg" min="0" step="0.1" inputmode="decimal" placeholder="0" value="${escA(hr)}"></div>
-      <div class="field"><label>Según el trabajador (opcional)</label><input type="number" id="wiz-htrab" min="0" step="0.1" inputmode="decimal" placeholder="Pendiente" value="${escA(ht)}"></div>
-    </div>
     <button type="button" class="btn btn-verde btn-full" onclick="wzGuardar()">✓ Guardar y siguiente</button>
     <div style="display:flex;gap:8px;margin-top:8px">
       <button type="button" class="btn" style="flex:1" onclick="wzSaltar()">Saltar →</button>
@@ -5579,9 +5595,20 @@ window.wzRender = function() {
 }
 window.wzCentroComb = function() { WZ.cur.centroModo = 'comb'; WZ.cur.centroCambiar = false; wzRender(); }
 window.wzCentro = function(i) { const v = WZ.optsC[i]; if (!v) return; WZ.cur.centro = v; WZ.cur.centroModo = 'manual'; WZ.cur.centroCambiar = false; wzRender(); }
+window.wzReciente = function(i, guardar) {
+  const cur = WZ && WZ.cur, x = cur && (cur.recientes || [])[i]; if (!x) return;
+  const c = WZ.comb[cur.trab];
+  if (x.centro) { cur.centro = x.centro; if (!c) { cur.centroModo = 'prev'; cur.centroCambiar = false; } }
+  else if (!c && !cur.centro) cur.centroCambiar = true;
+  if (x.labor) { cur.labor = x.labor; cur.laborDe = x.fecha; cur.laborCambiar = false; }
+  if (!(c && c.equipos && c.equipos.length)) { cur.maq = x.maq || ''; cur.maqModo = x.maq ? 'prev' : ''; cur.maqCambiar = false; }
+  if (guardar) { if (!cur.labor) { toast('Esa fila no tiene labor: elígela primero', false); wzRender(); return; } wzGuardar(); }
+  else wzRender();
+}
 window.wzLabor = function(i) {
   const v = i >= 0 ? (WZ.opts[i] || '') : (document.getElementById('wiz-labor-otra')?.value || '').trim();
   if (!v) return;
+  if (i < 0) agregarLaborAsistencia(v);
   WZ.cur.labor = v; WZ.cur.laborDe = ''; WZ.cur.laborCambiar = false; wzRender();
 }
 window.wzMaq = function(i) {
@@ -5672,6 +5699,32 @@ function laborAnteriorDe(trab, fecha) {
     .filter(r => r.trabajador === trab && r.labor && r.fecha < fecha)
     .sort((a, b) => (b.fecha || '').localeCompare(a.fecha || '') || (b.ts || 0) - (a.ts || 0))[0] || null;
 }
+// Labores que se fueron agregando a mano desde Asistencia (quedan guardadas para todos)
+const laboresAsistExtra = () => (config.laboresAsistencia || []).filter(x => typeof x === 'string' && x.trim());
+function laboresBaseAsist() {
+  return TIPOS_LABOR_CAMPO.filter(t => !t.oculto && t.id !== 'otro').map(t => t.label.replace(/^[^\p{L}]+/u, '')).concat(tiposLaborCampoConfig.map(t => (t && (t.label || t.nombre)) || t));
+}
+async function agregarLaborAsistencia(v) {
+  v = String(v || '').trim(); if (!v) return;
+  const existe = [...laboresBaseAsist(), ...laboresAsistExtra()].some(x => typeof x === 'string' && normNom(x) === normNom(v));
+  if (existe) return;
+  config.laboresAsistencia = [...laboresAsistExtra(), v];
+  try { await setDoc(doc(db, 'config', 'datos'), { laboresAsistencia: config.laboresAsistencia }, { merge: true }); toast('✓ "' + v + '" agregada a la lista de labores', true); }
+  catch (e) { console.warn('labor asistencia', e); toast('La labor se usó, pero no se pudo guardar en la lista: ' + e.message, false); }
+}
+// Últimas 10 combinaciones distintas (cultivo/centro · labor · maquinaria) del trabajador, la más reciente primero
+function recientesAsist(trab, fecha) {
+  const vistos = new Set(), out = [];
+  asistenciaRegistros.filter(r => r.trabajador === trab && r.fecha !== fecha && (r.labor || r.centro_costo))
+    .sort((a, b) => (b.fecha || '').localeCompare(a.fecha || '') || (b.ts || 0) - (a.ts || 0))
+    .forEach(r => {
+      const comb = r.centro_origen === 'combustible', k = (comb ? '' : (r.centro_costo || '')) + '|' + (r.labor || '') + '|' + (r.maquinaria || '');
+      if (vistos.has(k) || out.length >= 10) return;
+      vistos.add(k);
+      out.push({ fecha: r.fecha, centro: comb ? '' : (r.centro_costo || ''), centroComb: comb ? (r.centro_costo || '') : '', labor: r.labor || '', maq: r.maquinaria || '' });
+    });
+  return out;
+}
 function laboresComunesDe(trab) {
   const cuenta = {};
   asistenciaRegistros.filter(r => r.trabajador === trab && r.labor).forEach(r => { cuenta[r.labor] = (cuenta[r.labor] || 0) + 1; });
@@ -5700,9 +5753,9 @@ window.renderLaborAsistencia = function() {
   }
   const comunes = laboresComunesDe(trab);
   asistLaborOpciones = comunes.map(c => c[0]);
-  const base = TIPOS_LABOR_CAMPO.filter(t => !t.oculto && t.id !== 'otro').map(t => t.label.replace(/^[^\p{L}]+/u, '')).concat(tiposLaborCampoConfig.map(t => t.label || t.nombre || t).filter(x => typeof x === 'string'));
-  const extras = comunes.length ? [] : [...new Set(base.filter(x => typeof x === 'string' && x.trim()))];
-  if (!comunes.length) asistLaborOpciones = extras;
+  const base = [...laboresAsistExtra(), ...laboresBaseAsist().filter(x => typeof x === 'string')];
+  const extras = [...new Set([...laboresAsistExtra(), ...(comunes.length ? [] : base)].filter(x => typeof x === 'string' && x.trim() && !comunes.some(c => c[0] === x)))];
+  asistLaborOpciones = [...comunes.map(c => c[0]), ...extras];
   const titulo = comunes.length ? 'Más comunes de ' + escA(trab) : 'Sugeridas (aún no hay historial de ' + escA(trab) + ')';
   wrap.innerHTML = `<div style="font-size:12px;color:#6B7280;margin-bottom:4px">${titulo}</div>
     ${asistLaborOpciones.map((l, i) => `<button type="button" style="${btn}" onclick="elegirLaborAsistencia(${i})">${escA(l)}${comunes[i] ? ' <span style="color:#9CA3AF">×' + comunes[i][1] + '</span>' : ''}</button>`).join('')}
@@ -5725,6 +5778,7 @@ window.elegirLaborAsistencia = function(i) {
   if (i >= 0) v = asistLaborOpciones[i] || '';
   else v = (document.getElementById('asistencia-labor-otra')?.value || '').trim();
   if (!v) return;
+  if (i < 0) agregarLaborAsistencia(v);
   asistLaborSel = v; asistLaborCambiar = false; renderLaborAsistencia();
 }
 
