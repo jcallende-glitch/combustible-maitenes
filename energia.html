@@ -125,6 +125,8 @@ async function cargarTodo() {
   [S.sum, S.lec, S.fac] = await Promise.all([leer('energia_suministros'), leer('energia_lecturas'), leer('energia_facturas')]);
   S.sum.sort((a, b) => (a.nombre || '').localeCompare(b.nombre || '', 'es'));
 }
+const hijos = id => S.sum.filter(x => x.principal === id && x.activo !== false);
+const hijosTodos = id => S.sum.filter(x => x.principal === id);
 const sumDe = id => S.sum.find(s => s.id === id);
 const facDe = id => S.fac.filter(f => f.suministro === id).sort((a, b) => (a.periodoHasta || a.mes || '').localeCompare(b.periodoHasta || b.mes || ''));
 const lecDe = id => S.lec.filter(l => l.suministro === id).sort((a, b) => a.fecha.localeCompare(b.fecha) || (a.ts || 0) - (b.ts || 0));
@@ -174,9 +176,10 @@ function revisarFactura(f, excluirId) {
   const out = [], add = (nivel, txt) => out.push({ nivel, txt });
   const s = sumDe(f.suministro);
   if (!s) add('err', 'Falta asignar la factura a un suministro.');
-  const previas = facDe(f.suministro).filter(x => x.id !== excluirId);
   const hasta = f.periodoHasta || '', desde = f.periodoDesde || '';
-  if (s && hasta && previas.some(x => x.periodoHasta === hasta || (x.mes && x.mes === mesDe(hasta)))) add('err', 'Ya existe una factura de este suministro para el mismo período (posible duplicado).');
+  const otras = facDe(f.suministro).filter(x => x.id !== excluirId);
+  const previas = hasta ? otras.filter(x => (x.periodoHasta || '') < hasta) : otras; // solo meses anteriores: así da igual el orden en que se suban
+  if (s && hasta && otras.some(x => x.periodoHasta === hasta || (x.mes && x.mes === mesDe(hasta)))) add('err', 'Ya existe una factura de este suministro para el mismo período (posible duplicado).');
   if (desde && hasta) { const d = dias(desde, hasta); if (d <= 0) add('err', 'El período termina antes de empezar.'); else if (d < 25 || d > 36) add('warn', `El período dura ${num(d)} días (lo normal es 28–33).`); else add('ok', `Período de ${num(d)} días.`); }
   else add('info', 'Faltan las fechas del período.');
   const K = f.constante || (s && s.constante) || 1;
@@ -255,6 +258,11 @@ function revisarFactura(f, excluirId) {
       if (f.consumoKwh > 1500 && dd > 0) add('warn', `${num(f.consumoKwh)} kWh en el período es mucho para un suministro monofásico; revisa que no sea trifásico.`);
     }
   }
+  if (s && hijos(s.id).length && desde && hasta && f.consumoKwh != null) {
+    const r = resumenSub(s.id, f);
+    if (r.conDatos < r.n) add('info', `Submedidores: faltan lecturas de ${r.n - r.conDatos} de ${r.n} medidores para este período (${r.faltan.join(', ')}). Falta para cuadrar contra Copelec.`);
+    else { const v = r.dif / f.consumoKwh * 100; add(Math.abs(v) > 5 ? 'warn' : 'ok', `Suma de los ${r.n} submedidores: ${num(r.suma)} kWh vs ${num(f.consumoKwh)} kWh de Copelec: diferencia ${num(r.dif)} kWh (${pct(v)}).` + (Math.abs(v) > 5 ? (r.dif > 0 ? ' Hay consumo que ningún submedidor registra (pérdidas, un medidor sin leer o descalibrado).' : ' Los submedidores suman más de lo facturado: revisa las lecturas o las constantes.') : '')); }
+  }
   if (f.observaciones) add('info', 'Notas de la lectura: ' + f.observaciones);
   return out;
 }
@@ -276,11 +284,11 @@ function barras(labels, series, fmt, alto = 170) {
 const leyenda = series => '<div class="hint" style="margin:2px 0 6px">' + series.map(s => `<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${s.color};margin-right:4px"></span>${escA(s.nombre)}`).join(' &nbsp; ') + '</div>';
 
 // ── pestañas ────────────────────────────────────────────────────────────
-const TABS = [['resumen', '📊 Resumen'], ['facturas', '📄 Facturas'], ['lecturas', '🔢 Lecturas'], ['comparar', '📈 Comparar'], ['suministros', '⚙️ Suministros']];
+const TABS = [['resumen', '📊 Resumen'], ['facturas', '📄 Facturas'], ['lecturas', '🔢 Lecturas'], ['sub', '🔌 Submedidores'], ['comparar', '📈 Comparar'], ['suministros', '⚙️ Suministros']];
 window.setTab = t => { S.tab = t; render(); window.scrollTo(0, 0); };
 function render() {
   $('nav').innerHTML = TABS.map(([k, t]) => `<button class="${S.tab === k ? 'on' : ''}" onclick="setTab('${k}')">${t}</button>`).join('');
-  const f = { resumen: rResumen, facturas: rFacturas, lecturas: rLecturas, comparar: rComparar, suministros: rSuministros }[S.tab];
+  const f = { resumen: rResumen, facturas: rFacturas, lecturas: rLecturas, sub: rSub, comparar: rComparar, suministros: rSuministros }[S.tab];
   $('main').innerHTML = f();
   if (S.tab === 'facturas' && S.form) calcularRevision();
 }
@@ -289,7 +297,7 @@ function render() {
 function rResumen() {
   if (!S.sum.length) return `<div class="panel"><h2>Bienvenido</h2><p>Primero crea tus <b>suministros</b> (cada cuenta de Copelec: bombas, casa, bodega…) o sube una factura y la app los crea con los datos de la boleta.</p><button class="btn btn-verde" onclick="setTab('suministros')">⚙️ Crear suministros</button> <button class="btn btn-secondary" onclick="setTab('facturas')">📄 Subir una factura</button></div>`;
   const hoy = hoyStr();
-  const tarjetas = S.sum.filter(s => s.activo !== false).map(s => {
+  const tarjetas = S.sum.filter(s => s.activo !== false && !s.principal).map(s => {
     const fs = facDe(s.id), u = fs[fs.length - 1], a = fs[fs.length - 2], lec = lecDe(s.id), ul = lec[lec.length - 1];
     const ch = u ? revisarFactura(u, u.id) : [];
     const vK = u && a && a.consumoKwh ? (u.consumoKwh / a.consumoKwh - 1) * 100 : null, vP = u && a && precioKwh(a) ? (precioKwh(u) / precioKwh(a) - 1) * 100 : null, vT = u && a && totalSM(a) ? (totalSM(u) / totalSM(a) - 1) * 100 : null;
@@ -301,7 +309,7 @@ function rResumen() {
       : '<div class="hint" style="margin-top:8px">Aún no hay facturas de este suministro.</div>'}</div>`;
   }).join('');
   const meses = [...new Set(S.fac.map(f => f.mes).filter(Boolean))].sort().slice(-12);
-  const act = S.sum.filter(s => s.activo !== false);
+  const act = S.sum.filter(s => s.activo !== false && !s.principal);
   const filaM = (m) => { const fs = S.fac.filter(f => f.mes === m); return `<tr><td>${mesTxt(m)}</td>${act.map(s => { const f = fs.find(x => x.suministro === s.id); return `<td class="n">${f ? num(f.consumoKwh) : '–'}</td><td class="n">${f ? pesos(f.total) : '–'}</td>`; }).join('')}<td class="n"><b>${num(fs.reduce((a, f) => a + (f.consumoKwh || 0), 0))}</b></td><td class="n"><b>${pesos(fs.reduce((a, f) => a + (f.total || 0), 0))}</b></td></tr>`; };
   const tabla = meses.length ? `<div class="panel"><h2>Todos los suministros por mes</h2><div class="tw"><table><thead><tr><th>Mes</th>${act.map(s => `<th class="n" colspan="2">${escA(s.nombre)}</th>`).join('')}<th class="n" colspan="2">Total</th></tr><tr style="background:#333"><th></th>${act.map(() => '<th class="n">kWh</th><th class="n">$</th>').join('')}<th class="n">kWh</th><th class="n">$</th></tr></thead><tbody>${[...meses].reverse().map(filaM).join('')}</tbody></table></div></div>` : '';
   return tarjetas + tabla;
@@ -411,6 +419,40 @@ window.leerFactura = async function () {
   } catch (e) { est.innerHTML = '<span style="color:#B91C1C">' + escA(e.message) + '</span>'; const b = $('fac-leer'); if (b) b.disabled = false; }
 };
 
+// ── 🔌 Submedidores ──────────────────────────────────────────────────────
+function resumenSub(pid, f) {
+  const filas = hijosTodos(pid).map(h => ({ h, p: consumoPropio(h.id, f.periodoDesde, f.periodoHasta) })).filter(x => x.h.activo !== false || x.p), hs = filas;
+  const ok = filas.filter(x => x.p), suma = ok.reduce((a, x) => a + x.p.kwh, 0);
+  return { filas, n: hs.length, conDatos: ok.length, faltan: filas.filter(x => !x.p).map(x => x.h.nombre), suma, dif: (f.consumoKwh || 0) - suma };
+}
+window.S_sub = (k, v) => { S.sub = S.sub || {}; S.sub[k] = v; if (k === 'pid') S.sub.fid = ''; render(); };
+function rSub() {
+  const ppal = S.sum.filter(s => hijos(s.id).length);
+  if (!ppal.length) return `<div class="panel"><h2>🔌 Submedidores</h2><p>Para una cuenta que abastece varios medidores, crea cada medidor en ⚙️ Suministros y en el campo <b>«Es submedidor de»</b> elige la cuenta principal. Después anotas las lecturas de todos juntos cada mes y aquí se compara su suma con lo que factura Copelec y se reparte el costo.</p><button class="btn btn-verde" onclick="setTab('suministros')">⚙️ Ir a Suministros</button></div>`;
+  S.sub = S.sub || {};
+  const pid = ppal.some(x => x.id === S.sub.pid) ? S.sub.pid : ppal[0].id, P = sumDe(pid), fs = facDe(pid).slice().reverse();
+  const fid = fs.some(x => x.id === S.sub.fid) ? S.sub.fid : (fs[0] && fs[0].id), f = fs.find(x => x.id === fid), rep = !!S.sub.repartir;
+  const sel = `<div class="grid"><div class="field"><label>Cuenta principal</label><select onchange="S_sub('pid',this.value)">${ppal.map(x => `<option value="${x.id}" ${x.id === pid ? 'selected' : ''}>${escA(x.nombre)}</option>`).join('')}</select></div><div class="field"><label>Factura de Copelec</label><select onchange="S_sub('fid',this.value)">${fs.map(x => `<option value="${x.id}" ${x.id === fid ? 'selected' : ''}>${mesTxt(x.mes)} · ${fCorta(x.periodoDesde)} → ${fCorta(x.periodoHasta)}</option>`).join('')}</select></div></div>`;
+  if (!f) return `<div class="panel"><h2>🔌 Submedidores de ${escA(P.nombre)}</h2>${sel}<div class="hint">Aún no hay facturas de la cuenta principal para comparar.</div></div>`;
+  const r = resumenSub(pid, f), v = f.consumoKwh ? r.dif / f.consumoKwh * 100 : null, nivel = r.conDatos < r.n ? 'info' : Math.abs(v) > 5 ? 'warn' : 'ok';
+  const aviso = r.conDatos < r.n ? `Faltan lecturas de: ${r.faltan.map(escA).join(', ')}. La diferencia no es confiable hasta completarlas.` : '';
+  // costo del mes (sin mora): partes
+  const d = desglose(f), neto = netoSM(f), tot = totalSM(f), noaf = d.noafecto || 0;
+  const k = neto && tot != null ? (tot - noaf) / neto : 1, parteA = neto ? sinPotPunta(f) * k + noaf : null, parteB = neto ? (d.demanda + d.punta) * k : null;
+  const base = rep || r.dif < 0 ? r.suma : f.consumoKwh; // si los medidores suman más que Copelec, el costo se reparte entre ellos
+  const fila = x => { const kw = x.p ? x.p.kwh : null, sh = kw != null && base > 0 ? kw / base : null; return `<tr><td>${escA(x.h.nombre)}${x.h.medidor ? `<div class="hint">medidor ${escA(x.h.medidor)}</div>` : ''}</td><td class="n">${kw != null ? num(kw) + (x.p.aprox ? ' ≈' : '') : '<span class="hint">sin lectura</span>'}</td><td class="n">${sh != null ? num(sh * 100, 1) + ' %' : '–'}</td><td class="n">${sh != null && parteA != null ? pesos(parteA * sh) : '–'}</td><td class="n">${sh != null && parteB != null ? pesos(parteB * sh) : '–'}</td><td class="n"><b>${sh != null && tot != null ? pesos(tot * sh) : '–'}</b></td><td class="n">${sh != null && kw > 0 && tot != null ? '$' + num(tot * sh / kw, 0) : '–'}</td></tr>`; };
+  const perd = !rep && r.conDatos === r.n && r.dif >= 0 ? r.dif : null, shP = perd != null && f.consumoKwh > 0 ? perd / f.consumoKwh : null;
+  const filaP = shP != null ? `<tr style="background:var(--fondo)"><td>Pérdidas / no medido<div class="hint">Copelec − suma de submedidores</div></td><td class="n">${num(perd)}</td><td class="n">${num(shP * 100, 1)} %</td><td class="n">${parteA != null ? pesos(parteA * shP) : '–'}</td><td class="n">${parteB != null ? pesos(parteB * shP) : '–'}</td><td class="n"><b>${pesos(tot * shP)}</b></td><td class="n">–</td></tr>` : '';
+  const hist = fs.slice(0, 12).reverse().map(x => { const q = resumenSub(pid, x); return q.conDatos === q.n && x.consumoKwh ? { mes: mesTxt(x.mes), v: q.dif / x.consumoKwh * 100 } : null; }).filter(Boolean);
+  return `<div class="panel"><h2>🔌 Submedidores de ${escA(P.nombre)}</h2>${sel}
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0"><button class="btn btn-secondary" onclick="addSub('${pid}')">＋ Agregar submedidor</button>${hijos(pid).length ? `<button class="btn btn-secondary" onclick="quitarSubMenu('${pid}')">🗑️ Quitar un submedidor</button>` : ''}</div>
+    <div class="kpi"><div><small>Copelec facturó</small><b>${num(f.consumoKwh)} kWh</b></div><div><small>Suma de ${r.n} medidores</small><b>${r.conDatos ? num(r.suma) + ' kWh' : '–'}</b></div><div><small>Diferencia</small><b class="${nivel === 'warn' ? 'up' : ''}">${r.conDatos === r.n ? num(r.dif) + ' kWh' : '–'}</b><span style="font-size:12px">${r.conDatos === r.n ? pct(v) : ''}</span></div><div><small>Costo del mes (sin mora)</small><b>${pesos(tot)}</b></div></div>
+    ${aviso ? `<div class="chk info"><span>ℹ️</span><span>${aviso}</span></div>` : r.conDatos === r.n ? `<div class="chk ${nivel}"><span>${nivel === 'ok' ? '✓' : '⚠️'}</span><span>${nivel === 'ok' ? 'La suma de los submedidores calza con lo facturado por Copelec (dentro de 5 %).' : (r.dif > 0 ? 'Copelec factura más de lo que registran los submedidores: hay consumo no medido, pérdidas o un medidor sin leer o descalibrado.' : 'Los submedidores suman más de lo que factura Copelec: revisa las lecturas o las constantes de cada medidor.')}</span></div>` : ''}
+    <label style="font-size:13px;display:flex;gap:6px;align-items:center;margin:8px 0"><input type="checkbox" style="width:auto" ${rep ? 'checked' : ''} onchange="S_sub('repartir',this.checked)"> Repartir también las pérdidas entre los medidores (el 100 % del costo queda en los medidores)</label>
+    <div class="tw"><table><thead><tr><th>Medidor</th><th class="n">kWh del período</th><th class="n">%</th><th class="n">Energía y transporte</th><th class="n">Potencia y punta</th><th class="n">Costo asignado</th><th class="n">$/kWh</th></tr></thead><tbody>${r.filas.map(fila).join('')}${filaP}</tbody></table></div>
+    <div class="hint" style="margin-top:6px">El costo se reparte según los kWh de cada medidor sobre el período facturado (${fCorta(f.periodoDesde)} → ${fCorta(f.periodoHasta)}). «Energía y transporte» incluye administración, factor de potencia y cobros no afectos; «Potencia y punta» son los cargos por demanda. Todo sin mora y con IVA. ≈ = lectura aproximada, porque tu lectura no cayó justo en la fecha del período.</div></div>
+    ${hist.length > 1 ? `<div class="panel"><h2>Diferencia mes a mes (Copelec − submedidores)</h2>${barras(hist.map(x => x.mes), [{ nombre: '% diferencia', color: '#F5A623', valores: hist.map(x => Math.abs(x.v)) }], v => num(v, 1) + ' %')}<div class="hint">Barras = diferencia en valor absoluto. Una diferencia que crece mes a mes suele indicar una pérdida o un medidor que se descalibra.</div></div>` : ''}`;
+}
 // ── 🔢 Lecturas propias ──────────────────────────────────────────────────
 function rLecturas() {
   if (!S.sum.length) return '<div class="panel">Primero crea un suministro en ⚙️ Suministros.</div>';
@@ -423,13 +465,42 @@ function rLecturas() {
     <div class="field"><label>Observación (opcional)</label><input id="l-obs" placeholder="Ej: lectura de fin de mes"></div>
     <label style="font-size:13px;display:flex;gap:6px;align-items:center;margin:6px 0"><input type="checkbox" id="l-reinicio" style="width:auto"> El medidor se reinició o fue reemplazado</label>
     <button class="btn btn-verde btn-full" onclick="guardarLectura()">💾 Guardar lectura</button></div>`;
+  const hs = hijos(sid);
+  const masivo = hs.length ? `<div class="panel"><h2>Cargar las lecturas de los ${hs.length} medidores de ${escA(s.nombre)}</h2><div class="field"><label>Fecha de la lectura</label><input type="date" id="m-fecha" value="${hoyStr()}"></div>${hs.map(h => { const u = lecDe(h.id).slice(-1)[0]; return `<div class="field"><label>${escA(h.nombre)}${h.medidor ? ' · ' + escA(h.medidor) : ''}</label><input type="number" step="any" inputmode="decimal" data-hid="${h.id}" class="m-val" placeholder="${u ? 'Última: ' + num(u.lectura, 1) + ' (' + fCorta(u.fecha) + ')' : 'Lectura'}"></div>`; }).join('')}<button class="btn btn-verde btn-full" onclick="guardarMasivas()">💾 Guardar las lecturas anotadas</button><div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap"><button class="btn btn-secondary" onclick="addSub('${sid}')">＋ Agregar medidor</button><button class="btn btn-secondary" onclick="quitarSubMenu('${sid}')">🗑️ Quitar medidor</button></div><div class="hint" style="margin-top:6px">Puedes dejar en blanco los que no leíste; se guardan solo los que llenes.</div></div>` : '';
   const K = s.constante || 1;
   const filas = lecs.map((l, i) => { const a = lecs[i - 1], d = a ? dias(a.fecha, l.fecha) : null, k = a && !l.reinicio ? (l.lectura - a.lectura) * K : null; return { l, d, k }; }).reverse();
   const tabla = `<div class="panel"><h2>Lecturas de ${escA(s.nombre)}</h2>${filas.length ? `<div class="tw"><table><thead><tr><th>Fecha</th><th class="n">Lectura</th><th class="n">Días</th><th class="n">Consumo</th><th class="n">kWh/día</th><th></th></tr></thead><tbody>${filas.map(({ l, d, k }) => `<tr><td>${fCorta(l.fecha)}${l.reinicio ? ' <span class="chip info">reinicio</span>' : ''}${l.obs ? `<div class="hint">${escA(l.obs)}</div>` : ''}</td><td class="n">${num(l.lectura, 1)}</td><td class="n">${d != null ? num(d) : '–'}</td><td class="n">${k != null ? num(k) + ' kWh' : '–'}</td><td class="n">${k != null && d > 0 ? num(k / d, 1) : '–'}</td><td><button class="btn btn-rojo" style="padding:2px 8px" onclick="borrarLectura('${l.id}')">✕</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="hint">Sin lecturas.</div>'}</div>`;
   const fs = facDe(sid).slice().reverse();
   const cmp = `<div class="panel"><h2>Nuestro medidor vs Copelec</h2>${fs.length ? `<div class="tw"><table><thead><tr><th>Período facturado</th><th class="n">Copelec</th><th class="n">Nuestro</th><th class="n">Diferencia</th></tr></thead><tbody>${fs.map(f => { const p = consumoPropio(sid, f.periodoDesde, f.periodoHasta); if (!p || f.consumoKwh == null) return `<tr><td>${fCorta(f.periodoDesde)} → ${fCorta(f.periodoHasta)}</td><td class="n">${num(f.consumoKwh)}</td><td class="n hint" colspan="2">sin lecturas que cubran el período</td></tr>`; const dif = p.kwh - f.consumoKwh, v = f.consumoKwh ? dif / f.consumoKwh * 100 : null; return `<tr><td>${fCorta(f.periodoDesde)} → ${fCorta(f.periodoHasta)}</td><td class="n">${num(f.consumoKwh)}</td><td class="n">${num(p.kwh)}${p.aprox ? ' ≈' : ''}</td><td class="n ${Math.abs(v) > 5 ? 'up' : 'down'}">${num(dif)} kWh (${pct(v)})</td></tr>`; }).join('')}</tbody></table></div><div class="hint" style="margin-top:6px">Las lecturas propias se llevan a las fechas del período de Copelec (entre dos lecturas se reparte por días). Mientras más cerca estén tus lecturas del inicio y fin de cada período, más exacta es la comparación. ≈ = aproximado.</div>` : '<div class="hint">Sube facturas para comparar.</div>'}</div>`;
-  return form + tabla + cmp;
+  return masivo + form + tabla + cmp;
 }
+window.addSub = async function (pid) {
+  const P = sumDe(pid), nombre = (prompt('Nombre del nuevo submedidor de ' + (P ? P.nombre : '') + ' (ej: Casa 3, Bodega, Pozo)') || '').trim(); if (!nombre) return;
+  const med = (prompt('N° del medidor (opcional)') || '').trim(), k = parseNum(prompt('Constante del medidor (deja 1 si no tiene)', '1')) || 1;
+  try { await addDoc(collection(db, 'energia_suministros'), { nombre, nCliente: '', medidor: med, tarifa: '', constante: k, centro: '', direccion: '', fase: '', principal: pid, activo: true, ts: Date.now() }); await cargarTodo(); render(); toast('✓ Submedidor agregado'); } catch (e) { toast('Error: ' + e.message, false); }
+};
+window.quitarSubMenu = function (pid) {
+  const hs = hijos(pid); if (!hs.length) { toast('No hay submedidores', false); return; }
+  const txt = hs.map((h, i) => (i + 1) + '. ' + h.nombre).join('\n'), r = prompt('¿Cuál quitas? Escribe el número:\n' + txt); const h = hs[(parseInt(r, 10) || 0) - 1]; if (!h) return;
+  quitarSub(h.id);
+};
+window.quitarSub = async function (id) {
+  const h = sumDe(id), n = S.lec.filter(l => l.suministro === id).length;
+  try {
+    if (n) { if (!confirm(`«${h.nombre}» tiene ${n} lecturas. Se desactiva: deja de aparecer en la carga mensual, pero su historial se conserva para los meses ya medidos. ¿Continuar?`)) return; await updateDoc(doc(db, 'energia_suministros', id), { activo: false }); }
+    else { if (!confirm(`¿Eliminar «${h.nombre}»?`)) return; await deleteDoc(doc(db, 'energia_suministros', id)); }
+    await cargarTodo(); render(); toast('✓ Listo');
+  } catch (e) { toast('Error: ' + e.message, false); }
+};
+window.guardarMasivas = async function () {
+  const fecha = $('m-fecha').value, ins = [...document.querySelectorAll('.m-val')].filter(i => i.value.trim() !== '');
+  if (!fecha || !ins.length) { toast('Pon la fecha y al menos una lectura', false); return; }
+  const raros = [];
+  const datos = ins.map(i => { const hid = i.dataset.hid, val = parseNum(i.value), ant = lecDe(hid).filter(l => l.fecha <= fecha).slice(-1)[0]; if (ant && val != null && val < ant.lectura) raros.push((sumDe(hid) || {}).nombre + ' (' + num(val, 1) + ' < ' + num(ant.lectura, 1) + ')'); return { hid, val }; });
+  if (datos.some(d => d.val == null)) { toast('Hay una lectura que no es un número', false); return; }
+  if (raros.length && !confirm('Estas lecturas son menores que la anterior:\n' + raros.join('\n') + '\n¿Guardar igual?')) return;
+  try { for (const d of datos) await addDoc(collection(db, 'energia_lecturas'), { suministro: d.hid, fecha, lectura: d.val, obs: '', reinicio: false, registrado_por: USER.nombre, ts: Date.now() }); await cargarTodo(); render(); toast('✓ ' + datos.length + ' lecturas guardadas'); } catch (e) { toast('Error: ' + e.message, false); }
+};
 window.S_filtro = v => { S.filtroSum = v; render(); };
 window.guardarLectura = async function () {
   const sid = $('l-sum').value, fecha = $('l-fecha').value, val = parseNum($('l-val').value), reinicio = $('l-reinicio').checked;
@@ -469,11 +540,11 @@ let editSum = null;
 function rSuministros() {
   const f = editSum;
   const form = f ? `<div class="panel"><h2>${f.id ? 'Editar' : 'Nuevo'} suministro</h2>
-    <div class="grid"><div class="field"><label>Nombre</label><input id="s-nombre" value="${escA(f.nombre || '')}" placeholder="Ej: Bomba pozo 1"></div><div class="field"><label>N° de cliente (Copelec)</label><input id="s-cli" value="${escA(f.nCliente || '')}"></div><div class="field"><label>N° de medidor</label><input id="s-med" value="${escA(f.medidor || '')}"></div><div class="field"><label>Tarifa</label><input id="s-tar" value="${escA(f.tarifa || '')}" placeholder="BT1, AT3…"></div><div class="field"><label>Constante del medidor</label><input id="s-const" type="number" step="any" value="${f.constante || 1}"></div><div class="field"><label>Conexión</label><select id="s-fase"><option value="">Sin definir</option><option value="mono" ${f.fase === 'mono' ? 'selected' : ''}>Monofásico</option><option value="tri" ${f.fase === 'tri' ? 'selected' : ''}>Trifásico</option></select></div><div class="field"><label>Uso / centro de costo</label><input id="s-centro" value="${escA(f.centro || '')}" placeholder="Riego, casa, bodega…"></div></div>
+    <div class="grid"><div class="field"><label>Nombre</label><input id="s-nombre" value="${escA(f.nombre || '')}" placeholder="Ej: Bomba pozo 1"></div><div class="field"><label>N° de cliente (Copelec)</label><input id="s-cli" value="${escA(f.nCliente || '')}"></div><div class="field"><label>N° de medidor</label><input id="s-med" value="${escA(f.medidor || '')}"></div><div class="field"><label>Tarifa</label><input id="s-tar" value="${escA(f.tarifa || '')}" placeholder="BT1, AT3…"></div><div class="field"><label>Constante del medidor</label><input id="s-const" type="number" step="any" value="${f.constante || 1}"></div><div class="field"><label>Es submedidor de</label><select id="s-ppal"><option value="">— cuenta propia de Copelec —</option>${S.sum.filter(x => x.id !== f.id && !x.principal).map(x => `<option value="${x.id}" ${f.principal === x.id ? 'selected' : ''}>${escA(x.nombre)}</option>`).join('')}</select></div><div class="field"><label>Conexión</label><select id="s-fase"><option value="">Sin definir</option><option value="mono" ${f.fase === 'mono' ? 'selected' : ''}>Monofásico</option><option value="tri" ${f.fase === 'tri' ? 'selected' : ''}>Trifásico</option></select></div><div class="field"><label>Uso / centro de costo</label><input id="s-centro" value="${escA(f.centro || '')}" placeholder="Riego, casa, bodega…"></div></div>
     <div class="field"><label>Dirección / notas</label><input id="s-dir" value="${escA(f.direccion || '')}"></div>
     <label style="font-size:13px;display:flex;gap:6px;align-items:center;margin:6px 0"><input type="checkbox" id="s-act" style="width:auto" ${f.activo !== false ? 'checked' : ''}> Suministro activo</label>
     <div style="display:flex;gap:8px"><button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="editSumCancel()">Cancelar</button><button class="btn btn-verde" style="flex:1;justify-content:center" onclick="guardarSuministro()">💾 Guardar</button></div></div>` : `<button class="btn btn-verde" style="margin-bottom:10px" onclick="editSumNuevo()">＋ Nuevo suministro</button>`;
-  const lista = `<div class="panel"><h2>Suministros</h2>${S.sum.length ? `<div class="tw"><table><thead><tr><th>Nombre</th><th>Cliente</th><th>Medidor</th><th>Tarifa</th><th>Fase</th><th class="n">Const.</th><th>Uso</th><th></th></tr></thead><tbody>${S.sum.map(s => `<tr><td>${escA(s.nombre)}${s.activo === false ? ' <span class="chip warn">inactivo</span>' : ''}</td><td>${escA(s.nCliente || '–')}</td><td>${escA(s.medidor || '–')}</td><td>${escA(s.tarifa || '–')}</td><td>${s.fase === 'mono' ? 'Mono' : s.fase === 'tri' ? 'Tri' : '–'}</td><td class="n">${num(s.constante || 1, 2)}</td><td>${escA(s.centro || '–')}</td><td style="white-space:nowrap"><button class="btn btn-secondary" onclick="editSumEditar('${s.id}')">✏️</button> <button class="btn btn-rojo" onclick="borrarSuministro('${s.id}')">✕</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="hint">Aún no hay suministros.</div>'}</div>`;
+  const lista = `<div class="panel"><h2>Suministros</h2>${S.sum.length ? `<div class="tw"><table><thead><tr><th>Nombre</th><th>Cliente</th><th>Medidor</th><th>Tarifa</th><th>Fase</th><th class="n">Const.</th><th>Uso</th><th></th></tr></thead><tbody>${S.sum.map(s => `<tr><td>${s.principal ? '↳ ' : ''}${escA(s.nombre)}${s.principal ? `<div class="hint">submedidor de ${escA((sumDe(s.principal) || {}).nombre || '?')}</div>` : (hijos(s.id).length ? `<div class="hint">cuenta principal de ${hijos(s.id).length} medidores</div>` : '')}${s.activo === false ? ' <span class="chip warn">inactivo</span>' : ''}</td><td>${escA(s.nCliente || '–')}</td><td>${escA(s.medidor || '–')}</td><td>${escA(s.tarifa || '–')}</td><td>${s.fase === 'mono' ? 'Mono' : s.fase === 'tri' ? 'Tri' : '–'}</td><td class="n">${num(s.constante || 1, 2)}</td><td>${escA(s.centro || '–')}</td><td style="white-space:nowrap"><button class="btn btn-secondary" onclick="editSumEditar('${s.id}')">✏️</button> <button class="btn btn-rojo" onclick="borrarSuministro('${s.id}')">✕</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="hint">Aún no hay suministros.</div>'}</div>`;
   const reglas = `<div class="panel"><h2>📏 Qué considera correcto la app</h2>
     <details><summary style="cursor:pointer;font-weight:600">Trifásico (bombas, pozos, bodegas, packing)</summary><ul style="font-size:13px;line-height:1.6;margin:8px 0 0 16px;padding:0">
       <li><b>Factor de potencia ≥ 0,93.</b> Bajo eso hay recargo; bajo 0,80 es error.</li>
@@ -499,7 +570,7 @@ window.editSumEditar = id => { editSum = { ...sumDe(id) }; render(); };
 window.editSumCancel = () => { editSum = null; render(); };
 window.guardarSuministro = async function () {
   const v = id => $(id).value.trim(), nombre = v('s-nombre'); if (!nombre) { toast('Falta el nombre', false); return; }
-  const d = { nombre, nCliente: v('s-cli'), medidor: v('s-med'), tarifa: v('s-tar'), fase: v('s-fase'), constante: parseNum($('s-const').value) || 1, centro: v('s-centro'), direccion: v('s-dir'), activo: $('s-act').checked };
+  const d = { nombre, nCliente: v('s-cli'), medidor: v('s-med'), tarifa: v('s-tar'), fase: v('s-fase'), principal: v('s-ppal'), constante: parseNum($('s-const').value) || 1, centro: v('s-centro'), direccion: v('s-dir'), activo: $('s-act').checked };
   try { if (editSum.id) await updateDoc(doc(db, 'energia_suministros', editSum.id), d); else await addDoc(collection(db, 'energia_suministros'), { ...d, ts: Date.now() }); editSum = null; await cargarTodo(); render(); toast('✓ Suministro guardado'); } catch (e) { toast('Error: ' + e.message, false); }
 };
 window.borrarSuministro = async function (id) {
