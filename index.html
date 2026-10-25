@@ -5569,6 +5569,7 @@ function sueCalcular() {
   const porTrab = {}, porDia = {};
   regs.forEach(r => {
     const t0 = porTrab[r.trabajador] = porTrab[r.trabajador] || { dias: new Set(), items: [], perm: new Set(), falt: new Set() };
+    if (r.estado === 'vacaciones') { (t0.vac = t0.vac || new Set()).add(r.fecha); return; }
     if (r.estado === 'permiso') { t0.perm.add(r.fecha); return; }
     if (r.estado === 'falta') { t0.falt.add(r.fecha); return; }
     const he = parseFloat(r.horas_registro) || 0;
@@ -5582,7 +5583,7 @@ function sueCalcular() {
   const filas = SUE.filas.map(f => {
     if (f.trab === SUE_GEN) {
       const costoG = f.costo != null ? f.costo : null, dias = Object.keys(porDia).filter(d => porDia[d].some(x => x.w > 0));
-      const resG = { nombre: f.nombre, trabajador: 'General (según la tarja del día)', general: true, costo: costoG, liquido: f.liquido, haberes: f.haberes, heMonto: f.heMonto, heHoras: f.heHoras, dif: costoG != null && f.liquido != null ? costoG - f.liquido : null, diasTarja: dias.length, permisos: 0, faltas: 0, heTarja: 0, dist: [] };
+      const resG = { nombre: f.nombre, trabajador: 'General (según la tarja del día)', general: true, costo: costoG, liquido: f.liquido, haberes: f.haberes, heMonto: f.heMonto, heHoras: f.heHoras, dif: costoG != null && f.liquido != null ? costoG - f.liquido : null, diasTarja: dias.length, permisos: 0, faltas: 0, vacaciones: 0, heTarja: 0, dist: [] };
       if (costoG == null) { resG.estado = 'sin_costo'; return resG; }
       if (!dias.length) { resG.estado = 'sin_tarja'; return resG; }
       const acG = {};
@@ -5590,7 +5591,7 @@ function sueCalcular() {
       resG.dist = Object.values(acG); resG.estado = 'ok'; return resG;
     }
     const t = f.trab ? porTrab[f.trab] : null, costo = f.costo != null ? f.costo : null;
-    const res = { nombre: f.nombre, trabajador: f.trab || '', costo, liquido: f.liquido, haberes: f.haberes, heMonto: f.heMonto, heHoras: f.heHoras, dif: costo != null && f.liquido != null ? costo - f.liquido : null, diasTarja: t ? t.dias.size : 0, permisos: t ? t.perm.size : 0, faltas: t ? t.falt.size : 0, heTarja: t ? t.items.reduce((a, x) => a + x.he, 0) : 0, dist: [] };
+    const res = { nombre: f.nombre, trabajador: f.trab || '', costo, liquido: f.liquido, haberes: f.haberes, heMonto: f.heMonto, heHoras: f.heHoras, dif: costo != null && f.liquido != null ? costo - f.liquido : null, diasTarja: t ? t.dias.size : 0, permisos: t ? t.perm.size : 0, faltas: t ? t.falt.size : 0, vacaciones: t && t.vac ? t.vac.size : 0, heTarja: t ? t.items.reduce((a, x) => a + x.he, 0) : 0, dist: [] };
     if (!f.trab) { res.estado = 'sin_trabajador'; return res; }
     if (!t || !t.items.length || costo == null) { res.estado = (!t || !t.items.length) ? 'sin_tarja' : 'sin_costo'; return res; }
     const totDias = t.items.reduce((a, x) => a + x.dias, 0), totHe = t.items.reduce((a, x) => a + x.he, 0);
@@ -5630,7 +5631,7 @@ window.sueRecalcular = function() {
   const trabs = trabajadoresAsistenciaConfig || [];
   const est = { ok: '', sin_trabajador: '⚠️ Elige quién es', sin_tarja: '⚠️ Sin tarja este mes', sin_costo: '⚠️ Sin costo empresa' };
   const filasHtml = R.filas.map((f, i) => `<tr style="border-top:1px solid var(--borde)"><td style="padding:4px"><div style="font-size:12px">${escA(f.nombre)}</div><select style="font-size:12px;max-width:150px" onchange="sueAsignar(${i},this.value)"><option value="">— ninguno —</option><option value="__GENERAL__" ${f.general ? 'selected' : ''}>🏢 General: según la tarja del día</option>${trabs.map(t => `<option value="${escA(t)}" ${f.trabajador === t ? 'selected' : ''}>${escA(t)}</option>`).join('')}</select>${est[f.estado] ? `<div style="font-size:10px;color:#B45309">${est[f.estado]}</div>` : ''}</td>
-    <td style="text-align:right;padding:4px">${sueP(f.liquido)}</td><td style="text-align:right;padding:4px;font-weight:700">${sueP(f.costo)}</td><td style="text-align:right;padding:4px;color:var(--acero)">${sueP(f.dif)}</td><td style="text-align:right;padding:4px">${f.diasTarja || '–'}</td><td style="text-align:right;padding:4px">${f.permisos || f.faltas ? (f.permisos || 0) + ' / ' + (f.faltas || 0) : '–'}</td><td style="text-align:right;padding:4px">${f.heTarja ? sueH(f.heTarja) : '–'}${f.heHoras ? `<div style="font-size:10px;color:var(--acero)">pagadas ${sueH(f.heHoras)}</div>` : ''}</td></tr>`).join('');
+    <td style="text-align:right;padding:4px">${sueP(f.liquido)}</td><td style="text-align:right;padding:4px;font-weight:700">${sueP(f.costo)}</td><td style="text-align:right;padding:4px;color:var(--acero)">${sueP(f.dif)}</td><td style="text-align:right;padding:4px">${f.diasTarja || '–'}</td><td style="text-align:right;padding:4px">${f.permisos || f.faltas || f.vacaciones ? (f.permisos || 0) + ' / ' + (f.faltas || 0) + ' / ' + (f.vacaciones || 0) : '–'}</td><td style="text-align:right;padding:4px">${f.heTarja ? sueH(f.heTarja) : '–'}${f.heHoras ? `<div style="font-size:10px;color:var(--acero)">pagadas ${sueH(f.heHoras)}</div>` : ''}</td></tr>`).join('');
   const filaC = (c, tot) => `<tr style="border-top:1px solid var(--borde)"><td style="padding:4px">${puntoCentro(c.nombre)}${escA(c.nombre)}</td><td style="text-align:right;padding:4px;font-weight:700">${sueP(c.monto)}</td><td style="text-align:right;padding:4px">${tot ? Math.round(c.monto / tot * 100) : 0} %</td><td style="text-align:right;padding:4px;color:var(--acero)">${sueP(c.liquido)}</td><td style="text-align:right;padding:4px">${sueH(c.dias)}</td><td style="text-align:right;padding:4px">${c.he ? sueH(c.he) : '–'}</td><td style="text-align:right;padding:4px">${c.heMonto ? sueP(c.heMonto) : '–'}</td></tr>`;
   const totD = R.centros.reduce((a, c) => a + c.monto, 0), cab = '<thead><tr><th style="text-align:left;padding:4px"></th><th style="text-align:right;padding:4px">Costo empresa</th><th style="text-align:right;padding:4px">%</th><th style="text-align:right;padding:4px">Líquido</th><th style="text-align:right;padding:4px">Días</th><th style="text-align:right;padding:4px">H. extra</th><th style="text-align:right;padding:4px">$ H. extra</th></tr></thead>';
   cu.innerHTML = `<div style="font-size:13px;margin:6px 0"><b>Total costo empresa ${sueP(R.totalCosto)}</b> · líquido ${sueP(R.totalLiquido)} · diferencia ${sueP(R.totalCosto - R.totalLiquido)}${R.totalLiquido ? ` (${Math.round((R.totalCosto / R.totalLiquido - 1) * 100)} % sobre el líquido)` : ''}<br>
@@ -5638,7 +5639,7 @@ window.sueRecalcular = function() {
     ${R.sinPlanilla.length ? `<div style="font-size:12px;color:#B45309;margin-bottom:6px">⚠️ Con tarja pero sin fila en la planilla: ${R.sinPlanilla.map(escA).join(', ')}</div>` : ''}
     <div class="cultivos-label">Por cultivo / frutal (centro de costo)</div><div style="overflow-x:auto"><table style="width:100%;min-width:0;font-size:12px;border-collapse:collapse">${cab}<tbody>${R.centros.map(c => filaC(c, totD)).join('')}</tbody></table></div>
     <div class="cultivos-label" style="margin-top:10px">Por labor</div><div style="overflow-x:auto"><table style="width:100%;min-width:0;font-size:12px;border-collapse:collapse">${cab}<tbody>${R.labores.map(c => filaC(c, totD)).join('')}</tbody></table></div>
-    <div class="cultivos-label" style="margin-top:10px">Por trabajador</div><div style="overflow-x:auto"><table style="width:100%;min-width:0;font-size:12px;border-collapse:collapse"><thead><tr><th style="text-align:left;padding:4px">Trabajador</th><th style="text-align:right;padding:4px">Líquido</th><th style="text-align:right;padding:4px">Costo empresa</th><th style="text-align:right;padding:4px">Diferencia</th><th style="text-align:right;padding:4px">Días tarja</th><th style="text-align:right;padding:4px">Perm. / Faltas</th><th style="text-align:right;padding:4px">H. extra</th></tr></thead><tbody>${filasHtml}</tbody></table></div>
+    <div class="cultivos-label" style="margin-top:10px">Por trabajador</div><div style="overflow-x:auto"><table style="width:100%;min-width:0;font-size:12px;border-collapse:collapse"><thead><tr><th style="text-align:left;padding:4px">Trabajador</th><th style="text-align:right;padding:4px">Líquido</th><th style="text-align:right;padding:4px">Costo empresa</th><th style="text-align:right;padding:4px">Diferencia</th><th style="text-align:right;padding:4px">Días tarja</th><th style="text-align:right;padding:4px">Perm. / Faltas / Vac.</th><th style="text-align:right;padding:4px">H. extra</th></tr></thead><tbody>${filasHtml}</tbody></table></div>
     <div style="font-size:11px;color:var(--acero);margin-top:6px">Cada trabajador: su costo empresa se reparte por los días de su tarja (un día con varios centros se divide según sus %) más las horas extra anotadas (horas ÷ jornada). Si la planilla trae el monto de horas extra, ese monto va a los centros donde hizo las horas extra y el resto por días. Líquido por centro = proporcional al costo.<br>🏢 <b>General</b> (Eduardo, Camila, Nicolás y JC): sin labor propia; su costo se divide en partes iguales entre los días con tarja y cada día se reparte según los cultivos y labores que trabajó el resto ese día.</div>`;
   const b = document.getElementById('sue-guardar'), x = document.getElementById('sue-excel'); if (b) b.disabled = false; if (x) x.disabled = false;
 }
@@ -5655,7 +5656,7 @@ window.sueGuardar = async function() {
 window.sueExcel = function() {
   if (!SUE || !SUE.res || typeof XLSX === 'undefined') return;
   const R = SUE.res, wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(R.filas.map(f => ({ Planilla: f.nombre, Trabajador: f.trabajador, 'Líquido a pagar': f.liquido, 'Costo empresa': f.costo, Diferencia: f.dif, 'Días tarja': f.diasTarja, Permisos: f.permisos, Faltas: f.faltas, 'H. extra tarja': Math.round(f.heTarja * 10) / 10, 'H. extra pagadas': f.heHoras, '$ H. extra planilla': f.heMonto, Estado: f.estado }))), 'Trabajadores');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(R.filas.map(f => ({ Planilla: f.nombre, Trabajador: f.trabajador, 'Líquido a pagar': f.liquido, 'Costo empresa': f.costo, Diferencia: f.dif, 'Días tarja': f.diasTarja, Permisos: f.permisos, Faltas: f.faltas, Vacaciones: f.vacaciones, 'H. extra tarja': Math.round(f.heTarja * 10) / 10, 'H. extra pagadas': f.heHoras, '$ H. extra planilla': f.heMonto, Estado: f.estado }))), 'Trabajadores');
   const hoja = (arr, n) => XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(arr.map(c => ({ Nombre: c.nombre, 'Costo empresa': Math.round(c.monto), 'Líquido': Math.round(c.liquido), Días: Math.round(c.dias * 10) / 10, 'H. extra': Math.round(c.he * 10) / 10, '$ H. extra': Math.round(c.heMonto) }))), n);
   hoja(R.centros, 'Por centro'); hoja(R.labores, 'Por labor');
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(R.filas.flatMap(f => f.dist.map(a => ({ Trabajador: f.trabajador, Centro: a.centro, Labor: a.labor, 'Costo empresa': Math.round(a.monto), Días: Math.round(a.dias * 10) / 10, 'H. extra': Math.round(a.he * 10) / 10 })))), 'Detalle');
@@ -5700,7 +5701,7 @@ function wzCargarTrabajador() {
   if (WZ.i >= WZ.cola.length) { wzRenderFin(); return; }
   const trab = WZ.cola[WZ.i];
   const prev = asistenciaRegistros.filter(r => r.trabajador === trab).sort((a, b) => (b.fecha || '').localeCompare(a.fecha || '') || (b.ts || 0) - (a.ts || 0));
-  const ultLabor = prev.find(r => r.labor);
+  const ultLabor = prev.find(r => r.labor && (!r.estado || r.estado === 'presente'));
   const ultCentro = prev.find(r => r.centro_costo && r.centro_origen !== 'combustible');
   const ultMaq = prev.find(r => r.maquinaria);
   const c = WZ.comb[trab];
@@ -5712,7 +5713,8 @@ function wzCargarTrabajador() {
     centroCambiar: !c && !ultCentro,
     labor: ultLabor ? ultLabor.labor : '', laborDe: ultLabor ? ultLabor.fecha : '', laborCambiar: !ultLabor,
     maq: maqComb || (ultMaq ? ultMaq.maquinaria : ''), maqModo: maqComb ? 'comb' : (ultMaq ? 'prev' : ''), maqCambiar: false,
-    recientes: recientesAsist(trab, WZ.fecha), verRec: false, estado: 'presente', motivo: ''
+    recientes: recientesAsist(trab, WZ.fecha), verRec: false, estado: 'presente', motivo: '',
+    detalle: ultLabor ? (ultLabor.labor_detalle || '') : '', detalleCambiar: false
   };
   { const h1 = document.getElementById('wiz-hreg'), h2 = document.getElementById('wiz-htrab'); if (h1) h1.value = ''; if (h2) h2.value = ''; } // las horas no pasan al siguiente trabajador
   wzRender();
@@ -5772,8 +5774,9 @@ window.wzRender = function() {
     }
     maqHtml = `<div class="field"><label>Maquinaria</label>${inner}</div>`;
   }
+  const detHtml = cur.labor ? `<div class="field"><label>🔎 Detalle de la labor (opcional)</label>${cur.detalle && !cur.detalleCambiar ? `<div style="padding:10px;background:#ECFDF5;border:1px solid #6EE7B7;border-radius:8px">✓ <b>${escA(cur.detalle)}</b> <button type="button" style="${WZ_SMALL}" onclick="WZ.cur.detalleCambiar=true;wzRender()">Cambiar</button> <button type="button" style="${WZ_SMALL}" onclick="WZ.cur.detalle='';WZ.cur.detalleCambiar=false;wzRender()">Quitar</button></div>` : `<input type="text" id="wiz-det-q" autocomplete="off" placeholder="Escribe o busca el detalle…" oninput="wzDetFiltrar()" onkeydown="if(event.key==='Enter'){event.preventDefault();wzDetOk()}"><div id="wiz-det-lista" style="margin-top:4px"></div>`}</div>` : '';
   const rec = cur.recientes || [];
-  const txtRec = x => [x.centro || x.centroComb ? puntosTexto(x.centro || x.centroComb) : '', x.labor ? escA(x.labor) : '', x.maq ? '🚜 ' + escA(x.maq) : ''].filter(Boolean).join(' · ');
+  const txtRec = x => [x.centro || x.centroComb ? puntosTexto(x.centro || x.centroComb) : '', x.labor ? escA(x.labor) + (x.detalle ? ' › ' + escA(x.detalle) : '') : '', x.maq ? '🚜 ' + escA(x.maq) : ''].filter(Boolean).join(' · ');
   const recHtml = rec.length ? `<div style="padding:10px;background:#FEF9C3;border:1px solid #FDE047;border-radius:8px;margin-bottom:12px">
       <div style="font-size:12px;color:#6B7280">Lo último que hizo (${fechaBonita(rec[0].fecha)}):</div>
       <div style="font-size:14px;margin:4px 0 6px"><b>${txtRec(rec[0])}</b></div>
@@ -5792,7 +5795,7 @@ window.wzRender = function() {
     </div>
     <div style="height:6px;background:#E5E7EB;border-radius:4px;margin-bottom:14px"><div style="height:6px;width:${Math.round(WZ.i / WZ.total * 100)}%;background:#16A34A;border-radius:4px"></div></div>
     <div style="font-size:22px;font-weight:700;margin-bottom:10px">${escA(cur.trab)}</div>
-    <div style="display:flex;gap:6px;margin-bottom:12px">${[['presente', '✅ Trabajó', '#16A34A'], ['permiso', '📝 Permiso', '#2563EB'], ['falta', '❌ Falta', '#DC2626']].map(([k, t, col]) => `<button type="button" style="flex:1;padding:10px 4px;border-radius:8px;border:2px solid ${cur.estado === k ? col : '#D1D5DB'};background:${cur.estado === k ? col : '#fff'};color:${cur.estado === k ? '#fff' : '#111'};font-size:14px;font-weight:600;cursor:pointer" onclick="wzEstado('${k}')">${t}</button>`).join('')}</div>
+    ${botonesEstadoAsist(cur.estado, 'wzEstado')}
     ${cur.estado !== 'presente' ? `<div class="field"><label>${cur.estado === 'permiso' ? 'Motivo del permiso (opcional)' : 'Observación (opcional)'}</label><input type="text" id="wiz-motivo" value="${escA(cur.motivo || '')}" placeholder="${cur.estado === 'permiso' ? 'Ej: trámite, salud, con goce / sin goce' : 'Ej: avisó, sin aviso'}"></div>` : `    <div style="padding:10px;background:#F0F9FF;border:1px solid #BAE6FD;border-radius:8px;margin-bottom:12px">
       <div class="grid-2" style="margin-bottom:4px">
         <div class="field" style="margin:0"><label>⏱️ Horas extra aprox. del día (si trabajó)</label><input type="number" id="wiz-hreg" min="0" step="0.5" inputmode="decimal" placeholder="0" value="${escA(hr)}"></div>
@@ -5803,12 +5806,29 @@ window.wzRender = function() {
     ${recHtml}
     <div class="field"><label>Cultivo / frutal (centro de costo)</label>${centroHtml}</div>
     <div class="field"><label>Labor del día</label>${laborHtml}</div>
+    ${detHtml}
     ${maqHtml}`}
     <button type="button" class="btn btn-verde btn-full" onclick="wzGuardar()">✓ Guardar y siguiente</button>
     <div style="display:flex;gap:8px;margin-top:8px">
       <button type="button" class="btn" style="flex:1" onclick="wzSaltar()">Saltar →</button>
       <button type="button" class="btn" style="flex:1" onclick="wzTerminar()">Terminar</button>
     </div></div>`;
+  wzDetFiltrar();
+}
+window.wzDetFiltrar = function() {
+  const q = document.getElementById('wiz-det-q'), box = document.getElementById('wiz-det-lista'); if (!q || !box || !WZ || !WZ.cur) return;
+  const nq = normNom(q.value), toks = nq ? nq.split(' ') : [], propios = detallesDeLabor(WZ.cur.labor);
+  const otros = nq ? todosDetalles().filter(d => !propios.some(p => normNom(p) === normNom(d))) : [];
+  WZ.detOpts = [...propios, ...otros].filter(d => toks.every(t => normNom(d).includes(t))).slice(0, 14);
+  const exacto = nq && [...propios, ...otros].some(d => normNom(d) === nq);
+  box.innerHTML = WZ.detOpts.map((d, i) => `<button type="button" style="${WZ_SMALL}" onclick="wzDet(${i})">${escA(d)}</button>`).join('')
+    + (q.value.trim() && !exacto ? `<button type="button" style="${WZ_SMALL};border-style:dashed" onclick="wzDetOk()">＋ Agregar «${escA(q.value.trim())}»</button>` : '')
+    + (!WZ.detOpts.length && !q.value.trim() ? '<div style="font-size:12px;color:#9CA3AF">Aún no hay detalles para esta labor: escribe el primero.</div>' : '');
+}
+window.wzDet = function(i) { const d = (WZ.detOpts || [])[i]; if (!d) return; WZ.cur.detalle = d; WZ.cur.detalleCambiar = false; wzRender(); }
+window.wzDetOk = function() {
+  const q = document.getElementById('wiz-det-q'), v = ((q && q.value) || '').trim(); if (!v || !WZ.cur.labor) return;
+  const d = detalleCoincidente(WZ.cur.labor, v); WZ.cur.detalle = d; WZ.cur.detalleCambiar = false; agregarDetalleLabor(WZ.cur.labor, d); wzRender();
 }
 window.wzEstado = function(k) { if (!WZ || !WZ.cur) return; const m = document.getElementById('wiz-motivo'); if (m) WZ.cur.motivo = m.value; WZ.cur.estado = k; wzRender(); }
 window.wzCentroComb = function() { WZ.cur.centroModo = 'comb'; WZ.cur.centroCambiar = false; wzRender(); }
@@ -5818,7 +5838,7 @@ window.wzReciente = function(i, guardar) {
   const c = WZ.comb[cur.trab];
   if (x.centro) { cur.centro = x.centro; if (!c) { cur.centroModo = 'prev'; cur.centroCambiar = false; } }
   else if (!c && !cur.centro) cur.centroCambiar = true;
-  if (x.labor) { cur.labor = x.labor; cur.laborDe = x.fecha; cur.laborCambiar = false; }
+  if (x.labor) { cur.labor = x.labor; cur.laborDe = x.fecha; cur.laborCambiar = false; cur.detalle = x.detalle || ''; cur.detalleCambiar = false; }
   if (!(c && c.equipos && c.equipos.length)) { cur.maq = x.maq || ''; cur.maqModo = x.maq ? 'prev' : ''; cur.maqCambiar = false; }
   if (guardar) { if (!cur.labor) { toast('Esa fila no tiene labor: elígela primero', false); wzRender(); return; } wzGuardar(); }
   else wzRender();
@@ -5827,6 +5847,7 @@ window.wzLabor = function(i) {
   const v = i >= 0 ? (WZ.opts[i] || '') : (document.getElementById('wiz-labor-otra')?.value || '').trim();
   if (!v) return;
   if (i < 0) agregarLaborAsistencia(v);
+  if (WZ.cur.labor !== v) { WZ.cur.detalle = ''; WZ.cur.detalleCambiar = false; }
   WZ.cur.labor = v; WZ.cur.laborDe = ''; WZ.cur.laborCambiar = false; wzRender();
 }
 window.wzMaq = function(i) {
@@ -5840,9 +5861,11 @@ window.wzGuardar = async function() {
   const usaComb = !aus && cur.centroModo === 'comb' && c;
   const centro = aus ? '' : (usaComb ? c.texto : (cur.centro || ''));
   const aplicaMaq = !aus && !/riego/i.test(cur.labor || '');
+  let det = aus ? null : (cur.detalle || null);
+  if (!aus && !det && cur.labor) { const qd = document.getElementById('wiz-det-q'), vd = ((qd && qd.value) || '').trim(); if (vd) { det = detalleCoincidente(cur.labor, vd); agregarDetalleLabor(cur.labor, det); } }
   try {
     await addDoc(collection(db, 'asistencia'), {
-      trabajador: cur.trab, fecha: WZ.fecha, estado: aus ? cur.estado : 'presente', centro_costo: centro || null, labor: aus ? null : (cur.labor || null),
+      trabajador: cur.trab, fecha: WZ.fecha, estado: aus ? cur.estado : 'presente', centro_costo: centro || null, labor: aus ? null : (cur.labor || null), labor_detalle: det,
       maquinaria: aplicaMaq && cur.maq ? cur.maq : null,
       centro_origen: usaComb ? 'combustible' : null,
       centros_dist: usaComb ? c.lista : null,
@@ -5919,6 +5942,32 @@ function laborAnteriorDe(trab, fecha) {
     .filter(r => r.trabajador === trab && r.labor && r.fecha < fecha)
     .sort((a, b) => (b.fecha || '').localeCompare(a.fecha || '') || (b.ts || 0) - (a.ts || 0))[0] || null;
 }
+// Detalle de la labor (opcional): lista específica que va creciendo; se escribe o busca para que coincida la forma de escribirlo
+function detallesDeLabor(labor) {
+  const cnt = {};
+  asistenciaRegistros.forEach(r => { if (r.labor_detalle && r.labor === labor) cnt[r.labor_detalle] = (cnt[r.labor_detalle] || 0) + 1; });
+  const out = Object.entries(cnt).sort((a, b) => b[1] - a[1]).map(x => x[0]);
+  ((config.detallesLabor || {})[labor] || []).forEach(d => { if (!out.some(o => normNom(o) === normNom(d))) out.push(d); });
+  return out;
+}
+function todosDetalles() {
+  const cnt = {};
+  asistenciaRegistros.forEach(r => { if (r.labor_detalle) cnt[r.labor_detalle] = (cnt[r.labor_detalle] || 0) + 1; });
+  const out = Object.entries(cnt).sort((a, b) => b[1] - a[1]).map(x => x[0]);
+  Object.values(config.detallesLabor || {}).flat().forEach(d => { if (!out.some(o => normNom(o) === normNom(d))) out.push(d); });
+  return out;
+}
+function detalleCoincidente(labor, v) { const n = normNom(v); return [...detallesDeLabor(labor), ...todosDetalles()].find(d => normNom(d) === n) || String(v).trim(); }
+async function agregarDetalleLabor(labor, det) {
+  if (!labor || !det) return;
+  const m = { ...(config.detallesLabor || {}) }, l = m[labor] ? [...m[labor]] : [];
+  if (l.some(x => normNom(x) === normNom(det))) return;
+  l.push(det); m[labor] = l; config.detallesLabor = m;
+  try { await setDoc(doc(db, 'config', 'datos'), { detallesLabor: m }, { merge: true }); toast('✓ Detalle "' + det + '" agregado a ' + labor, true); }
+  catch (e) { console.warn('detalle labor', e); }
+}
+const ESTADOS_ASIST = { presente: ['✅ Trabajó', '#16A34A'], permiso: ['📝 Permiso', '#2563EB'], falta: ['❌ Falta', '#DC2626'], vacaciones: ['🏖️ Vacaciones', '#D97706'] };
+const botonesEstadoAsist = (actual, fn, extra) => '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">' + Object.entries(ESTADOS_ASIST).map(([k, [t, col]]) => `<button type="button" ${extra || ''} data-k="${k}" style="flex:1 1 40%;padding:10px 4px;border-radius:8px;border:2px solid ${actual === k ? col : '#D1D5DB'};background:${actual === k ? col : '#fff'};color:${actual === k ? '#fff' : '#111'};font-size:13px;font-weight:600;cursor:pointer" onclick="${fn}('${k}')">${t}</button>`).join('') + '</div>';
 // Labores que se fueron agregando a mano desde Asistencia (quedan guardadas para todos)
 const laboresAsistExtra = () => (config.laboresAsistencia || []).filter(x => typeof x === 'string' && x.trim());
 function laboresBaseAsist() {
@@ -5935,13 +5984,13 @@ async function agregarLaborAsistencia(v) {
 // Últimas 10 combinaciones distintas (cultivo/centro · labor · maquinaria) del trabajador, la más reciente primero
 function recientesAsist(trab, fecha) {
   const vistos = new Set(), out = [];
-  asistenciaRegistros.filter(r => r.trabajador === trab && r.fecha !== fecha && (r.labor || r.centro_costo))
+  asistenciaRegistros.filter(r => r.trabajador === trab && r.fecha !== fecha && (!r.estado || r.estado === 'presente') && (r.labor || r.centro_costo))
     .sort((a, b) => (b.fecha || '').localeCompare(a.fecha || '') || (b.ts || 0) - (a.ts || 0))
     .forEach(r => {
-      const comb = r.centro_origen === 'combustible', k = (comb ? '' : (r.centro_costo || '')) + '|' + (r.labor || '') + '|' + (r.maquinaria || '');
+      const comb = r.centro_origen === 'combustible', k = (comb ? '' : (r.centro_costo || '')) + '|' + (r.labor || '') + '|' + (r.labor_detalle || '') + '|' + (r.maquinaria || '');
       if (vistos.has(k) || out.length >= 10) return;
       vistos.add(k);
-      out.push({ fecha: r.fecha, centro: comb ? '' : (r.centro_costo || ''), centroComb: comb ? (r.centro_costo || '') : '', labor: r.labor || '', maq: r.maquinaria || '' });
+      out.push({ fecha: r.fecha, centro: comb ? '' : (r.centro_costo || ''), centroComb: comb ? (r.centro_costo || '') : '', labor: r.labor || '', detalle: r.labor_detalle || '', maq: r.maquinaria || '' });
     });
   return out;
 }
@@ -6002,6 +6051,11 @@ window.elegirLaborAsistencia = function(i) {
   asistLaborSel = v; asistLaborCambiar = false; renderLaborAsistencia();
 }
 
+window.asistDetSugerir = function() {
+  const dl = document.getElementById('asistencia-detalles'); if (!dl) return;
+  const l = asistLaborSel || '', lista = l ? [...detallesDeLabor(l), ...todosDetalles().filter(d => !detallesDeLabor(l).some(x => normNom(x) === normNom(d)))] : todosDetalles();
+  dl.innerHTML = lista.slice(0, 60).map(d => `<option value="${escA(d)}">`).join('');
+}
 window.registrarAsistencia = async function() {
   const trabajador = document.getElementById('asistencia-trabajador').value;
   const fecha = document.getElementById('asistencia-fecha').value;
@@ -6011,12 +6065,15 @@ window.registrarAsistencia = async function() {
   const obs = document.getElementById('asistencia-obs').value.trim();
   if (!trabajador || !fecha) { toast('Selecciona trabajador y fecha', false); return; }
   const estadoInd = document.getElementById('asistencia-estado')?.value || 'presente';
+  const detInd = estadoInd === 'presente' ? ((document.getElementById('asistencia-detalle')?.value || '').trim()) : '';
+  const detFinal = detInd ? detalleCoincidente(asistLaborSel, detInd) : null;
+  if (detFinal && asistLaborSel) agregarDetalleLabor(asistLaborSel, detFinal);
   if (estadoInd === 'presente' && horasTrab === '' && horasReg === '') { toast('Ingresa al menos un valor de horas extra', false); return; }
   const btn = document.getElementById('btn-registrar-asistencia');
   btn.disabled = true; btn.textContent = 'Guardando...';
   try {
     await addDoc(collection(db, 'asistencia'), {
-      trabajador, fecha, estado: estadoInd, centro_costo: estadoInd === 'presente' ? (centro || null) : null, labor: estadoInd === 'presente' ? (asistLaborSel || null) : null,
+      trabajador, fecha, estado: estadoInd, centro_costo: estadoInd === 'presente' ? (centro || null) : null, labor: estadoInd === 'presente' ? (asistLaborSel || null) : null, labor_detalle: detFinal,
       centro_origen: (asistCentroUsaComb && asistCentroComb) ? 'combustible' : null,
       centros_dist: (asistCentroUsaComb && asistCentroComb) ? asistCentroComb.lista.map(x => ({ centro: x.centro, pct: x.pct })) : null,
       horas_trabajador: horasTrab !== '' ? parseFloat(horasTrab) : null,
@@ -6025,7 +6082,7 @@ window.registrarAsistencia = async function() {
     });
     document.getElementById('asistencia-horas-trabajador').value = '';
     document.getElementById('asistencia-horas-registro').value = '';
-    document.getElementById('asistencia-obs').value = ''; { const se = document.getElementById('asistencia-estado'); if (se) se.value = 'presente'; }
+    document.getElementById('asistencia-obs').value = ''; { const se = document.getElementById('asistencia-estado'); if (se) se.value = 'presente'; const sd = document.getElementById('asistencia-detalle'); if (sd) sd.value = ''; }
     asistLaborSel = ''; asistLaborCambiar = false; renderLaborAsistencia(); cargarCentroCombAsistencia();
     toast('✓ Registro de asistencia guardado', true);
   } catch(e) { toast('Error: ' + e.message, false); }
@@ -6040,9 +6097,9 @@ window.renderTablaAsistencia = function() {
   let data = [...asistenciaRegistros].filter(r => r.ts >= corte);
   if (fTrab) data = data.filter(r => r.trabajador === fTrab);
 
-  let sumaTrab = 0, sumaReg = 0, pendientes = 0, sumaTrabC = 0, sumaRegC = 0, nPerm = 0, nFalta = 0;
+  let sumaTrab = 0, sumaReg = 0, pendientes = 0, sumaTrabC = 0, sumaRegC = 0, nPerm = 0, nFalta = 0, nVac = 0;
   data.forEach(r => {
-    if (r.estado === 'permiso') nPerm++; else if (r.estado === 'falta') nFalta++;
+    if (r.estado === 'permiso') nPerm++; else if (r.estado === 'falta') nFalta++; else if (r.estado === 'vacaciones') nVac++;
     sumaTrab += r.horas_trabajador || 0; sumaReg += r.horas_registro || 0;
     if (r.horas_trabajador == null && (!r.estado || r.estado === 'presente')) pendientes++;
     else { sumaTrabC += r.horas_trabajador || 0; sumaRegC += r.horas_registro || 0; }
@@ -6053,7 +6110,7 @@ window.renderTablaAsistencia = function() {
     <div class="stat-card"><div class="stat-label">Horas extra (trabajador)</div><div class="stat-value">${sumaTrab.toFixed(1)}<span>hr</span></div></div>
     <div class="stat-card"><div class="stat-label">Horas extra (registro)</div><div class="stat-value">${sumaReg.toFixed(1)}<span>hr</span></div></div>
     <div class="stat-card"><div class="stat-label">Diferencia${pendientes?' (sin pendientes)':''}</div><div class="stat-value" style="color:${dif>0.5?'var(--rojo)':'var(--verde)'}">${dif.toFixed(1)}<span>hr</span></div></div>
-    ${nPerm || nFalta ? `<div class="stat-card"><div class="stat-label">Permisos / Faltas</div><div class="stat-value">${nPerm} / <span style="color:var(--rojo)">${nFalta}</span></div></div>` : ''}
+    ${nPerm || nFalta || nVac ? `<div class="stat-card"><div class="stat-label">Permisos / Faltas / Vacac.</div><div class="stat-value">${nPerm} / <span style="color:var(--rojo)">${nFalta}</span> / <span style="color:#D97706">${nVac}</span></div></div>` : ''}
     ${pendientes?`<div class="stat-card"><div class="stat-label">Pendientes del trabajador</div><div class="stat-value" style="color:#B45309">${pendientes}</div></div>`:''}`;
 
   const cont = document.getElementById('asistencia-tabla-container');
@@ -6068,9 +6125,9 @@ window.renderTablaAsistencia = function() {
       return `<tr ${filaAlerta?'style="background:#FFF5F5"':''}>
         <td class="td-mono">${r.fecha}</td>
         <td><strong>${r.trabajador}</strong></td>
-        <td style="font-size:12px">${r.estado === 'permiso' ? '<b style="color:#2563EB">📝 Permiso</b>' : r.estado === 'falta' ? '<b style="color:#DC2626">❌ Falta</b>' : ''}${r.labor ? escA(r.labor) : (r.estado === 'permiso' || r.estado === 'falta' ? '' : '—')}${r.maquinaria ? '<br><span style="color:#6B7280">🚜 ' + escA(r.maquinaria) + '</span>' : ''}</td>
+        <td style="font-size:12px">${r.estado && r.estado !== 'presente' && ESTADOS_ASIST[r.estado] ? `<b style="color:${ESTADOS_ASIST[r.estado][1]}">${ESTADOS_ASIST[r.estado][0]}</b>` : ''}${r.labor ? escA(r.labor) + (r.labor_detalle ? '<br><span style="color:#6B7280">› ' + escA(r.labor_detalle) + '</span>' : '') : (r.estado && r.estado !== 'presente' ? '' : '—')}${r.maquinaria ? '<br><span style="color:#6B7280">🚜 ' + escA(r.maquinaria) + '</span>' : ''}</td>
         <td style="font-size:12px">${r.centro_origen === 'combustible' ? '⛽ ' : ''}${r.centro_costo ? puntosTexto(r.centro_costo) : '—'}</td>
-        <td class="td-mono">${ht != null ? ht.toFixed(1)+' hr' : (r.estado === 'permiso' || r.estado === 'falta' ? '—' : '<span style="color:#B45309;font-weight:600">⏳ Pendiente</span>')}</td>
+        <td class="td-mono">${ht != null ? ht.toFixed(1)+' hr' : (r.estado && r.estado !== 'presente' ? '—' : '<span style="color:#B45309;font-weight:600">⏳ Pendiente</span>')}</td>
         <td class="td-mono">${hr != null ? hr.toFixed(1)+' hr' : '—'}</td>
         <td class="td-mono" style="color:${filaAlerta?'var(--rojo)':'inherit'};font-weight:${filaAlerta?'600':'400'}">${difFila != null ? (filaAlerta?'⚠️ ':'')+difFila.toFixed(1)+' hr' : '—'}</td>
         <td style="font-size:12px;color:#6B7280">${r.obs || '—'}</td>
@@ -6093,11 +6150,12 @@ window.editarAsistencia = function(id) {
   ov.dataset.id = id;
   ov.innerHTML = `<div style="background:var(--blanco,#fff);border-radius:12px;max-width:480px;width:100%;padding:16px;margin:auto">
     <div class="panel-title">✏️ ${escA(r.trabajador)} · ${fechaBonita(r.fecha)}</div>
-    <div style="display:flex;gap:6px;margin-bottom:10px">${[['presente', '✅ Trabajó', '#16A34A'], ['permiso', '📝 Permiso', '#2563EB'], ['falta', '❌ Falta', '#DC2626']].map(([k, t, col]) => `<button type="button" data-k="${k}" style="flex:1;padding:10px 4px;border-radius:8px;border:2px solid ${est === k ? col : '#D1D5DB'};background:${est === k ? col : '#fff'};color:${est === k ? '#fff' : '#111'};font-size:14px;font-weight:600;cursor:pointer" onclick="editAsistEstado('${k}')">${t}</button>`).join('')}</div>
+    ${botonesEstadoAsist(est, 'editAsistEstado')}
     <input type="hidden" id="ea-estado" value="${est}">
     <div id="ea-trabajo">
       <div class="field"><label>Cultivo / frutal (centro de costo)</label><div class="select-wrapper"><select id="ea-centro"><option value="">— sin centro —</option>${actual ? `<option value="__actual" selected>${escA(actual)} (actual)</option>` : ''}${centros.map(c => `<option value="${escA(c)}" ${r.centro_costo === c ? 'selected' : ''}>${escA(c)}</option>`).join('')}</select></div></div>
-      <div class="field"><label>Labor</label><input type="text" id="ea-labor" list="ea-labores" value="${escA(r.labor || '')}" placeholder="Elige o escribe una nueva"><datalist id="ea-labores">${labores.map(l => `<option value="${escA(l)}">`).join('')}</datalist></div>
+      <div class="field"><label>Labor</label><input type="text" id="ea-labor" list="ea-labores" value="${escA(r.labor || '')}" placeholder="Elige o escribe una nueva" oninput="editAsistDetalles()"><datalist id="ea-labores">${labores.map(l => `<option value="${escA(l)}">`).join('')}</datalist></div>
+      <div class="field"><label>Detalle de la labor (opcional)</label><input type="text" id="ea-detalle" list="ea-detalles" autocomplete="off" value="${escA(r.labor_detalle || '')}" placeholder="Escribe o elige"><datalist id="ea-detalles"></datalist></div>
       <div class="field"><label>Maquinaria</label><div class="select-wrapper"><select id="ea-maq"><option value="">Sin maquinaria</option>${[...new Set([r.maquinaria, ...(config.equipos || [])].filter(x => x && x !== 'Otro (especificar)'))].map(e => `<option value="${escA(e)}" ${r.maquinaria === e ? 'selected' : ''}>${escA(e)}</option>`).join('')}</select></div></div>
       <div class="grid-2">
         <div class="field"><label>Horas extra aprox.</label><input type="number" id="ea-hreg" min="0" step="0.5" inputmode="decimal" value="${r.horas_registro != null ? r.horas_registro : ''}"></div>
@@ -6108,15 +6166,20 @@ window.editarAsistencia = function(id) {
     <div style="display:flex;gap:8px;margin-top:10px">
       <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="document.getElementById('modal-edit-asist').remove()">Cancelar</button>
       <button class="btn btn-verde" style="flex:1" onclick="guardarEditAsistencia()">💾 Guardar</button></div></div>`;
-  editAsistEstado(est);
+  editAsistEstado(est); editAsistDetalles();
+}
+window.editAsistDetalles = function() {
+  const dl = document.getElementById('ea-detalles'), l = (document.getElementById('ea-labor')?.value || '').trim(); if (!dl) return;
+  const own = detallesDeLabor(l), lista = [...own, ...todosDetalles().filter(d => !own.some(x => normNom(x) === normNom(d)))];
+  dl.innerHTML = lista.slice(0, 60).map(d => `<option value="${escA(d)}">`).join('');
 }
 window.editAsistEstado = function(k) {
   const ov = document.getElementById('modal-edit-asist'); if (!ov) return;
   document.getElementById('ea-estado').value = k;
-  const cols = { presente: '#16A34A', permiso: '#2563EB', falta: '#DC2626' };
+  const cols = Object.fromEntries(Object.entries(ESTADOS_ASIST).map(([a, b]) => [a, b[1]]));
   ov.querySelectorAll('button[data-k]').forEach(b => { const on = b.dataset.k === k; b.style.borderColor = on ? cols[k] : '#D1D5DB'; b.style.background = on ? cols[k] : '#fff'; b.style.color = on ? '#fff' : '#111'; });
   document.getElementById('ea-trabajo').style.display = k === 'presente' ? '' : 'none';
-  document.getElementById('ea-obs-l').textContent = k === 'permiso' ? 'Motivo del permiso (opcional)' : k === 'falta' ? 'Observación (opcional)' : 'Observación';
+  document.getElementById('ea-obs-l').textContent = k === 'permiso' ? 'Motivo del permiso (opcional)' : k === 'presente' ? 'Observación' : 'Observación (opcional)';
 }
 window.guardarEditAsistencia = async function() {
   const ov = document.getElementById('modal-edit-asist'); if (!ov) return;
@@ -6127,9 +6190,10 @@ window.guardarEditAsistencia = async function() {
     const cs = document.getElementById('ea-centro').value, labor = document.getElementById('ea-labor').value.trim();
     cambios.horas_trabajador = num(document.getElementById('ea-htrab').value); cambios.horas_registro = num(document.getElementById('ea-hreg').value) ?? 0;
     cambios.labor = labor || null; cambios.maquinaria = document.getElementById('ea-maq').value || null;
+    { const dv = (document.getElementById('ea-detalle').value || '').trim(), dd = dv && labor ? detalleCoincidente(labor, dv) : null; cambios.labor_detalle = dd; if (dd) agregarDetalleLabor(labor, dd); }
     if (cs !== '__actual') { cambios.centro_costo = cs || null; if ((cs || null) !== (r.centro_costo || null)) { cambios.centro_origen = null; cambios.centros_dist = null; } }
     if (labor) agregarLaborAsistencia(labor);
-  } else { Object.assign(cambios, { centro_costo: null, centro_origen: null, centros_dist: null, labor: null, maquinaria: null, horas_trabajador: null, horas_registro: 0 }); }
+  } else { Object.assign(cambios, { centro_costo: null, centro_origen: null, centros_dist: null, labor: null, labor_detalle: null, maquinaria: null, horas_trabajador: null, horas_registro: 0 }); }
   try { await updateDoc(doc(db, 'asistencia', id), cambios); ov.remove(); toast('✓ Registro actualizado', true); }
   catch (e) { toast('Error: ' + e.message, false); }
 }
@@ -14524,11 +14588,15 @@ tbody td{padding:10px 12px;vertical-align:middle;}
           <div id="asistencia-labor-wrap"></div>
         </div>
         <div class="field">
+          <label>Detalle de la labor (opcional)</label>
+          <input type="text" id="asistencia-detalle" list="asistencia-detalles" autocomplete="off" placeholder="Escribe o elige" onfocus="asistDetSugerir()" oninput="asistDetSugerir()"><datalist id="asistencia-detalles"></datalist>
+        </div>
+        <div class="field">
           <label>Centro de costo</label>
           <div id="asistencia-centro-comb"></div>
           <div class="select-wrapper"><select id="asistencia-centro" onchange="asistCentroUsaComb=false;renderCentroCombAsistencia()"></select></div>
         </div>
-        <div class="field"><label>Asistencia</label><div class="select-wrapper"><select id="asistencia-estado"><option value="presente">✅ Trabajó</option><option value="permiso">📝 Permiso</option><option value="falta">❌ Falta</option></select></div></div>
+        <div class="field"><label>Asistencia</label><div class="select-wrapper"><select id="asistencia-estado"><option value="presente">✅ Trabajó</option><option value="permiso">📝 Permiso</option><option value="falta">❌ Falta</option><option value="vacaciones">🏖️ Vacaciones</option></select></div></div>
         <div class="grid-2">
           <div class="field"><label>Horas extra según el trabajador (puede quedar pendiente)</label><input type="number" id="asistencia-horas-trabajador" min="0" step="0.1" placeholder="Vacío = pendiente"></div>
           <div class="field"><label>Horas extra según tu registro</label><input type="number" id="asistencia-horas-registro" min="0" step="0.1" placeholder="Ej: 1.5"></div>
