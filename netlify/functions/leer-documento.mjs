@@ -77,6 +77,49 @@ Extrae UNA fila por trabajador con su nombre, RUT, costo total empresa, total ha
 Reglas: no inventes cifras; omite lo que no se vea y explícalo en "observaciones". Los montos van en pesos chilenos como número entero (sin puntos de miles). No sumes ni agregues una fila de totales.
 Responde solo usando la herramienta registrar_remuneraciones.`;
 
+const HERRAMIENTA_ELECTRICA = {
+  name: 'registrar_factura_electrica',
+  description: 'Registra los datos leídos de una boleta o factura de electricidad chilena (distribuidora, por ejemplo Copelec).',
+  input_schema: {
+    type: 'object',
+    properties: {
+      legible: { type: 'boolean' },
+      empresa: { type: 'string', description: 'Distribuidora que emite (ej. Copelec)' },
+      numero_cliente: { type: 'string', description: 'Número de cliente / suministro tal como figura' },
+      numero_medidor: { type: 'string' },
+      nombre_cliente: { type: 'string' },
+      direccion: { type: 'string' },
+      tarifa: { type: 'string', description: 'Tarifa contratada (BT1, BT2, BT3, AT2, AT3, etc.), si figura' },
+      numero_documento: { type: 'string', description: 'Folio de la boleta o factura' },
+      fecha_emision: { type: 'string', description: 'AAAA-MM-DD' },
+      fecha_vencimiento: { type: 'string', description: 'AAAA-MM-DD' },
+      periodo_desde: { type: 'string', description: 'Inicio del período facturado AAAA-MM-DD (fecha de lectura anterior)' },
+      periodo_hasta: { type: 'string', description: 'Fin del período facturado AAAA-MM-DD (fecha de lectura actual)' },
+      lectura_anterior: { type: 'number', description: 'Lectura anterior del medidor de energía (kWh)' },
+      lectura_actual: { type: 'number', description: 'Lectura actual del medidor de energía (kWh)' },
+      constante_medidor: { type: 'number', description: 'Factor o constante de multiplicación del medidor, si figura (1 si no)' },
+      consumo_kwh: { type: 'number', description: 'Consumo de energía facturado en kWh' },
+      demanda_maxima_kw: { type: 'number', description: 'Demanda máxima leída (kW), si figura' },
+      demanda_punta_kw: { type: 'number', description: 'Demanda máxima en horas punta (kW), si figura' },
+      potencia_conectada_kw: { type: 'number', description: 'Potencia conectada o contratada (kW), si figura' },
+      cargos: {
+        type: 'array', description: 'TODAS las líneas de cargos de la cuenta, con su monto (positivo o negativo si es descuento o saldo)',
+        items: { type: 'object', properties: { concepto: { type: 'string' }, monto: { type: 'number', description: 'Pesos' }, cantidad: { type: 'number', description: 'kWh o kW si la línea lo muestra' }, precio_unitario: { type: 'number', description: 'Precio por unidad si la línea lo muestra' } }, required: ['concepto', 'monto'] },
+      },
+      neto: { type: 'number', description: 'Monto neto (sin IVA), si figura' },
+      iva: { type: 'number' },
+      total: { type: 'number', description: 'Total a pagar en pesos' },
+      historial: { type: 'array', description: 'Tabla de consumos de meses anteriores si la cuenta la trae', items: { type: 'object', properties: { mes: { type: 'string', description: 'AAAA-MM' }, kwh: { type: 'number' }, monto: { type: 'number' } }, required: ['mes'] } },
+      observaciones: { type: 'string', description: 'Dudas de lectura, avisos de la distribuidora, recargos, deuda anterior, datos que faltan' },
+    },
+    required: ['legible'],
+  },
+};
+const PROMPT_ELECTRICA = `Lee esta boleta o factura de electricidad de Chile (distribuidora como Copelec).
+Extrae los datos del cliente, el período, las lecturas del medidor (anterior y actual), el consumo en kWh, demanda y potencia si figuran, TODAS las líneas de cargos con su monto, neto, IVA, total y la tabla de consumos anteriores si la trae.
+Reglas: no inventes cifras; si algo no se ve con claridad omítelo y explícalo en "observaciones". Montos en pesos chilenos como número (sin puntos de miles); decimales con punto. Fechas AAAA-MM-DD. Si la cuenta trae saldos anteriores, multas, intereses o convenios, inclúyelos como cargos y menciónalos en observaciones.
+Responde solo usando la herramienta registrar_factura_electrica.`;
+
 const PROMPT = `Lee este documento (factura o guía de despacho de Chile, productos agrícolas: agroquímicos, fertilizantes, insumos).
 Extrae el proveedor, el folio, la fecha y TODAS las líneas de productos con su nombre comercial, cantidad, unidad y valor neto unitario (sin IVA).
 Reglas:
@@ -110,6 +153,27 @@ export default async function handler(request) {
   try { body = await request.json(); } catch (e) { return json({ error: 'Solicitud inválida' }, 400); }
   const { usuario, pin, imagenes } = body || {};
   if (!(await pinValido(usuario, pin, env))) return json({ error: 'No autorizado' }, 401);
+  if (body.modo === 'electricidad') {
+    const docs = body.documentos;
+    if (!Array.isArray(docs) || !docs.length || docs.length > 3) return json({ error: 'Envía entre 1 y 3 archivos' }, 400);
+    let tot = 0; const cont = [];
+    for (const du of docs) {
+      const m = /^data:(application\/pdf|image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(du || '');
+      if (!m) return json({ error: 'Formato no válido (PDF o imagen)' }, 400);
+      tot += m[2].length * 0.75; if (tot > MAX_BYTES_TOTAL) return json({ error: 'Los archivos pesan demasiado' }, 413);
+      cont.push(m[1] === 'application/pdf' ? { type: 'document', source: { type: 'base64', media_type: m[1], data: m[2] } } : { type: 'image', source: { type: 'base64', media_type: m[1], data: m[2] } });
+    }
+    cont.push({ type: 'text', text: PROMPT_ELECTRICA });
+    let r3;
+    try {
+      r3 = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({ model: MODELO, max_tokens: 6000, thinking: { type: 'between_tools' }, tools: [HERRAMIENTA_ELECTRICA], tool_choice: { type: 'auto' }, messages: [{ role: 'user', content: cont }] }) });
+    } catch (e) { return json({ error: 'No se pudo contactar el servicio de IA' }, 502); }
+    if (!r3.ok) { let d = ''; try { const e = await r3.json(); d = (e && e.error && e.error.message) ? ': ' + e.error.message : ''; } catch (e) {} return json({ error: 'El servicio de IA respondió con error (' + r3.status + ')' + d }, 502); }
+    const d3 = await r3.json(), u3 = (d3.content || []).find(b => b.type === 'tool_use' && b.name === 'registrar_factura_electrica');
+    if (u3) return json({ ok: true, factura: u3.input });
+    return json({ error: 'No se pudo leer la factura' }, 502);
+  }
   if (body.modo === 'remuneraciones') {
     const docs = body.documentos;
     if (!Array.isArray(docs) || !docs.length || docs.length > 2) return json({ error: 'Envía 1 o 2 archivos' }, 400);
