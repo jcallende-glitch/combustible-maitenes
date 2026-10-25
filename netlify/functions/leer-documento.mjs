@@ -108,7 +108,24 @@ const HERRAMIENTA_ELECTRICA = {
       },
       neto: { type: 'number', description: 'Monto neto (sin IVA), si figura' },
       iva: { type: 'number' },
-      total: { type: 'number', description: 'Total a pagar en pesos' },
+      total: { type: 'number', description: 'TOTAL DE FACTURA del mes en pesos (neto + IVA + otros cargos no afectos). NO es el "Total a pagar" cuando hay saldo anterior' },
+      otros_no_afectos: { type: 'number', description: '"Otros cargos no afectados" / total cobros no afectos a IVA (servicio público, fondo de estabilización, etc.)' },
+      saldo_anterior: { type: 'number', description: 'Saldo anterior impago arrastrado (0 si no hay)' },
+      total_a_pagar: { type: 'number', description: '"TOTAL A PAGAR" final de la cuenta (total de factura + saldo anterior)' },
+      interes_mora: { type: 'number', description: 'Monto del cargo "Interés por mora" (0 si no hay)' },
+      cargo_factor_potencia: { type: 'number', description: 'Monto del cargo por factor de potencia' },
+      factor_potencia: { type: 'number', description: 'Factor de potencia indicado entre paréntesis en el cargo (ej. 0,49 → 0.49)' },
+      kvarh_anterior: { type: 'number', description: 'Lectura anterior del medidor de energía reactiva (kVArh), segunda fila de lecturas' },
+      kvarh_actual: { type: 'number', description: 'Lectura actual de energía reactiva (kVArh)' },
+      consumo_kvarh: { type: 'number', description: 'Consumo de energía reactiva facturado (kVArh)' },
+      demanda_suministrada_kw: { type: 'number', description: 'kW de "Cargo por demanda suministrada" (ej. 228.69)' },
+      consumo_referencia_kwh: { type: 'number', description: '"Consumo de referencia (kWh / mensual)"' },
+      ultimo_pago_monto: { type: 'number', description: 'Monto del último pago realizado' },
+      ultimo_pago_fecha: { type: 'string', description: 'Fecha del último pago AAAA-MM-DD' },
+      fecha_corte: { type: 'string', description: 'Fecha de corte a partir de AAAA-MM-DD, si figura' },
+      corte_en_tramite: { type: 'boolean', description: 'true si dice "Corte en trámite"' },
+      fecha_fin_contrato: { type: 'string', description: 'Fecha de término de contrato AAAA-MM-DD' },
+      fecha_limite_cambio_tarifa: { type: 'string', description: 'AAAA-MM-DD' },
       historial: { type: 'array', description: 'Tabla de consumos de meses anteriores si la cuenta la trae', items: { type: 'object', properties: { mes: { type: 'string', description: 'AAAA-MM' }, kwh: { type: 'number' }, monto: { type: 'number' } }, required: ['mes'] } },
       observaciones: { type: 'string', description: 'Dudas de lectura, avisos de la distribuidora, recargos, deuda anterior, datos que faltan' },
     },
@@ -116,6 +133,7 @@ const HERRAMIENTA_ELECTRICA = {
   },
 };
 const PROMPT_ELECTRICA = `Lee esta boleta o factura de electricidad de Chile (distribuidora como Copelec).
+Estructura típica de Copelec: arriba "Datos del cliente" y "Datos del suministro" (tarifa, potencia conectada, término de contrato); luego "Detalle de lectura/consumo" con DOS filas de medidor: la primera es energía activa (kWh) y la segunda energía reactiva (kVArh); cada fila tiene lectura anterior, lectura actual, constante y consumo. Bajo ella: consumo de referencia, "Potencia leída (kW)" (demanda máxima) y "Potencia leída horas de punta (kW)". Luego "Detalle de la cuenta": cargos de energía (administración, transporte, electricidad consumida, demanda suministrada con sus kW, demanda máxima en horas punta, factor de potencia con su valor entre paréntesis, interés por mora), otros cobros no afectos, saldo anterior, y al pie Total Neto, IVA, Otros cargos no afectados, Total de factura, Saldo anterior y TOTAL A PAGAR. A la derecha: fecha de vencimiento, fecha de corte, último pago. El gráfico de barras de 13 meses no trae cifras: no lo leas. Distingue siempre "Total de factura" (campo total) de "Total a pagar" (campo total_a_pagar).
 Extrae los datos del cliente, el período, las lecturas del medidor (anterior y actual), el consumo en kWh, demanda y potencia si figuran, TODAS las líneas de cargos con su monto, neto, IVA, total y la tabla de consumos anteriores si la trae.
 Reglas: no inventes cifras; si algo no se ve con claridad omítelo y explícalo en "observaciones". Montos en pesos chilenos como número (sin puntos de miles); decimales con punto. Fechas AAAA-MM-DD. Si la cuenta trae saldos anteriores, multas, intereses o convenios, inclúyelos como cargos y menciónalos en observaciones.
 Responde solo usando la herramienta registrar_factura_electrica.`;
