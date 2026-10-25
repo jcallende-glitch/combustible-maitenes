@@ -43,6 +43,40 @@ const HERRAMIENTA = {
   },
 };
 
+const HERRAMIENTA_SUELDOS = {
+  name: 'registrar_remuneraciones',
+  description: 'Registra, trabajador por trabajador, los montos de una planilla o liquidaciones de sueldo chilenas.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      legible: { type: 'boolean' },
+      mes: { type: 'string', description: 'Mes de la planilla AAAA-MM, si se ve' },
+      filas: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            nombre: { type: 'string', description: 'Nombre del trabajador tal como figura' },
+            rut: { type: 'string' },
+            costo_empresa: { type: 'number', description: 'Costo total para la empresa en pesos (sueldo + aportes del empleador + gratificación, etc.). Si la planilla no lo trae, omitir.' },
+            total_haberes: { type: 'number', description: 'Total haberes (bruto) en pesos' },
+            liquido: { type: 'number', description: 'Líquido a pagar en pesos' },
+            horas_extra_monto: { type: 'number', description: 'Monto pagado en horas extra en pesos, si aparece' },
+            horas_extra_horas: { type: 'number', description: 'Cantidad de horas extra pagadas, si aparece' },
+          },
+          required: ['nombre'],
+        },
+      },
+      observaciones: { type: 'string', description: 'Dudas de lectura, columnas que faltan o supuestos' },
+    },
+    required: ['legible', 'filas'],
+  },
+};
+const PROMPT_SUELDOS = `Lee esta planilla o liquidaciones de sueldo de trabajadores agrícolas en Chile.
+Extrae UNA fila por trabajador con su nombre, RUT, costo total empresa, total haberes, líquido a pagar, y si aparecen, el monto y las horas de horas extra.
+Reglas: no inventes cifras; omite lo que no se vea y explícalo en "observaciones". Los montos van en pesos chilenos como número entero (sin puntos de miles). No sumes ni agregues una fila de totales.
+Responde solo usando la herramienta registrar_remuneraciones.`;
+
 const PROMPT = `Lee este documento (factura o guía de despacho de Chile, productos agrícolas: agroquímicos, fertilizantes, insumos).
 Extrae el proveedor, el folio, la fecha y TODAS las líneas de productos con su nombre comercial, cantidad, unidad y valor neto unitario (sin IVA).
 Reglas:
@@ -76,6 +110,27 @@ export default async function handler(request) {
   try { body = await request.json(); } catch (e) { return json({ error: 'Solicitud inválida' }, 400); }
   const { usuario, pin, imagenes } = body || {};
   if (!(await pinValido(usuario, pin, env))) return json({ error: 'No autorizado' }, 401);
+  if (body.modo === 'remuneraciones') {
+    const docs = body.documentos;
+    if (!Array.isArray(docs) || !docs.length || docs.length > 2) return json({ error: 'Envía 1 o 2 archivos' }, 400);
+    let tot = 0; const cont = [];
+    for (const du of docs) {
+      const m = /^data:(application\/pdf|image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(du || '');
+      if (!m) return json({ error: 'Formato no válido (PDF o imagen)' }, 400);
+      tot += m[2].length * 0.75; if (tot > MAX_BYTES_TOTAL) return json({ error: 'Los archivos pesan demasiado' }, 413);
+      cont.push(m[1] === 'application/pdf' ? { type: 'document', source: { type: 'base64', media_type: m[1], data: m[2] } } : { type: 'image', source: { type: 'base64', media_type: m[1], data: m[2] } });
+    }
+    cont.push({ type: 'text', text: PROMPT_SUELDOS });
+    let r2;
+    try {
+      r2 = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({ model: MODELO, max_tokens: 8000, thinking: { type: 'between_tools' }, tools: [HERRAMIENTA_SUELDOS], tool_choice: { type: 'auto' }, messages: [{ role: 'user', content: cont }] }) });
+    } catch (e) { return json({ error: 'No se pudo contactar el servicio de IA' }, 502); }
+    if (!r2.ok) { let d = ''; try { const e = await r2.json(); d = (e && e.error && e.error.message) ? ': ' + e.error.message : ''; } catch (e) {} return json({ error: 'El servicio de IA respondió con error (' + r2.status + ')' + d }, 502); }
+    const d2 = await r2.json(), u2 = (d2.content || []).find(b => b.type === 'tool_use' && b.name === 'registrar_remuneraciones');
+    if (u2) return json({ ok: true, remuneraciones: u2.input });
+    return json({ error: 'No se pudo leer la planilla' }, 502);
+  }
   if (!Array.isArray(imagenes) || !imagenes.length || imagenes.length > 3) return json({ error: 'Envía entre 1 y 3 fotos' }, 400);
   let total = 0;
   const contenido = [];
