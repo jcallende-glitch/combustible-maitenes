@@ -5384,6 +5384,7 @@ let unsubAsistencia = null;
 let asistenciaRegistros = [];
 let asistenciaCargada = false;
 let asistEstado = 'elegir'; // 'elegir' | 'planilla' | 'wizard'
+Object.defineProperty(window, 'asistEstado', { get: () => asistEstado, set: v => { asistEstado = v; }, configurable: true });
 
 function initAsistencia() {
   asistEstado = 'elegir';
@@ -5460,9 +5461,16 @@ function sueNum(v) {
   else s = s.replace(',', '.');
   const n = parseFloat(s); return isFinite(n) ? n : null;
 }
+const SUE_GENERALES = ['Eduardo Faundez', 'Camila Faundez', 'Nicolás Feris', 'JC Allende', 'Juan Carlos Allende'];
+const SUE_GEN = '__GENERAL__';
+function sueEsGeneral(nombre) {
+  const toks = normNom(nombre).split(' ').filter(t => t.length > 1);
+  return SUE_GENERALES.some(g => { const gt = normNom(g).split(' ').filter(x => x.length > 1); return gt.length && gt.filter(x => toks.includes(x)).length / gt.length >= 0.99; });
+}
 function sueMatch(nombre) {
   const mp = config.mapaNomina || {};
   if (Object.prototype.hasOwnProperty.call(mp, nombre)) return mp[nombre];
+  if (sueEsGeneral(nombre)) return SUE_GEN;
   const toks = normNom(nombre).split(' ').filter(t => t.length > 1);
   let best = '', bs = 0, dup = false;
   (trabajadoresAsistenciaConfig || []).forEach(t => {
@@ -5558,7 +5566,7 @@ function sueMapaGuardar() { clearTimeout(sueMapaTimer); sueMapaTimer = setTimeou
 // Reparte el costo de cada trabajador según su tarja del mes
 function sueCalcular() {
   const mes = SUE.mes, J = SUE.jornada || 8, regs = asistenciaRegistros.filter(r => r.fecha && r.fecha.startsWith(mes));
-  const porTrab = {};
+  const porTrab = {}, porDia = {};
   regs.forEach(r => {
     const t0 = porTrab[r.trabajador] = porTrab[r.trabajador] || { dias: new Set(), items: [], perm: new Set(), falt: new Set() };
     if (r.estado === 'permiso') { t0.perm.add(r.fecha); return; }
@@ -5569,8 +5577,18 @@ function sueCalcular() {
     const t = t0;
     t.dias.add(r.fecha);
     partes.forEach(x => t.items.push({ centro: x.centro, labor, dias: x.p / sp, he: he * x.p / sp }));
+    if (!sueEsGeneral(r.trabajador)) partes.forEach(x => { const w = x.p / sp + (he * x.p / sp) / J; (porDia[r.fecha] = porDia[r.fecha] || []).push({ centro: x.centro, labor, w }); });
   });
   const filas = SUE.filas.map(f => {
+    if (f.trab === SUE_GEN) {
+      const costoG = f.costo != null ? f.costo : null, dias = Object.keys(porDia).filter(d => porDia[d].some(x => x.w > 0));
+      const resG = { nombre: f.nombre, trabajador: 'General (según la tarja del día)', general: true, costo: costoG, liquido: f.liquido, haberes: f.haberes, heMonto: f.heMonto, heHoras: f.heHoras, dif: costoG != null && f.liquido != null ? costoG - f.liquido : null, diasTarja: dias.length, permisos: 0, faltas: 0, heTarja: 0, dist: [] };
+      if (costoG == null) { resG.estado = 'sin_costo'; return resG; }
+      if (!dias.length) { resG.estado = 'sin_tarja'; return resG; }
+      const acG = {};
+      dias.forEach(d => { const tw = porDia[d].reduce((a, x) => a + x.w, 0); porDia[d].forEach(x => { const k = x.centro + '|' + x.labor, a = acG[k] = acG[k] || { centro: x.centro, labor: x.labor, monto: 0, heMonto: 0, dias: 0, he: 0 }; a.monto += costoG / dias.length * x.w / tw; }); });
+      resG.dist = Object.values(acG); resG.estado = 'ok'; return resG;
+    }
     const t = f.trab ? porTrab[f.trab] : null, costo = f.costo != null ? f.costo : null;
     const res = { nombre: f.nombre, trabajador: f.trab || '', costo, liquido: f.liquido, haberes: f.haberes, heMonto: f.heMonto, heHoras: f.heHoras, dif: costo != null && f.liquido != null ? costo - f.liquido : null, diasTarja: t ? t.dias.size : 0, permisos: t ? t.perm.size : 0, faltas: t ? t.falt.size : 0, heTarja: t ? t.items.reduce((a, x) => a + x.he, 0) : 0, dist: [] };
     if (!f.trab) { res.estado = 'sin_trabajador'; return res; }
@@ -5611,7 +5629,7 @@ window.sueRecalcular = function() {
   const R = SUE.res = sueCalcular();
   const trabs = trabajadoresAsistenciaConfig || [];
   const est = { ok: '', sin_trabajador: '⚠️ Elige quién es', sin_tarja: '⚠️ Sin tarja este mes', sin_costo: '⚠️ Sin costo empresa' };
-  const filasHtml = R.filas.map((f, i) => `<tr style="border-top:1px solid var(--borde)"><td style="padding:4px"><div style="font-size:12px">${escA(f.nombre)}</div><select style="font-size:12px;max-width:150px" onchange="sueAsignar(${i},this.value)"><option value="">— ninguno —</option>${trabs.map(t => `<option value="${escA(t)}" ${f.trabajador === t ? 'selected' : ''}>${escA(t)}</option>`).join('')}</select>${est[f.estado] ? `<div style="font-size:10px;color:#B45309">${est[f.estado]}</div>` : ''}</td>
+  const filasHtml = R.filas.map((f, i) => `<tr style="border-top:1px solid var(--borde)"><td style="padding:4px"><div style="font-size:12px">${escA(f.nombre)}</div><select style="font-size:12px;max-width:150px" onchange="sueAsignar(${i},this.value)"><option value="">— ninguno —</option><option value="__GENERAL__" ${f.general ? 'selected' : ''}>🏢 General: según la tarja del día</option>${trabs.map(t => `<option value="${escA(t)}" ${f.trabajador === t ? 'selected' : ''}>${escA(t)}</option>`).join('')}</select>${est[f.estado] ? `<div style="font-size:10px;color:#B45309">${est[f.estado]}</div>` : ''}</td>
     <td style="text-align:right;padding:4px">${sueP(f.liquido)}</td><td style="text-align:right;padding:4px;font-weight:700">${sueP(f.costo)}</td><td style="text-align:right;padding:4px;color:var(--acero)">${sueP(f.dif)}</td><td style="text-align:right;padding:4px">${f.diasTarja || '–'}</td><td style="text-align:right;padding:4px">${f.permisos || f.faltas ? (f.permisos || 0) + ' / ' + (f.faltas || 0) : '–'}</td><td style="text-align:right;padding:4px">${f.heTarja ? sueH(f.heTarja) : '–'}${f.heHoras ? `<div style="font-size:10px;color:var(--acero)">pagadas ${sueH(f.heHoras)}</div>` : ''}</td></tr>`).join('');
   const filaC = (c, tot) => `<tr style="border-top:1px solid var(--borde)"><td style="padding:4px">${puntoCentro(c.nombre)}${escA(c.nombre)}</td><td style="text-align:right;padding:4px;font-weight:700">${sueP(c.monto)}</td><td style="text-align:right;padding:4px">${tot ? Math.round(c.monto / tot * 100) : 0} %</td><td style="text-align:right;padding:4px;color:var(--acero)">${sueP(c.liquido)}</td><td style="text-align:right;padding:4px">${sueH(c.dias)}</td><td style="text-align:right;padding:4px">${c.he ? sueH(c.he) : '–'}</td><td style="text-align:right;padding:4px">${c.heMonto ? sueP(c.heMonto) : '–'}</td></tr>`;
   const totD = R.centros.reduce((a, c) => a + c.monto, 0), cab = '<thead><tr><th style="text-align:left;padding:4px"></th><th style="text-align:right;padding:4px">Costo empresa</th><th style="text-align:right;padding:4px">%</th><th style="text-align:right;padding:4px">Líquido</th><th style="text-align:right;padding:4px">Días</th><th style="text-align:right;padding:4px">H. extra</th><th style="text-align:right;padding:4px">$ H. extra</th></tr></thead>';
@@ -5621,7 +5639,7 @@ window.sueRecalcular = function() {
     <div class="cultivos-label">Por cultivo / frutal (centro de costo)</div><div style="overflow-x:auto"><table style="width:100%;min-width:0;font-size:12px;border-collapse:collapse">${cab}<tbody>${R.centros.map(c => filaC(c, totD)).join('')}</tbody></table></div>
     <div class="cultivos-label" style="margin-top:10px">Por labor</div><div style="overflow-x:auto"><table style="width:100%;min-width:0;font-size:12px;border-collapse:collapse">${cab}<tbody>${R.labores.map(c => filaC(c, totD)).join('')}</tbody></table></div>
     <div class="cultivos-label" style="margin-top:10px">Por trabajador</div><div style="overflow-x:auto"><table style="width:100%;min-width:0;font-size:12px;border-collapse:collapse"><thead><tr><th style="text-align:left;padding:4px">Trabajador</th><th style="text-align:right;padding:4px">Líquido</th><th style="text-align:right;padding:4px">Costo empresa</th><th style="text-align:right;padding:4px">Diferencia</th><th style="text-align:right;padding:4px">Días tarja</th><th style="text-align:right;padding:4px">Perm. / Faltas</th><th style="text-align:right;padding:4px">H. extra</th></tr></thead><tbody>${filasHtml}</tbody></table></div>
-    <div style="font-size:11px;color:var(--acero);margin-top:6px">Cada trabajador: su costo empresa se reparte por los días de su tarja (un día con varios centros se divide según sus %) más las horas extra anotadas (horas ÷ jornada). Si la planilla trae el monto de horas extra, ese monto va a los centros donde hizo las horas extra y el resto por días. Líquido por centro = proporcional al costo.</div>`;
+    <div style="font-size:11px;color:var(--acero);margin-top:6px">Cada trabajador: su costo empresa se reparte por los días de su tarja (un día con varios centros se divide según sus %) más las horas extra anotadas (horas ÷ jornada). Si la planilla trae el monto de horas extra, ese monto va a los centros donde hizo las horas extra y el resto por días. Líquido por centro = proporcional al costo.<br>🏢 <b>General</b> (Eduardo, Camila, Nicolás y JC): sin labor propia; su costo se divide en partes iguales entre los días con tarja y cada día se reparte según los cultivos y labores que trabajó el resto ese día.</div>`;
   const b = document.getElementById('sue-guardar'), x = document.getElementById('sue-excel'); if (b) b.disabled = false; if (x) x.disabled = false;
 }
 window.sueGuardar = async function() {
@@ -5644,6 +5662,7 @@ window.sueExcel = function() {
   XLSX.writeFile(wb, 'sueldos-' + SUE.mes + '.xlsx');
 }
 let WZ = null; // estado del asistente
+Object.defineProperty(window, 'WZ', { get: () => WZ, set: v => { WZ = v; }, configurable: true }); // los botones (onclick) lo usan
 window.iniciarCompletarAsistencia = async function(fechaForzada) {
   asistEstado = 'wizard'; renderModoAsistencia();
   const w = document.getElementById('asistencia-wizard');
@@ -5773,7 +5792,7 @@ window.wzRender = function() {
     </div>
     <div style="height:6px;background:#E5E7EB;border-radius:4px;margin-bottom:14px"><div style="height:6px;width:${Math.round(WZ.i / WZ.total * 100)}%;background:#16A34A;border-radius:4px"></div></div>
     <div style="font-size:22px;font-weight:700;margin-bottom:10px">${escA(cur.trab)}</div>
-    <div style="display:flex;gap:6px;margin-bottom:12px">${[['presente', '✅ Trabajó', '#16A34A'], ['permiso', '📝 Permiso', '#2563EB'], ['falta', '❌ Falta', '#DC2626']].map(([k, t, col]) => `<button type="button" style="flex:1;padding:10px 4px;border-radius:8px;border:2px solid ${cur.estado === k ? col : '#D1D5DB'};background:${cur.estado === k ? col : '#fff'};color:${cur.estado === k ? '#fff' : '#111'};font-size:14px;font-weight:600;cursor:pointer" onclick="WZ.cur.motivo=document.getElementById('wiz-motivo')?.value??WZ.cur.motivo;WZ.cur.estado='${k}';wzRender()">${t}</button>`).join('')}</div>
+    <div style="display:flex;gap:6px;margin-bottom:12px">${[['presente', '✅ Trabajó', '#16A34A'], ['permiso', '📝 Permiso', '#2563EB'], ['falta', '❌ Falta', '#DC2626']].map(([k, t, col]) => `<button type="button" style="flex:1;padding:10px 4px;border-radius:8px;border:2px solid ${cur.estado === k ? col : '#D1D5DB'};background:${cur.estado === k ? col : '#fff'};color:${cur.estado === k ? '#fff' : '#111'};font-size:14px;font-weight:600;cursor:pointer" onclick="wzEstado('${k}')">${t}</button>`).join('')}</div>
     ${cur.estado !== 'presente' ? `<div class="field"><label>${cur.estado === 'permiso' ? 'Motivo del permiso (opcional)' : 'Observación (opcional)'}</label><input type="text" id="wiz-motivo" value="${escA(cur.motivo || '')}" placeholder="${cur.estado === 'permiso' ? 'Ej: trámite, salud, con goce / sin goce' : 'Ej: avisó, sin aviso'}"></div>` : `    <div style="padding:10px;background:#F0F9FF;border:1px solid #BAE6FD;border-radius:8px;margin-bottom:12px">
       <div class="grid-2" style="margin-bottom:4px">
         <div class="field" style="margin:0"><label>⏱️ Horas extra aprox. del día (si trabajó)</label><input type="number" id="wiz-hreg" min="0" step="0.5" inputmode="decimal" placeholder="0" value="${escA(hr)}"></div>
@@ -5791,6 +5810,7 @@ window.wzRender = function() {
       <button type="button" class="btn" style="flex:1" onclick="wzTerminar()">Terminar</button>
     </div></div>`;
 }
+window.wzEstado = function(k) { if (!WZ || !WZ.cur) return; const m = document.getElementById('wiz-motivo'); if (m) WZ.cur.motivo = m.value; WZ.cur.estado = k; wzRender(); }
 window.wzCentroComb = function() { WZ.cur.centroModo = 'comb'; WZ.cur.centroCambiar = false; wzRender(); }
 window.wzCentro = function(i) { const v = WZ.optsC[i]; if (!v) return; WZ.cur.centro = v; WZ.cur.centroModo = 'manual'; WZ.cur.centroCambiar = false; wzRender(); }
 window.wzReciente = function(i, guardar) {
@@ -6061,29 +6081,57 @@ window.renderTablaAsistencia = function() {
   </table></div>`;
 }
 
-window.editarAsistencia = async function(id) {
+window.editarAsistencia = function(id) {
   const r = asistenciaRegistros.find(x => x.id === id);
   if (!r) return;
-  const pedir = (txt, actual) => {
-    const v = prompt(txt + '\n(déjalo vacío si aún no lo tienes)', actual != null ? actual : '');
-    if (v === null) return undefined;
-    const t = v.trim().replace(',', '.');
-    if (t === '') return null;
-    const n = parseFloat(t);
-    return isNaN(n) || n < 0 ? undefined : n;
-  };
-  const ht = pedir('Horas extra según el TRABAJADOR — ' + r.trabajador + ' · ' + r.fecha, r.horas_trabajador);
-  if (ht === undefined) return;
-  const hr = pedir('Horas extra según tu REGISTRO', r.horas_registro);
-  if (hr === undefined) return;
-  const labor = prompt('Labor del día', r.labor || '');
-  if (labor === null) return;
-  const obs = prompt('Observación', r.obs || '');
-  if (obs === null) return;
-  try {
-    await updateDoc(doc(db, 'asistencia', id), { horas_trabajador: ht, horas_registro: hr, labor: labor.trim() || null, obs: obs.trim(), editado_por: currentUser, editado_ts: Date.now() });
-    toast('✓ Registro actualizado', true);
-  } catch(e) { toast('Error: ' + e.message, false); }
+  let ov = document.getElementById('modal-edit-asist');
+  if (!ov) { ov = document.createElement('div'); ov.id = 'modal-edit-asist'; ov.style.cssText = 'position:fixed;inset:0;z-index:4000;background:rgba(0,0,0,.55);display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:16px'; document.body.appendChild(ov); }
+  const labores = [...new Set([...laboresComunesDe(r.trabajador).map(x => x[0]), ...laboresAsistExtra(), ...laboresBaseAsist()].filter(x => typeof x === 'string' && x.trim()))];
+  const centros = [...new Set([...(config.centros || []).filter(x => !/^otros/i.test(x))])];
+  const actual = r.centro_costo && !centros.includes(r.centro_costo) ? r.centro_costo : '';
+  const est = r.estado || 'presente';
+  ov.dataset.id = id;
+  ov.innerHTML = `<div style="background:var(--blanco,#fff);border-radius:12px;max-width:480px;width:100%;padding:16px;margin:auto">
+    <div class="panel-title">✏️ ${escA(r.trabajador)} · ${fechaBonita(r.fecha)}</div>
+    <div style="display:flex;gap:6px;margin-bottom:10px">${[['presente', '✅ Trabajó', '#16A34A'], ['permiso', '📝 Permiso', '#2563EB'], ['falta', '❌ Falta', '#DC2626']].map(([k, t, col]) => `<button type="button" data-k="${k}" style="flex:1;padding:10px 4px;border-radius:8px;border:2px solid ${est === k ? col : '#D1D5DB'};background:${est === k ? col : '#fff'};color:${est === k ? '#fff' : '#111'};font-size:14px;font-weight:600;cursor:pointer" onclick="editAsistEstado('${k}')">${t}</button>`).join('')}</div>
+    <input type="hidden" id="ea-estado" value="${est}">
+    <div id="ea-trabajo">
+      <div class="field"><label>Cultivo / frutal (centro de costo)</label><div class="select-wrapper"><select id="ea-centro"><option value="">— sin centro —</option>${actual ? `<option value="__actual" selected>${escA(actual)} (actual)</option>` : ''}${centros.map(c => `<option value="${escA(c)}" ${r.centro_costo === c ? 'selected' : ''}>${escA(c)}</option>`).join('')}</select></div></div>
+      <div class="field"><label>Labor</label><input type="text" id="ea-labor" list="ea-labores" value="${escA(r.labor || '')}" placeholder="Elige o escribe una nueva"><datalist id="ea-labores">${labores.map(l => `<option value="${escA(l)}">`).join('')}</datalist></div>
+      <div class="field"><label>Maquinaria</label><div class="select-wrapper"><select id="ea-maq"><option value="">Sin maquinaria</option>${[...new Set([r.maquinaria, ...(config.equipos || [])].filter(x => x && x !== 'Otro (especificar)'))].map(e => `<option value="${escA(e)}" ${r.maquinaria === e ? 'selected' : ''}>${escA(e)}</option>`).join('')}</select></div></div>
+      <div class="grid-2">
+        <div class="field"><label>Horas extra aprox.</label><input type="number" id="ea-hreg" min="0" step="0.5" inputmode="decimal" value="${r.horas_registro != null ? r.horas_registro : ''}"></div>
+        <div class="field"><label>Según el trabajador</label><input type="number" id="ea-htrab" min="0" step="0.5" inputmode="decimal" placeholder="Pendiente" value="${r.horas_trabajador != null ? r.horas_trabajador : ''}"></div>
+      </div>
+    </div>
+    <div class="field"><label id="ea-obs-l">Observación</label><input type="text" id="ea-obs" value="${escA(r.obs || '')}"></div>
+    <div style="display:flex;gap:8px;margin-top:10px">
+      <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="document.getElementById('modal-edit-asist').remove()">Cancelar</button>
+      <button class="btn btn-verde" style="flex:1" onclick="guardarEditAsistencia()">💾 Guardar</button></div></div>`;
+  editAsistEstado(est);
+}
+window.editAsistEstado = function(k) {
+  const ov = document.getElementById('modal-edit-asist'); if (!ov) return;
+  document.getElementById('ea-estado').value = k;
+  const cols = { presente: '#16A34A', permiso: '#2563EB', falta: '#DC2626' };
+  ov.querySelectorAll('button[data-k]').forEach(b => { const on = b.dataset.k === k; b.style.borderColor = on ? cols[k] : '#D1D5DB'; b.style.background = on ? cols[k] : '#fff'; b.style.color = on ? '#fff' : '#111'; });
+  document.getElementById('ea-trabajo').style.display = k === 'presente' ? '' : 'none';
+  document.getElementById('ea-obs-l').textContent = k === 'permiso' ? 'Motivo del permiso (opcional)' : k === 'falta' ? 'Observación (opcional)' : 'Observación';
+}
+window.guardarEditAsistencia = async function() {
+  const ov = document.getElementById('modal-edit-asist'); if (!ov) return;
+  const id = ov.dataset.id, r = asistenciaRegistros.find(x => x.id === id); if (!r) return;
+  const estado = document.getElementById('ea-estado').value, num = v => { const t = String(v).trim().replace(',', '.'); const n = parseFloat(t); return t === '' || isNaN(n) || n < 0 ? null : n; };
+  const cambios = { estado, obs: document.getElementById('ea-obs').value.trim(), editado_por: currentUser, editado_ts: Date.now() };
+  if (estado === 'presente') {
+    const cs = document.getElementById('ea-centro').value, labor = document.getElementById('ea-labor').value.trim();
+    cambios.horas_trabajador = num(document.getElementById('ea-htrab').value); cambios.horas_registro = num(document.getElementById('ea-hreg').value) ?? 0;
+    cambios.labor = labor || null; cambios.maquinaria = document.getElementById('ea-maq').value || null;
+    if (cs !== '__actual') { cambios.centro_costo = cs || null; if ((cs || null) !== (r.centro_costo || null)) { cambios.centro_origen = null; cambios.centros_dist = null; } }
+    if (labor) agregarLaborAsistencia(labor);
+  } else { Object.assign(cambios, { centro_costo: null, centro_origen: null, centros_dist: null, labor: null, maquinaria: null, horas_trabajador: null, horas_registro: 0 }); }
+  try { await updateDoc(doc(db, 'asistencia', id), cambios); ov.remove(); toast('✓ Registro actualizado', true); }
+  catch (e) { toast('Error: ' + e.message, false); }
 }
 
 window.eliminarAsistencia = async function(id) {
