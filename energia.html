@@ -128,7 +128,7 @@ async function cargarTodo() {
 const sumDe = id => S.sum.find(s => s.id === id);
 const facDe = id => S.fac.filter(f => f.suministro === id).sort((a, b) => (a.periodoHasta || a.mes || '').localeCompare(b.periodoHasta || b.mes || ''));
 const lecDe = id => S.lec.filter(l => l.suministro === id).sort((a, b) => a.fecha.localeCompare(b.fecha) || (a.ts || 0) - (b.ts || 0));
-const esSaldo = c => /impago|saldo anterior|meses anteriores/i.test(c.concepto || '');
+const esSaldo = c => /impago|saldo anterior|meses anteriores|^\s*(sub)?total/i.test(c.concepto || '');
 const cargosMes = f => (f.cargos || []).filter(c => !esSaldo(c));
 const mora = f => f.interesMora || 0;
 const netoSM = f => { const b = f.neto || (f.total ? f.total / 1.19 : null); return b == null ? null : b - mora(f); };
@@ -136,6 +136,17 @@ const totalSM = f => f.total == null ? null : f.total - mora(f) * (f.neto && f.i
 // Precio de la energía: línea «Electricidad consumida» ÷ kWh (no mezcla demanda, factor de potencia ni mora)
 const precioKwh = f => { const l = cargosMes(f).find(c => /electricidad consumida|energ[ií]a consumida/i.test(c.concepto || '')); if (l && l.monto && f.consumoKwh > 0) return l.monto / f.consumoKwh; const b = netoSM(f); return b && f.consumoKwh > 0 ? b / f.consumoKwh : null; };
 // Costo total por kWh: todo el neto del mes (energía + demanda + transporte + factor de potencia), sin mora
+// Desglose por tipo de cargo (sin saldo anterior ni subtotales)
+const CATS = [['energia', 'Energía consumida', /electricidad consumida|energ[ií]a consumida/i], ['transporte', 'Transporte de electricidad', /transporte/i], ['admin', 'Administración del servicio', /administraci/i], ['punta', 'Demanda en horas punta', /punta/i], ['demanda', 'Demanda suministrada (potencia)', /demanda/i], ['fp', 'Factor de potencia', /factor de potencia/i], ['mora', 'Interés por mora', /mora/i], ['noafecto', 'Servicio público y fondo de estabilización', /servicio p[uú]blico|estabilizaci/i]];
+function desglose(f) {
+  const tot = {}; CATS.forEach(c => tot[c[0]] = 0); tot.otros = 0;
+  cargosMes(f).forEach(c => { const k = (CATS.find(x => x[2].test(c.concepto || '')) || ['otros'])[0]; tot[k] += c.monto || 0; });
+  if (!tot.mora && f.interesMora) tot.mora = f.interesMora;
+  return tot;
+}
+const kwhDe = (f, v) => f.consumoKwh > 0 && v != null ? v / f.consumoKwh : null;
+const sinPotPunta = f => { const d = desglose(f), b = netoSM(f); return b == null ? null : b - d.demanda - d.punta; };
+const costoKwhSinPotPunta = f => kwhDe(f, sinPotPunta(f));
 const costoKwh = f => { const b = netoSM(f); return b && f.consumoKwh > 0 ? b / f.consumoKwh : null; };
 
 // Consumo según NUESTRAS lecturas entre dos fechas (interpolación lineal entre lecturas; tolera 4 días fuera del rango)
@@ -285,8 +296,8 @@ function rResumen() {
     const lecAviso = ul ? (dias(ul.fecha, hoy) > 32 ? `<span class="chip warn">Última lectura propia hace ${num(dias(ul.fecha, hoy))} días</span>` : `<span class="chip ok">Lectura propia: ${fCorta(ul.fecha)}</span>`) : '<span class="chip warn">Sin lecturas propias</span>';
     const ult12 = fs.slice(-12);
     return `<div class="panel"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><div><h2 style="margin:0">${escA(s.nombre)}</h2><div class="hint">Cliente ${escA(s.nCliente || '–')} · medidor ${escA(s.medidor || '–')}${s.tarifa ? ' · ' + escA(s.tarifa) : ''}${s.centro ? ' · ' + escA(s.centro) : ''}</div></div><div>${lecAviso}</div></div>
-      ${u ? `<div class="kpi"><div><small>Último período (${mesTxt(u.mes)})</small><b>${num(u.consumoKwh)} kWh</b><span class="${vK > 0 ? 'up' : 'down'}" style="font-size:12px">${a ? pct(vK) + ' vs mes anterior' : ''}</span></div><div><small>Costo del mes (sin mora)</small><b>${pesos(totalSM(u))}</b><span class="${vT > 0 ? 'up' : 'down'}" style="font-size:12px">${a ? pct(vT) : ''}</span></div><div><small>Precio energía</small><b>${precioKwh(u) ? '$' + num(precioKwh(u), 1) : '–'}/kWh</b><span class="${vP > 0 ? 'up' : 'down'}" style="font-size:12px">${a ? pct(vP) : ''}</span></div><div><small>Costo total/kWh</small><b>${costoKwh(u) ? '$' + num(costoKwh(u), 0) : '–'}</b></div>${u.demandaMaxKw != null ? `<div><small>Demanda máx.</small><b>${num(u.demandaMaxKw, 1)} kW</b></div>` : ''}${u.saldoAnterior > 0 ? `<div><small>Saldo anterior impago</small><b class="up">${pesos(u.saldoAnterior)}</b></div>` : ''}${u.cargoFp ? `<div><small>Recargo factor potencia</small><b class="up">${pesos(u.cargoFp)}</b></div>` : ''}${u.interesMora ? `<div><small>Interés por mora</small><b class="up">${pesos(u.interesMora)}</b></div>` : ''}</div>
-      <details style="margin:6px 0"><summary style="cursor:pointer;list-style:none">${chipNivel(ch)} <span class="hint">▾ ver detalle</span></summary><div style="margin-top:8px">${checksHtml(ch.slice().sort((a, b) => ({ err: 0, warn: 1, info: 2, ok: 3 }[a.nivel]) - ({ err: 0, warn: 1, info: 2, ok: 3 }[b.nivel])))}</div></details>${barras(ult12.map(x => mesTxt(x.mes)), [{ nombre: 'kWh', color: '#2D7D46', valores: ult12.map(x => x.consumoKwh) }], v => num(v))}`
+      ${u ? `<div class="kpi"><div><small>Último período (${mesTxt(u.mes)})</small><b>${num(u.consumoKwh)} kWh</b><span class="${vK > 0 ? 'up' : 'down'}" style="font-size:12px">${a ? pct(vK) + ' vs mes anterior' : ''}</span></div><div><small>Costo del mes (sin mora)</small><b>${pesos(totalSM(u))}</b><span class="${vT > 0 ? 'up' : 'down'}" style="font-size:12px">${a ? pct(vT) : ''}</span></div><div><small>Precio energía</small><b>${precioKwh(u) ? '$' + num(precioKwh(u), 1) : '–'}/kWh</b><span class="${vP > 0 ? 'up' : 'down'}" style="font-size:12px">${a ? pct(vP) : ''}</span></div><div><small>Costo total/kWh</small><b>${costoKwh(u) ? '$' + num(costoKwh(u), 0) : '–'}</b></div><div><small>Costo/kWh sin potencia ni punta</small><b>${costoKwhSinPotPunta(u) ? '$' + num(costoKwhSinPotPunta(u), 0) : '–'}</b></div>${u.demandaMaxKw != null ? `<div><small>Demanda máx.</small><b>${num(u.demandaMaxKw, 1)} kW</b></div>` : ''}${u.saldoAnterior > 0 ? `<div><small>Saldo anterior impago</small><b class="up">${pesos(u.saldoAnterior)}</b></div>` : ''}${u.cargoFp ? `<div><small>Recargo factor potencia</small><b class="up">${pesos(u.cargoFp)}</b></div>` : ''}${u.interesMora ? `<div><small>Interés por mora</small><b class="up">${pesos(u.interesMora)}</b></div>` : ''}</div>
+      <details style="margin:6px 0"><summary style="cursor:pointer;list-style:none">${chipNivel(ch)} <span class="hint">▾ ver detalle</span></summary><div style="margin-top:8px">${checksHtml(ch.slice().sort((a, b) => ({ err: 0, warn: 1, info: 2, ok: 3 }[a.nivel]) - ({ err: 0, warn: 1, info: 2, ok: 3 }[b.nivel])))}</div></details>${desgloseHtml(u)}${barras(ult12.map(x => mesTxt(x.mes)), [{ nombre: 'kWh', color: '#2D7D46', valores: ult12.map(x => x.consumoKwh) }], v => num(v))}`
       : '<div class="hint" style="margin-top:8px">Aún no hay facturas de este suministro.</div>'}</div>`;
   }).join('');
   const meses = [...new Set(S.fac.map(f => f.mes).filter(Boolean))].sort().slice(-12);
@@ -294,6 +305,19 @@ function rResumen() {
   const filaM = (m) => { const fs = S.fac.filter(f => f.mes === m); return `<tr><td>${mesTxt(m)}</td>${act.map(s => { const f = fs.find(x => x.suministro === s.id); return `<td class="n">${f ? num(f.consumoKwh) : '–'}</td><td class="n">${f ? pesos(f.total) : '–'}</td>`; }).join('')}<td class="n"><b>${num(fs.reduce((a, f) => a + (f.consumoKwh || 0), 0))}</b></td><td class="n"><b>${pesos(fs.reduce((a, f) => a + (f.total || 0), 0))}</b></td></tr>`; };
   const tabla = meses.length ? `<div class="panel"><h2>Todos los suministros por mes</h2><div class="tw"><table><thead><tr><th>Mes</th>${act.map(s => `<th class="n" colspan="2">${escA(s.nombre)}</th>`).join('')}<th class="n" colspan="2">Total</th></tr><tr style="background:#333"><th></th>${act.map(() => '<th class="n">kWh</th><th class="n">$</th>').join('')}<th class="n">kWh</th><th class="n">$</th></tr></thead><tbody>${[...meses].reverse().map(filaM).join('')}</tbody></table></div></div>` : '';
   return tarjetas + tabla;
+}
+
+function desgloseHtml(u) {
+  const d = desglose(u), neto = netoSM(u); if (!neto || !(u.consumoKwh > 0)) return '';
+  const fila = (n, v, neg) => `<tr${neg ? ' style="opacity:.65"' : ''}><td>${n}</td><td class="n">${pesos(v)}</td><td class="n">${num(v / neto * 100, 1)} %</td><td class="n">$${num(v / u.consumoKwh, 1)}</td></tr>`;
+  const sp = sinPotPunta(u);
+  return `<details style="margin:8px 0" open><summary style="cursor:pointer;font-weight:700;font-size:13px">Desglose del costo de ${mesTxt(u.mes)} (${num(u.consumoKwh)} kWh, sin mora)</summary>
+    <div class="tw"><table><thead><tr><th>Cargo</th><th class="n">Monto</th><th class="n">% del neto</th><th class="n">$ por kWh del mes</th></tr></thead><tbody>
+    ${CATS.filter(c => !['mora', 'noafecto'].includes(c[0]) && d[c[0]]).map(c => fila(c[1], d[c[0]])).join('')}${d.otros ? fila('Otros cargos', d.otros) : ''}
+    <tr style="font-weight:700;border-top:2px solid var(--borde)"><td>Total neto sin mora</td><td class="n">${pesos(neto)}</td><td class="n">100 %</td><td class="n">$${num(neto / u.consumoKwh, 1)}</td></tr>
+    <tr style="background:var(--fondo)"><td><b>Sin potencia ni punta</b><div class="hint">energía + transporte + administración${d.fp ? ' + factor de potencia' : ''}</div></td><td class="n"><b>${pesos(sp)}</b></td><td class="n">${num(sp / neto * 100, 1)} %</td><td class="n"><b>$${num(sp / u.consumoKwh, 1)}</b></td></tr>
+    <tr style="background:var(--fondo)"><td><b>Solo potencia + punta</b></td><td class="n"><b>${pesos(d.demanda + d.punta)}</b></td><td class="n">${num((d.demanda + d.punta) / neto * 100, 1)} %</td><td class="n"><b>$${num((d.demanda + d.punta) / u.consumoKwh, 1)}</b></td></tr></tbody></table></div>
+    <div class="hint">La potencia y la punta son cargos por capacidad, no por consumo: si el mes se consume poco, su costo por kWh sube. Cobros no afectos del mes: ${pesos(d.noafecto)}. Interés por mora (excluido): ${pesos(d.mora)}.</div></details>`;
 }
 
 // ── 📄 Facturas ──────────────────────────────────────────────────────────
@@ -423,9 +447,9 @@ function rComparar() {
   if (!S.fac.length) return '<div class="panel">Sube facturas para poder comparar.</div>';
   const sid = S.cmp.sum, met = S.cmp.met;
   const base = sid ? S.fac.filter(f => f.suministro === sid) : S.fac;
-  const valor = f => met === 'kwh' ? f.consumoKwh : met === 'total' ? totalSM(f) : met === 'costo' ? costoKwh(f) : precioKwh(f);
-  const fmt = v => met === 'kwh' ? num(v) : met === 'total' ? pesos(v) : '$' + num(v, met === 'costo' ? 0 : 1);
-  const agg = (mes) => { const fs = base.filter(f => f.mes === mes); if (!fs.length) return null; if (met === 'precio' || met === 'costo') { const k = fs.reduce((a, f) => a + (f.consumoKwh || 0), 0), n = fs.reduce((a, f) => a + (met === 'costo' ? (netoSM(f) || 0) : (precioKwh(f) || 0) * (f.consumoKwh || 0)), 0); return k > 0 ? n / k : null; } return fs.reduce((a, f) => a + (valor(f) || 0), 0); };
+  const valor = f => met === 'kwh' ? f.consumoKwh : met === 'total' ? totalSM(f) : met === 'costo' ? costoKwh(f) : met === 'costosp' ? costoKwhSinPotPunta(f) : met === 'demanda' ? (() => { const d = desglose(f); return d.demanda + d.punta; })() : precioKwh(f);
+  const fmt = v => met === 'kwh' ? num(v) : (met === 'total' || met === 'demanda') ? pesos(v) : '$' + num(v, met === 'costo' ? 0 : 1);
+  const agg = (mes) => { const fs = base.filter(f => f.mes === mes); if (!fs.length) return null; if (met === 'precio' || met === 'costo' || met === 'costosp') { const k = fs.reduce((a, f) => a + (f.consumoKwh || 0), 0), n = fs.reduce((a, f) => a + (met === 'costo' ? (netoSM(f) || 0) : met === 'costosp' ? (sinPotPunta(f) || 0) : (precioKwh(f) || 0) * (f.consumoKwh || 0)), 0); return k > 0 ? n / k : null; } return fs.reduce((a, f) => a + (valor(f) || 0), 0); };
   const ult = base.map(f => f.mes).filter(Boolean).sort().slice(-1)[0], y = ult ? +ult.slice(0, 4) : new Date().getFullYear();
   const lab = MESES.map(m => m), v1 = MESES.map((_, i) => agg(`${y}-${String(i + 1).padStart(2, '0')}`)), v0 = MESES.map((_, i) => agg(`${y - 1}-${String(i + 1).padStart(2, '0')}`));
   const series = [{ nombre: String(y - 1), color: '#9CA3AF', valores: v0 }, { nombre: String(y), color: '#2D7D46', valores: v1 }];
@@ -433,7 +457,7 @@ function rComparar() {
   const sumA = idx.reduce((a, i) => a + v1[i], 0), sumB = idx.reduce((a, i) => a + v0[i], 0);
   const resumen = idx.length ? `En los ${idx.length} meses con datos en ambos años: <b>${fmt(sumA)}</b> (${y}) vs <b>${fmt(sumB)}</b> (${y - 1}) → <b class="${sumA > sumB ? 'up' : 'down'}">${pct((sumA / sumB - 1) * 100)}</b>` : 'Aún no hay meses con datos en ambos años.';
   const ult12 = [...new Set(base.map(f => f.mes).filter(Boolean))].sort().slice(-13);
-  const cont = `<div class="panel"><h2>Comparar</h2><div class="grid"><div class="field"><label>Suministro</label><select onchange="S_cmp('sum',this.value)"><option value="">Todos juntos</option>${S.sum.map(s => `<option value="${s.id}" ${s.id === sid ? 'selected' : ''}>${escA(s.nombre)}</option>`).join('')}</select></div><div class="field"><label>Qué comparar</label><select onchange="S_cmp('met',this.value)"><option value="kwh" ${met === 'kwh' ? 'selected' : ''}>Consumo (kWh)</option><option value="total" ${met === 'total' ? 'selected' : ''}>Costo del mes, sin mora ($)</option><option value="precio" ${met === 'precio' ? 'selected' : ''}>Precio de la energía ($/kWh)</option><option value="costo" ${met === 'costo' ? 'selected' : ''}>Costo total por kWh, sin mora</option></select></div></div>
+  const cont = `<div class="panel"><h2>Comparar</h2><div class="grid"><div class="field"><label>Suministro</label><select onchange="S_cmp('sum',this.value)"><option value="">Todos juntos</option>${S.sum.map(s => `<option value="${s.id}" ${s.id === sid ? 'selected' : ''}>${escA(s.nombre)}</option>`).join('')}</select></div><div class="field"><label>Qué comparar</label><select onchange="S_cmp('met',this.value)"><option value="kwh" ${met === 'kwh' ? 'selected' : ''}>Consumo (kWh)</option><option value="total" ${met === 'total' ? 'selected' : ''}>Costo del mes, sin mora ($)</option><option value="precio" ${met === 'precio' ? 'selected' : ''}>Precio de la energía ($/kWh)</option><option value="costo" ${met === 'costo' ? 'selected' : ''}>Costo total por kWh, sin mora</option><option value="costosp" ${met === 'costosp' ? 'selected' : ''}>Costo por kWh sin potencia ni punta</option><option value="demanda" ${met === 'demanda' ? 'selected' : ''}>Cargos de potencia + punta ($)</option></select></div></div>
     <h2 style="margin-top:10px">Mismo mes, año contra año</h2>${leyenda(series)}${barras(lab, series, fmt, 190)}<div style="font-size:13px;margin-top:6px">${resumen}</div></div>
     <div class="panel"><h2>Mes contra mes (últimos 13)</h2>${barras(ult12.map(mesTxt), [{ nombre: 'Valor', color: '#F5A623', valores: ult12.map(agg) }], fmt, 170)}
     <div class="tw" style="margin-top:6px"><table><thead><tr><th>Mes</th><th class="n">Valor</th><th class="n">vs mes anterior</th><th class="n">vs mismo mes año anterior</th></tr></thead><tbody>${[...ult12].reverse().map(m => { const a = agg(m), p = agg(mesMas(m, -1)), q = agg(mesMas(m, -12)); return `<tr><td>${mesTxt(m)}</td><td class="n">${fmt(a)}</td><td class="n">${a != null && p ? pct((a / p - 1) * 100) : '–'}</td><td class="n">${a != null && q ? pct((a / q - 1) * 100) : '–'}</td></tr>`; }).join('')}</tbody></table></div></div>`;
