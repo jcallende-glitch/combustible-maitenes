@@ -5438,14 +5438,208 @@ window.renderModoAsistencia = function() {
       <div style="display:flex;gap:10px;flex-wrap:wrap">
         <button type="button" style="${btn};background:#16A34A;color:#fff;border-color:#16A34A" onclick="iniciarCompletarAsistencia()">✍️ Completar</button>
         <button type="button" style="${btn}" onclick="asistEstado='planilla';renderModoAsistencia()">📋 Revisar</button>
+        ${esAdminPleno() ? `<button type="button" style="${btn}" onclick="abrirSueldos()">💰 Sueldos del mes</button>` : ''}
       </div></div>`;
   } else {
     m.innerHTML = `<div style="display:flex;gap:8px;margin-bottom:10px">
       <button type="button" class="btn" style="flex:1" onclick="iniciarCompletarAsistencia()">✍️ Completar</button>
-      <button type="button" class="btn" style="flex:1" onclick="asistEstado='planilla';renderModoAsistencia()">📋 Planilla</button></div>`;
+      <button type="button" class="btn" style="flex:1" onclick="asistEstado='planilla';renderModoAsistencia()">📋 Planilla</button>
+      ${esAdminPleno() ? `<button type="button" class="btn" style="flex:1" onclick="abrirSueldos()">💰 Sueldos</button>` : ''}</div>`;
   }
 }
 
+// ─── 💰 SUELDOS DEL MES: la planilla de remuneraciones se reparte entre cultivos/frutales y labores según la tarja ───
+let SUE = null;
+const sueP = v => v == null || !isFinite(v) ? '–' : '$' + Math.round(v).toLocaleString('es-CL');
+const sueH = v => (Math.round((v || 0) * 10) / 10).toLocaleString('es-CL', { maximumFractionDigits: 1 });
+function sueNum(v) {
+  if (typeof v === 'number') return isFinite(v) ? v : null;
+  let s = String(v == null ? '' : v).replace(/[$\s]/g, ''); if (!s || !/\d/.test(s)) return null;
+  if (s.includes(',') && s.includes('.')) s = s.replace(/\./g, '').replace(',', '.');
+  else if (/^-?\d{1,3}(\.\d{3})+$/.test(s)) s = s.replace(/\./g, '');
+  else s = s.replace(',', '.');
+  const n = parseFloat(s); return isFinite(n) ? n : null;
+}
+function sueMatch(nombre) {
+  const mp = config.mapaNomina || {};
+  if (Object.prototype.hasOwnProperty.call(mp, nombre)) return mp[nombre];
+  const toks = normNom(nombre).split(' ').filter(t => t.length > 1);
+  let best = '', bs = 0, dup = false;
+  (trabajadoresAsistenciaConfig || []).forEach(t => {
+    const tt = normNom(t).split(' ').filter(x => x.length > 1); if (!tt.length) return;
+    const sc = tt.filter(x => toks.includes(x)).length / tt.length;
+    if (sc > bs) { bs = sc; best = t; dup = false; } else if (sc === bs && sc > 0) dup = true;
+  });
+  return bs >= 0.66 && !dup ? best : '';
+}
+const SUE_CAMPOS = [['nombre', 'Nombre', /nombre|trabajador|empleado/], ['costo', 'Costo empresa', /costo.*empresa|costo total|total costo|costo laboral/], ['liquido', 'Líquido a pagar', /l[i]quido|alcance|a pagar/], ['haberes', 'Total haberes', /total haberes|haberes|bruto/], ['heMonto', 'Horas extra ($)', /(extra|h\.? ?e).*(monto|valor|\$|pago)|(monto|valor|pago).*extra|sobretiempo.*\$/], ['heHoras', 'Horas extra (horas)', /(horas?|hrs?) ?extra|h\.? ?e\.?$|sobretiempo/]];
+function sueAutoColumnas(headers) {
+  const map = {}, h = headers.map(x => normNom(x));
+  SUE_CAMPOS.forEach(([k, , re]) => {
+    let i = h.findIndex((x, ix) => re.test(x) && !Object.values(map).includes(ix));
+    if (k === 'heHoras') { const j = h.findIndex((x, ix) => /extra|sobretiempo/.test(x) && !/monto|valor|\$|pago/.test(x) && !Object.values(map).includes(ix)); i = j >= 0 ? j : i; }
+    if (i >= 0) map[k] = i;
+  });
+  return map;
+}
+function sueFilasDeRaw() {
+  const { headers, data, map } = SUE.raw, out = [];
+  data.forEach(r => {
+    const nombre = String(r[map.nombre] == null ? '' : r[map.nombre]).trim();
+    if (!nombre || /^total/i.test(nombre)) return;
+    const f = { nombre, costo: sueNum(r[map.costo]), liquido: sueNum(r[map.liquido]), haberes: sueNum(r[map.haberes]), heMonto: sueNum(r[map.heMonto]), heHoras: sueNum(r[map.heHoras]) };
+    if (f.costo == null && f.liquido == null && f.haberes == null) return;
+    out.push(f);
+  });
+  SUE.filas = out; out.forEach(f => f.trab = sueMatch(f.nombre));
+}
+window.abrirSueldos = async function() {
+  if (!esAdminPleno()) { toast('Solo JC o Camila', false); return; }
+  const hoy = getNow().fecha, d = new Date(hoy + 'T12:00:00'); d.setDate(1); d.setMonth(d.getMonth() - 1);
+  const mes = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+  SUE = { mes, filas: [], raw: null, jornada: 8, res: null };
+  let ov = document.getElementById('modal-sueldos');
+  if (!ov) { ov = document.createElement('div'); ov.id = 'modal-sueldos'; ov.style.cssText = 'position:fixed;inset:0;z-index:4000;background:rgba(0,0,0,.55);display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:12px'; document.body.appendChild(ov); }
+  ov.innerHTML = `<div style="background:var(--blanco,#fff);border-radius:12px;max-width:760px;width:100%;padding:16px;margin:auto">
+    <div class="panel-title">💰 Sueldos del mes</div>
+    <div class="hint" style="margin-bottom:8px">Sube la planilla del mes (Excel, CSV o PDF). Se reparte el <b>costo total empresa</b> de cada trabajador entre cultivos/frutales y labores, en proporción a lo que registró en la tarja (días + horas extra). También queda el líquido a pagar, para analizar la diferencia.</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:8px">
+      <div class="field" style="margin:0"><label>Mes</label><input type="month" id="sue-mes" value="${mes}" onchange="SUE.mes=this.value;sueRecalcular()"></div>
+      <div class="field" style="margin:0;width:120px"><label>Horas por jornada</label><input type="number" id="sue-jornada" value="8" min="4" max="12" step="0.5" onchange="SUE.jornada=parseFloat(this.value)||8;sueRecalcular()"></div>
+      <div class="field" style="margin:0;flex:1;min-width:200px"><label>Planilla</label><input type="file" id="sue-archivo" accept=".xlsx,.xls,.csv,.pdf,image/*" onchange="sueCargarArchivo(this.files[0])"></div></div>
+    <div id="sue-estado" style="font-size:12px;color:var(--acero);margin-bottom:6px"></div>
+    <div id="sue-columnas"></div>
+    <div id="sue-cuerpo"></div>
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="cerrarSueldos()">Cerrar</button>
+      <button class="btn btn-secondary" style="flex:1;justify-content:center" id="sue-excel" onclick="sueExcel()" disabled>📥 Excel</button>
+      <button class="btn btn-verde" style="flex:1" id="sue-guardar" onclick="sueGuardar()" disabled>💾 Guardar mes</button></div></div>`;
+  try { const sn = await getDoc(doc(db, 'remuneraciones', mes)); if (sn.exists() && SUE && SUE.mes === mes) { SUE.guardado = sn.data(); document.getElementById('sue-estado').innerHTML = `Ya hay un reparto guardado de ${mes} (${(SUE.guardado.filas || []).length} trabajadores). Si subes otra planilla lo reemplaza.`; } } catch (e) {}
+}
+window.cerrarSueldos = function() { const ov = document.getElementById('modal-sueldos'); if (ov) ov.remove(); SUE = null; }
+window.sueCargarArchivo = async function(f) {
+  if (!f || !SUE) return;
+  const est = document.getElementById('sue-estado'); est.textContent = 'Leyendo ' + f.name + '…';
+  const nombre = f.name.toLowerCase();
+  try {
+    if (/\.(xlsx|xls|csv)$/.test(nombre)) {
+      if (typeof XLSX === 'undefined') throw new Error('No se cargó la librería de Excel');
+      const wb = XLSX.read(await f.arrayBuffer(), { type: 'array' });
+      let best = null;
+      wb.SheetNames.forEach(n => { const rows = XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, raw: true, defval: '' }); if (!best || rows.length > best.rows.length) best = { n, rows }; });
+      const rows = best ? best.rows : [];
+      let hi = rows.slice(0, 20).findIndex(r => r.some(c => /nombre|trabajador|empleado/.test(normNom(c))));
+      if (hi < 0) hi = 0;
+      const headers = (rows[hi] || []).map(c => String(c)), data = rows.slice(hi + 1);
+      SUE.raw = { headers, data, map: sueAutoColumnas(headers) };
+      if (SUE.raw.map.nombre == null) SUE.raw.map.nombre = 0;
+      sueFilasDeRaw(); est.textContent = '✓ ' + f.name + ' · hoja "' + best.n + '" · ' + SUE.filas.length + ' trabajadores. Revisa las columnas detectadas.';
+    } else {
+      if (f.size > 4.5 * 1024 * 1024) throw new Error('El archivo pesa demasiado (máx. 4,5 MB)');
+      if (!sesionPinIA) { sesionPinIA = (prompt('Ingresa tu PIN para usar la lectura con IA') || '').trim(); if (!sesionPinIA) { est.textContent = ''; return; } }
+      const url = await new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = () => no(new Error('No se pudo leer el archivo')); r.readAsDataURL(f); });
+      est.textContent = '🤖 Leyendo la planilla con IA… (puede tardar un minuto)';
+      const resp = await fetch(URL_LECTOR_DOC, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ usuario: currentUser, pin: sesionPinIA, modo: 'remuneraciones', documentos: [url] }) });
+      if (resp.status === 401) { sesionPinIA = ''; throw new Error('PIN no válido para la lectura con IA'); }
+      const j = await resp.json().catch(() => ({}));
+      if (!resp.ok || !j.remuneraciones) throw new Error(j.error || 'No se pudo leer la planilla');
+      SUE.raw = null;
+      SUE.filas = (j.remuneraciones.filas || []).map(x => ({ nombre: x.nombre, costo: x.costo_empresa != null ? x.costo_empresa : null, liquido: x.liquido != null ? x.liquido : null, haberes: x.total_haberes != null ? x.total_haberes : null, heMonto: x.horas_extra_monto != null ? x.horas_extra_monto : null, heHoras: x.horas_extra_horas != null ? x.horas_extra_horas : null }));
+      SUE.filas.forEach(x => x.trab = sueMatch(x.nombre));
+      est.innerHTML = '✓ Leída con IA: ' + SUE.filas.length + ' trabajadores. <b>Revisa las cifras</b> contra la planilla.' + (j.remuneraciones.observaciones ? '<br>🗒️ ' + escA(j.remuneraciones.observaciones) : '');
+    }
+    sueRecalcular();
+  } catch (e) { est.innerHTML = '<span style="color:#B91C1C">' + escA(e.message) + '</span>'; }
+}
+window.sueCambiarCol = function(k, v) { if (!SUE || !SUE.raw) return; if (v === '') delete SUE.raw.map[k]; else SUE.raw.map[k] = parseInt(v, 10); sueFilasDeRaw(); sueRecalcular(); }
+window.sueAsignar = function(i, v) { if (!SUE || !SUE.filas[i]) return; SUE.filas[i].trab = v; config.mapaNomina = { ...(config.mapaNomina || {}), [SUE.filas[i].nombre]: v }; sueMapaGuardar(); sueRecalcular(); }
+let sueMapaTimer = null;
+function sueMapaGuardar() { clearTimeout(sueMapaTimer); sueMapaTimer = setTimeout(() => setDoc(doc(db, 'config', 'datos'), { mapaNomina: config.mapaNomina }, { merge: true }).catch(e => console.warn('mapaNomina', e)), 800); }
+// Reparte el costo de cada trabajador según su tarja del mes
+function sueCalcular() {
+  const mes = SUE.mes, J = SUE.jornada || 8, regs = asistenciaRegistros.filter(r => r.fecha && r.fecha.startsWith(mes));
+  const porTrab = {};
+  regs.forEach(r => {
+    const he = parseFloat(r.horas_registro) || 0;
+    const partes = (r.centros_dist && r.centros_dist.length) ? r.centros_dist.map(x => ({ centro: x.centro, p: (x.pct || 0) / 100 })) : [{ centro: r.centro_costo || 'Sin centro asignado', p: 1 }];
+    const sp = partes.reduce((a, x) => a + x.p, 0) || 1, labor = r.labor || 'Sin labor';
+    const t = porTrab[r.trabajador] = porTrab[r.trabajador] || { dias: new Set(), items: [] };
+    t.dias.add(r.fecha);
+    partes.forEach(x => t.items.push({ centro: x.centro, labor, dias: x.p / sp, he: he * x.p / sp }));
+  });
+  const filas = SUE.filas.map(f => {
+    const t = f.trab ? porTrab[f.trab] : null, costo = f.costo != null ? f.costo : null;
+    const res = { nombre: f.nombre, trabajador: f.trab || '', costo, liquido: f.liquido, haberes: f.haberes, heMonto: f.heMonto, heHoras: f.heHoras, dif: costo != null && f.liquido != null ? costo - f.liquido : null, diasTarja: t ? t.dias.size : 0, heTarja: t ? t.items.reduce((a, x) => a + x.he, 0) : 0, dist: [] };
+    if (!f.trab) { res.estado = 'sin_trabajador'; return res; }
+    if (!t || costo == null) { res.estado = !t ? 'sin_tarja' : 'sin_costo'; return res; }
+    const totDias = t.items.reduce((a, x) => a + x.dias, 0), totHe = t.items.reduce((a, x) => a + x.he, 0);
+    let baseM = costo, heM = 0;
+    if (f.heMonto > 0 && totHe > 0 && f.heMonto < costo) { baseM = costo - f.heMonto; heM = f.heMonto; }
+    const peso = x => (heM > 0 ? 0 : x.he / J);
+    const totP = heM > 0 ? totDias : totDias + totHe / J;
+    const acum = {};
+    t.items.forEach(x => {
+      const monto = baseM * ((heM > 0 ? x.dias : x.dias + x.he / J) / (totP || 1)) + (heM > 0 ? heM * x.he / totHe : 0);
+      const heMx = heM > 0 ? heM * x.he / totHe : (f.heMonto > 0 && totHe > 0 ? 0 : 0);
+      const k = x.centro + '|' + x.labor, a = acum[k] = acum[k] || { centro: x.centro, labor: x.labor, monto: 0, heMonto: 0, dias: 0, he: 0 };
+      a.monto += monto; a.heMonto += heMx; a.dias += x.dias; a.he += x.he;
+    });
+    res.dist = Object.values(acum); res.estado = 'ok'; res.heEnPlanilla = heM > 0;
+    return res;
+  });
+  const usados = new Set(filas.filter(f => f.trabajador).map(f => f.trabajador));
+  const sinPlanilla = Object.keys(porTrab).filter(t => !usados.has(t));
+  const centros = {}, labores = {};
+  filas.filter(f => f.estado === 'ok').forEach(f => f.dist.forEach(a => {
+    const fr = f.liquido != null && f.costo ? f.liquido / f.costo : null;
+    [[centros, a.centro], [labores, a.labor]].forEach(([obj, k]) => { const c = obj[k] = obj[k] || { nombre: k, monto: 0, liquido: 0, heMonto: 0, dias: 0, he: 0 }; c.monto += a.monto; c.liquido += fr != null ? a.monto * fr : 0; c.heMonto += a.heMonto; c.dias += a.dias; c.he += a.he; });
+  }));
+  const sinDistribuir = filas.filter(f => f.estado && f.estado !== 'ok').reduce((a, f) => a + (f.costo || 0), 0);
+  return { filas, centros: Object.values(centros).sort((a, b) => b.monto - a.monto), labores: Object.values(labores).sort((a, b) => b.monto - a.monto), sinPlanilla, sinDistribuir, totalCosto: filas.reduce((a, f) => a + (f.costo || 0), 0), totalLiquido: filas.reduce((a, f) => a + (f.liquido || 0), 0), registros: regs.length };
+}
+window.sueRecalcular = function() {
+  if (!SUE) return;
+  const col = document.getElementById('sue-columnas'), cu = document.getElementById('sue-cuerpo'); if (!col || !cu) return;
+  if (SUE.raw) {
+    const hs = SUE.raw.headers;
+    col.innerHTML = `<details style="margin-bottom:8px" ${SUE.raw.map.costo == null ? 'open' : ''}><summary style="font-size:12px;cursor:pointer">Columnas detectadas${SUE.raw.map.costo == null ? ' — <b style="color:#B91C1C">falta elegir el costo empresa</b>' : ''}</summary><div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px">${SUE_CAMPOS.map(([k, t]) => `<div class="field" style="margin:0"><label style="font-size:11px">${t}</label><select onchange="sueCambiarCol('${k}',this.value)"><option value="">— no está —</option>${hs.map((h, i) => `<option value="${i}" ${SUE.raw.map[k] === i ? 'selected' : ''}>${escA(h || 'col. ' + (i + 1))}</option>`).join('')}</select></div>`).join('')}</div></details>`;
+  } else col.innerHTML = '';
+  if (!SUE.filas.length) { cu.innerHTML = ''; return; }
+  const R = SUE.res = sueCalcular();
+  const trabs = trabajadoresAsistenciaConfig || [];
+  const est = { ok: '', sin_trabajador: '⚠️ Elige quién es', sin_tarja: '⚠️ Sin tarja este mes', sin_costo: '⚠️ Sin costo empresa' };
+  const filasHtml = R.filas.map((f, i) => `<tr style="border-top:1px solid var(--borde)"><td style="padding:4px"><div style="font-size:12px">${escA(f.nombre)}</div><select style="font-size:12px;max-width:150px" onchange="sueAsignar(${i},this.value)"><option value="">— ninguno —</option>${trabs.map(t => `<option value="${escA(t)}" ${f.trabajador === t ? 'selected' : ''}>${escA(t)}</option>`).join('')}</select>${est[f.estado] ? `<div style="font-size:10px;color:#B45309">${est[f.estado]}</div>` : ''}</td>
+    <td style="text-align:right;padding:4px">${sueP(f.liquido)}</td><td style="text-align:right;padding:4px;font-weight:700">${sueP(f.costo)}</td><td style="text-align:right;padding:4px;color:var(--acero)">${sueP(f.dif)}</td><td style="text-align:right;padding:4px">${f.diasTarja || '–'}</td><td style="text-align:right;padding:4px">${f.heTarja ? sueH(f.heTarja) : '–'}${f.heHoras ? `<div style="font-size:10px;color:var(--acero)">pagadas ${sueH(f.heHoras)}</div>` : ''}</td></tr>`).join('');
+  const filaC = (c, tot) => `<tr style="border-top:1px solid var(--borde)"><td style="padding:4px">${puntoCentro(c.nombre)}${escA(c.nombre)}</td><td style="text-align:right;padding:4px;font-weight:700">${sueP(c.monto)}</td><td style="text-align:right;padding:4px">${tot ? Math.round(c.monto / tot * 100) : 0} %</td><td style="text-align:right;padding:4px;color:var(--acero)">${sueP(c.liquido)}</td><td style="text-align:right;padding:4px">${sueH(c.dias)}</td><td style="text-align:right;padding:4px">${c.he ? sueH(c.he) : '–'}</td><td style="text-align:right;padding:4px">${c.heMonto ? sueP(c.heMonto) : '–'}</td></tr>`;
+  const totD = R.centros.reduce((a, c) => a + c.monto, 0), cab = '<thead><tr><th style="text-align:left;padding:4px"></th><th style="text-align:right;padding:4px">Costo empresa</th><th style="text-align:right;padding:4px">%</th><th style="text-align:right;padding:4px">Líquido</th><th style="text-align:right;padding:4px">Días</th><th style="text-align:right;padding:4px">H. extra</th><th style="text-align:right;padding:4px">$ H. extra</th></tr></thead>';
+  cu.innerHTML = `<div style="font-size:13px;margin:6px 0"><b>Total costo empresa ${sueP(R.totalCosto)}</b> · líquido ${sueP(R.totalLiquido)} · diferencia ${sueP(R.totalCosto - R.totalLiquido)}${R.totalLiquido ? ` (${Math.round((R.totalCosto / R.totalLiquido - 1) * 100)} % sobre el líquido)` : ''}<br>
+      Repartido: <b>${sueP(totD)}</b>${R.sinDistribuir ? ` · <span style="color:#B45309">sin repartir ${sueP(R.sinDistribuir)}</span>` : ''} · ${R.registros} registros de tarja en ${escA(SUE.mes)}</div>
+    ${R.sinPlanilla.length ? `<div style="font-size:12px;color:#B45309;margin-bottom:6px">⚠️ Con tarja pero sin fila en la planilla: ${R.sinPlanilla.map(escA).join(', ')}</div>` : ''}
+    <div class="cultivos-label">Por cultivo / frutal (centro de costo)</div><div style="overflow-x:auto"><table style="width:100%;min-width:0;font-size:12px;border-collapse:collapse">${cab}<tbody>${R.centros.map(c => filaC(c, totD)).join('')}</tbody></table></div>
+    <div class="cultivos-label" style="margin-top:10px">Por labor</div><div style="overflow-x:auto"><table style="width:100%;min-width:0;font-size:12px;border-collapse:collapse">${cab}<tbody>${R.labores.map(c => filaC(c, totD)).join('')}</tbody></table></div>
+    <div class="cultivos-label" style="margin-top:10px">Por trabajador</div><div style="overflow-x:auto"><table style="width:100%;min-width:0;font-size:12px;border-collapse:collapse"><thead><tr><th style="text-align:left;padding:4px">Trabajador</th><th style="text-align:right;padding:4px">Líquido</th><th style="text-align:right;padding:4px">Costo empresa</th><th style="text-align:right;padding:4px">Diferencia</th><th style="text-align:right;padding:4px">Días tarja</th><th style="text-align:right;padding:4px">H. extra</th></tr></thead><tbody>${filasHtml}</tbody></table></div>
+    <div style="font-size:11px;color:var(--acero);margin-top:6px">Cada trabajador: su costo empresa se reparte por los días de su tarja (un día con varios centros se divide según sus %) más las horas extra anotadas (horas ÷ jornada). Si la planilla trae el monto de horas extra, ese monto va a los centros donde hizo las horas extra y el resto por días. Líquido por centro = proporcional al costo.</div>`;
+  const b = document.getElementById('sue-guardar'), x = document.getElementById('sue-excel'); if (b) b.disabled = false; if (x) x.disabled = false;
+}
+window.sueGuardar = async function() {
+  if (!SUE || !SUE.res) return;
+  const R = SUE.res, mes = SUE.mes;
+  if (SUE.guardado && !confirm('Ya hay un reparto guardado de ' + mes + '. ¿Reemplazarlo?')) return;
+  const lim = o => JSON.parse(JSON.stringify(o, (k, v) => v === undefined || (typeof v === 'number' && !isFinite(v)) ? null : v));
+  try {
+    await setDoc(doc(db, 'remuneraciones', mes), lim({ mes, jornada: SUE.jornada, filas: R.filas, centros: R.centros, labores: R.labores, sinPlanilla: R.sinPlanilla, sinDistribuir: R.sinDistribuir, totalCosto: R.totalCosto, totalLiquido: R.totalLiquido, registros: R.registros, registrado_por: currentUser, ts: Date.now() }));
+    toast('✓ Sueldos de ' + mes + ' guardados', true);
+  } catch (e) { toast('Error: ' + e.message, false); }
+}
+window.sueExcel = function() {
+  if (!SUE || !SUE.res || typeof XLSX === 'undefined') return;
+  const R = SUE.res, wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(R.filas.map(f => ({ Planilla: f.nombre, Trabajador: f.trabajador, 'Líquido a pagar': f.liquido, 'Costo empresa': f.costo, Diferencia: f.dif, 'Días tarja': f.diasTarja, 'H. extra tarja': Math.round(f.heTarja * 10) / 10, 'H. extra pagadas': f.heHoras, '$ H. extra planilla': f.heMonto, Estado: f.estado }))), 'Trabajadores');
+  const hoja = (arr, n) => XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(arr.map(c => ({ Nombre: c.nombre, 'Costo empresa': Math.round(c.monto), 'Líquido': Math.round(c.liquido), Días: Math.round(c.dias * 10) / 10, 'H. extra': Math.round(c.he * 10) / 10, '$ H. extra': Math.round(c.heMonto) }))), n);
+  hoja(R.centros, 'Por centro'); hoja(R.labores, 'Por labor');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(R.filas.flatMap(f => f.dist.map(a => ({ Trabajador: f.trabajador, Centro: a.centro, Labor: a.labor, 'Costo empresa': Math.round(a.monto), Días: Math.round(a.dias * 10) / 10, 'H. extra': Math.round(a.he * 10) / 10 })))), 'Detalle');
+  XLSX.writeFile(wb, 'sueldos-' + SUE.mes + '.xlsx');
+}
 let WZ = null; // estado del asistente
 window.iniciarCompletarAsistencia = async function(fechaForzada) {
   asistEstado = 'wizard'; renderModoAsistencia();
