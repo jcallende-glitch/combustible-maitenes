@@ -290,7 +290,7 @@ window.setTab = t => { S.tab = t; render(); window.scrollTo(0, 0); };
 function render() {
   $('nav').innerHTML = TABS.map(([k, t]) => `<button class="${S.tab === k ? 'on' : ''}" onclick="setTab('${k}')">${t}</button>`).join('');
   const f = { resumen: rResumen, facturas: rFacturas, lecturas: rLecturas, sub: rSub, ha: rHa, comparar: rComparar, suministros: rSuministros }[S.tab];
-  $('main').innerHTML = f();
+  $('main').innerHTML = f(); if (S.tab === 'facturas') pintarCola();
   if (S.tab === 'facturas' && S.form) calcularRevision();
 }
 
@@ -334,12 +334,13 @@ function formVacio() { return { id: null, suministro: S.filtroSum || (S.sum[0] &
 function rFacturas() {
   const f = S.form;
   const subir = `<div class="panel"><h2>Subir factura de Copelec</h2>
-    <div class="hint" style="margin-bottom:8px">Sube la boleta o factura del mes (PDF o foto; hasta 3 archivos si viene en varias páginas). La app la lee con IA, te muestra lo leído y lo va revisando contra los meses anteriores y contra tus lecturas.</div>
+    <div class="hint" style="margin-bottom:8px">Puedes subir muchas boletas de una vez (PDF de varias páginas, varios PDF o fotos): cada página o foto se lee como una boleta y quedan en una cola para revisar y guardar. Si una sola boleta viene en 2 o 3 archivos, desmarca la casilla de abajo. La app lee con IA y revisa contra los meses anteriores y tus lecturas.</div>
     <input type="file" id="fac-arch" accept=".pdf,image/*" multiple>
+    <label style="font-size:13px;display:flex;gap:6px;align-items:center;margin-top:8px"><input type="checkbox" id="fac-porpag" checked style="width:auto"> Cada página o foto es una boleta distinta (para subir varias de una vez)</label>
     <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap"><button class="btn btn-verde" id="fac-leer" onclick="leerFactura()">🤖 Leer con IA</button><button class="btn btn-secondary" onclick="nuevaFactura()">✍️ Ingresar a mano</button></div><div id="fac-est" class="hint" style="margin-top:6px"></div></div>`;
   const form = f ? formFactura(f) : '';
   const lista = S.sum.map(s => { const fs = facDe(s.id).slice().reverse(); if (!fs.length) return ''; return `<div class="panel"><h2>${escA(s.nombre)}</h2><div class="tw"><table><thead><tr><th>Período</th><th class="n">kWh</th><th class="n">Total factura</th><th class="n">$/kWh energía</th><th>Revisión</th><th></th></tr></thead><tbody>${fs.map(x => { const ch = revisarFactura(x, x.id); return `<tr><td>${fCorta(x.periodoDesde)} → ${fCorta(x.periodoHasta)}<div class="hint">${mesTxt(x.mes)}${x.numeroDoc ? ' · N° ' + escA(x.numeroDoc) : ''}</div></td><td class="n">${num(x.consumoKwh)}</td><td class="n">${pesos(x.total)}</td><td class="n">${precioKwh(x) ? num(precioKwh(x), 1) : '–'}</td><td>${chipNivel(ch)}</td><td style="white-space:nowrap"><button class="btn btn-secondary" onclick="verFactura('${x.id}')">🔍</button> <button class="btn btn-secondary" onclick="editarFactura('${x.id}')">✏️</button> <button class="btn btn-rojo" onclick="borrarFactura('${x.id}')">✕</button></td></tr>`; }).join('')}</tbody></table></div></div>`; }).join('');
-  return subir + form + (lista || '<div class="panel hint">Aún no hay facturas guardadas.</div>') + '<div id="detalle-fac"></div>';
+  return subir + '<div id="cola"></div>' + form + (lista || '<div class="panel hint">Aún no hay facturas guardadas.</div>') + '<div id="detalle-fac"></div>';
 }
 function campo(id, label, v, tipo = 'text', extra = '') { return `<div class="field"><label>${label}</label><input id="${id}" type="${tipo}" value="${escA(v == null ? '' : v)}" ${extra} oninput="calcularRevision()"></div>`; }
 function formFactura(f) {
@@ -378,9 +379,10 @@ window.guardarFactura = async function () {
   if (!f.periodoHasta) { toast('Falta la fecha de término del período', false); return; }
   const ch = revisarFactura(f, f.id), errs = ch.filter(c => c.nivel === 'err');
   if (errs.length && !confirm('La revisión encontró ' + errs.length + ' error(es):\n\n' + errs.map(e => '• ' + e.txt).join('\n') + '\n\n¿Guardar de todos modos?')) return;
-  const datos = { suministro: f.suministro, mes: f.mes, periodoDesde: f.periodoDesde || null, periodoHasta: f.periodoHasta, numeroDoc: f.numeroDoc || null, vencimiento: f.vencimiento || null, lecturaAnterior: f.lecturaAnterior, lecturaActual: f.lecturaActual, constante: f.constante, consumoKwh: f.consumoKwh, demandaMaxKw: f.demandaMaxKw, potenciaKw: f.potenciaKw, tarifa: f.tarifa || null, neto: f.neto, iva: f.iva, total: f.total, noAfectos: f.noAfectos, saldoAnterior: f.saldoAnterior, totalAPagar: f.totalAPagar, interesMora: f.interesMora, cargoFp: f.cargoFp, kvarhAnterior: f.kvarhAnterior, kvarhActual: f.kvarhActual, consumoKvarh: f.consumoKvarh, factorPotencia: f.factorPotencia, demandaSumKw: f.demandaSumKw, demandaPuntaKw: f.demandaPuntaKw, fechaCorte: f.fechaCorte || null, finContrato: f.finContrato || null, limiteTarifa: f.limiteTarifa || null, corteTramite: !!f.corteTramite, cargos: f.cargos || [], observaciones: f.observaciones || '', emision: f.emision || null, historialLeido: f.historialLeido || null, porIA: !!f.porIA, registrado_por: USER.nombre, ts: Date.now() };
+  const datos = datosFactura(f);
   try {
     if (f.id) await updateDoc(doc(db, 'energia_facturas', f.id), datos); else await addDoc(collection(db, 'energia_facturas'), datos);
+    if (S.form.colaId != null && S.cola) S.cola = S.cola.filter(x => x.id !== S.form.colaId);
     S.form = null; await cargarTodo(); render(); toast('✓ Factura guardada');
   } catch (e) { toast('Error: ' + e.message, false); }
 };
@@ -400,24 +402,94 @@ function aDataUrl(file) {
     img.onerror = () => { URL.revokeObjectURL(url); no(new Error('No se pudo abrir la imagen ' + file.name)); }; img.src = url;
   });
 }
+function datosFactura(f) { return { suministro: f.suministro, mes: f.mes, periodoDesde: f.periodoDesde || null, periodoHasta: f.periodoHasta, numeroDoc: f.numeroDoc || null, vencimiento: f.vencimiento || null, lecturaAnterior: f.lecturaAnterior, lecturaActual: f.lecturaActual, constante: f.constante, consumoKwh: f.consumoKwh, demandaMaxKw: f.demandaMaxKw, potenciaKw: f.potenciaKw, tarifa: f.tarifa || null, neto: f.neto, iva: f.iva, total: f.total, noAfectos: f.noAfectos, saldoAnterior: f.saldoAnterior, totalAPagar: f.totalAPagar, interesMora: f.interesMora, cargoFp: f.cargoFp, kvarhAnterior: f.kvarhAnterior, kvarhActual: f.kvarhActual, consumoKvarh: f.consumoKvarh, factorPotencia: f.factorPotencia, demandaSumKw: f.demandaSumKw, demandaPuntaKw: f.demandaPuntaKw, fechaCorte: f.fechaCorte || null, finContrato: f.finContrato || null, limiteTarifa: f.limiteTarifa || null, corteTramite: !!f.corteTramite, cargos: f.cargos || [], observaciones: f.observaciones || '', emision: f.emision || null, historialLeido: f.historialLeido || null, porIA: !!f.porIA, registrado_por: USER.nombre, ts: Date.now() }; }
+function formDeLectura(d) {
+  const nc = normNom(d.numero_cliente || ''), s = S.sum.find(x => nc && normNom(x.nCliente) === nc) || S.sum.find(x => d.numero_medidor && normNom(x.medidor) === normNom(d.numero_medidor));
+  const f = { id: null, leido: d, porIA: true, suministro: s ? s.id : '', periodoDesde: d.periodo_desde || '', periodoHasta: d.periodo_hasta || '', numeroDoc: d.numero_documento || '', vencimiento: d.fecha_vencimiento || '', emision: d.fecha_emision || null, tarifa: d.tarifa || '', lecturaAnterior: d.lectura_anterior != null ? d.lectura_anterior : null, lecturaActual: d.lectura_actual != null ? d.lectura_actual : null, constante: d.constante_medidor != null ? d.constante_medidor : (s && s.constante) || 1, consumoKwh: d.consumo_kwh != null ? d.consumo_kwh : null, demandaMaxKw: d.demanda_maxima_kw != null ? d.demanda_maxima_kw : null, potenciaKw: d.potencia_conectada_kw != null ? d.potencia_conectada_kw : null, neto: d.neto != null ? d.neto : null, iva: d.iva != null ? d.iva : null, total: d.total != null ? d.total : null, noAfectos: d.otros_no_afectos != null ? d.otros_no_afectos : null, saldoAnterior: d.saldo_anterior != null ? d.saldo_anterior : null, totalAPagar: d.total_a_pagar != null ? d.total_a_pagar : null, interesMora: d.interes_mora != null ? d.interes_mora : null, cargoFp: d.cargo_factor_potencia != null ? d.cargo_factor_potencia : null, kvarhAnterior: d.kvarh_anterior != null ? d.kvarh_anterior : null, kvarhActual: d.kvarh_actual != null ? d.kvarh_actual : null, consumoKvarh: d.consumo_kvarh != null ? d.consumo_kvarh : null, factorPotencia: d.factor_potencia != null ? d.factor_potencia : null, demandaSumKw: d.demanda_suministrada_kw != null ? d.demanda_suministrada_kw : null, demandaPuntaKw: d.demanda_punta_kw != null ? d.demanda_punta_kw : null, fechaCorte: d.fecha_corte || '', finContrato: d.fecha_fin_contrato || '', limiteTarifa: d.fecha_limite_cambio_tarifa || '', corteTramite: !!d.corte_en_tramite, cargos: (d.cargos || []).filter(c => !esSaldo(c)), historialLeido: d.historial || null, observaciones: d.observaciones || '', aviso: s ? 'Leída con IA. Revisa las cifras contra la boleta antes de guardar.' : 'Leída con IA. No encontré un suministro con el cliente ' + (d.numero_cliente || '?') + ': elígelo o créalo.' };
+  f.mes = mesDe(f.periodoHasta || f.emision); return f;
+}
+async function pedirPin() { if (pinIA) return true; pinIA = USER.pin || (prompt('Ingresa tu PIN para usar la lectura con IA') || '').trim(); return !!pinIA; }
+async function leerDocs(documentos) {
+  const resp = await fetch('/api/leer-documento', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ usuario: USER.nombre, pin: pinIA, modo: 'electricidad', documentos }) });
+  if (resp.status === 401) { pinIA = ''; throw new Error('PIN no válido para la lectura con IA'); }
+  const j = await resp.json().catch(() => ({}));
+  if (!resp.ok || !j.factura) throw new Error(j.error || 'No se pudo leer la factura');
+  if (j.factura.legible === false) throw new Error('La factura no se ve con claridad. Prueba con una foto más nítida o el PDF.');
+  return j.factura;
+}
+function cargarPdfLib() { return new Promise((ok, no) => { if (window.PDFLib) return ok(); const sc = document.createElement('script'); sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js'; sc.onload = ok; sc.onerror = () => no(new Error('No se pudo cargar el separador de PDF')); document.head.appendChild(sc); }); }
+// Devuelve la lista de "boletas" a leer: cada una es un arreglo de dataURLs
+async function prepararBoletas(files, porPagina) {
+  const out = [];
+  for (const f of files) {
+    if (porPagina && f.type === 'application/pdf') {
+      await cargarPdfLib();
+      const src = await PDFLib.PDFDocument.load(await f.arrayBuffer()), n = src.getPageCount();
+      for (let i = 0; i < n; i++) { const d = await PDFLib.PDFDocument.create(); const [pg] = await d.copyPages(src, [i]); d.addPage(pg); out.push({ nombre: f.name + (n > 1 ? ' · pág. ' + (i + 1) : ''), docs: [await d.saveAsBase64({ dataUri: true })] }); }
+    } else out.push({ nombre: f.name, docs: [await aDataUrl(f)] });
+  }
+  return out;
+}
 window.leerFactura = async function () {
-  const files = [...($('fac-arch').files || [])], est = $('fac-est');
+  const files = [...($('fac-arch').files || [])], est = $('fac-est'), porPag = $('fac-porpag') ? $('fac-porpag').checked : true;
   if (!files.length) { est.textContent = 'Elige el PDF o las fotos de la factura.'; return; }
-  if (files.length > 3) { est.textContent = 'Máximo 3 archivos.'; return; }
-  if (!pinIA) { if (USER.pin) pinIA = USER.pin; else pinIA = (prompt('Ingresa tu PIN para usar la lectura con IA') || '').trim(); if (!pinIA) return; }
-  $('fac-leer').disabled = true; est.textContent = '🤖 Leyendo la factura… (puede tardar hasta un minuto)';
+  if (!await pedirPin()) return;
+  $('fac-leer').disabled = true; est.textContent = '📄 Preparando archivos…';
   try {
-    const documentos = []; for (const f of files) documentos.push(await aDataUrl(f));
-    const resp = await fetch('/api/leer-documento', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ usuario: USER.nombre, pin: pinIA, modo: 'electricidad', documentos }) });
-    if (resp.status === 401) { pinIA = ''; throw new Error('PIN no válido para la lectura con IA'); }
-    const j = await resp.json().catch(() => ({}));
-    if (!resp.ok || !j.factura) throw new Error(j.error || 'No se pudo leer la factura');
-    const d = j.factura; if (d.legible === false) throw new Error('La factura no se ve con claridad. Prueba con una foto más nítida o el PDF.');
-    const nc = normNom(d.numero_cliente || ''), s = S.sum.find(x => nc && normNom(x.nCliente) === nc) || S.sum.find(x => d.numero_medidor && normNom(x.medidor) === normNom(d.numero_medidor));
-    S.form = { id: null, leido: d, porIA: true, suministro: s ? s.id : '', periodoDesde: d.periodo_desde || '', periodoHasta: d.periodo_hasta || '', numeroDoc: d.numero_documento || '', vencimiento: d.fecha_vencimiento || '', emision: d.fecha_emision || null, tarifa: d.tarifa || '', lecturaAnterior: d.lectura_anterior != null ? d.lectura_anterior : null, lecturaActual: d.lectura_actual != null ? d.lectura_actual : null, constante: d.constante_medidor != null ? d.constante_medidor : (s && s.constante) || 1, consumoKwh: d.consumo_kwh != null ? d.consumo_kwh : null, demandaMaxKw: d.demanda_maxima_kw != null ? d.demanda_maxima_kw : null, potenciaKw: d.potencia_conectada_kw != null ? d.potencia_conectada_kw : null, neto: d.neto != null ? d.neto : null, iva: d.iva != null ? d.iva : null, total: d.total != null ? d.total : null, noAfectos: d.otros_no_afectos != null ? d.otros_no_afectos : null, saldoAnterior: d.saldo_anterior != null ? d.saldo_anterior : null, totalAPagar: d.total_a_pagar != null ? d.total_a_pagar : null, interesMora: d.interes_mora != null ? d.interes_mora : null, cargoFp: d.cargo_factor_potencia != null ? d.cargo_factor_potencia : null, kvarhAnterior: d.kvarh_anterior != null ? d.kvarh_anterior : null, kvarhActual: d.kvarh_actual != null ? d.kvarh_actual : null, consumoKvarh: d.consumo_kvarh != null ? d.consumo_kvarh : null, factorPotencia: d.factor_potencia != null ? d.factor_potencia : null, demandaSumKw: d.demanda_suministrada_kw != null ? d.demanda_suministrada_kw : null, demandaPuntaKw: d.demanda_punta_kw != null ? d.demanda_punta_kw : null, fechaCorte: d.fecha_corte || '', finContrato: d.fecha_fin_contrato || '', limiteTarifa: d.fecha_limite_cambio_tarifa || '', corteTramite: !!d.corte_en_tramite, cargos: (d.cargos || []).filter(c => !esSaldo(c)), historialLeido: d.historial || null, observaciones: d.observaciones || '', aviso: s ? 'Leída con IA. Revisa las cifras contra la boleta antes de guardar.' : 'Leída con IA. No encontré un suministro con el cliente ' + (d.numero_cliente || '?') + ': elígelo o créalo.' };
-    S.form.mes = mesDe(S.form.periodoHasta || S.form.emision);
-    render(); $('form-fac') && $('form-fac').scrollIntoView({ behavior: 'smooth' });
-  } catch (e) { est.innerHTML = '<span style="color:#B91C1C">' + escA(e.message) + '</span>'; const b = $('fac-leer'); if (b) b.disabled = false; }
+    let boletas;
+    if (!porPag) { if (files.length > 3) throw new Error('Para una sola boleta, máximo 3 archivos. Si son varias boletas, marca «Cada página o foto es una boleta distinta».'); const documentos = []; for (const f of files) documentos.push(await aDataUrl(f)); boletas = [{ nombre: files.map(f => f.name).join(', '), docs: documentos }]; }
+    else boletas = await prepararBoletas(files, true);
+    if (boletas.length === 1) {
+      est.textContent = '🤖 Leyendo la factura… (puede tardar hasta un minuto)';
+      S.form = formDeLectura(await leerDocs(boletas[0].docs)); S.cola = null; render(); $('form-fac') && $('form-fac').scrollIntoView({ behavior: 'smooth' }); return;
+    }
+    S.cola = boletas.map((b, i) => ({ id: i, nombre: b.nombre, docs: b.docs, estado: 'pend', form: null, msg: '' }));
+    est.textContent = ''; pintarCola(); procesarCola();
+  } catch (e) { est.innerHTML = '<span style="color:#B91C1C">' + escA(e.message) + '</span>'; }
+  const b = $('fac-leer'); if (b) b.disabled = false;
+};
+// ── cola de lectura (varias boletas) ─────────────────────────────────────
+let colaCorriendo = false;
+async function procesarCola() {
+  if (colaCorriendo) return; colaCorriendo = true;
+  const trabajar = async () => { for (;;) { const it = (S.cola || []).find(x => x.estado === 'pend'); if (!it) return; it.estado = 'leyendo'; pintarCola(); try { it.form = formDeLectura(await leerDocs(it.docs)); it.estado = 'ok'; it.docs = null; } catch (e) { it.estado = 'err'; it.msg = e.message; } pintarCola(); } };
+  await Promise.all([trabajar(), trabajar()]);
+  colaCorriendo = false; pintarCola();
+}
+function revisarItem(it) { if (!it.form) return []; return revisarFactura(it.form, null); }
+function pintarCola() {
+  const box = $('cola'); if (!box) return; const c = S.cola;
+  if (!c || !c.length) { box.innerHTML = ''; return; }
+  const hechas = c.filter(x => x.estado === 'ok' || x.estado === 'err').length, ordenadas = c.slice().sort((a, b) => ((a.form && a.form.periodoHasta) || '9').localeCompare((b.form && b.form.periodoHasta) || '9'));
+  const falt = [...new Set(c.filter(x => x.form && !x.form.suministro && x.form.leido).map(x => x.form.leido.numero_cliente || '?'))];
+  box.innerHTML = `<div class="panel"><h2>Cola de lectura · ${hechas} de ${c.length}</h2>
+    ${hechas < c.length ? `<div class="hint" style="margin-bottom:6px">🤖 Leyendo… puedes seguir usando la página, pero no cierres la pestaña.</div>` : ''}
+    <div class="tw"><table><thead><tr><th>Boleta</th><th>Período</th><th class="n">kWh</th><th class="n">Total</th><th>Revisión</th><th></th></tr></thead><tbody>${ordenadas.map(it => { const f = it.form, ch = revisarItem(it), sm = f && sumDe(f.suministro); return `<tr><td>${escA(it.nombre)}${f ? `<div class="hint">${sm ? escA(sm.nombre) : '<span style="color:#B45309">sin suministro</span>'}</div>` : ''}</td>${it.estado === 'ok' ? `<td>${fCorta(f.periodoDesde)} → ${fCorta(f.periodoHasta)}</td><td class="n">${num(f.consumoKwh)}</td><td class="n">${pesos(f.total)}</td><td>${chipNivel(ch)}</td><td style="white-space:nowrap"><button class="btn btn-secondary" onclick="colaRevisar(${it.id})">🔍 Revisar</button> <button class="btn btn-rojo" onclick="colaQuitar(${it.id})">✕</button></td>` : it.estado === 'err' ? `<td colspan="4" style="color:#B91C1C">${escA(it.msg)}</td><td><button class="btn btn-secondary" onclick="colaReintentar(${it.id})">↻</button> <button class="btn btn-rojo" onclick="colaQuitar(${it.id})">✕</button></td>` : `<td colspan="5" class="hint">${it.estado === 'leyendo' ? '🤖 leyendo…' : 'en espera'}</td>`}</tr>`; }).join('')}</tbody></table></div>
+    ${falt.length ? `<div class="chk warn" style="margin-top:8px"><span>⚠️</span><span>Hay boletas de cliente(s) sin suministro creado: ${falt.map(escA).join(', ')}. <button class="btn btn-secondary" style="padding:2px 8px" onclick="colaCrearSuministros()">＋ Crear suministros</button></span></div>` : ''}
+    ${hechas === c.length ? `<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap"><button class="btn btn-verde" onclick="colaGuardarTodas()">💾 Guardar todas las que no tengan errores</button><button class="btn btn-secondary" onclick="colaCerrar()">Cerrar cola</button></div><div class="hint" style="margin-top:6px">Se guardan en orden de fecha. Las que tengan errores (duplicado, suministro faltante, cifras que no cuadran) quedan en la cola para que las revises una por una con 🔍.</div>` : ''}</div>`;
+}
+window.colaQuitar = id => { S.cola = S.cola.filter(x => x.id !== id); pintarCola(); };
+window.colaCerrar = () => { if (S.cola.some(x => x.estado === 'ok') && !confirm('Quedan boletas leídas sin guardar. ¿Cerrar la cola y descartarlas?')) return; S.cola = null; pintarCola(); };
+window.colaReintentar = id => { const it = S.cola.find(x => x.id === id); if (it && it.docs) { it.estado = 'pend'; it.msg = ''; pintarCola(); procesarCola(); } else toast('Vuelve a subir esa boleta', false); };
+window.colaRevisar = id => { const it = S.cola.find(x => x.id === id); if (!it || !it.form) return; S.form = JSON.parse(JSON.stringify(it.form)); S.form.colaId = id; render(); pintarCola(); $('form-fac') && $('form-fac').scrollIntoView({ behavior: 'smooth' }); };
+window.colaCrearSuministros = async function () {
+  const claves = {}; (S.cola || []).filter(x => x.form && !x.form.suministro && x.form.leido).forEach(x => { const d = x.form.leido, k = d.numero_cliente || ('m' + d.numero_medidor); if (!claves[k]) claves[k] = d; });
+  for (const d of Object.values(claves)) {
+    const nombre = prompt(`Nombre para el cliente ${d.numero_cliente || '?'} (${[d.direccion, d.tarifa].filter(Boolean).join(' · ')})`, d.nombre_cliente || ''); if (!nombre) continue;
+    try { await addDoc(collection(db, 'energia_suministros'), { nombre: nombre.trim(), nCliente: d.numero_cliente || '', medidor: d.numero_medidor || '', tarifa: d.tarifa || '', constante: d.constante_medidor || 1, direccion: d.direccion || '', centro: '', activo: true, ts: Date.now() }); } catch (e) { toast('Error: ' + e.message, false); return; }
+  }
+  await cargarTodo();
+  S.cola.forEach(x => { if (x.form && !x.form.suministro && x.form.leido) { const d = x.form.leido, nc = normNom(d.numero_cliente || ''), sm = S.sum.find(q => nc && normNom(q.nCliente) === nc) || S.sum.find(q => d.numero_medidor && normNom(q.medidor) === normNom(d.numero_medidor)); if (sm) { x.form.suministro = sm.id; if (x.form.constante == null) x.form.constante = sm.constante || 1; } } });
+  pintarCola(); toast('✓ Suministros creados');
+};
+window.colaGuardarTodas = async function () {
+  const orden = S.cola.filter(x => x.estado === 'ok').sort((a, b) => (a.form.periodoHasta || '').localeCompare(b.form.periodoHasta || '')); let ok = 0, salt = 0;
+  for (const it of orden) {
+    const f = it.form; if (!f.suministro || !f.periodoHasta || revisarFactura(f, null).some(c => c.nivel === 'err')) { salt++; continue; }
+    try { const r = await addDoc(collection(db, 'energia_facturas'), datosFactura({ ...f, mes: mesDe(f.periodoHasta) })); S.fac.push({ id: r.id, ...datosFactura({ ...f, mes: mesDe(f.periodoHasta) }) }); it.estado = 'guardada'; ok++; } catch (e) { toast('Error: ' + e.message, false); break; }
+  }
+  S.cola = S.cola.filter(x => x.estado !== 'guardada'); await cargarTodo();
+  toast(`✓ ${ok} guardadas` + (salt ? ` · ${salt} con errores quedan en la cola` : '')); if (!S.cola.length) S.cola = null; render(); pintarCola();
 };
 
 // ── 🌱 Costo por hectárea ────────────────────────────────────────────────
