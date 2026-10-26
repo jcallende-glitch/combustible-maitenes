@@ -119,11 +119,12 @@ async function revisarAcceso() {
 }
 
 // ── datos ───────────────────────────────────────────────────────────────
-const S = { sum: [], lec: [], fac: [], tab: 'resumen', form: null, filtroSum: '', cmp: { sum: '', met: 'kwh' } };
+const S = { potreros: [], ha: {}, sum: [], lec: [], fac: [], tab: 'resumen', form: null, filtroSum: '', cmp: { sum: '', met: 'kwh' } };
 async function cargarTodo() {
   const leer = async n => (await getDocs(collection(db, n))).docs.map(d => ({ id: d.id, ...d.data() }));
   [S.sum, S.lec, S.fac] = await Promise.all([leer('energia_suministros'), leer('energia_lecturas'), leer('energia_facturas')]);
   S.sum.sort((a, b) => (a.nombre || '').localeCompare(b.nombre || '', 'es'));
+  try { const sn = await getDoc(doc(db, 'config', 'datos')); S.potreros = ((sn.exists() && sn.data().potreros) || []).map(p => ({ nombre: p.nombre, ha: p.hectareas != null && p.hectareas !== '' ? Number(p.hectareas) : null, tipo: p.tipo || '', cultivo: p.cultivoPermanente || '' })).filter(p => p.nombre).sort((a, b) => a.nombre.localeCompare(b.nombre, 'es')); } catch (e) { S.potreros = []; }
 }
 const hijos = id => S.sum.filter(x => x.principal === id && x.activo !== false);
 const hijosTodos = id => S.sum.filter(x => x.principal === id);
@@ -284,11 +285,11 @@ function barras(labels, series, fmt, alto = 170) {
 const leyenda = series => '<div class="hint" style="margin:2px 0 6px">' + series.map(s => `<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${s.color};margin-right:4px"></span>${escA(s.nombre)}`).join(' &nbsp; ') + '</div>';
 
 // ── pestañas ────────────────────────────────────────────────────────────
-const TABS = [['resumen', '📊 Resumen'], ['facturas', '📄 Facturas'], ['lecturas', '🔢 Lecturas'], ['sub', '🔌 Submedidores'], ['comparar', '📈 Comparar'], ['suministros', '⚙️ Suministros']];
+const TABS = [['resumen', '📊 Resumen'], ['facturas', '📄 Facturas'], ['lecturas', '🔢 Lecturas'], ['sub', '🔌 Submedidores'], ['ha', '🌱 Costo por ha'], ['comparar', '📈 Comparar'], ['suministros', '⚙️ Suministros']];
 window.setTab = t => { S.tab = t; render(); window.scrollTo(0, 0); };
 function render() {
   $('nav').innerHTML = TABS.map(([k, t]) => `<button class="${S.tab === k ? 'on' : ''}" onclick="setTab('${k}')">${t}</button>`).join('');
-  const f = { resumen: rResumen, facturas: rFacturas, lecturas: rLecturas, sub: rSub, comparar: rComparar, suministros: rSuministros }[S.tab];
+  const f = { resumen: rResumen, facturas: rFacturas, lecturas: rLecturas, sub: rSub, ha: rHa, comparar: rComparar, suministros: rSuministros }[S.tab];
   $('main').innerHTML = f();
   if (S.tab === 'facturas' && S.form) calcularRevision();
 }
@@ -419,6 +420,48 @@ window.leerFactura = async function () {
   } catch (e) { est.innerHTML = '<span style="color:#B91C1C">' + escA(e.message) + '</span>'; const b = $('fac-leer'); if (b) b.disabled = false; }
 };
 
+// ── 🌱 Costo por hectárea ────────────────────────────────────────────────
+const potDe = n => S.potreros.find(p => p.nombre === n);
+const haSum = sm => (sm.potreros || []).reduce((a, n) => a + ((potDe(n) || {}).ha || 0), 0);
+// Filas mensuales de costo por suministro. Si una cuenta tiene submedidores, su costo (sin mora) se reparte entre ellos por kWh, pérdidas incluidas.
+function filasCosto() {
+  const out = [];
+  S.sum.filter(x => !x.principal).forEach(sm => facDe(sm.id).forEach(f => {
+    const tot = totalSM(f); if (tot == null || !f.mes) return;
+    if (hijosTodos(sm.id).length) { const r = resumenSub(sm.id, f), ok = r.filas.filter(x => x.p && r.suma > 0); if (ok.length) { ok.forEach(x => out.push({ sid: x.h.id, mes: f.mes, kwh: x.p.kwh, costo: tot * x.p.kwh / r.suma, inc: r.conDatos < r.n })); return; } }
+    out.push({ sid: sm.id, mes: f.mes, kwh: f.consumoKwh || 0, costo: tot, inc: false });
+  }));
+  return out;
+}
+window.S_ha = (k, v) => { S.ha[k] = v; render(); };
+function rHa() {
+  const todas = filasCosto(); if (!todas.length) return '<div class="panel"><h2>🌱 Costo por hectárea</h2>Sube facturas y asigna potreros a cada suministro (⚙️ Suministros) para ver el gasto eléctrico por ha.</div>';
+  const meses = [...new Set(todas.map(r => r.mes))].sort(), anios = [...new Set(meses.map(m => m.slice(0, 4)))].sort().reverse();
+  const modo = S.ha.modo || '12', ult = meses[meses.length - 1], desdeM = mesMas(ult, -11);
+  const filas = todas.filter(r => modo === '12' ? r.mes >= desdeM : r.mes.startsWith(modo));
+  const nm = new Set(filas.map(r => r.mes)).size;
+  const sel = `<div class="field"><label>Período</label><select onchange="S_ha('modo',this.value)"><option value="12" ${modo === '12' ? 'selected' : ''}>Últimos 12 meses con datos (hasta ${mesTxt(ult)})</option>${anios.map(a => `<option value="${a}" ${modo === a ? 'selected' : ''}>Año ${a}</option>`).join('')}</select></div>`;
+  // por suministro
+  const porS = {}; filas.forEach(r => { const a = porS[r.sid] = porS[r.sid] || { kwh: 0, costo: 0, n: 0, inc: 0 }; a.kwh += r.kwh; a.costo += r.costo; a.n++; if (r.inc) a.inc++; });
+  const filaS = Object.keys(porS).sort((a, b) => porS[b].costo - porS[a].costo).map(id => { const sm = sumDe(id) || { nombre: '(borrado)' }, a = porS[id], ha = haSum(sm); return `<tr><td>${sm.principal ? '↳ ' : ''}${escA(sm.nombre)}<div class="hint">${(sm.potreros || []).length ? escA(sm.potreros.join(', ')) : '<span style="color:#B45309">sin potreros asignados</span>'}</div></td><td class="n">${ha ? num(ha, 1) : '–'}</td><td class="n">${num(a.kwh)}</td><td class="n">${pesos(a.costo)}</td><td class="n">${ha ? num(a.kwh / ha) : '–'}</td><td class="n"><b>${ha ? pesos(a.costo / ha) : '–'}</b></td><td class="n">${a.n}${a.inc ? ` <span class="chip warn">${a.inc} incompl.</span>` : ''}</td></tr>`; }).join('');
+  // por potrero: el costo de cada suministro se reparte entre sus potreros según hectáreas
+  const porP = {}; let sinAsignar = 0;
+  filas.forEach(r => { const sm = sumDe(r.sid) || {}, nombres = (sm.potreros || []).filter(n => potDe(n) && potDe(n).ha > 0), haS = nombres.reduce((a, n) => a + potDe(n).ha, 0); if (!haS) { sinAsignar += r.costo; return; } nombres.forEach(n => { const w = potDe(n).ha / haS, a = porP[n] = porP[n] || { kwh: 0, costo: 0, fuentes: new Set(), meses: {} }; a.kwh += r.kwh * w; a.costo += r.costo * w; a.fuentes.add(sm.nombre); a.meses[r.mes] = (a.meses[r.mes] || 0) + r.costo * w; }); });
+  const filaP = Object.keys(porP).sort((a, b) => porP[b].costo / potDe(b).ha - porP[a].costo / potDe(a).ha).map(n => { const a = porP[n], ha = potDe(n).ha; return `<tr><td>${escA(n)}<div class="hint">${potDe(n).cultivo ? escA(potDe(n).cultivo) + ' · ' : ''}${[...a.fuentes].map(escA).join(', ')}</div></td><td class="n">${num(ha, 1)}</td><td class="n">${num(a.kwh)}</td><td class="n">${pesos(a.costo)}</td><td class="n">${num(a.kwh / ha)}</td><td class="n"><b>${pesos(a.costo / ha)}</b></td></tr>`; }).join('');
+  const totalC = filas.reduce((a, r) => a + r.costo, 0), totalK = filas.reduce((a, r) => a + r.kwh, 0), haTot = Object.keys(porP).reduce((a, n) => a + potDe(n).ha, 0);
+  const sinHa = S.potreros.filter(p => !p.ha).length;
+  const potSel = S.ha.pot && porP[S.ha.pot] ? S.ha.pot : '';
+  const mm = [...new Set(filas.map(r => r.mes))].sort(), serie = mm.map(m => potSel ? (porP[potSel].meses[m] || 0) / potDe(potSel).ha : filas.filter(r => r.mes === m).reduce((a, r) => a + r.costo, 0));
+  return `<div class="panel"><h2>🌱 Costo eléctrico por hectárea</h2>${sel}
+    <div class="kpi"><div><small>Costo eléctrico (sin mora)</small><b>${pesos(totalC)}</b></div><div><small>Consumo</small><b>${num(totalK)} kWh</b></div><div><small>Ha con riego asignado</small><b>${num(haTot, 1)} ha</b></div><div><small>$ por ha (todo el riego)</small><b>${haTot ? pesos((totalC - sinAsignar) / haTot) : '–'}</b></div></div>
+    ${sinAsignar > 0 ? `<div class="chk warn"><span>⚠️</span><span>${pesos(sinAsignar)} corresponden a suministros sin potreros asignados (o con potreros sin hectáreas): no entran al costo por ha. Asígnalos en ⚙️ Suministros.</span></div>` : ''}
+    ${sinHa ? `<div class="chk info"><span>ℹ️</span><span>${sinHa} potrero(s) no tienen hectáreas en la app y no se pueden usar: ${S.potreros.filter(p => !p.ha).map(p => escA(p.nombre)).join(', ')}.</span></div>` : ''}</div>
+    <div class="panel"><h2>Por suministro / submedidor</h2><div class="tw"><table><thead><tr><th>Suministro</th><th class="n">Ha</th><th class="n">kWh</th><th class="n">Costo</th><th class="n">kWh/ha</th><th class="n">$/ha</th><th class="n">Meses</th></tr></thead><tbody>${filaS}</tbody></table></div>
+    <div class="hint" style="margin-top:6px">Si la cuenta tiene submedidores, su costo se reparte entre ellos según sus kWh (incluidas las pérdidas). «incompl.» = en ese mes faltó leer algún submedidor.</div></div>
+    <div class="panel"><h2>Por potrero</h2>${filaP ? `<div class="tw"><table><thead><tr><th>Potrero</th><th class="n">Ha</th><th class="n">kWh</th><th class="n">Costo</th><th class="n">kWh/ha</th><th class="n">$/ha</th></tr></thead><tbody>${filaP}</tbody></table></div><div class="hint" style="margin-top:6px">Si un suministro riega varios potreros, su costo se reparte según las hectáreas de cada uno. Si un potrero recibe de varios suministros, se suman.</div>` : '<div class="hint">Asigna potreros a los suministros en ⚙️ Suministros.</div>'}</div>
+    <div class="panel"><h2>Mes a mes</h2><div class="field"><label>Ver</label><select onchange="S_ha('pot',this.value)"><option value="">Costo total ($)</option>${Object.keys(porP).sort().map(n => `<option value="${escA(n)}" ${n === potSel ? 'selected' : ''}>$ por ha · ${escA(n)}</option>`).join('')}</select></div>${barras(mm.map(mesTxt), [{ nombre: potSel ? '$/ha' : '$', color: '#2D7D46', valores: serie }], v => pesos(v))}<div class="hint">${nm} mes(es) en el período.</div></div>`;
+}
+
 // ── 🔌 Submedidores ──────────────────────────────────────────────────────
 function resumenSub(pid, f) {
   const filas = hijosTodos(pid).map(h => ({ h, p: consumoPropio(h.id, f.periodoDesde, f.periodoHasta) })).filter(x => x.h.activo !== false || x.p), hs = filas;
@@ -541,10 +584,11 @@ function rSuministros() {
   const f = editSum;
   const form = f ? `<div class="panel"><h2>${f.id ? 'Editar' : 'Nuevo'} suministro</h2>
     <div class="grid"><div class="field"><label>Nombre</label><input id="s-nombre" value="${escA(f.nombre || '')}" placeholder="Ej: Bomba pozo 1"></div><div class="field"><label>N° de cliente (Copelec)</label><input id="s-cli" value="${escA(f.nCliente || '')}"></div><div class="field"><label>N° de medidor</label><input id="s-med" value="${escA(f.medidor || '')}"></div><div class="field"><label>Tarifa</label><input id="s-tar" value="${escA(f.tarifa || '')}" placeholder="BT1, AT3…"></div><div class="field"><label>Constante del medidor</label><input id="s-const" type="number" step="any" value="${f.constante || 1}"></div><div class="field"><label>Es submedidor de</label><select id="s-ppal"><option value="">— cuenta propia de Copelec —</option>${S.sum.filter(x => x.id !== f.id && !x.principal).map(x => `<option value="${x.id}" ${f.principal === x.id ? 'selected' : ''}>${escA(x.nombre)}</option>`).join('')}</select></div><div class="field"><label>Conexión</label><select id="s-fase"><option value="">Sin definir</option><option value="mono" ${f.fase === 'mono' ? 'selected' : ''}>Monofásico</option><option value="tri" ${f.fase === 'tri' ? 'selected' : ''}>Trifásico</option></select></div><div class="field"><label>Uso / centro de costo</label><input id="s-centro" value="${escA(f.centro || '')}" placeholder="Riego, casa, bodega…"></div></div>
+    <div class="field"><label>Potreros que riega (para el costo por ha)</label>${S.potreros.length ? `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:4px;max-height:220px;overflow:auto;border:1px solid var(--borde);border-radius:8px;padding:8px">${S.potreros.map((q, i) => `<label style="font-size:13px;display:flex;gap:6px;align-items:center;text-transform:none;letter-spacing:0;font-weight:400;margin:0"><input type="checkbox" class="s-pot" data-i="${i}" style="width:auto" ${(f.potreros || []).includes(q.nombre) ? 'checked' : ''}> ${escA(q.nombre)}${q.ha ? ' <span class="hint">' + num(q.ha, 1) + ' ha</span>' : ' <span class="hint" style="color:#B45309">sin ha</span>'}</label>`).join('')}</div>` : '<div class="hint">No se pudieron leer los potreros de la app.</div>'}</div>
     <div class="field"><label>Dirección / notas</label><input id="s-dir" value="${escA(f.direccion || '')}"></div>
     <label style="font-size:13px;display:flex;gap:6px;align-items:center;margin:6px 0"><input type="checkbox" id="s-act" style="width:auto" ${f.activo !== false ? 'checked' : ''}> Suministro activo</label>
     <div style="display:flex;gap:8px"><button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="editSumCancel()">Cancelar</button><button class="btn btn-verde" style="flex:1;justify-content:center" onclick="guardarSuministro()">💾 Guardar</button></div></div>` : `<button class="btn btn-verde" style="margin-bottom:10px" onclick="editSumNuevo()">＋ Nuevo suministro</button>`;
-  const lista = `<div class="panel"><h2>Suministros</h2>${S.sum.length ? `<div class="tw"><table><thead><tr><th>Nombre</th><th>Cliente</th><th>Medidor</th><th>Tarifa</th><th>Fase</th><th class="n">Const.</th><th>Uso</th><th></th></tr></thead><tbody>${S.sum.map(s => `<tr><td>${s.principal ? '↳ ' : ''}${escA(s.nombre)}${s.principal ? `<div class="hint">submedidor de ${escA((sumDe(s.principal) || {}).nombre || '?')}</div>` : (hijos(s.id).length ? `<div class="hint">cuenta principal de ${hijos(s.id).length} medidores</div>` : '')}${s.activo === false ? ' <span class="chip warn">inactivo</span>' : ''}</td><td>${escA(s.nCliente || '–')}</td><td>${escA(s.medidor || '–')}</td><td>${escA(s.tarifa || '–')}</td><td>${s.fase === 'mono' ? 'Mono' : s.fase === 'tri' ? 'Tri' : '–'}</td><td class="n">${num(s.constante || 1, 2)}</td><td>${escA(s.centro || '–')}</td><td style="white-space:nowrap"><button class="btn btn-secondary" onclick="editSumEditar('${s.id}')">✏️</button> <button class="btn btn-rojo" onclick="borrarSuministro('${s.id}')">✕</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="hint">Aún no hay suministros.</div>'}</div>`;
+  const lista = `<div class="panel"><h2>Suministros</h2>${S.sum.length ? `<div class="tw"><table><thead><tr><th>Nombre</th><th>Cliente</th><th>Medidor</th><th>Tarifa</th><th>Fase</th><th class="n">Const.</th><th>Uso</th><th></th></tr></thead><tbody>${S.sum.map(s => `<tr><td>${s.principal ? '↳ ' : ''}${escA(s.nombre)}${s.principal ? `<div class="hint">submedidor de ${escA((sumDe(s.principal) || {}).nombre || '?')}</div>` : (hijos(s.id).length ? `<div class="hint">cuenta principal de ${hijos(s.id).length} medidores</div>` : '')}${s.activo === false ? ' <span class="chip warn">inactivo</span>' : ''}</td><td>${escA(s.nCliente || '–')}</td><td>${escA(s.medidor || '–')}</td><td>${escA(s.tarifa || '–')}</td><td>${s.fase === 'mono' ? 'Mono' : s.fase === 'tri' ? 'Tri' : '–'}</td><td class="n">${num(s.constante || 1, 2)}</td><td>${escA(s.centro || '–')}${(s.potreros || []).length ? `<div class="hint">${escA(s.potreros.join(', '))} · ${num(haSum(s), 1)} ha</div>` : ''}</td><td style="white-space:nowrap"><button class="btn btn-secondary" onclick="editSumEditar('${s.id}')">✏️</button> <button class="btn btn-rojo" onclick="borrarSuministro('${s.id}')">✕</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="hint">Aún no hay suministros.</div>'}</div>`;
   const reglas = `<div class="panel"><h2>📏 Qué considera correcto la app</h2>
     <details><summary style="cursor:pointer;font-weight:600">Trifásico (bombas, pozos, bodegas, packing)</summary><ul style="font-size:13px;line-height:1.6;margin:8px 0 0 16px;padding:0">
       <li><b>Factor de potencia ≥ 0,93.</b> Bajo eso hay recargo; bajo 0,80 es error.</li>
@@ -570,7 +614,7 @@ window.editSumEditar = id => { editSum = { ...sumDe(id) }; render(); };
 window.editSumCancel = () => { editSum = null; render(); };
 window.guardarSuministro = async function () {
   const v = id => $(id).value.trim(), nombre = v('s-nombre'); if (!nombre) { toast('Falta el nombre', false); return; }
-  const d = { nombre, nCliente: v('s-cli'), medidor: v('s-med'), tarifa: v('s-tar'), fase: v('s-fase'), principal: v('s-ppal'), constante: parseNum($('s-const').value) || 1, centro: v('s-centro'), direccion: v('s-dir'), activo: $('s-act').checked };
+  const d = { nombre, nCliente: v('s-cli'), medidor: v('s-med'), tarifa: v('s-tar'), fase: v('s-fase'), principal: v('s-ppal'), potreros: [...document.querySelectorAll('.s-pot:checked')].map(i => S.potreros[+i.dataset.i].nombre), constante: parseNum($('s-const').value) || 1, centro: v('s-centro'), direccion: v('s-dir'), activo: $('s-act').checked };
   try { if (editSum.id) await updateDoc(doc(db, 'energia_suministros', editSum.id), d); else await addDoc(collection(db, 'energia_suministros'), { ...d, ts: Date.now() }); editSum = null; await cargarTodo(); render(); toast('✓ Suministro guardado'); } catch (e) { toast('Error: ' + e.message, false); }
 };
 window.borrarSuministro = async function (id) {
