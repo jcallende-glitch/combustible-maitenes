@@ -99,6 +99,8 @@
     <button class="btn btn-verde" id="btn-consultar" onclick="consultar()" style="flex:1 1 200px;justify-content:center">🔎 Consultar recorrido</button>
     <label class="btn btn-sec" style="flex:1 1 200px;justify-content:center">📂 Cargar archivo (JSON / CSV)<input type="file" id="archivo" accept=".json,.csv,.txt" style="display:none" onchange="cargarArchivo(this)"></label>
   </div>
+  <button class="btn btn-sec btn-full" style="margin-top:8px" onclick="explorar()">🔍 Explorar qué datos entrega esta máquina (RPM, combustible, carga…)</button>
+  <div id="explorar" style="margin-top:8px"></div>
   <div id="progreso" class="nota" style="margin-top:6px"></div>
   <div id="aviso-datos"></div>
 </div>
@@ -185,7 +187,22 @@
 </div>
 
 <div class="panel">
-  <div class="ph"><span>5 · Variables detectadas y diagnóstico</span>
+  <div class="ph"><span>5 · Análisis detallado de lo filtrado</span><label class="chk" style="margin:0"><input type="checkbox" id="a-marc" onchange="dibujar()"> Marcar paradas en el mapa</label></div>
+  <div class="nota">Usa los puntos que dejan pasar los filtros de arriba (por ejemplo, solo un potrero o solo un día). Ajusta los umbrales según tu equipo.</div>
+  <div class="grid" style="margin:8px 0">
+    <div class="field"><label>Detenido bajo (km/h)</label><input type="number" id="a-vmin" value="1" step="0.5" onchange="dibujar()"></div>
+    <div class="field"><label>Traslado sobre (km/h)</label><input type="number" id="a-vmax" value="15" step="1" onchange="dibujar()"></div>
+    <div class="field"><label>RPM ralentí bajo</label><input type="number" id="a-rlo" value="1000" step="50" onchange="dibujar()"></div>
+    <div class="field"><label>RPM alto sobre</label><input type="number" id="a-rhi" value="2100" step="50" onchange="dibujar()"></div>
+    <div class="field"><label>Parada mínima (min)</label><input type="number" id="a-par" value="5" step="1" onchange="dibujar()"></div>
+    <div class="field"><label>Ancho de labor (m)</label><input type="number" id="a-ancho" value="" placeholder="ej. 6" step="0.5" onchange="dibujar()"></div>
+    <div class="field"><label>Consumo ref. (L/h)</label><input type="number" id="a-lh" value="" placeholder="opcional" step="1" onchange="dibujar()"></div>
+  </div>
+  <div id="analisis"></div>
+</div>
+
+<div class="panel">
+  <div class="ph"><span>6 · Variables detectadas y diagnóstico</span>
     <span><button class="btn btn-sec btn-mini" onclick="descargarDiag(false)">⬇️ Diagnóstico</button>
     <button class="btn btn-sec btn-mini" onclick="descargarDiag(true)">⬇️ Datos completos (JSON)</button></span></div>
   <div class="nota">Si no aparece una variable de RPM, JDLink no la entrega por este recurso. Descarga el diagnóstico y envíalo para ajustar los nombres.</div>
@@ -306,6 +323,7 @@ function tiempoDe(v) {
   return NaN;
 }
 const SKIP_SEG = /^(lat|lon|lng|latitude|longitude|long|links|id|@type|vin|serialnumber|altitude_ref)$/i;
+const SKIP_ID = /(^|[a-z])Id$|^principleId$/;
 const SKIP_TIME = /(timestamp|time|date|fecha|hora)$/i;
 function convUnidad(v, unit) {
   const u = String(unit || '').toLowerCase().replace(/\s/g, '');
@@ -338,7 +356,7 @@ function aplanar(o, pref, out, depth) {
     return;
   }
   const seg = pref.split('.').pop();
-  if (SKIP_SEG.test(seg) || SKIP_TIME.test(seg)) return;
+  if (SKIP_SEG.test(seg) || SKIP_TIME.test(seg) || SKIP_ID.test(seg)) return;
   if (typeof o === 'number') { out.num[pref] = o; return; }
   if (typeof o === 'string') {
     if (/^-?\d+([.,]\d+)?$/.test(o.trim())) { out.num[pref] = Number(o.trim().replace(',', '.')); return; }
@@ -373,7 +391,7 @@ let dibujados = [];          // puntos que pasan el filtro (en orden)
 let permisosPruebas = {};
 
 // ── Mapa ─────────────────────────────────────────────────────────
-let map, capaBase, capaDatos, capaPot, capaCursor, renderer;
+let map, capaBase, capaDatos, capaPot, capaCursor, capaParadas, renderer;
 function initMapa() {
   map = L.map('mapa', { preferCanvas: true, zoomControl: true }).setView([-36.6, -72.0], 12);
   renderer = L.canvas({ padding: 0.5 });
@@ -381,6 +399,7 @@ function initMapa() {
   capaDatos = L.layerGroup().addTo(map);
   capaPot = L.layerGroup().addTo(map);
   capaCursor = L.layerGroup().addTo(map);
+  capaParadas = L.layerGroup().addTo(map);
 }
 window.cambioBase = function () {
   if (capaBase) map.removeLayer(capaBase);
@@ -499,6 +518,7 @@ const RE_VEL_NO = /(engine|rpm|pto|fan|motor|wind|rotor|spindle|drum|shaft|^_)/i
 function nombreCampo(k) {
   if (k === '_vgps') return 'Velocidad calculada por GPS';
   if (k === '_hora') return 'Hora del día';
+  if (/(^|\.)heading$/i.test(k)) return 'Rumbo / dirección (grados)';
   return k;
 }
 function etiquetaCampo(k) { const c = CAMPOS[k]; return nombreCampo(k) + (c && c.unidad ? ` (${c.unidad})` : '') + (c ? ` · ${c.n} pts` : ''); }
@@ -516,7 +536,7 @@ function llenarSelectores() {
   const cv = $('col-var'); const previo = cv.value;
   cv.innerHTML = `<option value="vel">Velocidad (filtro)</option><option value="rpm">RPM (filtro)</option>` +
     (ESTADOS.length ? '<option value="_estado">Estado JDLink</option>' : '') +
-    `<option value="_pot">Potrero</option>` + ks.map(k => `<option value="f:${esc(k)}">${esc(etiquetaCampo(k))}</option>`).join('');
+    `<option value="_pot">Potrero</option>` + ks.filter(k => CAMPOS[k].max > CAMPOS[k].min).map(k => `<option value="f:${esc(k)}">${esc(etiquetaCampo(k))}</option>`).join('');
   cv.value = [...cv.options].some(o => o.value === previo) ? previo : (selVel ? 'vel' : (selRpm ? 'rpm' : '_pot'));
   $('sel-dia').innerHTML = '<option value="">Todos los días</option>' + [...new Set(P.map(p => diaTxt(p.t)))].map(d => `<option>${d}</option>`).join('');
   $('f-pot').innerHTML = '<option value="">Todos</option>' + [...new Set(P.map(p => p.pot))].sort().map(n => `<option>${esc(n)}</option>`).join('');
@@ -743,7 +763,7 @@ function dibujar() {
   }
   pintarLeyenda(cv, pasan.length);
   if (paso > 1) $('leyenda').innerHTML += `<div class="nota">Se dibuja 1 de cada ${paso} puntos para que el mapa sea fluido (las cifras usan todos).</div>`;
-  histogramas(); resumen();
+  histogramas(); resumen(); try { analisisDetallado(); } catch (e) { console.warn('analisis', e); }
   const cur = $('cursor'); cur.max = Math.max(0, pasan.length - 1); if (+cur.value > +cur.max) cur.value = cur.max;
   moverCursor(+cur.value, true);
 }
@@ -830,6 +850,163 @@ function tablaCampos() {
     ks.map(k => { const c = CAMPOS[k]; return `<tr><td>${esc(nombreCampo(k))}${k === selRpm ? ' <span class="badge">RPM</span>' : ''}${k === selVel ? ' <span class="badge">velocidad</span>' : ''}</td><td>${esc(c.unidad)}</td><td class="n">${c.n}</td><td class="n">${+c.min.toFixed(2)}</td><td class="n">${+(c.sum / c.n).toFixed(2)}</td><td class="n">${+c.max.toFixed(2)}</td></tr>`; }).join('') + '</tbody></table>' : '<span class="nota">Aún no hay datos.</span>';
 }
 
+
+// ── Análisis detallado ───────────────────────────────────────────
+let PARADAS = [];
+window.irA = function (idx) {
+  const p = P[idx]; if (!p) return;
+  map.setView([p.lat, p.lng], Math.max(map.getZoom(), 17));
+  L.popup().setLatLng([p.lat, p.lng]).setContent(popupPunto(p)).openOn(map);
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+};
+function dibujarCanvasHoras(H) {
+  const cv = $('c-horas'); if (!cv) return;
+  const r = window.devicePixelRatio || 1, W = cv.width = cv.clientWidth * r, Hh = cv.height = cv.clientHeight * r, ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, W, Hh);
+  const mx = Math.max(1, ...H.map(h => h.trab + h.det + h.tras + h.sin)), bw = W / 24, base = Hh - 16 * r;
+  H.forEach((h, i) => {
+    let y = base;
+    [['trab', '#2D7D46'], ['tras', '#2563EB'], ['det', '#F59E0B'], ['sin', '#9CA3AF']].forEach(([k, c]) => { const a = h[k] / mx * (base - 4); ctx.fillStyle = c; ctx.fillRect(i * bw + 2, y - a, bw - 4, a); y -= a; });
+    ctx.fillStyle = '#6B7280'; ctx.font = `${10 * r}px sans-serif`; ctx.textAlign = 'center'; ctx.fillText(String(i), i * bw + bw / 2, Hh - 3 * r);
+  });
+}
+function dibujarDispersion(pts, vmin, vmax) {
+  const cv = $('c-disp'); if (!cv) return;
+  const r = window.devicePixelRatio || 1, W = cv.width = cv.clientWidth * r, H = cv.height = cv.clientHeight * r, ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, W, H);
+  if (!pts.length) return;
+  const xs = pts.map(q => q[0]), ys = pts.map(q => q[1]);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs) || 1, y0 = Math.min(...ys), y1 = Math.max(...ys) || 1;
+  const m = 28 * r;
+  ctx.strokeStyle = '#E5E2DA'; ctx.lineWidth = 1; ctx.strokeRect(m, 6 * r, W - m - 6 * r, H - m - 6 * r);
+  ctx.fillStyle = '#6B7280'; ctx.font = `${10 * r}px sans-serif`;
+  ctx.textAlign = 'left'; ctx.fillText(x0.toFixed(0), m, H - 14 * r); ctx.textAlign = 'right'; ctx.fillText(x1.toFixed(1) + ' km/h →', W - 6 * r, H - 14 * r);
+  ctx.textAlign = 'left'; ctx.fillText(y1.toFixed(0) + ' rpm', 2 * r, 16 * r); ctx.fillText(y0.toFixed(0), 2 * r, H - m);
+  pts.forEach(([x, y]) => {
+    const px = m + (x - x0) / ((x1 - x0) || 1) * (W - m - 8 * r), py = H - m - (y - y0) / ((y1 - y0) || 1) * (H - m - 10 * r);
+    ctx.fillStyle = x < vmin ? 'rgba(245,158,11,.35)' : x > vmax ? 'rgba(37,99,235,.35)' : 'rgba(45,125,70,.35)';
+    ctx.beginPath(); ctx.arc(px, py, 2.5 * r, 0, 7); ctx.fill();
+  });
+}
+function analisisDetallado() {
+  const out = $('analisis'); capaParadas.clearLayers();
+  if (!dibujados.length) { out.innerHTML = '<span class="nota">Sin puntos filtrados.</span>'; return; }
+  const gap = +$('gap').value, ancho = +$('a-ancho').value || 0, vmin = +$('a-vmin').value, vmax = +$('a-vmax').value;
+  const rlo = +$('a-rlo').value, rhi = +$('a-rhi').value, parMin = (+$('a-par').value || 5) * 60000, lh = +$('a-lh').value || 0;
+  const dtp = p => { const n = P[p.idx + 1]; return n ? Math.min(n.t - p.t, gap) : 0; };
+  const velp = p => { const v = vVel(p); return v != null ? v : (p.f['_vgps'] ?? null); };
+  const cat = v => v == null ? 'sin' : v < vmin ? 'det' : v > vmax ? 'tras' : 'trab';
+  const T = { det: 0, trab: 0, tras: 0, sin: 0 }, K = { det: 0, trab: 0, tras: 0, sin: 0 };
+  const R = { bajo: 0, norm: 0, alto: 0 }, hasR = !!selRpm;
+  const H = Array.from({ length: 24 }, () => ({ det: 0, trab: 0, tras: 0, sin: 0, sr: 0, tr: 0, sv: 0, tv: 0 }));
+  const D = {}, POT = {}; const disp = [];
+  let tot = 0, nAcel = 0, nFren = 0, nAcelBase = 0, vTrab = 0, tTrabV = 0, rTrab = 0, tTrabR = 0, rDet = 0, tDetR = 0;
+  let maxV = null, maxR = null; const stops = []; let run = null;
+  const cierra = () => { if (run && run.fin - run.ini + run.dtf >= parMin) stops.push(run); run = null; };
+  dibujados.forEach((p, i) => {
+    const d = dtp(p), v = velp(p), c = cat(v), r = vRpm(p), q = dibujados[i - 1];
+    const ady = q && p.idx === q.idx + 1 && p.t - q.t <= gap;
+    tot += d; T[c] += d;
+    const dk = ady ? distKm(q, p) : 0; K[c] += dk;
+    const hh = new Date(p.t).getHours(); H[hh][c] += d; if (r != null) { H[hh].sr += r * d; H[hh].tr += d; } if (v != null) { H[hh].sv += v * d; H[hh].tv += d; }
+    if (r != null) { const b = r < rlo ? 'bajo' : r > rhi ? 'alto' : 'norm'; R[b] += d; if (c === 'trab') { rTrab += r * d; tTrabR += d; } if (c === 'det') { rDet += r * d; tDetR += d; } if (isFinite(v) && v != null && disp.length < 6000 && i % Math.max(1, Math.ceil(dibujados.length / 6000)) === 0) disp.push([v, r]); }
+    if (v != null && c === 'trab') { vTrab += v * d; tTrabV += d; }
+    if (v != null && (maxV == null || v > maxV.v)) maxV = { v, p }; if (r != null && (maxR == null || r > maxR.v)) maxR = { v: r, p };
+    const dia = diaTxt(p.t), x = D[dia] || (D[dia] = { ms: 0, km: 0, kmT: 0, sr: 0, tr: 0, sv: 0, tv: 0, pots: new Set(), a: p.t, b: p.t, trab: 0 });
+    x.ms += d; x.km += dk; if (c === 'trab') { x.kmT += dk; x.trab += d; } if (r != null) { x.sr += r * d; x.tr += d; } if (v != null) { x.sv += v * d; x.tv += d; } x.pots.add(p.pot); x.b = p.t;
+    const z = POT[p.pot] || (POT[p.pot] = { ms: 0, trab: 0, kmT: 0, km: 0 }); z.ms += d; z.km += dk; if (c === 'trab') { z.trab += d; z.kmT += dk; }
+    if (ady) {
+      const dtq = (p.t - q.t) / 1000, vq = velp(q);
+      if (v != null && vq != null && dtq > 0 && dtq <= 30) { nAcelBase++; const a = (v - vq) / 3.6 / dtq; if (a > 1.5) nAcel++; if (a < -1.5) nFren++; }
+    }
+    if (c === 'det') { if (run && ady) { run.fin = p.t; run.dtf = d; run.sr += (r || 0) * d; run.tr += r != null ? d : 0; run.n++; } else { cierra(); run = { ini: p.t, fin: p.t, dtf: d, idx: p.idx, pot: p.pot, sr: (r || 0) * d, tr: r != null ? d : 0, n: 1 }; } } else cierra();
+  });
+  cierra();
+  // calidad de datos
+  const ints = []; for (let i = 1; i < P.length; i++) ints.push(P[i].t - P[i - 1].t);
+  const med = ints.length ? [...ints].sort((a, b) => a - b)[Math.floor(ints.length / 2)] : 0;
+  const huecos = ints.filter(x => x > gap).length;
+  const conR = P.filter(p => vRpm(p) != null).length, conV = P.filter(p => vVel(p) != null).length;
+  const hTrab = T.trab / 3600000, hMot = (T.trab + T.det + T.tras) / 3600000;
+  const ha = ancho ? K.trab * ancho / 10 : null;
+  const kp = (v, l) => `<div class="kpi"><b>${v}</b><span>${l}</span></div>`;
+  const pct = ms => tot ? (100 * ms / tot).toFixed(0) + '%' : '0%';
+  let h = '<div class="kpis">' +
+    kp(fmtH(T.trab), `trabajando (${pct(T.trab)})`) + kp(fmtH(T.tras), `traslado (${pct(T.tras)})`) + kp(fmtH(T.det), `detenido (${pct(T.det)})`) +
+    (T.sin ? kp(fmtH(T.sin), 'sin dato de velocidad') : '') +
+    kp(tTrabV ? (vTrab / tTrabV).toFixed(1) : '—', 'km/h prom. trabajando') + kp(K.trab.toFixed(1) + ' km', 'recorrido trabajando') + kp(K.tras.toFixed(1) + ' km', 'recorrido en traslado') +
+    (ha != null ? kp(ha.toFixed(1) + ' ha', `superficie estimada (${ancho} m)`) + kp(hTrab ? (ha / hTrab).toFixed(2) : '—', 'ha por hora de trabajo') : kp('—', 'ingresa ancho de labor para ha')) +
+    (lh ? kp((hMot * lh).toFixed(0) + ' L', `combustible estimado (${lh} L/h)`) + (ha ? kp((hMot * lh / ha).toFixed(1), 'L por ha estimado') : '') : '') +
+    kp(`${stops.length}`, `paradas ≥ ${parMin / 60000} min · ${fmtH(stops.reduce((s, x) => s + (x.fin - x.ini + x.dtf), 0))}`) +
+    (nAcelBase ? kp(`${nAcel} / ${nFren}`, 'aceleraciones / frenadas bruscas') : '') + '</div>';
+  if (hasR) {
+    const tr = R.bajo + R.norm + R.alto;
+    h += `<div style="font-weight:700;font-size:13px;margin:12px 0 4px">⚙️ Régimen del motor</div><div class="kpis">` +
+      kp(tr ? (100 * R.bajo / tr).toFixed(0) + '%' : '—', `ralentí / bajo (< ${rlo} rpm)`) + kp(tr ? (100 * R.norm / tr).toFixed(0) + '%' : '—', `normal (${rlo}–${rhi})`) + kp(tr ? (100 * R.alto / tr).toFixed(0) + '%' : '—', `alto (> ${rhi} rpm)`) +
+      kp(tTrabR ? (rTrab / tTrabR).toFixed(0) : '—', 'RPM prom. trabajando') + kp(tDetR ? (rDet / tDetR).toFixed(0) : '—', 'RPM prom. detenido') +
+      kp(fmtH(tDetR), 'motor encendido sin avanzar') + '</div>';
+  }
+  h += `<div style="font-weight:700;font-size:13px;margin:12px 0 4px">🕒 Actividad por hora del día <span class="nota" style="font-weight:400">(verde trabajo · azul traslado · naranja detenido)</span></div><canvas id="c-horas" style="width:100%;height:110px;display:block"></canvas>`;
+  const hs = H.map((x, i) => ({ i, x })).filter(o => o.x.trab + o.x.det + o.x.tras + o.x.sin > 0);
+  h += `<div style="overflow-x:auto;margin-top:6px"><table><thead><tr><th>Hora</th><th class="n">Trabajo</th><th class="n">Traslado</th><th class="n">Detenido</th><th class="n">RPM prom.</th><th class="n">km/h prom.</th></tr></thead><tbody>` +
+    hs.map(({ i, x }) => `<tr><td>${String(i).padStart(2, '0')}:00</td><td class="n">${fmtH(x.trab)}</td><td class="n">${fmtH(x.tras)}</td><td class="n">${fmtH(x.det)}</td><td class="n">${x.tr ? (x.sr / x.tr).toFixed(0) : '—'}</td><td class="n">${x.tv ? (x.sv / x.tv).toFixed(1) : '—'}</td></tr>`).join('') + '</tbody></table></div>';
+  const dias = Object.entries(D);
+  h += `<div style="font-weight:700;font-size:13px;margin:12px 0 4px">📅 Por día</div><div style="overflow-x:auto"><table><thead><tr><th>Día</th><th>Jornada</th><th class="n">Horas</th><th class="n">Trabajo</th><th class="n">Km</th>${ancho ? '<th class="n">Ha est.</th>' : ''}<th class="n">RPM</th><th class="n">km/h</th><th>Potreros</th></tr></thead><tbody>` +
+    dias.map(([d, x]) => `<tr><td>${d}</td><td>${horaTxt(x.a)}–${horaTxt(x.b)}</td><td class="n">${fmtH(x.ms)}</td><td class="n">${fmtH(x.trab)}</td><td class="n">${x.km.toFixed(1)}</td>${ancho ? `<td class="n">${(x.kmT * ancho / 10).toFixed(1)}</td>` : ''}<td class="n">${x.tr ? (x.sr / x.tr).toFixed(0) : '—'}</td><td class="n">${x.tv ? (x.sv / x.tv).toFixed(1) : '—'}</td><td>${[...x.pots].map(esc).join(', ')}</td></tr>`).join('') + '</tbody></table></div>';
+  h += `<div style="font-weight:700;font-size:13px;margin:12px 0 4px">📍 Productividad por potrero</div><div style="overflow-x:auto"><table><thead><tr><th>Potrero / zona</th><th class="n">Tiempo</th><th class="n">Trabajo</th><th class="n">% útil</th><th class="n">Km trab.</th>${ancho ? '<th class="n">Ha est.</th><th class="n">ha/h</th>' : ''}${lh ? '<th class="n">L est.</th>' : ''}</tr></thead><tbody>` +
+    Object.entries(POT).sort((a, b) => b[1].ms - a[1].ms).map(([n, z]) => { const hz = z.kmT * ancho / 10; return `<tr><td>${esc(n)}</td><td class="n">${fmtH(z.ms)}</td><td class="n">${fmtH(z.trab)}</td><td class="n">${z.ms ? (100 * z.trab / z.ms).toFixed(0) : 0}%</td><td class="n">${z.kmT.toFixed(1)}</td>${ancho ? `<td class="n">${hz.toFixed(1)}</td><td class="n">${z.trab ? (hz / (z.trab / 3600000)).toFixed(2) : '—'}</td>` : ''}${lh ? `<td class="n">${(z.ms / 3600000 * lh).toFixed(0)}</td>` : ''}</tr>`; }).join('') + '</tbody></table></div>';
+  if (disp.length > 10) h += `<div style="font-weight:700;font-size:13px;margin:12px 0 4px">📈 RPM vs velocidad <span class="nota" style="font-weight:400">(cada punto es una lectura; naranja detenido, verde trabajo, azul traslado)</span></div><canvas id="c-disp" style="width:100%;height:190px;display:block"></canvas>`;
+  PARADAS = stops.sort((a, b) => (b.fin - b.ini + b.dtf) - (a.fin - a.ini + a.dtf));
+  h += `<div style="font-weight:700;font-size:13px;margin:12px 0 4px">⏸ Paradas más largas (≥ ${parMin / 60000} min)</div>` + (PARADAS.length ? `<div style="overflow-x:auto"><table><thead><tr><th>Inicio</th><th class="n">Duración</th><th>Lugar</th><th class="n">RPM</th><th></th></tr></thead><tbody>` +
+    PARADAS.slice(0, 20).map(x => `<tr><td>${fechaHoraTxt(x.ini).slice(0, 16)}</td><td class="n">${fmtH(x.fin - x.ini + x.dtf)}</td><td>${esc(x.pot)}</td><td class="n">${x.tr ? (x.sr / x.tr).toFixed(0) : '—'}</td><td><button class="btn btn-sec btn-mini" onclick="irA(${x.idx})">Ver</button></td></tr>`).join('') + '</tbody></table></div>' : '<div class="nota">No hay paradas de ese largo.</div>');
+  h += `<div style="font-weight:700;font-size:13px;margin:12px 0 4px">🏁 Récords</div><div class="kpis">` +
+    (maxV ? `<div class="kpi"><b>${maxV.v.toFixed(1)} km/h</b><span>vel. máxima · ${horaTxt(maxV.p.t)} · ${esc(maxV.p.pot)}</span><br><button class="btn btn-sec btn-mini" onclick="irA(${maxV.p.idx})">Ver</button></div>` : '') +
+    (maxR ? `<div class="kpi"><b>${maxR.v.toFixed(0)} rpm</b><span>RPM máx. · ${horaTxt(maxR.p.t)} · ${esc(maxR.p.pot)}</span><br><button class="btn btn-sec btn-mini" onclick="irA(${maxR.p.idx})">Ver</button></div>` : '') + '</div>';
+  h += `<div style="font-weight:700;font-size:13px;margin:12px 0 4px">🧪 Calidad de los datos</div><div class="kpis">` +
+    kp(med ? (med / 1000).toFixed(0) + ' s' : '—', 'intervalo típico entre puntos') + kp(String(huecos), `huecos > ${gap / 60000} min`) + kp(P.length ? (100 * conV / P.length).toFixed(0) + '%' : '—', 'puntos con velocidad') + kp(P.length ? (100 * conR / P.length).toFixed(0) + '%' : '—', 'puntos con RPM') + '</div>' +
+    (med > 30000 ? '<div class="nota" style="margin-top:4px">Los puntos están muy espaciados: velocidad GPS, superficie y aceleraciones son aproximadas.</div>' : '');
+  out.innerHTML = h;
+  dibujarCanvasHoras(H); dibujarDispersion(disp, vmin, vmax);
+  if ($('a-marc').checked) PARADAS.slice(0, 60).forEach(x => { const p = P[x.idx]; L.circleMarker([p.lat, p.lng], { radius: 8, color: '#fff', weight: 2, fillColor: '#F59E0B', fillOpacity: 1 }).bindPopup(`⏸ ${fmtH(x.fin - x.ini + x.dtf)} · ${fechaHoraTxt(x.ini)}<br>${esc(x.pot)}`).addTo(capaParadas); });
+}
+
+
+// ── Explorador de recursos de la máquina ─────────────────────────
+window.explorar = async function () {
+  const m = maquinas[Number($('maq').value)]; const box = $('explorar');
+  if (!m) { toast('Elige una máquina', false); return; }
+  const id = m.organizationRole?.principalId || m.principalId || m.id;
+  const fin = Date.now(), ini = fin - 6 * 3600000;
+  const q = `startDate=${new Date(ini).toISOString()}&endDate=${new Date(fin).toISOString()}`;
+  box.innerHTML = '<div class="nota">Consultando recursos de la máquina…</div>';
+  const res = { maquina: nomMaq(m), id, objeto: m, recursos: [] };
+  const mr = await callJDApi(`/machines/${id}`);
+  res.objetoCompleto = mr.status === 200 ? mr.data : { status: mr.status };
+  const links = [...(m.links || []), ...(((mr.data && mr.data.links) || []))];
+  const vistos = new Set(); const lista = [];
+  links.forEach(l => { if (l.uri && !vistos.has(l.uri)) { vistos.add(l.uri); lista.push({ rel: l.rel, uri: l.uri }); } });
+  ['engineHours', 'hoursOfOperation', 'deviceStateReports', 'measurements', 'machineMeasurements', 'engineSpeed', 'fuelLevel', 'fuelUsage', 'alerts', 'machineStatus', 'performance', 'telemetry', 'terminals'].forEach(r => {
+    const u = `/machines/${id}/${r}`; if (!lista.some(x => x.uri.includes('/' + r))) lista.push({ rel: r + ' (probado)', uri: u });
+  });
+  for (let i = 0; i < lista.length; i++) {
+    const l = lista[i]; if (/^self$/i.test(l.rel)) continue;
+    box.innerHTML = `<div class="nota">Probando ${i + 1}/${lista.length}: ${esc(l.rel)}…</div>`;
+    let r = await callJDApi(l.uri + (l.uri.includes('?') ? '&' : '?') + q + '&itemLimit=5');
+    if (r.status !== 200) { const r2 = await callJDApi(l.uri); if (r2.status === 200 || r.status === 0) r = r2; }
+    const vals = r.data && Array.isArray(r.data.values) ? r.data.values : (r.data && typeof r.data === 'object' ? [r.data] : []);
+    const ap = nuevoAplanado(); if (vals[0]) aplanar(vals[0], '', ap, 0);
+    const claves = [...Object.entries(ap.num).map(([k, v]) => `${k}=${+Number(v).toFixed(2)}`), ...Object.entries(ap.cat).map(([k, v]) => `${k}=${v}`)];
+    res.recursos.push({ rel: l.rel, uri: l.uri, http: r.status, n: vals.length, claves, muestra: vals.slice(0, 2) });
+  }
+  window._explorar = res;
+  const hit = res.recursos.some(x => x.claves.some(c => RE_RPM.test(c)));
+  box.innerHTML = (hit ? '<div class="aviso ok">✅ Se encontró un recurso con RPM (marcado abajo).</div>' : '<div class="aviso">No apareció RPM en estos recursos. Descarga el resultado y envíamelo para revisar.</div>') +
+    `<div style="overflow-x:auto"><table><thead><tr><th>Recurso</th><th class="n">HTTP</th><th class="n">Reg.</th><th>Variables del primer registro</th></tr></thead><tbody>` +
+    res.recursos.map(x => `<tr${x.claves.some(c => RE_RPM.test(c)) ? ' style="background:#DCFCE7"' : ''}><td>${esc(x.rel)}</td><td class="n">${x.http}</td><td class="n">${x.n}</td><td style="font-size:11px">${esc(x.claves.slice(0, 14).join(' · '))}</td></tr>`).join('') + '</tbody></table></div>' +
+    '<button class="btn btn-sec btn-mini" style="margin-top:6px" onclick="bajar(\'explorar-maquina.json\', JSON.stringify(window._explorar))">⬇️ Descargar resultado completo</button>';
+};
+window.bajar = bajar;
+
 // ── Carga de datos ───────────────────────────────────────────────
 function aplicarDatos(puntos, origen) {
   P = puntos;
@@ -885,7 +1062,7 @@ window.consultar = async function () {
     pts = construirPuntos(loc.valores);
     rawGuardado = { gps: loc.valores, extras: {} };
     if (pts.length && $('extra').checked) {
-      const cand = links.filter(l => /(engine|rpm|speed|measure|telemetr|fuel|devicestate|terminal|performance|load|temperature|pto|hydraul)/i.test(l.rel || '') && !/(breadcrumb|locationhistory|hoursofoperation)/i.test(l.rel || ''));
+      const cand = links.filter(l => /(engine|rpm|speed|measure|telemetr|fuel|devicestate|terminal|performance|load|temperature|pto|hydraul|status|state)/i.test(l.rel || '') && !/(breadcrumb|locationhistory|hoursofoperation|^self$)/i.test(l.rel || ''));
       diag.extras = cand.map(l => l.rel);
       for (const l of cand) {
         setProg(`Buscando variables en «${l.rel}»…`);
