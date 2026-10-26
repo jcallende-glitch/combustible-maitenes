@@ -203,7 +203,7 @@ function revisarFactura(f, excluirId) {
   if (f.total != null && f.totalAPagar != null) { const esp = f.total + (f.saldoAnterior || 0); if (Math.abs(esp - f.totalAPagar) > 5) add('err', `Total de factura + saldo anterior (${pesos(esp)}) no coincide con el total a pagar (${pesos(f.totalAPagar)}).`); }
   if (f.saldoAnterior > 0) add('warn', `Arrastra un saldo anterior impago de ${pesos(f.saldoAnterior)}. No se incluye en los cálculos ni comparaciones: el costo del mes es ${pesos(f.total)}, pero el total a pagar es ${pesos(f.totalAPagar)}.`);
   if (f.interesMora > 0) add('warn', `Cobró ${pesos(f.interesMora)} de interés por mora (por deuda anterior). No se incluye en el costo por kWh ni en las comparaciones.`);
-  if (f.corteTramite) add('err', 'La cuenta dice «Corte en trámite»' + (f.fechaCorte ? ' (corte desde ' + fCorta(f.fechaCorte) + ')' : '') + '.');
+  if (f.corteTramite) add('warn', 'La cuenta dice «Corte en trámite»' + (f.fechaCorte ? ' (corte desde ' + fCorta(f.fechaCorte) + ')' : '') + '.');
   else if (f.fechaCorte) add('warn', 'Fecha de corte: ' + fCorta(f.fechaCorte) + '.');
   if (f.kvarhActual != null && f.kvarhAnterior != null && f.consumoKwh > 0) {
     const kv = f.consumoKvarh != null ? f.consumoKvarh : (f.kvarhActual - f.kvarhAnterior) * K;
@@ -466,7 +466,7 @@ function pintarCola() {
     ${hechas < c.length ? `<div class="hint" style="margin-bottom:6px">🤖 Leyendo… puedes seguir usando la página, pero no cierres la pestaña.</div>` : ''}
     <div class="tw"><table><thead><tr><th>Boleta</th><th>Período</th><th class="n">kWh</th><th class="n">Total</th><th>Revisión</th><th></th></tr></thead><tbody>${ordenadas.map(it => { const f = it.form, ch = revisarItem(it), sm = f && sumDe(f.suministro); return `<tr><td>${escA(it.nombre)}${f ? `<div class="hint">${sm ? escA(sm.nombre) : '<span style="color:#B45309">sin suministro</span>'}</div>` : ''}</td>${it.estado === 'ok' ? `<td>${fCorta(f.periodoDesde)} → ${fCorta(f.periodoHasta)}</td><td class="n">${num(f.consumoKwh)}</td><td class="n">${pesos(f.total)}</td><td>${chipNivel(ch)}</td><td style="white-space:nowrap"><button class="btn btn-secondary" onclick="colaRevisar(${it.id})">🔍 Revisar</button> <button class="btn btn-rojo" onclick="colaQuitar(${it.id})">✕</button></td>` : it.estado === 'err' ? `<td colspan="4" style="color:#B91C1C">${escA(it.msg)}</td><td><button class="btn btn-secondary" onclick="colaReintentar(${it.id})">↻</button> <button class="btn btn-rojo" onclick="colaQuitar(${it.id})">✕</button></td>` : `<td colspan="5" class="hint">${it.estado === 'leyendo' ? '🤖 leyendo…' : 'en espera'}</td>`}</tr>`; }).join('')}</tbody></table></div>
     ${falt.length ? `<div class="chk warn" style="margin-top:8px"><span>⚠️</span><span>Hay boletas de cliente(s) sin suministro creado: ${falt.map(escA).join(', ')}. <button class="btn btn-secondary" style="padding:2px 8px" onclick="colaCrearSuministros()">＋ Crear suministros</button></span></div>` : ''}
-    ${hechas === c.length ? `<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap"><button class="btn btn-verde" onclick="colaGuardarTodas()">💾 Guardar todas las que no tengan errores</button><button class="btn btn-secondary" onclick="colaCerrar()">Cerrar cola</button></div><div class="hint" style="margin-top:6px">Se guardan en orden de fecha. Las que tengan errores (duplicado, suministro faltante, cifras que no cuadran) quedan en la cola para que las revises una por una con 🔍.</div>` : ''}</div>`;
+    ${hechas === c.length ? `<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap"><button class="btn btn-verde" onclick="colaGuardarTodas(true)">💾 Guardar todas</button><button class="btn btn-secondary" onclick="colaGuardarTodas(false)">Solo las sin errores</button><button class="btn btn-secondary" onclick="colaCerrar()">Cerrar cola</button></div><div class="hint" style="margin-top:6px">«Guardar todas» guarda también las que tienen alertas o errores de cifras (quedan marcadas en la factura). Solo quedan en la cola las que no tienen suministro o período, o las que ya existen (duplicadas). Se guardan en orden de fecha.</div>` : ''}</div>`;
 }
 window.colaQuitar = id => { S.cola = S.cola.filter(x => x.id !== id); pintarCola(); };
 window.colaCerrar = () => { if (S.cola.some(x => x.estado === 'ok') && !confirm('Quedan boletas leídas sin guardar. ¿Cerrar la cola y descartarlas?')) return; S.cola = null; pintarCola(); };
@@ -482,14 +482,14 @@ window.colaCrearSuministros = async function () {
   S.cola.forEach(x => { if (x.form && !x.form.suministro && x.form.leido) { const d = x.form.leido, nc = normNom(d.numero_cliente || ''), sm = S.sum.find(q => nc && normNom(q.nCliente) === nc) || S.sum.find(q => d.numero_medidor && normNom(q.medidor) === normNom(d.numero_medidor)); if (sm) { x.form.suministro = sm.id; if (x.form.constante == null) x.form.constante = sm.constante || 1; } } });
   pintarCola(); toast('✓ Suministros creados');
 };
-window.colaGuardarTodas = async function () {
+window.colaGuardarTodas = async function (forzar) {
   const orden = S.cola.filter(x => x.estado === 'ok').sort((a, b) => (a.form.periodoHasta || '').localeCompare(b.form.periodoHasta || '')); let ok = 0, salt = 0;
   for (const it of orden) {
-    const f = it.form; if (!f.suministro || !f.periodoHasta || revisarFactura(f, null).some(c => c.nivel === 'err')) { salt++; continue; }
+    const f = it.form, ch = f.suministro && f.periodoHasta ? revisarFactura(f, null) : [{ nivel: 'err', txt: 'falta suministro o período' }]; if (!f.suministro || !f.periodoHasta || (forzar ? ch.some(c => /Ya existe una factura/.test(c.txt)) : ch.some(c => c.nivel === 'err'))) { salt++; continue; }
     try { const r = await addDoc(collection(db, 'energia_facturas'), datosFactura({ ...f, mes: mesDe(f.periodoHasta) })); S.fac.push({ id: r.id, ...datosFactura({ ...f, mes: mesDe(f.periodoHasta) }) }); it.estado = 'guardada'; ok++; } catch (e) { toast('Error: ' + e.message, false); break; }
   }
   S.cola = S.cola.filter(x => x.estado !== 'guardada'); await cargarTodo();
-  toast(`✓ ${ok} guardadas` + (salt ? ` · ${salt} con errores quedan en la cola` : '')); if (!S.cola.length) S.cola = null; render(); pintarCola();
+  toast(`✓ ${ok} guardadas` + (salt ? ` · ${salt} quedan en la cola (` + (forzar ? 'sin suministro, sin período o duplicadas' : 'con errores') + ')' : '')); if (!S.cola.length) S.cola = null; render(); pintarCola();
 };
 
 // ── 🌱 Costo por hectárea ────────────────────────────────────────────────
