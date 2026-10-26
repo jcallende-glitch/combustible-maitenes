@@ -5691,6 +5691,8 @@ window.iniciarCompletarAsistencia = async function(fechaForzada) {
       comb[op] = { lista, equipos: [...(eqs[op] || [])], texto: lista.map(x => x.centro + ' ' + x.pct + '%').join(' · ') };
     });
   } catch (e) { console.warn('wizard combustible', e); }
+  // Cuaderno de campo: labores del día / en curso (se suscribe una vez y se espera la primera carga)
+  try { suscribirLaboresCampo(); for (let i = 0; i < 16 && !(laboresCampoTodos || []).length; i++) await new Promise(r => setTimeout(r, 250)); if (!Object.keys(cultivoActualPorPotrero).length) await cargarCultivosActualesPotreros(); } catch (e) { console.warn('wizard cuaderno', e); }
   const yaTienen = new Set(asistenciaRegistros.filter(r => r.fecha === fecha).map(r => r.trabajador));
   const cola = trabajadoresAsistenciaConfig.filter(t => !yaTienen.has(t));
   WZ = { fecha, ult, comb, cola, total: cola.length, i: 0, guardados: 0, saltados: 0, yaTienen: yaTienen.size };
@@ -5705,17 +5707,21 @@ function wzCargarTrabajador() {
   const ultLabor = prev.find(r => r.labor && (!r.estado || r.estado === 'presente'));
   const ultCentro = prev.find(r => r.centro_costo && r.centro_origen !== 'combustible');
   const ultMaq = prev.find(r => r.maquinaria);
-  const c = WZ.comb[trab];
+  const c = WZ.comb[trab], cu = cuadernoDelDia(trab, WZ.fecha);
   const maqComb = c && c.equipos && c.equipos.length ? c.equipos.join(' + ') : '';
+  const cuCentros = cu && cu.centros.length ? cu.centros : null;
+  const maq = (cu && cu.equipos.length ? cu.equipos.join(' + ') : '') || maqComb || (ultMaq ? ultMaq.maquinaria : '');
+  const eq1 = maq.split(' + ')[0], ultAp = prev.find(r => Array.isArray(r.aperos) && r.aperos.length && (!eq1 || r.maquinaria === maq || String(r.maquinaria || '').split(' + ')[0] === eq1));
   WZ.cur = {
-    trab,
-    centroModo: c ? 'comb' : (ultCentro ? 'prev' : 'manual'),
-    centro: ultCentro ? ultCentro.centro_costo : '',
-    centroCambiar: !c && !ultCentro,
-    labor: ultLabor ? ultLabor.labor : '', laborDe: ultLabor ? ultLabor.fecha : '', laborCambiar: !ultLabor,
-    maq: maqComb || (ultMaq ? ultMaq.maquinaria : ''), maqModo: maqComb ? 'comb' : (ultMaq ? 'prev' : ''), maqCambiar: false,
+    trab, cu, cuConfirmar: !!cu,
+    centroModo: cuCentros ? 'cuad' : (c ? 'comb' : (ultCentro ? 'prev' : 'manual')),
+    centros: cuCentros ? cuCentros.map(x => ({ ...x })) : (c ? [] : (ultCentro ? centrosDeReg(ultCentro) : [])),
+    centroCambiar: !cuCentros && !c && !ultCentro,
+    labor: cu && cu.labor ? cu.labor : (ultLabor ? ultLabor.labor : ''), laborDe: cu && cu.labor ? '' : (ultLabor ? ultLabor.fecha : ''), laborCambiar: !(cu && cu.labor) && !ultLabor, laborCuad: !!(cu && cu.labor),
+    maq, maqModo: cu && cu.equipos.length ? 'cuad' : (maqComb ? 'comb' : (ultMaq ? 'prev' : '')), maqCambiar: false,
+    aperos: cu && cu.aperos.length ? [...cu.aperos] : (ultAp ? [...ultAp.aperos] : []),
     recientes: recientesAsist(trab, WZ.fecha), verRec: false, estado: 'presente', motivo: '',
-    detalle: ultLabor ? (ultLabor.labor_detalle || '') : '', detalleCambiar: false
+    detalle: ultLabor && !(cu && cu.labor) ? (ultLabor.labor_detalle || '') : '', detalleCambiar: false
   };
   { const h1 = document.getElementById('wiz-hreg'), h2 = document.getElementById('wiz-htrab'); if (h1) h1.value = ''; if (h2) h2.value = ''; } // las horas no pasan al siguiente trabajador
   wzRender();
@@ -5726,6 +5732,7 @@ const puntoCentro = n => SIN_COLOR_CENTRO.test(n || '') ? '' : `<span style="dis
 const puntosTexto = txt => String(txt || '').split(' · ').map(t => puntoCentro(t.replace(/\s+\d+%$/, '')) + escA(t)).join(' · ');
 const WZ_BTN = 'display:block;width:100%;padding:11px;margin:6px 0;border-radius:8px;border:1px solid #D1D5DB;background:#fff;font-size:14px;cursor:pointer';
 const WZ_SMALL = 'padding:8px 12px;border-radius:8px;border:1px solid #D1D5DB;background:#fff;font-size:13px;cursor:pointer;margin:3px 4px 3px 0';
+const fCortaAsist = f => f ? f.slice(8, 10) + '-' + f.slice(5, 7) : '';
 const wzUnicos = arr => [...new Set(arr.filter(x => typeof x === 'string' && x.trim()))];
 
 window.wzRender = function() {
@@ -5733,18 +5740,23 @@ window.wzRender = function() {
   if (!WZ || !w) return;
   const cur = WZ.cur, c = WZ.comb[cur.trab];
   const hr = document.getElementById('wiz-hreg')?.value ?? '', ht = document.getElementById('wiz-htrab')?.value ?? '';
-  // ── 1) CENTRO DE COSTO ──
+  // ── 1) CENTRO(S) DE COSTO (uno o más cultivos) ──
+  const cList = cur.centros || [];
+  const chipCentros = l => l.map(x => puntoCentro(x.centro) + escA(x.centro) + (l.length > 1 ? ' ' + x.pct + '%' : '')).join(' · ');
   let centroHtml;
   if (cur.centroModo === 'comb' && c && !cur.centroCambiar) {
     centroHtml = `<div style="padding:10px;background:#EFF6FF;border:1px solid #93C5FD;border-radius:8px">⛽ <b>${puntosTexto(c.texto)}</b> <span style="font-size:12px;color:#6B7280">(del combustible)</span> <button type="button" style="${WZ_SMALL}" onclick="WZ.cur.centroCambiar=true;wzRender()">Cambiar</button></div>`;
-  } else if (cur.centroModo === 'prev' && !cur.centroCambiar) {
-    centroHtml = `<div style="padding:10px;background:#ECFDF5;border:1px solid #6EE7B7;border-radius:8px">✓ <b>${puntosTexto(cur.centro)}</b> <span style="font-size:12px;color:#6B7280">(el último que usó)</span> <button type="button" style="${WZ_SMALL}" onclick="WZ.cur.centroCambiar=true;wzRender()">Cambiar</button></div>`;
-  } else if (cur.centroModo === 'manual' && cur.centro && !cur.centroCambiar) {
-    centroHtml = `<div style="padding:10px;background:#ECFDF5;border:1px solid #6EE7B7;border-radius:8px">✓ <b>${puntosTexto(cur.centro)}</b> <button type="button" style="${WZ_SMALL}" onclick="WZ.cur.centroCambiar=true;wzRender()">Cambiar</button></div>`;
+  } else if (cList.length && !cur.centroCambiar) {
+    const origen = cur.centroModo === 'cuad' ? '📒 del cuaderno de campo' : (cur.centroModo === 'prev' ? 'el último que usó' : '');
+    centroHtml = `<div style="padding:10px;background:${cur.centroModo === 'cuad' ? '#EFF6FF' : '#ECFDF5'};border:1px solid ${cur.centroModo === 'cuad' ? '#93C5FD' : '#6EE7B7'};border-radius:8px">${cur.centroModo === 'cuad' ? '📒' : '✓'} <b>${chipCentros(cList)}</b> ${origen ? `<span style="font-size:12px;color:#6B7280">(${origen})</span>` : ''} <button type="button" style="${WZ_SMALL}" onclick="WZ.cur.centroCambiar=true;wzRender()">Cambiar</button></div>`;
   } else {
     WZ.optsC = (config.centros || []).filter(x => !/^otros/i.test(x));
-    centroHtml = (c ? `<button type="button" style="${WZ_BTN};background:#EFF6FF;border-color:#93C5FD" onclick="wzCentroComb()">⛽ ${puntosTexto(c.texto)}</button>` : '') +
-      WZ.optsC.map((x, i) => `<button type="button" style="${WZ_BTN}" onclick="wzCentro(${i})" ><span style="display:flex;align-items:center;justify-content:center">${puntoCentro(x)}${escA(x)}</span></button>`).join('');
+    const sel = new Set(cList.map(x => x.centro));
+    centroHtml = (c ? `<button type="button" style="${WZ_BTN};background:#EFF6FF;border-color:#93C5FD" onclick="wzCentroComb()">⛽ Usar el del combustible: ${puntosTexto(c.texto)}</button>` : '') +
+      `<div style="font-size:12px;color:#6B7280;margin:4px 0">Toca uno o más cultivos / frutales</div>` +
+      WZ.optsC.map((x, i) => `<button type="button" style="${WZ_BTN};${sel.has(x) ? 'background:#16A34A;color:#fff;border-color:#16A34A;font-weight:700' : ''}" onclick="wzCentroTog(${i})"><span style="display:flex;align-items:center;justify-content:center">${sel.has(x) ? '✓ ' : ''}${puntoCentro(x)}${escA(x)}</span></button>`).join('') +
+      (cList.length > 1 ? `<div style="padding:8px;background:#F9FAFB;border:1px solid #E5E7EB;border-radius:8px;margin-top:6px"><div style="font-size:12px;color:#6B7280;margin-bottom:4px">¿Qué porcentaje del día en cada uno? (suma ${cList.reduce((a, x) => a + (x.pct || 0), 0)} %)</div>${cList.map((x, i) => `<div style="display:flex;align-items:center;gap:6px;margin:3px 0"><span style="flex:1">${puntoCentro(x.centro)}${escA(x.centro)}</span><input type="number" min="0" max="100" value="${x.pct}" style="width:70px" onchange="wzPct(${i},this.value)"> %</div>`).join('')}<button type="button" style="${WZ_SMALL}" onclick="WZ.cur.centros=repartirPct(WZ.cur.centros.map(x=>x.centro));wzRender()">Partes iguales</button></div>` : '') +
+      (cList.length ? `<button type="button" class="btn btn-verde btn-full" style="margin-top:8px" onclick="wzCentrosListo()">✓ Listo${cList.length > 1 ? ' (' + cList.length + ' cultivos)' : ''}</button>` : '');
   }
   // ── 2) LABOR ──
   let laborHtml;
@@ -5758,26 +5770,40 @@ window.wzRender = function() {
       WZ.opts.map((l, i) => { const k = comunes.find(x => x[0] === l); return `<button type="button" style="${WZ_BTN}" onclick="wzLabor(${i})">${escA(l)}${k ? ' <span style="color:#9CA3AF">×' + k[1] + '</span>' : ''}</button>`; }).join('') +
       `<div style="display:flex;gap:6px;margin-top:6px"><input type="text" id="wiz-labor-otra" placeholder="Otra labor..." style="flex:1"><button type="button" style="${WZ_SMALL}" onclick="wzLabor(-1)">OK</button></div>`;
   }
-  // ── 3) MAQUINARIA (cuando aplica: no se pregunta en riego) ──
+  // ── 3) MAQUINARIA Y APEROS (cuando aplica: no se pregunta en riego) ──
   const aplicaMaq = !/riego/i.test(cur.labor || '');
   let maqHtml = '';
   if (aplicaMaq) {
     let inner;
     if (cur.maqCambiar) {
-      const propios = (config.equipoOperador && config.equipoOperador[cur.trab]) || [];
-      WZ.optsM = wzUnicos([...(c && c.equipos ? c.equipos : []), ...propios, ...(config.equipos || [])]);
-      inner = `<button type="button" style="${WZ_BTN}" onclick="wzMaq(-1)">Sin maquinaria</button>` +
-        WZ.optsM.map((x, i) => `<button type="button" style="${WZ_BTN}" onclick="wzMaq(${i})">${escA(x)}</button>`).join('');
+      WZ.optsM = equiposOrdenados(cur.trab, [...(cur.cu ? cur.cu.equipos : []), ...(c && c.equipos ? c.equipos : [])]);
+      const prop = new Set(equiposDe(cur.trab));
+      inner = `<div style="font-size:12px;color:#6B7280">Primero su equipo y los que usó últimamente</div><button type="button" style="${WZ_BTN}" onclick="wzMaq(-1)">Sin maquinaria</button>` +
+        WZ.optsM.map((x, i) => `<button type="button" style="${WZ_BTN};${prop.has(x) ? 'border-color:#16A34A;font-weight:700' : ''}" onclick="wzMaq(${i})">${prop.has(x) ? '⭐ ' : ''}${escA(x)}</button>`).join('');
     } else if (cur.maq) {
-      inner = `<div style="padding:10px;background:${cur.maqModo === 'comb' ? '#EFF6FF' : '#ECFDF5'};border:1px solid ${cur.maqModo === 'comb' ? '#93C5FD' : '#6EE7B7'};border-radius:8px">${cur.maqModo === 'comb' ? '⛽' : '✓'} <b>${escA(cur.maq)}</b> <span style="font-size:12px;color:#6B7280">${cur.maqModo === 'comb' ? '(del combustible)' : '(la última que usó)'}</span> <button type="button" style="${WZ_SMALL}" onclick="WZ.cur.maqCambiar=true;wzRender()">Cambiar</button></div>`;
+      const cual = { comb: ['⛽', '#EFF6FF', '#93C5FD', '(del combustible)'], cuad: ['📒', '#EFF6FF', '#93C5FD', '(del cuaderno de campo)'], prev: ['✓', '#ECFDF5', '#6EE7B7', '(el último que usó)'] }[cur.maqModo] || ['✓', '#ECFDF5', '#6EE7B7', ''];
+      inner = `<div style="padding:10px;background:${cual[1]};border:1px solid ${cual[2]};border-radius:8px">${cual[0]} <b>${escA(cur.maq)}</b> <span style="font-size:12px;color:#6B7280">${cual[3]}</span> <button type="button" style="${WZ_SMALL}" onclick="WZ.cur.maqCambiar=true;wzRender()">Cambiar</button></div>`;
     } else {
       inner = `<div style="padding:10px;background:#F9FAFB;border:1px solid #E5E7EB;border-radius:8px;font-size:14px">Sin maquinaria <button type="button" style="${WZ_SMALL}" onclick="WZ.cur.maqCambiar=true;wzRender()">Elegir</button></div>`;
     }
     maqHtml = `<div class="field"><label>Maquinaria</label>${inner}</div>`;
+    if (cur.maq && !cur.maqCambiar) {
+      const eq1 = cur.maq.split(' + ')[0], lista = aperosOrdenados(cur.trab, eq1), sel = cur.aperos || [];
+      WZ.optsA = wzUnicos([...sel, ...lista.map(x => x.nombre)]);
+      const ult = Object.fromEntries(lista.map(x => [x.nombre, x.ult]));
+      maqHtml += `<div class="field"><label>Aperos de ${escA(eq1)} (opcional, puedes elegir varios)</label>${WZ.optsA.length ? `<div style="font-size:12px;color:#6B7280">Primero los que ha usado últimamente</div>` + WZ.optsA.map((a, i) => `<button type="button" style="${WZ_SMALL};${sel.includes(a) ? 'background:#16A34A;color:#fff;border-color:#16A34A;font-weight:700' : ''}" onclick="wzApero(${i})">${sel.includes(a) ? '✓ ' : ''}${escA(a)}${ult[a] ? ` <span style="opacity:.7;font-size:11px">${fCortaAsist(ult[a])}</span>` : ''}</button>`).join('') : '<div style="font-size:12px;color:#9CA3AF">No hay aperos definidos para este equipo.</div>'}</div>`;
+    }
   }
   const detHtml = cur.labor ? `<div class="field"><label>🔎 Detalle de la labor (opcional)</label>${cur.detalle && !cur.detalleCambiar ? `<div style="padding:10px;background:#ECFDF5;border:1px solid #6EE7B7;border-radius:8px">✓ <b>${escA(cur.detalle)}</b> <button type="button" style="${WZ_SMALL}" onclick="WZ.cur.detalleCambiar=true;wzRender()">Cambiar</button> <button type="button" style="${WZ_SMALL}" onclick="WZ.cur.detalle='';WZ.cur.detalleCambiar=false;wzRender()">Quitar</button></div>` : `<input type="text" id="wiz-det-q" autocomplete="off" placeholder="Escribe o busca el detalle…" oninput="wzDetFiltrar()" onkeydown="if(event.key==='Enter'){event.preventDefault();wzDetOk()}"><div id="wiz-det-lista" style="margin-top:4px"></div>`}</div>` : '';
+  const cu = cur.cu, cuadHtml = cu && cur.cuConfirmar && cur.estado === 'presente' ? `<div style="padding:12px;background:#DBEAFE;border:2px solid #3B82F6;border-radius:10px;margin-bottom:12px">
+      <div style="font-weight:700">📒 Cuaderno de campo ${cu.enCurso ? '(labor en curso)' : 'de este día'}</div>
+      <div style="font-size:14px;margin:6px 0;line-height:1.6">${cu.labores.length ? '<b>' + cu.labores.map(escA).join(' + ') + '</b><br>' : ''}${cu.potreros.length ? '🌿 ' + cu.potreros.map(escA).join(', ') + '<br>' : ''}${cu.centros.length ? 'Cultivo: <b>' + puntosTexto(centrosTexto(cu.centros)) + '</b><br>' : ''}${cu.equipos.length ? '🚜 ' + cu.equipos.map(escA).join(' + ') : ''}${cu.aperos.length ? ' · ' + cu.aperos.map(escA).join(' + ') : ''}</div>
+      ${cu.sinCultivo.length ? `<div style="font-size:12px;color:#B45309;margin-bottom:6px">No pude saber el cultivo de: ${cu.sinCultivo.map(escA).join(', ')}. Elígelo abajo.</div>` : ''}
+      ${cu.labores.length > 1 ? `<div style="font-size:12px;color:#6B7280;margin-bottom:6px">Hizo varias labores: se anota «${escA(cur.labor)}»; cámbiala si corresponde.</div>` : ''}
+      <button type="button" style="${WZ_SMALL};background:#16A34A;color:#fff;border-color:#16A34A" onclick="wzConfirmarCuad()">✅ Confirmar y guardar</button>
+      <button type="button" style="${WZ_SMALL}" onclick="WZ.cur.cuConfirmar=false;wzRender()">✏️ Revisar o cambiar</button></div>` : '';
   const rec = cur.recientes || [];
-  const txtRec = x => [x.centro || x.centroComb ? puntosTexto(x.centro || x.centroComb) : '', x.labor ? escA(x.labor) + (x.detalle ? ' › ' + escA(x.detalle) : '') : '', x.maq ? '🚜 ' + escA(x.maq) : ''].filter(Boolean).join(' · ');
+  const txtRec = x => [x.centro || x.centroComb ? puntosTexto(x.centro || x.centroComb) : '', x.labor ? escA(x.labor) + (x.detalle ? ' › ' + escA(x.detalle) : '') : '', x.maq ? '🚜 ' + escA(x.maq) + ((x.aperos || []).length ? ' › ' + x.aperos.map(escA).join(' + ') : '') : ''].filter(Boolean).join(' · ');
   const recHtml = rec.length ? `<div style="padding:10px;background:#FEF9C3;border:1px solid #FDE047;border-radius:8px;margin-bottom:12px">
       <div style="font-size:12px;color:#6B7280">Lo último que hizo (${fechaBonita(rec[0].fecha)}):</div>
       <div style="font-size:14px;margin:4px 0 6px"><b>${txtRec(rec[0])}</b></div>
@@ -5804,8 +5830,8 @@ window.wzRender = function() {
       </div>
       <div>${[0, 0.5, 1, 1.5, 2, 3, 4].map(h => `<button type="button" style="${WZ_SMALL}" onclick="document.getElementById('wiz-hreg').value='${h}'">${String(h).replace('.', ',')} h</button>`).join('')}</div>
     </div>
-    ${recHtml}
-    <div class="field"><label>Cultivo / frutal (centro de costo)</label>${centroHtml}</div>
+    ${cuadHtml}${cuadHtml ? '' : recHtml}
+    <div class="field"><label>Cultivo(s) / frutal (centro de costo)</label>${centroHtml}</div>
     <div class="field"><label>Labor del día</label>${laborHtml}</div>
     ${detHtml}
     ${maqHtml}`}
@@ -5832,15 +5858,33 @@ window.wzDetOk = function() {
   const d = detalleCoincidente(WZ.cur.labor, v); WZ.cur.detalle = d; WZ.cur.detalleCambiar = false; agregarDetalleLabor(WZ.cur.labor, d); wzRender();
 }
 window.wzEstado = function(k) { if (!WZ || !WZ.cur) return; const m = document.getElementById('wiz-motivo'); if (m) WZ.cur.motivo = m.value; WZ.cur.estado = k; wzRender(); }
-window.wzCentroComb = function() { WZ.cur.centroModo = 'comb'; WZ.cur.centroCambiar = false; wzRender(); }
-window.wzCentro = function(i) { const v = WZ.optsC[i]; if (!v) return; WZ.cur.centro = v; WZ.cur.centroModo = 'manual'; WZ.cur.centroCambiar = false; wzRender(); }
+window.wzCentroComb = function() { WZ.cur.centroModo = 'comb'; WZ.cur.centros = []; WZ.cur.centroCambiar = false; wzRender(); }
+window.wzCentroTog = function(i) {
+  const v = WZ.optsC[i]; if (!v) return; const cur = WZ.cur, l = cur.centros || [], k = l.findIndex(x => x.centro === v);
+  const nombres = k >= 0 ? l.filter((x, j) => j !== k).map(x => x.centro) : [...l.map(x => x.centro), v];
+  cur.centros = repartirPct(nombres); cur.centroModo = 'manual'; wzRender();
+}
+window.wzPct = function(i, v) { const l = WZ.cur.centros; if (!l[i]) return; l[i].pct = Math.max(0, Math.min(100, parseInt(v, 10) || 0)); wzRender(); }
+window.wzCentrosListo = function() {
+  const l = WZ.cur.centros || []; if (!l.length) return;
+  const t = l.reduce((a, x) => a + (x.pct || 0), 0); if (l.length > 1 && t !== 100) { toast('Los porcentajes deben sumar 100 (ahora suman ' + t + ')', false); return; }
+  WZ.cur.centroModo = 'manual'; WZ.cur.centroCambiar = false; wzRender();
+}
+window.wzApero = function(i) { const a = (WZ.optsA || [])[i]; if (!a) return; const l = WZ.cur.aperos || (WZ.cur.aperos = []), k = l.indexOf(a); if (k >= 0) l.splice(k, 1); else l.push(a); wzRender(); }
+window.wzConfirmarCuad = function() {
+  const cur = WZ.cur; if (!cur.labor) { toast('Falta la labor: toca «Revisar o cambiar»', false); return; }
+  if (cur.centroModo !== 'comb' && !(cur.centros || []).length) { toast('Falta el cultivo: toca «Revisar o cambiar» y elígelo', false); return; }
+  wzGuardar();
+}
 window.wzReciente = function(i, guardar) {
   const cur = WZ && WZ.cur, x = cur && (cur.recientes || [])[i]; if (!x) return;
   const c = WZ.comb[cur.trab];
-  if (x.centro) { cur.centro = x.centro; if (!c) { cur.centroModo = 'prev'; cur.centroCambiar = false; } }
-  else if (!c && !cur.centro) cur.centroCambiar = true;
+  cur.cuConfirmar = false;
+  if (x.centros && x.centros.length) { cur.centros = x.centros.map(y => ({ ...y })); if (!c || cur.centroModo === 'cuad') { cur.centroModo = 'prev'; cur.centroCambiar = false; } }
+  else if (!c && !(cur.centros || []).length) cur.centroCambiar = true;
   if (x.labor) { cur.labor = x.labor; cur.laborDe = x.fecha; cur.laborCambiar = false; cur.detalle = x.detalle || ''; cur.detalleCambiar = false; }
   if (!(c && c.equipos && c.equipos.length)) { cur.maq = x.maq || ''; cur.maqModo = x.maq ? 'prev' : ''; cur.maqCambiar = false; }
+  cur.aperos = [...(x.aperos || [])];
   if (guardar) { if (!cur.labor) { toast('Esa fila no tiene labor: elígela primero', false); wzRender(); return; } wzGuardar(); }
   else wzRender();
 }
@@ -5852,15 +5896,19 @@ window.wzLabor = function(i) {
   WZ.cur.labor = v; WZ.cur.laborDe = ''; WZ.cur.laborCambiar = false; wzRender();
 }
 window.wzMaq = function(i) {
-  WZ.cur.maq = i >= 0 ? (WZ.optsM[i] || '') : ''; WZ.cur.maqModo = 'manual'; WZ.cur.maqCambiar = false; wzRender();
+  const cur = WZ.cur, antes = cur.maq, nuevo = i >= 0 ? (WZ.optsM[i] || '') : '';
+  cur.maq = nuevo; cur.maqModo = 'manual'; cur.maqCambiar = false;
+  if (nuevo !== antes) { const u = asistenciaRegistros.filter(r => r.trabajador === cur.trab && Array.isArray(r.aperos) && r.aperos.length && nuevo && String(r.maquinaria || '').split(' + ')[0] === nuevo.split(' + ')[0]).sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''))[0]; cur.aperos = u ? [...u.aperos] : []; }
+  wzRender();
 }
 window.wzGuardar = async function() {
   const cur = WZ.cur, c = WZ.comb[cur.trab];
   const aus = cur.estado && cur.estado !== 'presente';
   const hreg = aus ? '' : (document.getElementById('wiz-hreg')?.value ?? ''), htrab = aus ? '' : (document.getElementById('wiz-htrab')?.value ?? '');
   const motivo = aus ? (document.getElementById('wiz-motivo')?.value ?? cur.motivo ?? '').trim() : '';
-  const usaComb = !aus && cur.centroModo === 'comb' && c;
-  const centro = aus ? '' : (usaComb ? c.texto : (cur.centro || ''));
+  const usaComb = !aus && cur.centroModo === 'comb' && c && !(cur.centros || []).length;
+  const cList = aus ? [] : (cur.centros || []), multi = !usaComb && cList.length > 1;
+  const centro = aus ? '' : (usaComb ? c.texto : centrosTexto(cList));
   const aplicaMaq = !aus && !/riego/i.test(cur.labor || '');
   let det = aus ? null : (cur.detalle || null);
   if (!aus && !det && cur.labor) { const qd = document.getElementById('wiz-det-q'), vd = ((qd && qd.value) || '').trim(); if (vd) { det = detalleCoincidente(cur.labor, vd); agregarDetalleLabor(cur.labor, det); } }
@@ -5868,8 +5916,9 @@ window.wzGuardar = async function() {
     await addDoc(collection(db, 'asistencia'), {
       trabajador: cur.trab, fecha: WZ.fecha, estado: aus ? cur.estado : 'presente', centro_costo: centro || null, labor: aus ? null : (cur.labor || null), labor_detalle: det,
       maquinaria: aplicaMaq && cur.maq ? cur.maq : null,
-      centro_origen: usaComb ? 'combustible' : null,
-      centros_dist: usaComb ? c.lista : null,
+      aperos: aplicaMaq && cur.maq && (cur.aperos || []).length ? [...cur.aperos] : null,
+      centro_origen: usaComb ? 'combustible' : (multi ? 'multi' : (!aus && cur.centroModo === 'cuad' ? 'cuaderno' : null)),
+      centros_dist: usaComb ? c.lista : (multi ? cList.map(x => ({ centro: x.centro, pct: x.pct })) : null),
       horas_trabajador: htrab !== '' ? parseFloat(htrab) : null,
       horas_registro: hreg !== '' ? parseFloat(hreg) : 0,
       obs: motivo, registrado_por: currentUser, ts: Date.now()
@@ -5982,16 +6031,58 @@ async function agregarLaborAsistencia(v) {
   try { await setDoc(doc(db, 'config', 'datos'), { laboresAsistencia: config.laboresAsistencia }, { merge: true }); toast('✓ "' + v + '" agregada a la lista de labores', true); }
   catch (e) { console.warn('labor asistencia', e); toast('La labor se usó, pero no se pudo guardar en la lista: ' + e.message, false); }
 }
+// Centros (con %) de un registro de asistencia que no viene del combustible
+function centrosDeReg(r) {
+  if (r.centros_dist && r.centros_dist.length && r.centro_origen !== 'combustible') return r.centros_dist.map(x => ({ centro: x.centro, pct: x.pct || 0 }));
+  return r.centro_costo && r.centro_origen !== 'combustible' ? [{ centro: r.centro_costo, pct: 100 }] : [];
+}
+const centrosTexto = l => l.length > 1 ? l.map(x => x.centro + ' ' + x.pct + '%').join(' · ') : (l[0] ? l[0].centro : '');
+function repartirPct(nombres, pesos) {
+  const n = nombres.length; if (!n) return [];
+  const tot = pesos ? pesos.reduce((a, b) => a + b, 0) : 0, ok = pesos && tot > 0;
+  let ac = 0; return nombres.map((c, i) => { const p = i === n - 1 ? 100 - ac : Math.round(ok ? pesos[i] / tot * 100 : 100 / n); ac += p; return { centro: c, pct: p }; });
+}
+// Aperos del equipo, con los que el trabajador usó más recientemente primero
+function aperosOrdenados(trab, eq) {
+  const base = (aperosConfig || []).filter(a => !eq || !a.equipos || !a.equipos.length || a.equipos.includes(eq)).map(a => a.nombre);
+  const ult = {};
+  asistenciaRegistros.filter(r => r.trabajador === trab && Array.isArray(r.aperos)).forEach(r => r.aperos.forEach(a => { if ((r.fecha || '') > (ult[a] || '')) ult[a] = r.fecha; }));
+  (laboresCampoTodos || []).forEach(l => (l.aperos || []).forEach(a => Object.entries(equiposPorDia(l)).forEach(([d, arr]) => { if (arr.some(x => normNom(x.operador) === normNom(trab)) && d > (ult[a] || '')) ult[a] = d; })));
+  return [...new Set(base)].sort((a, b) => (ult[b] || '').localeCompare(ult[a] || '') || a.localeCompare(b, 'es')).map(n => ({ nombre: n, ult: ult[n] || '' }));
+}
+// Equipos del trabajador: el suyo asignado, luego los usados últimamente, luego el resto
+function equiposOrdenados(trab, extra) {
+  const ult = {};
+  asistenciaRegistros.filter(r => r.trabajador === trab && r.maquinaria).forEach(r => String(r.maquinaria).split(' + ').forEach(e => { if ((r.fecha || '') > (ult[e] || '')) ult[e] = r.fecha; }));
+  const rec = Object.keys(ult).sort((a, b) => ult[b].localeCompare(ult[a]));
+  return wzUnicos([...(extra || []), ...equiposDe(trab), ...rec, ...(config.equipos || [])]).filter(e => e !== 'Otro (especificar)');
+}
+// Lo que el cuaderno de campo dice de ese trabajador ese día (labores del día o en curso)
+function cuadernoDelDia(trab, fecha) {
+  const nt = normNom(trab), ls = [];
+  (laboresCampoTodos || []).forEach(l => {
+    if (!l.fecha || l.fecha > fecha) return;
+    const dd = equiposPorDia(l)[fecha];
+    if (dd) { const mine = dd.filter(x => normNom(x.operador) === nt); if (mine.length) ls.push({ l, equipos: mine.map(x => x.equipo).filter(Boolean) }); }
+    else if (l.enCurso && normNom(l.operadorLabor) === nt) ls.push({ l, equipos: l.equipo ? [l.equipo] : [] });
+  });
+  if (!ls.length) return null;
+  const pots = [...new Set(ls.map(x => x.l.potrero).filter(Boolean))];
+  const porCult = {}; pots.forEach(pt => { const c = jdpCultivoDePotrero(pt); if (!c) return; const ha = ((potrerosConfig || []).find(x => x.nombre === pt) || {}).hectareas; (porCult[c] = porCult[c] || { ha: 0, n: 0 }); porCult[c].ha += Number(ha) || 0; porCult[c].n++; });
+  const cults = Object.keys(porCult), pesos = cults.map(c => porCult[c].ha), centros = cults.length ? repartirPct(cults, pesos.every(x => x > 0) ? pesos : null) : [];
+  const labores = [...new Set(ls.map(x => nombreTipoDocCampo(x.l).replace(/^[^\p{L}]+/u, '')).filter(Boolean))];
+  return { potreros: pots, centros, sinCultivo: pots.filter(pt => !jdpCultivoDePotrero(pt)), labores, labor: labores[0] || '', equipos: [...new Set(ls.flatMap(x => x.equipos))], aperos: [...new Set(ls.flatMap(x => x.l.aperos || []))], enCurso: ls.some(x => x.l.enCurso) };
+}
 // Últimas 10 combinaciones distintas (cultivo/centro · labor · maquinaria) del trabajador, la más reciente primero
 function recientesAsist(trab, fecha) {
   const vistos = new Set(), out = [];
   asistenciaRegistros.filter(r => r.trabajador === trab && r.fecha !== fecha && (!r.estado || r.estado === 'presente') && (r.labor || r.centro_costo))
     .sort((a, b) => (b.fecha || '').localeCompare(a.fecha || '') || (b.ts || 0) - (a.ts || 0))
     .forEach(r => {
-      const comb = r.centro_origen === 'combustible', k = (comb ? '' : (r.centro_costo || '')) + '|' + (r.labor || '') + '|' + (r.labor_detalle || '') + '|' + (r.maquinaria || '');
+      const comb = r.centro_origen === 'combustible', cs = centrosDeReg(r), ap = Array.isArray(r.aperos) ? r.aperos : [], k = (comb ? '' : centrosTexto(cs)) + '|' + (r.labor || '') + '|' + (r.labor_detalle || '') + '|' + (r.maquinaria || '') + '|' + ap.join(',');
       if (vistos.has(k) || out.length >= 10) return;
       vistos.add(k);
-      out.push({ fecha: r.fecha, centro: comb ? '' : (r.centro_costo || ''), centroComb: comb ? (r.centro_costo || '') : '', labor: r.labor || '', detalle: r.labor_detalle || '', maq: r.maquinaria || '' });
+      out.push({ fecha: r.fecha, centros: cs, centro: comb ? '' : centrosTexto(cs), centroComb: comb ? (r.centro_costo || '') : '', labor: r.labor || '', detalle: r.labor_detalle || '', maq: r.maquinaria || '', aperos: ap });
     });
   return out;
 }
@@ -6126,7 +6217,7 @@ window.renderTablaAsistencia = function() {
       return `<tr ${filaAlerta?'style="background:#FFF5F5"':''}>
         <td class="td-mono">${r.fecha}</td>
         <td><strong>${r.trabajador}</strong></td>
-        <td style="font-size:12px">${r.estado && r.estado !== 'presente' && ESTADOS_ASIST[r.estado] ? `<b style="color:${ESTADOS_ASIST[r.estado][1]}">${ESTADOS_ASIST[r.estado][0]}</b>` : ''}${r.labor ? escA(r.labor) + (r.labor_detalle ? '<br><span style="color:#6B7280">› ' + escA(r.labor_detalle) + '</span>' : '') : (r.estado && r.estado !== 'presente' ? '' : '—')}${r.maquinaria ? '<br><span style="color:#6B7280">🚜 ' + escA(r.maquinaria) + '</span>' : ''}</td>
+        <td style="font-size:12px">${r.estado && r.estado !== 'presente' && ESTADOS_ASIST[r.estado] ? `<b style="color:${ESTADOS_ASIST[r.estado][1]}">${ESTADOS_ASIST[r.estado][0]}</b>` : ''}${r.labor ? escA(r.labor) + (r.labor_detalle ? '<br><span style="color:#6B7280">› ' + escA(r.labor_detalle) + '</span>' : '') : (r.estado && r.estado !== 'presente' ? '' : '—')}${r.maquinaria ? '<br><span style="color:#6B7280">🚜 ' + escA(r.maquinaria) + (Array.isArray(r.aperos) && r.aperos.length ? ' › ' + r.aperos.map(escA).join(' + ') : '') + '</span>' : ''}</td>
         <td style="font-size:12px">${r.centro_origen === 'combustible' ? '⛽ ' : ''}${r.centro_costo ? puntosTexto(r.centro_costo) : '—'}</td>
         <td class="td-mono">${ht != null ? ht.toFixed(1)+' hr' : (r.estado && r.estado !== 'presente' ? '—' : '<span style="color:#B45309;font-weight:600">⏳ Pendiente</span>')}</td>
         <td class="td-mono">${hr != null ? hr.toFixed(1)+' hr' : '—'}</td>
@@ -6658,9 +6749,17 @@ window.quitarParHoy = async function(k, clave) {
     await batch.commit();
   } catch (e) { toast('Error: ' + e.message, false); }
 }
-window.terminarLaborEnCurso = async function(k) {
+window.terminarDesdeHistorial = function(id) {
+  const l = (laboresCampoTodos || []).find(x => x.id === id); if (!l || !l.enCurso) { toast('Esa labor ya está terminada', false); return; }
+  const k = claveEnCurso(l), g = laboresCampoTodos.filter(x => x.enCurso && claveEnCurso(x) === k), ini = g.map(x => x.fecha).sort()[0], hoy = hoyCampoStr();
+  const r = prompt(`Terminar la labor «${nombreTipoDocCampo(l)}» (inicio ${fCorta(ini)}${g.length > 1 ? ', ' + g.length + ' potreros' : ''}).\n¿Qué día terminó? (AAAA-MM-DD)`, hoy);
+  if (!r) return; const fin = r.trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(fin)) { toast('Escribe la fecha como AAAA-MM-DD', false); return; }
+  terminarLaborEnCurso(k, fin);
+}
+window.terminarLaborEnCurso = async function(k, finOpt) {
   const g = (laboresCampoTodos || []).filter(l => l.enCurso && claveEnCurso(l) === k); if (!g.length) return;
-  const fin = (document.getElementById('fin-' + k) || {}).value;
+  const fin = finOpt || (document.getElementById('fin-' + k) || {}).value;
   const ini = g.map(l => l.fecha).sort()[0];
   if (!fin) { toast('Elige la fecha de término', false); return; }
   if (fin < ini) { toast('La fecha de término no puede ser anterior al inicio (' + fCorta(ini) + ')', false); return; }
@@ -8329,7 +8428,7 @@ window.renderHistorialLabores = function() {
   });
   const tipoLabel = {}; TIPOS_LABOR_CAMPO.forEach(t => tipoLabel[t.id] = iconoLaborHtml(t));
   const tipoTxt = l => l.tipo === 'personalizado' ? '🧩 ' + escA(l.nombreTipo) : (tipoLabel[l.tipo] || l.tipo);
-  const botones = l => `${l.fecha ? `<button class="btn btn-secondary" style="padding:6px 9px;margin-right:4px" title="Clima de los días de la labor (temperatura, lluvia y radiación)" onclick="actualizarClimaLabor('${l.id}')">🌤️</button>` : ''}${potreroEsHuerto(l.potrero) && l.fecha ? `<button class="btn btn-secondary" style="padding:6px 9px;margin-right:4px" title="Hileras trabajadas por día (según el recorrido del tractor)" onclick="verHilerasLabor('${l.id}')">🌳</button>` : ''}${l.fecha && !potreroEsHuerto(l.potrero) && potreroConPoligono(l.potrero) && (l.equipo || Object.keys(equiposPorDia(l)).length || (l.aperos || []).length) ? `<button class="btn btn-secondary" style="padding:6px 9px;margin-right:4px" title="Superficie trabajada por día (según el recorrido del tractor)" onclick="verCoberturaLabor('${l.id}')">🗺️</button>` : ''}<button class="btn btn-secondary" style="padding:6px 9px;margin-right:4px" title="Editar" onclick="editarLaborCampo('${l.id}')">✏️</button><button class="btn btn-secondary" style="padding:6px 9px;margin-right:4px" title="Agregar otra labor del mismo día enlazada a esta" onclick="agregarLaborAFila('${l.id}')">➕</button><button class="btn btn-danger" onclick="eliminarLaborCampo('${l.id}')">✕</button>`;
+  const botones = l => `${l.fecha ? `<button class="btn btn-secondary" style="padding:6px 9px;margin-right:4px" title="Clima de los días de la labor (temperatura, lluvia y radiación)" onclick="actualizarClimaLabor('${l.id}')">🌤️</button>` : ''}${potreroEsHuerto(l.potrero) && l.fecha ? `<button class="btn btn-secondary" style="padding:6px 9px;margin-right:4px" title="Hileras trabajadas por día (según el recorrido del tractor)" onclick="verHilerasLabor('${l.id}')">🌳</button>` : ''}${l.fecha && !potreroEsHuerto(l.potrero) && potreroConPoligono(l.potrero) && (l.equipo || Object.keys(equiposPorDia(l)).length || (l.aperos || []).length) ? `<button class="btn btn-secondary" style="padding:6px 9px;margin-right:4px" title="Superficie trabajada por día (según el recorrido del tractor)" onclick="verCoberturaLabor('${l.id}')">🗺️</button>` : ''}${l.enCurso ? `<button class="btn btn-verde" style="padding:6px 9px;margin-right:4px" title="Dar por terminada esta labor" onclick="terminarDesdeHistorial('${l.id}')">🏁 Terminar</button>` : ''}<button class="btn btn-secondary" style="padding:6px 9px;margin-right:4px" title="Editar" onclick="editarLaborCampo('${l.id}')">✏️</button><button class="btn btn-secondary" style="padding:6px 9px;margin-right:4px" title="Agregar otra labor del mismo día enlazada a esta" onclick="agregarLaborAFila('${l.id}')">➕</button><button class="btn btn-danger" onclick="eliminarLaborCampo('${l.id}')">✕</button>`;
   const sentido = campoHistorialOrden === 'asc' ? 1 : -1;
   const ordenInfo = g => { if (!g[0].fecha) return ''; const it = itemsDelDia(g[0]); if (it.length < 2) return ''; const pos = it.findIndex(x => x.some(y => y.id === g[0].id)) + 1; return `<div style="font-size:10px;color:#6B7280;margin-top:3px">${pos}º de ${it.length} del día</div>`; };
   const botonesOrden = g => { if (!puedeEditarCampo() || !g[0].fecha || itemsDelDia(g[0]).length < 2) return ''; return `<div style="margin-top:4px"><button class="btn btn-secondary" style="padding:3px 8px;margin-right:3px" title="Subir" onclick="moverLaborDia('${g[0].id}',${-1 * sentido})">▲</button><button class="btn btn-secondary" style="padding:3px 8px" title="Bajar" onclick="moverLaborDia('${g[0].id}',${1 * sentido})">▼</button></div>`; };
