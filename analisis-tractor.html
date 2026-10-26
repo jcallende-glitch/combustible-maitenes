@@ -170,6 +170,7 @@
       <div class="grid">
         <div class="field"><label>Potrero / zona</label><select id="f-pot" onchange="dibujar()"></select></div>
         <div class="field"><label>Estado JDLink</label><select id="f-estado" onchange="dibujar()"></select></div>
+        <div class="field"><label>Motor</label><select id="f-motor" onchange="dibujar()"><option value="">Todos</option></select></div>
       </div>
       <div class="field"><label>Hueco máximo entre puntos (para contar tiempo)</label>
         <select id="gap" onchange="dibujar()"><option value="120000">2 min</option><option value="300000" selected>5 min</option><option value="900000">15 min</option></select></div>
@@ -272,7 +273,7 @@ async function callJDApi(endpointOrUrl) {
   try {
     const resp = await fetch('/.netlify/functions/jd-api', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint: endpointOrUrl, token }) });
     const text = await resp.text(); let data = null; try { data = JSON.parse(text); } catch (e) {}
-    return { status: resp.status, data };
+    return { status: resp.status, data, text };
   } catch (e) { return { status: 0, data: null }; }
 }
 async function cargarOrganizacionJD() {
@@ -380,6 +381,8 @@ function coordsDe(v) {
 
 // ── Estado global ────────────────────────────────────────────────
 let P = [];                  // puntos ordenados por tiempo
+let TRAMOS = [];             // motor encendido/apagado (hoursOfOperation): {s, e, on}
+let HORO = [];               // horómetro (engineHours): {t, h}
 let CAMPOS = {};             // ruta -> {n,min,max,sum,unidad}
 let ESTADOS = [];
 let maquinas = [], potreros = [], diag = null, rawGuardado = null;
@@ -437,6 +440,48 @@ function asignarPotreros() {
     }
   });
 }
+
+
+// ── Motor: encendido/apagado y horómetro (JDLink) ────────────────
+function extraerTramos(vals) {
+  const out = [];
+  (vals || []).forEach(v => {
+    if (!v || typeof v !== 'object') return;
+    const s = Date.parse(v.startDate || v.start || v.startTime || ''), e = Date.parse(v.endDate || v.end || v.endTime || '');
+    if (!isFinite(s) || !isFinite(e) || e <= s) return;
+    let st = v.engineState ?? v.state ?? v.status; if (st && typeof st === 'object') st = st.value;
+    out.push({ s, e, on: st === 1 || st === '1' || st === true || /^(on|true|running|encendido)$/i.test(String(st)) });
+  });
+  out.sort((a, b) => a.s - b.s);
+  return out;
+}
+function extraerHoro(vals) {
+  const out = [];
+  (vals || []).forEach(v => {
+    if (!v || typeof v !== 'object') return;
+    const t = tiempoDe(v), r = v.reading ?? v.engineHours ?? v.hours;
+    const h = numO(r && typeof r === 'object' ? (r.valueAsDouble ?? r.value) : r);
+    if (isFinite(t) && h != null) out.push({ t, h });
+  });
+  out.sort((a, b) => a.t - b.t);
+  return out.filter((x, i) => i === 0 || x.t !== out[i - 1].t);
+}
+function motorEn(t) {
+  let lo = 0, hi = TRAMOS.length - 1;
+  while (lo <= hi) { const m = (lo + hi) >> 1, x = TRAMOS[m]; if (t < x.s) hi = m - 1; else if (t > x.e) lo = m + 1; else return x.on ? 1 : 0; }
+  return null;
+}
+function horoEn(t) {
+  if (!HORO.length || t < HORO[0].t - 1800000 || t > HORO[HORO.length - 1].t + 1800000) return null;
+  if (t <= HORO[0].t) return HORO[0].h;
+  for (let i = 1; i < HORO.length; i++) if (t <= HORO[i].t) { const a = HORO[i - 1], b = HORO[i]; return a.h + (b.h - a.h) * (t - a.t) / ((b.t - a.t) || 1); }
+  return HORO[HORO.length - 1].h;
+}
+function extractTramosSeguro(v) { try { return extraerTramos(v); } catch (e) { return []; } }
+function motorMs(a, b) { let ms = 0; TRAMOS.forEach(x => { if (x.on) { const i = Math.max(a, x.s), f = Math.min(b, x.e); if (f > i) ms += f - i; } }); return ms; }
+function encendidosEn(a, b) { return TRAMOS.filter(x => x.on && x.s >= a && x.s <= b).length; }
+function marcarMotor() { P.forEach(p => { p.motor = TRAMOS.length ? motorEn(p.t) : null; p.horo = horoEn(p.t); }); }
+const txtMotor = p => p.motor === 1 ? 'Motor encendido' : p.motor === 0 ? 'Motor apagado' : 'Sin dato de motor';
 
 // ── Construcción de puntos ───────────────────────────────────────
 function distKm(a, b) {
@@ -535,12 +580,13 @@ function llenarSelectores() {
   $('sel-vel').innerHTML = '<option value="">— sin variable —</option>' + ks.map(k => opt(k, selVel)).join('');
   const cv = $('col-var'); const previo = cv.value;
   cv.innerHTML = `<option value="vel">Velocidad (filtro)</option><option value="rpm">RPM (filtro)</option>` +
-    (ESTADOS.length ? '<option value="_estado">Estado JDLink</option>' : '') +
+    (ESTADOS.length ? '<option value="_estado">Estado JDLink</option>' : '') + (TRAMOS.length ? '<option value="_motor">Motor encendido / apagado</option>' : '') +
     `<option value="_pot">Potrero</option>` + ks.filter(k => CAMPOS[k].max > CAMPOS[k].min).map(k => `<option value="f:${esc(k)}">${esc(etiquetaCampo(k))}</option>`).join('');
   cv.value = [...cv.options].some(o => o.value === previo) ? previo : (selVel ? 'vel' : (selRpm ? 'rpm' : '_pot'));
   $('sel-dia').innerHTML = '<option value="">Todos los días</option>' + [...new Set(P.map(p => diaTxt(p.t)))].map(d => `<option>${d}</option>`).join('');
   $('f-pot').innerHTML = '<option value="">Todos</option>' + [...new Set(P.map(p => p.pot))].sort().map(n => `<option>${esc(n)}</option>`).join('');
   $('f-estado').innerHTML = '<option value="">Todos</option>' + ESTADOS.map(n => `<option>${esc(n)}</option>`).join('');
+  $('f-motor').innerHTML = TRAMOS.length ? '<option value="">Todos</option><option value="1">Encendido</option><option value="0">Apagado</option>' : '<option value="">Sin datos de motor</option>';
 }
 const diaTxt = t => { const d = new Date(t); return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`; };
 const horaTxt = t => new Date(t).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' });
@@ -650,6 +696,7 @@ function filtroPasa(p, omitir) {
   if (omitir !== 'vel' && selVel && activoRango('vel')) { const v = vVel(p); if (v == null ? !sd : (v < F.vel[0] || v > F.vel[1])) return false; }
   const fp = $('f-pot').value; if (fp && p.pot !== fp) return false;
   const fe = $('f-estado').value; if (fe && p.estado !== fe) return false;
+  const fm = $('f-motor').value; if (fm !== '' && String(p.motor) !== fm) return false;
   return true;
 }
 
@@ -671,7 +718,8 @@ function colorEsc(t) {
   return pal[pal.length - 1][1];
 }
 const CAT_COL = ['#2563EB', '#DC2626', '#16A34A', '#F59E0B', '#7C3AED', '#0D9488', '#DB2777', '#92400E', '#4B5563', '#EA580C'];
-const ESTADO_COL = { working: '#16A34A', transport: '#2563EB', idle: '#F59E0B', off: '#6B7280', unknown: '#9CA3AF' };
+const ESTADO_COL = { working: '#16A34A', transport: '#2563EB', idle: '#F59E0B', off: '#6B7280', unknown: '#9CA3AF', 'motor encendido': '#16A34A', 'motor apagado': '#374151', 'sin dato de motor': '#D1D5DB' };
+const catKey = (p, cv) => cv === '_estado' ? (p.estado || 'sin estado') : cv === '_motor' ? txtMotor(p) : p.pot;
 function valorColor(p, cv) {
   if (cv === 'vel') return vVel(p);
   if (cv === 'rpm') return vRpm(p);
@@ -680,10 +728,10 @@ function valorColor(p, cv) {
 }
 window.cambioColor = function () { $('esc-min').value = ''; $('esc-max').value = ''; dibujar(); };
 function prepararEscala(lista, cv) {
-  const cat = cv === '_estado' || cv === '_pot';
+  const cat = cv === '_estado' || cv === '_pot' || cv === '_motor';
   if (cat) {
     const mapa = {}; let i = 0;
-    lista.forEach(p => { const k = cv === '_estado' ? (p.estado || 'sin estado') : p.pot; if (!(k in mapa)) mapa[k] = (cv === '_estado' && ESTADO_COL[String(k).toLowerCase()]) || CAT_COL[(i++) % CAT_COL.length]; });
+    lista.forEach(p => { const k = catKey(p, cv); if (!(k in mapa)) mapa[k] = ((cv === '_estado' || cv === '_motor') && ESTADO_COL[String(k).toLowerCase()]) || CAT_COL[(i++) % CAT_COL.length]; });
     colorEscala = { cat: true, mapa, min: 0, max: 1 }; return;
   }
   let vs = lista.map(p => valorColor(p, cv)).filter(v => v != null).sort((a, b) => a - b);
@@ -695,7 +743,7 @@ function prepararEscala(lista, cv) {
   colorEscala = { cat: false, mapa: {}, min: mn, max: mx };
 }
 function colorDe(p, cv) {
-  if (colorEscala.cat) return colorEscala.mapa[cv === '_estado' ? (p.estado || 'sin estado') : p.pot];
+  if (colorEscala.cat) return colorEscala.mapa[catKey(p, cv)];
   const v = valorColor(p, cv); if (v == null) return '#9CA3AF';
   return colorEsc((v - colorEscala.min) / (colorEscala.max - colorEscala.min));
 }
@@ -723,6 +771,8 @@ function popupPunto(p) {
   if (p.f['_vgps'] != null) filas.push(['Vel. GPS', p.f['_vgps'].toFixed(1) + ' km/h']);
   Object.entries(p.f).filter(([k]) => k[0] !== '_').forEach(([k, val]) => { if (k !== selRpm && k !== selVel) filas.push([k, (+val.toFixed(2)) + (p.u[k] ? ' ' + p.u[k] : '')]); });
   Object.entries(p.c).forEach(([k, val]) => { if (k !== 'machineState') filas.push([k, val]); });
+  if (p.motor != null) filas.push(['Motor', p.motor === 1 ? 'Encendido' : 'Apagado']);
+  if (p.horo != null) filas.push(['Horómetro', p.horo.toFixed(1) + ' h']);
   filas.push(['Coord.', p.lat.toFixed(6) + ', ' + p.lng.toFixed(6)]);
   return '<table class="pt-tab">' + filas.map(([a, b]) => `<tr><td style="color:#6B7280">${esc(a)}</td><td><b>${esc(b)}</b></td></tr>`).join('') + '</table>';
 }
@@ -781,7 +831,7 @@ window.moverCursor = function (i, silencioso) {
   if (!p) { $('cursor-txt').textContent = ''; return; }
   L.circleMarker([p.lat, p.lng], { radius: 9, color: '#fff', weight: 3, fillColor: '#111', fillOpacity: 0.9, interactive: false }).addTo(capaCursor);
   const r = vRpm(p), v = vVel(p);
-  $('cursor-txt').innerHTML = `<b>${fechaHoraTxt(p.t)}</b> · ${esc(p.pot)}${r != null ? ` · ⚙️ ${r.toFixed(0)} rpm` : ''}${v != null ? ` · 🚜 ${v.toFixed(1)} km/h` : ''}${p.estado ? ` · ${esc(p.estado)}` : ''}`;
+  $('cursor-txt').innerHTML = `<b>${fechaHoraTxt(p.t)}</b> · ${esc(p.pot)}${r != null ? ` · ⚙️ ${r.toFixed(0)} rpm` : ''}${v != null ? ` · 🚜 ${v.toFixed(1)} km/h` : ''}${p.estado ? ` · ${esc(p.estado)}` : ''}${p.motor === 1 ? ' · 🟢 motor' : p.motor === 0 ? ' · ⚫ motor apagado' : ''}${p.horo != null ? ` · ⏱ ${p.horo.toFixed(1)} h` : ''}`;
   if (!silencioso && !map.getBounds().contains([p.lat, p.lng])) map.panTo([p.lat, p.lng]);
 };
 window.reproducir = function () {
@@ -852,6 +902,9 @@ function tablaCampos() {
 
 
 // ── Análisis detallado ───────────────────────────────────────────
+function inicioDia(t) { const d = new Date(t); d.setHours(0, 0, 0, 0); return d.getTime(); }
+function motorDia(t, w0, w1) { const a = inicioDia(t); return motorMs(Math.max(a, w0), Math.min(a + 86400000, w1)); }
+function horoDia(t) { const a = inicioDia(t), b = a + 86400000; const xs = HORO.filter(x => x.t >= a && x.t < b); return xs.length ? `${xs[0].h.toFixed(1)} → ${xs[xs.length - 1].h.toFixed(1)}` : '—'; }
 let PARADAS = [];
 window.irA = function (idx) {
   const p = P[idx]; if (!p) return;
@@ -929,6 +982,15 @@ function analisisDetallado() {
   const conR = P.filter(p => vRpm(p) != null).length, conV = P.filter(p => vVel(p) != null).length;
   const hTrab = T.trab / 3600000, hMot = (T.trab + T.det + T.tras) / 3600000;
   const ha = ancho ? K.trab * ancho / 10 : null;
+  // Motor (JDLink): ventana de tiempo del filtro de hora
+  const w0 = F.t[0], w1 = F.t[1] + dtp(P[P.length - 1]);
+  const motOn = TRAMOS.length ? motorMs(w0, w1) : null;
+  let movAll = 0; P.forEach(p => { if (p.t < w0 || p.t > F.t[1]) return; const c = cat(velp(p)); if (c === 'trab' || c === 'tras') movAll += dtp(p); });
+  const ralenti = motOn != null ? Math.max(0, motOn - movAll) : null;
+  const hIni = horoEn(w0) ?? (HORO.find(x => x.t >= w0) || {}).h ?? null;
+  const hFinR = [...HORO].reverse().find(x => x.t <= w1);
+  const hFin = horoEn(w1) ?? (hFinR ? hFinR.h : null);
+  const hMotor = motOn != null ? motOn / 3600000 : (hIni != null && hFin != null ? hFin - hIni : null);
   const kp = (v, l) => `<div class="kpi"><b>${v}</b><span>${l}</span></div>`;
   const pct = ms => tot ? (100 * ms / tot).toFixed(0) + '%' : '0%';
   let h = '<div class="kpis">' +
@@ -936,9 +998,16 @@ function analisisDetallado() {
     (T.sin ? kp(fmtH(T.sin), 'sin dato de velocidad') : '') +
     kp(tTrabV ? (vTrab / tTrabV).toFixed(1) : '—', 'km/h prom. trabajando') + kp(K.trab.toFixed(1) + ' km', 'recorrido trabajando') + kp(K.tras.toFixed(1) + ' km', 'recorrido en traslado') +
     (ha != null ? kp(ha.toFixed(1) + ' ha', `superficie estimada (${ancho} m)`) + kp(hTrab ? (ha / hTrab).toFixed(2) : '—', 'ha por hora de trabajo') : kp('—', 'ingresa ancho de labor para ha')) +
-    (lh ? kp((hMot * lh).toFixed(0) + ' L', `combustible estimado (${lh} L/h)`) + (ha ? kp((hMot * lh / ha).toFixed(1), 'L por ha estimado') : '') : '') +
+    (lh ? kp(((hMotor ?? hMot) * lh).toFixed(0) + ' L', `combustible estimado (${lh} L/h × horas motor)`) + (ha ? kp(((hMotor ?? hMot) * lh / ha).toFixed(1), 'L por ha estimado') : '') : '') +
     kp(`${stops.length}`, `paradas ≥ ${parMin / 60000} min · ${fmtH(stops.reduce((s, x) => s + (x.fin - x.ini + x.dtf), 0))}`) +
     (nAcelBase ? kp(`${nAcel} / ${nFren}`, 'aceleraciones / frenadas bruscas') : '') + '</div>';
+  if (motOn != null || HORO.length) {
+    h += `<div style="font-weight:700;font-size:13px;margin:12px 0 4px">🔑 Motor según JDLink <span class="nota" style="font-weight:400">(en el período del filtro de hora; no depende del filtro de potrero)</span></div><div class="kpis">` +
+      (motOn != null ? kp(fmtH(motOn), 'motor encendido') + kp(fmtH(Math.min(movAll, motOn)), `en movimiento (${motOn ? Math.round(100 * Math.min(movAll, motOn) / motOn) : 0}%)`) +
+        kp(fmtH(ralenti), `encendido sin avanzar (${motOn ? Math.round(100 * ralenti / motOn) : 0}%)`) + kp(String(encendidosEn(w0, w1)), 'veces que se encendió') : '') +
+      (hIni != null && hFin != null ? kp(`${hIni.toFixed(1)} → ${hFin.toFixed(1)}`, `horómetro (+${(hFin - hIni).toFixed(1)} h)`) : '') + '</div>' +
+      '<div class="nota" style="margin-top:4px">"Encendido sin avanzar" = tiempo con motor encendido menos el tiempo en movimiento: es el ralentí aproximado mientras no lleguen las RPM.</div>';
+  }
   if (hasR) {
     const tr = R.bajo + R.norm + R.alto;
     h += `<div style="font-weight:700;font-size:13px;margin:12px 0 4px">⚙️ Régimen del motor</div><div class="kpis">` +
@@ -951,8 +1020,8 @@ function analisisDetallado() {
   h += `<div style="overflow-x:auto;margin-top:6px"><table><thead><tr><th>Hora</th><th class="n">Trabajo</th><th class="n">Traslado</th><th class="n">Detenido</th><th class="n">RPM prom.</th><th class="n">km/h prom.</th></tr></thead><tbody>` +
     hs.map(({ i, x }) => `<tr><td>${String(i).padStart(2, '0')}:00</td><td class="n">${fmtH(x.trab)}</td><td class="n">${fmtH(x.tras)}</td><td class="n">${fmtH(x.det)}</td><td class="n">${x.tr ? (x.sr / x.tr).toFixed(0) : '—'}</td><td class="n">${x.tv ? (x.sv / x.tv).toFixed(1) : '—'}</td></tr>`).join('') + '</tbody></table></div>';
   const dias = Object.entries(D);
-  h += `<div style="font-weight:700;font-size:13px;margin:12px 0 4px">📅 Por día</div><div style="overflow-x:auto"><table><thead><tr><th>Día</th><th>Jornada</th><th class="n">Horas</th><th class="n">Trabajo</th><th class="n">Km</th>${ancho ? '<th class="n">Ha est.</th>' : ''}<th class="n">RPM</th><th class="n">km/h</th><th>Potreros</th></tr></thead><tbody>` +
-    dias.map(([d, x]) => `<tr><td>${d}</td><td>${horaTxt(x.a)}–${horaTxt(x.b)}</td><td class="n">${fmtH(x.ms)}</td><td class="n">${fmtH(x.trab)}</td><td class="n">${x.km.toFixed(1)}</td>${ancho ? `<td class="n">${(x.kmT * ancho / 10).toFixed(1)}</td>` : ''}<td class="n">${x.tr ? (x.sr / x.tr).toFixed(0) : '—'}</td><td class="n">${x.tv ? (x.sv / x.tv).toFixed(1) : '—'}</td><td>${[...x.pots].map(esc).join(', ')}</td></tr>`).join('') + '</tbody></table></div>';
+  h += `<div style="font-weight:700;font-size:13px;margin:12px 0 4px">📅 Por día</div><div style="overflow-x:auto"><table><thead><tr><th>Día</th><th>Jornada</th><th class="n">Horas</th><th class="n">Trabajo</th>${TRAMOS.length ? '<th class="n">Motor JD</th>' : ''}${HORO.length ? '<th>Horómetro</th>' : ''}<th class="n">Km</th>${ancho ? '<th class="n">Ha est.</th>' : ''}<th class="n">RPM</th><th class="n">km/h</th><th>Potreros</th></tr></thead><tbody>` +
+    dias.map(([d, x]) => `<tr><td>${d}</td><td>${horaTxt(x.a)}–${horaTxt(x.b)}</td><td class="n">${fmtH(x.ms)}</td><td class="n">${fmtH(x.trab)}</td>${TRAMOS.length ? `<td class="n">${fmtH(motorDia(x.a, w0, w1))}</td>` : ''}${HORO.length ? `<td>${horoDia(x.a)}</td>` : ''}<td class="n">${x.km.toFixed(1)}</td>${ancho ? `<td class="n">${(x.kmT * ancho / 10).toFixed(1)}</td>` : ''}<td class="n">${x.tr ? (x.sr / x.tr).toFixed(0) : '—'}</td><td class="n">${x.tv ? (x.sv / x.tv).toFixed(1) : '—'}</td><td>${[...x.pots].map(esc).join(', ')}</td></tr>`).join('') + '</tbody></table></div>';
   h += `<div style="font-weight:700;font-size:13px;margin:12px 0 4px">📍 Productividad por potrero</div><div style="overflow-x:auto"><table><thead><tr><th>Potrero / zona</th><th class="n">Tiempo</th><th class="n">Trabajo</th><th class="n">% útil</th><th class="n">Km trab.</th>${ancho ? '<th class="n">Ha est.</th><th class="n">ha/h</th>' : ''}${lh ? '<th class="n">L est.</th>' : ''}</tr></thead><tbody>` +
     Object.entries(POT).sort((a, b) => b[1].ms - a[1].ms).map(([n, z]) => { const hz = z.kmT * ancho / 10; return `<tr><td>${esc(n)}</td><td class="n">${fmtH(z.ms)}</td><td class="n">${fmtH(z.trab)}</td><td class="n">${z.ms ? (100 * z.trab / z.ms).toFixed(0) : 0}%</td><td class="n">${z.kmT.toFixed(1)}</td>${ancho ? `<td class="n">${hz.toFixed(1)}</td><td class="n">${z.trab ? (hz / (z.trab / 3600000)).toFixed(2) : '—'}</td>` : ''}${lh ? `<td class="n">${(z.ms / 3600000 * lh).toFixed(0)}</td>` : ''}</tr>`; }).join('') + '</tbody></table></div>';
   if (disp.length > 10) h += `<div style="font-weight:700;font-size:13px;margin:12px 0 4px">📈 RPM vs velocidad <span class="nota" style="font-weight:400">(cada punto es una lectura; naranja detenido, verde trabajo, azul traslado)</span></div><canvas id="c-disp" style="width:100%;height:190px;display:block"></canvas>`;
@@ -988,6 +1057,8 @@ window.explorar = async function () {
   ['engineHours', 'hoursOfOperation', 'deviceStateReports', 'measurements', 'machineMeasurements', 'engineSpeed', 'fuelLevel', 'fuelUsage', 'alerts', 'machineStatus', 'performance', 'telemetry', 'terminals'].forEach(r => {
     const u = `/machines/${id}/${r}`; if (!lista.some(x => x.uri.includes('/' + r))) lista.push({ rel: r + ' (probado)', uri: u });
   });
+  if (m.id && String(m.id) !== String(id)) ['machineMeasurements', 'deviceStateReports', 'alerts'].forEach(r => lista.push({ rel: r + ' (id equipo ' + m.id + ')', uri: `/machines/${m.id}/${r}` }));
+  if (m.organization && m.organization.id) lista.push({ rel: 'machineMeasurements (organización)', uri: `/organizations/${m.organization.id}/machineMeasurements` });
   for (let i = 0; i < lista.length; i++) {
     const l = lista[i]; if (/^self$/i.test(l.rel)) continue;
     box.innerHTML = `<div class="nota">Probando ${i + 1}/${lista.length}: ${esc(l.rel)}…</div>`;
@@ -996,13 +1067,14 @@ window.explorar = async function () {
     const vals = r.data && Array.isArray(r.data.values) ? r.data.values : (r.data && typeof r.data === 'object' ? [r.data] : []);
     const ap = nuevoAplanado(); if (vals[0]) aplanar(vals[0], '', ap, 0);
     const claves = [...Object.entries(ap.num).map(([k, v]) => `${k}=${+Number(v).toFixed(2)}`), ...Object.entries(ap.cat).map(([k, v]) => `${k}=${v}`)];
-    res.recursos.push({ rel: l.rel, uri: l.uri, http: r.status, n: vals.length, claves, muestra: vals.slice(0, 2) });
+    const error = r.status !== 200 ? String(r.text || '').replace(/\s+/g, ' ').slice(0, 400) : '';
+    res.recursos.push({ rel: l.rel, uri: l.uri, http: r.status, n: r.status === 200 ? vals.length : 0, claves: r.status === 200 ? claves : [], error, muestra: r.status === 200 ? vals.slice(0, 2) : [] });
   }
   window._explorar = res;
   const hit = res.recursos.some(x => x.claves.some(c => RE_RPM.test(c)));
   box.innerHTML = (hit ? '<div class="aviso ok">✅ Se encontró un recurso con RPM (marcado abajo).</div>' : '<div class="aviso">No apareció RPM en estos recursos. Descarga el resultado y envíamelo para revisar.</div>') +
     `<div style="overflow-x:auto"><table><thead><tr><th>Recurso</th><th class="n">HTTP</th><th class="n">Reg.</th><th>Variables del primer registro</th></tr></thead><tbody>` +
-    res.recursos.map(x => `<tr${x.claves.some(c => RE_RPM.test(c)) ? ' style="background:#DCFCE7"' : ''}><td>${esc(x.rel)}</td><td class="n">${x.http}</td><td class="n">${x.n}</td><td style="font-size:11px">${esc(x.claves.slice(0, 14).join(' · '))}</td></tr>`).join('') + '</tbody></table></div>' +
+    res.recursos.map(x => `<tr${x.claves.some(c => RE_RPM.test(c)) ? ' style="background:#DCFCE7"' : ''}><td>${esc(x.rel)}</td><td class="n">${x.http}</td><td class="n">${x.n}</td><td style="font-size:11px">${x.error ? `<span style="color:#B91C1C">${esc(x.error.slice(0, 160))}</span>` : ''}${esc(x.claves.slice(0, 14).join(' · '))}</td></tr>`).join('') + '</tbody></table></div>' +
     '<button class="btn btn-sec btn-mini" style="margin-top:6px" onclick="bajar(\'explorar-maquina.json\', JSON.stringify(window._explorar))">⬇️ Descargar resultado completo</button>';
 };
 window.bajar = bajar;
@@ -1011,7 +1083,7 @@ window.bajar = bajar;
 function aplicarDatos(puntos, origen) {
   P = puntos;
   if (!P.length) { $('aviso-datos').innerHTML = '<div class="aviso mal">No llegaron puntos GPS en ese período. Prueba otro día o revisa que la máquina tenga JDLink activo.</div>'; capaDatos.clearLayers(); $('leyenda').innerHTML = '<span class="nota">Sin puntos.</span>'; return; }
-  asignarPotreros(); calcularDerivados(); resumirCampos(); elegirAuto(); llenarSelectores();
+  asignarPotreros(); calcularDerivados(); marcarMotor(); resumirCampos(); elegirAuto(); llenarSelectores();
   $('vel-unidad').value = '1'; $('vel-unidad').disabled = selVel === '_vgps';
   iniciarFiltro('rpm'); iniciarFiltro('vel'); iniciarFiltro('t');
   $('est-fuente').textContent = `${origen} · ${P.length} puntos · ${fechaHoraTxt(P[0].t)} → ${fechaHoraTxt(P[P.length - 1].t)}`;
@@ -1061,6 +1133,16 @@ window.consultar = async function () {
     }
     pts = construirPuntos(loc.valores);
     rawGuardado = { gps: loc.valores, extras: {} };
+    TRAMOS = []; HORO = [];
+    if (pts.length) {
+      const lHrs = link(/hoursofoperation/i);
+      const rh = await traerRango(lHrs ? lHrs.uri : `/machines/${principalId}/hoursOfOperation`, desde - 6 * 3600000, hasta, diag, 'Motor encendido/apagado', setProg);
+      if (rh.ok) { TRAMOS = extractTramosSeguro(rh.valores); rawGuardado.horasOperacion = rh.valores; }
+      const lEh = link(/enginehours/i);
+      const re_ = await traerRango(lEh ? lEh.uri : `/machines/${principalId}/engineHours`, desde - 6 * 3600000, hasta, diag, 'Horómetro', setProg);
+      if (re_.ok) { HORO = extraerHoro(re_.valores); rawGuardado.horometro = re_.valores; }
+      diag.llamadas.push(`  → motor: ${TRAMOS.length} tramos · horómetro: ${HORO.length} lecturas`);
+    }
     if (pts.length && $('extra').checked) {
       const cand = links.filter(l => /(engine|rpm|speed|measure|telemetr|fuel|devicestate|terminal|performance|load|temperature|pto|hydraul|status|state)/i.test(l.rel || '') && !/(breadcrumb|locationhistory|hoursofoperation|^self$)/i.test(l.rel || ''));
       diag.extras = cand.map(l => l.rel);
@@ -1096,7 +1178,7 @@ window.cargarArchivo = async function (inp) {
       valores = Array.isArray(j) ? j : (j.values || j.datos || j.ubicaciones || j.gps || []);
     }
     diag = { maquina: f.name, rels: [], fuenteGps: 'archivo', llamadas: [`Archivo ${f.name}: ${valores.length} registros`], errores: {}, muestras: { archivo: valores.slice(0, 3) }, extras: [] };
-    rawGuardado = { gps: valores, extras: {} };
+    rawGuardado = { gps: valores, extras: {} }; TRAMOS = []; HORO = [];
     $('diag-llamadas').textContent = diag.llamadas.join('\n');
     aplicarDatos(construirPuntos(valores), 'Archivo ' + f.name);
   } catch (e) { toast('No se pudo leer el archivo: ' + e.message, false); }
