@@ -1,0 +1,1005 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Análisis de tractor · Los Maitenes</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+  :root { --fondo:#F4F3EF; --blanco:#FFFFFF; --negro:#1A1A1A; --acero:#6B7280; --borde:#E5E2DA; --verde:#2D7D46; --amarillo:#F5A623; --rojo:#B91C1C; --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--fondo); color: var(--negro); font-family: var(--sans); }
+  header { background: var(--negro); color: #fff; padding: 12px 16px; }
+  header h1 { margin: 0; font-size: 17px; }
+  header div { font-size: 12px; color: #D1D5DB; margin-top: 2px; }
+  main { max-width: 1180px; margin: 0 auto; padding: 12px 12px 60px; }
+  .panel { background: var(--blanco); border: 1px solid var(--borde); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+  .ph { font-weight: 700; font-size: 13px; color: var(--acero); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 8px; display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; }
+  .field { margin: 6px 0; min-width: 0; }
+  .field label { display: block; font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--acero); margin-bottom: 3px; }
+  select, input[type=text], input[type=number], input[type=datetime-local] { width: 100%; min-width: 0; padding: 8px; font-size: 14px; border: 1px solid var(--borde); border-radius: 8px; background: #fff; font-family: inherit; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+  .btn { display: inline-flex; align-items: center; gap: 6px; border: none; border-radius: 8px; padding: 9px 12px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit; }
+  .btn-full { width: 100%; justify-content: center; }
+  .btn-verde { background: var(--verde); color: #fff; }
+  .btn-sec { background: #EEECE6; color: var(--negro); }
+  .btn-mini { padding: 4px 9px; font-size: 12px; border-radius: 999px; }
+  .btn:disabled { opacity: .55; }
+  .chk { display:flex; align-items:center; gap:6px; font-size:13px; margin:4px 0; }
+  .chk input { width:auto; }
+  .chips { display:flex; gap:6px; flex-wrap:wrap; margin:6px 0; }
+  .nota { font-size: 12px; color: var(--acero); }
+  .aviso { background:#FEF3C7; border:1px solid #FCD34D; border-radius:8px; padding:8px 10px; font-size:13px; margin:8px 0; }
+  .aviso.mal { background:#FEE2E2; border-color:#FCA5A5; }
+  .aviso.ok { background:#DCFCE7; border-color:#86EFAC; }
+  #lay { display:block; }
+  #mapa-wrap { position: sticky; top: 0; z-index: 800; background: var(--fondo); padding-bottom: 6px; }
+  #mapa { height: 46vh; min-height: 280px; border-radius: 12px; border: 1px solid var(--borde); }
+  #leyenda { background:#fff; border:1px solid var(--borde); border-radius:10px; padding:6px 10px; margin-top:6px; font-size:12px; }
+  #leyenda .barra { height:12px; border-radius:6px; margin:4px 0 2px; }
+  #leyenda .ext { display:flex; justify-content:space-between; font-variant-numeric: tabular-nums; }
+  @media (min-width: 1000px) {
+    #lay { display:grid; grid-template-columns: minmax(0,1.5fr) minmax(0,1fr); gap:12px; align-items:start; }
+    #mapa-wrap { top: 8px; }
+    #mapa { height: 72vh; }
+  }
+  .flt { border:1px solid var(--borde); border-radius:10px; padding:8px 10px; margin-bottom:10px; }
+  .flt-h { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:4px; }
+  .flt-h b { font-size:14px; }
+  .flt-h select { width:auto; max-width:60%; font-size:12px; padding:4px; }
+  .flt-r { display:grid; grid-template-columns: 1fr auto 1fr; gap:6px; align-items:center; font-size:13px; }
+  .dual { position:relative; height:26px; margin:4px 0; }
+  .dual input[type=range] { position:absolute; left:0; right:0; width:100%; margin:0; pointer-events:none; -webkit-appearance:none; appearance:none; background:transparent; height:26px; }
+  .dual input[type=range]::-webkit-slider-thumb { pointer-events:auto; -webkit-appearance:none; appearance:none; width:22px; height:22px; border-radius:50%; background:var(--verde); border:2px solid #fff; box-shadow:0 0 0 1px #0004; cursor:pointer; }
+  .dual input[type=range]::-moz-range-thumb { pointer-events:auto; width:20px; height:20px; border-radius:50%; background:var(--verde); border:2px solid #fff; cursor:pointer; }
+  .dual input[type=range]::-webkit-slider-runnable-track { background:transparent; }
+  .dual .pista { position:absolute; left:0; right:0; top:11px; height:4px; border-radius:2px; background:#D9D6CC; }
+  .dual .sel { position:absolute; top:11px; height:4px; border-radius:2px; background:var(--verde); }
+  canvas.hist { width:100%; height:56px; display:block; }
+  table { width:100%; border-collapse: collapse; font-size: 12.5px; }
+  thead tr { background: var(--negro); color: #fff; }
+  thead th { padding: 6px 5px; text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; }
+  tbody td { padding: 5px; border-bottom: 1px solid var(--borde); vertical-align: top; }
+  td.n, th.n { text-align:right; font-variant-numeric: tabular-nums; }
+  .kpis { display:grid; grid-template-columns: repeat(auto-fit, minmax(110px,1fr)); gap:8px; }
+  .kpi { background:#F8F7F3; border-radius:8px; padding:8px; }
+  .kpi b { display:block; font-size:18px; font-variant-numeric: tabular-nums; }
+  .kpi span { font-size:11px; color:var(--acero); text-transform:uppercase; letter-spacing:.04em; }
+  .badge { display:inline-block; padding:1px 7px; border-radius:999px; background:#DCFCE7; font-size:11px; }
+  details summary { cursor:pointer; font-weight:600; font-size:13px; }
+  #toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--negro); color: #fff; padding: 10px 16px; border-radius: 8px; font-size: 14px; display:none; z-index: 9000; max-width: 90%; }
+  #toast.mal { background: #B91C1C; }
+  .pt-tab td { padding:2px 6px 2px 0; font-size:12px; }
+  .leaflet-popup-content { margin: 8px 10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🗺️ Análisis de un tractor (mapa por RPM y velocidad)</h1>
+  <div>Solo lectura: trae el recorrido de JDLink (o un archivo), lo pinta por color y deja filtrar por RPM, velocidad, hora, estado y potrero. No modifica nada de la app.</div>
+</header>
+<main>
+
+<div class="panel">
+  <div class="ph"><span>1 · Datos</span><span class="nota" id="est-fuente"></span></div>
+  <div class="grid">
+    <div class="field"><label>Máquina (JDLink)</label><select id="maq"><option value="">Cargando…</option></select></div>
+    <div class="field"><label>Desde</label><input type="datetime-local" id="desde"></div>
+    <div class="field"><label>Hasta</label><input type="datetime-local" id="hasta"></div>
+  </div>
+  <div class="chips">
+    <button class="btn btn-sec btn-mini" onclick="rangoRapido('hoy')">Hoy</button>
+    <button class="btn btn-sec btn-mini" onclick="rangoRapido('ayer')">Ayer</button>
+    <button class="btn btn-sec btn-mini" onclick="rangoRapido('3')">3 días</button>
+    <button class="btn btn-sec btn-mini" onclick="rangoRapido('7')">7 días</button>
+  </div>
+  <label class="chk"><input type="checkbox" id="extra" checked> Buscar también otras variables de la máquina (RPM, carga, combustible…) en los demás recursos de JDLink</label>
+  <div style="display:flex;gap:8px;flex-wrap:wrap">
+    <button class="btn btn-verde" id="btn-consultar" onclick="consultar()" style="flex:1 1 200px;justify-content:center">🔎 Consultar recorrido</button>
+    <label class="btn btn-sec" style="flex:1 1 200px;justify-content:center">📂 Cargar archivo (JSON / CSV)<input type="file" id="archivo" accept=".json,.csv,.txt" style="display:none" onchange="cargarArchivo(this)"></label>
+  </div>
+  <div id="progreso" class="nota" style="margin-top:6px"></div>
+  <div id="aviso-datos"></div>
+</div>
+
+<div id="lay">
+  <div id="mapa-wrap">
+    <div id="mapa"></div>
+    <div id="leyenda"><span class="nota">Consulta un recorrido para ver el mapa.</span></div>
+    <div id="cursor-info" class="panel" style="display:none;margin:6px 0 0;padding:6px 10px">
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn btn-sec btn-mini" id="btn-play" onclick="reproducir()">▶</button>
+        <input type="range" id="cursor" min="0" max="0" value="0" style="flex:1" oninput="moverCursor(+this.value)">
+      </div>
+      <div id="cursor-txt" style="font-size:12px;margin-top:2px"></div>
+    </div>
+  </div>
+
+  <div id="lateral">
+    <div class="panel">
+      <div class="ph"><span>2 · Cómo se pinta</span></div>
+      <div class="field"><label>Pintar por</label><select id="col-var" onchange="cambioColor()"></select></div>
+      <div class="grid">
+        <div class="field"><label>Dibujo</label><select id="modo" onchange="dibujar()"><option value="puntos">Puntos</option><option value="lineas">Líneas (tramos)</option></select></div>
+        <div class="field"><label>Base</label><select id="base" onchange="cambioBase()"><option value="sat">Satélite</option><option value="mapa">Mapa</option></select></div>
+        <div class="field"><label>Tamaño</label><input type="range" id="tam" min="1" max="12" value="4" oninput="dibujar()"></div>
+      </div>
+      <div class="grid">
+        <div class="field"><label>Escala mín.</label><input type="number" id="esc-min" placeholder="auto" onchange="dibujar()"></div>
+        <div class="field"><label>Escala máx.</label><input type="number" id="esc-max" placeholder="auto" onchange="dibujar()"></div>
+        <div class="field"><label>Paleta</label><select id="paleta" onchange="dibujar()"><option value="arco">Azul → rojo</option><option value="rojoverde">Rojo → verde</option><option value="verderojo">Verde → rojo</option><option value="calor">Amarillo → rojo oscuro</option></select></div>
+      </div>
+      <label class="chk"><input type="checkbox" id="recorte" checked onchange="dibujar()"> Ignorar extremos (percentil 2–98) al calcular la escala</label>
+      <label class="chk"><input type="checkbox" id="tenue" onchange="dibujar()"> Mostrar en gris los puntos que el filtro deja fuera</label>
+      <label class="chk"><input type="checkbox" id="ver-pot" checked onchange="cambioPotreros()"> Mostrar potreros</label>
+      <label class="chk"><input type="checkbox" id="ver-nom" onchange="cambioPotreros()"> Mostrar nombres de potreros</label>
+    </div>
+
+    <div class="panel">
+      <div class="ph"><span>3 · Filtros</span><button class="btn btn-sec btn-mini" onclick="resetFiltros()">↺ Restablecer</button></div>
+
+      <div class="flt" id="flt-rpm">
+        <div class="flt-h"><b>⚙️ RPM</b><select id="sel-rpm" onchange="cambioVarFiltro('rpm')"></select></div>
+        <div class="flt-r"><input type="number" id="rpm-min" onchange="numFiltro('rpm')"><span>a</span><input type="number" id="rpm-max" onchange="numFiltro('rpm')"></div>
+        <div class="dual" id="dual-rpm"><div class="pista"></div><div class="sel"></div><input type="range" id="rpm-smin" oninput="slFiltro('rpm')"><input type="range" id="rpm-smax" oninput="slFiltro('rpm')"></div>
+        <canvas class="hist" id="h-rpm"></canvas>
+        <div class="chips" id="pre-rpm"></div>
+      </div>
+
+      <div class="flt" id="flt-vel">
+        <div class="flt-h"><b>🚜 Velocidad (km/h)</b><select id="sel-vel" onchange="cambioVarFiltro('vel')"></select></div>
+        <div class="flt-r"><input type="number" id="vel-min" onchange="numFiltro('vel')"><span>a</span><input type="number" id="vel-max" onchange="numFiltro('vel')"></div>
+        <div class="dual" id="dual-vel"><div class="pista"></div><div class="sel"></div><input type="range" id="vel-smin" oninput="slFiltro('vel')"><input type="range" id="vel-smax" oninput="slFiltro('vel')"></div>
+        <canvas class="hist" id="h-vel"></canvas>
+        <div class="chips" id="pre-vel"></div>
+        <div class="field" style="margin-top:4px"><label>Unidad de la variable elegida</label>
+          <select id="vel-unidad" onchange="cambioVelUnidad()"><option value="1">km/h</option><option value="3.6">m/s → km/h</option><option value="1.609344">mi/h → km/h</option></select></div>
+      </div>
+
+      <label class="chk"><input type="checkbox" id="sindato" checked onchange="dibujar()"> Incluir puntos sin dato de la variable filtrada</label>
+
+      <div class="flt">
+        <div class="flt-h"><b>🕒 Hora</b><select id="sel-dia" onchange="cambioDia()" style="max-width:55%"></select></div>
+        <div class="flt-r"><input type="text" id="t-min-txt" readonly><span>a</span><input type="text" id="t-max-txt" readonly></div>
+        <div class="dual" id="dual-t"><div class="pista"></div><div class="sel"></div><input type="range" id="t-smin" oninput="slFiltro('t')"><input type="range" id="t-smax" oninput="slFiltro('t')"></div>
+      </div>
+
+      <div class="grid">
+        <div class="field"><label>Potrero / zona</label><select id="f-pot" onchange="dibujar()"></select></div>
+        <div class="field"><label>Estado JDLink</label><select id="f-estado" onchange="dibujar()"></select></div>
+      </div>
+      <div class="field"><label>Hueco máximo entre puntos (para contar tiempo)</label>
+        <select id="gap" onchange="dibujar()"><option value="120000">2 min</option><option value="300000" selected>5 min</option><option value="900000">15 min</option></select></div>
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="ph"><span>4 · Resultado del filtro</span>
+    <span><button class="btn btn-sec btn-mini" onclick="ajustar()">🎯 Ajustar mapa</button>
+    <button class="btn btn-sec btn-mini" onclick="descargarCSV()">⬇️ CSV filtrado</button></span></div>
+  <div class="kpis" id="kpis"></div>
+  <div style="overflow-x:auto;margin-top:10px" id="tab-pot"></div>
+  <div style="overflow-x:auto;margin-top:10px" id="tab-estado"></div>
+</div>
+
+<div class="panel">
+  <div class="ph"><span>5 · Variables detectadas y diagnóstico</span>
+    <span><button class="btn btn-sec btn-mini" onclick="descargarDiag(false)">⬇️ Diagnóstico</button>
+    <button class="btn btn-sec btn-mini" onclick="descargarDiag(true)">⬇️ Datos completos (JSON)</button></span></div>
+  <div class="nota">Si no aparece una variable de RPM, JDLink no la entrega por este recurso. Descarga el diagnóstico y envíalo para ajustar los nombres.</div>
+  <div style="overflow-x:auto;margin-top:8px" id="tab-campos"></div>
+  <details style="margin-top:8px"><summary>Llamadas realizadas a JDLink</summary><pre id="diag-llamadas" style="font-size:11px;white-space:pre-wrap;max-height:260px;overflow:auto"></pre></details>
+</div>
+
+</main>
+<div id="toast"></div>
+
+<div id="acceso" style="display:none;position:fixed;inset:0;z-index:9500;background:rgba(0,0,0,.6);align-items:center;justify-content:center;padding:16px">
+  <div class="panel" style="width:100%;max-width:380px">
+    <div style="font-weight:700;font-size:16px;margin-bottom:8px">🗺️ Análisis de tractor</div>
+    <div class="field"><label>Ingresa tu PIN</label><input type="text" id="acc-pin" inputmode="numeric" autocomplete="off" style="font-size:22px;text-align:center;letter-spacing:6px;-webkit-text-security:disc" onkeydown="if(event.key==='Enter')entrarAnalisis()"></div>
+    <div id="acc-msg" style="font-size:13px;color:#B91C1C;min-height:18px"></div>
+    <button class="btn btn-verde btn-full" id="acc-btn" onclick="entrarAnalisis()">Ingresar</button>
+  </div>
+</div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getFirestore, doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+const app = initializeApp({
+  apiKey: "AIzaSyAVsios3N97MQVPJLC94qEOXGJNmKzK9RI",
+  authDomain: "combustible-los-maitenes.firebaseapp.com",
+  projectId: "combustible-los-maitenes",
+  storageBucket: "combustible-los-maitenes.firebasestorage.app",
+  messagingSenderId: "750216939749",
+  appId: "1:750216939749:web:978e4173eaee8235ebac0c"
+});
+const db = getFirestore(app);
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+function toast(msg, ok = true) {
+  const t = $('toast'); t.textContent = msg; t.className = ok ? '' : 'mal'; t.style.display = 'block';
+  clearTimeout(toast._t); toast._t = setTimeout(() => { t.style.display = 'none'; }, 4000);
+}
+
+// ── John Deere (mismo token que la app) ──────────────────────────
+let jdAccessToken = null, jdRefreshToken = null, jdExpireAt = 0, jdMachinesLink = null;
+async function cargarConfigJD() {
+  try { const s = await getDoc(doc(db, 'config', 'jdlink')); if (s.exists()) { const d = s.data(); jdAccessToken = d.token || null; jdRefreshToken = d.refreshToken || null; jdExpireAt = d.expireAt || 0; jdMachinesLink = d.machinesLink || null; } }
+  catch (e) { console.warn('config JD', e); }
+}
+async function renovarTokenJD() {
+  if (!jdRefreshToken) return false;
+  try {
+    const resp = await fetch('/.netlify/functions/jd-token', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: jdRefreshToken }) });
+    const data = await resp.json();
+    if (data.access_token) {
+      jdAccessToken = data.access_token; jdRefreshToken = data.refresh_token || jdRefreshToken; jdExpireAt = Date.now() + (data.expires_in || 3600) * 1000;
+      await setDoc(doc(db, 'config', 'jdlink'), { token: jdAccessToken, refreshToken: jdRefreshToken, expireAt: jdExpireAt }, { merge: true });
+      return true;
+    }
+  } catch (e) { console.warn('renovar token JD', e); }
+  return false;
+}
+async function getTokenValido() {
+  if (!jdAccessToken) return null;
+  if (Date.now() > jdExpireAt - 5 * 60 * 1000) { const ok = await renovarTokenJD(); if (!ok) return null; }
+  return jdAccessToken;
+}
+async function callJDApi(endpointOrUrl) {
+  const token = await getTokenValido();
+  if (!token) return { status: 401, data: null };
+  try {
+    const resp = await fetch('/.netlify/functions/jd-api', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint: endpointOrUrl, token }) });
+    const text = await resp.text(); let data = null; try { data = JSON.parse(text); } catch (e) {}
+    return { status: resp.status, data };
+  } catch (e) { return { status: 0, data: null }; }
+}
+async function cargarOrganizacionJD() {
+  const { status, data } = await callJDApi('/organizations');
+  if (status !== 200 || !data) return;
+  const org = (data.values || [])[0];
+  const l = org && (org.links || []).find(x => x.rel === 'machines');
+  if (l) jdMachinesLink = l.uri;
+}
+// Trae todas las páginas de un recurso para [desde, hasta] en tramos de 24 h
+async function traerRango(urlBase, desde, hasta, diag, etiqueta, progreso) {
+  const valores = [];
+  const DIA = 24 * 3600 * 1000;
+  let n = 0; const total = Math.max(1, Math.ceil((hasta - desde) / DIA));
+  for (let ini = desde; ini < hasta; ini += DIA) {
+    n++;
+    const fin = Math.min(hasta, ini + DIA);
+    let url = urlBase + (urlBase.includes('?') ? '&' : '?') + `startDate=${new Date(ini).toISOString()}&endDate=${new Date(fin).toISOString()}`;
+    let urlGrande = /itemLimit=/i.test(url) ? null : url + '&itemLimit=100';
+    for (let pag = 0; url && pag < 600; pag++) {
+      let res;
+      if (pag === 0 && urlGrande) { res = await callJDApi(urlGrande); if (res.status !== 200 || !res.data) res = await callJDApi(url); }
+      else res = await callJDApi(url);
+      const { status, data } = res;
+      if (pag === 0 || status !== 200) diag.llamadas.push(`${etiqueta} (día ${n}/${total}): HTTP ${status}${data && Array.isArray(data.values) ? ` · ${data.values.length} registros (1ª página)` : ''}`);
+      if (status !== 200 || !data) { if (!diag.errores[etiqueta]) diag.errores[etiqueta] = { status, data }; return { ok: false, status, valores }; }
+      const vals = data.values || [];
+      if (!diag.muestras[etiqueta] && vals.length) diag.muestras[etiqueta] = vals.slice(0, 3);
+      valores.push(...vals);
+      if (progreso) progreso(`${etiqueta}: día ${n}/${total} · ${valores.length} registros`);
+      const next = (data.links || []).find(l => /nextpage/i.test(l.rel || ''));
+      url = next ? next.uri : null;
+    }
+  }
+  return { ok: true, status: 200, valores };
+}
+
+// ── Lectura genérica de registros ────────────────────────────────
+const numO = v => { if (v == null || v === '' || typeof v === 'boolean') return null; const n = Number(v); return isFinite(n) ? n : null; };
+const TKEYS = ['eventTimestamp', 'gpsFixTimestamp', 'timestamp', 'time', 'dateTime', 'datetime', 'recordedTime', 'reportTime', 'date', 'startDate', 'startTime', 'fecha', 'hora'];
+function tiempoDe(v) {
+  for (const k of TKEYS) {
+    const raw = v[k]; if (raw == null || raw === '') continue;
+    if (typeof raw === 'number') return raw > 1e11 ? raw : raw * 1000;
+    if (/^\d{10,13}$/.test(String(raw))) { const n = Number(raw); return n > 1e11 ? n : n * 1000; }
+    const t = Date.parse(raw); if (isFinite(t)) return t;
+  }
+  return NaN;
+}
+const SKIP_SEG = /^(lat|lon|lng|latitude|longitude|long|links|id|@type|vin|serialnumber|altitude_ref)$/i;
+const SKIP_TIME = /(timestamp|time|date|fecha|hora)$/i;
+function convUnidad(v, unit) {
+  const u = String(unit || '').toLowerCase().replace(/\s/g, '');
+  if (!u) return [v, ''];
+  if (/^(m\/s|mps|m1s-1|meterspersecond|metrespersecond)$/.test(u)) return [v * 3.6, 'km/h'];
+  if (/(mi\/h|mph|milesperhour|mileperhour)/.test(u)) return [v * 1.609344, 'km/h'];
+  if (/(km\/h|kph|kmh|kilometersperhour|kilometrosporhora)/.test(u)) return [v, 'km/h'];
+  if (/(rpm|min-1|1\/min|revolutionsperminute|1min-1)/.test(u)) return [v, 'rpm'];
+  if (/^(%|percent|pct)/.test(u)) return [v, '%'];
+  return [v, unit];
+}
+// Aplana un registro: devuelve { num: {ruta: valor}, cat: {ruta: texto}, unidades: {ruta: unidad} }
+function aplanar(o, pref, out, depth) {
+  if (o == null || depth > 5) return;
+  if (Array.isArray(o)) {
+    o.slice(0, 60).forEach((x, i) => {
+      if (x && typeof x === 'object' && !Array.isArray(x) && (x.name || x['@type'] || x.type) && ('value' in x || 'valueAsDouble' in x || 'valueAsInteger' in x)) medida(x, (pref ? pref + '.' : '') + (x.name || x.type || x['@type']), out);
+      else aplanar(x, pref + '[' + i + ']', out, depth + 1);
+    });
+    return;
+  }
+  if (typeof o === 'object') {
+    const ks = Object.keys(o);
+    if (pref && ks.length <= 8 && ('value' in o || 'valueAsDouble' in o || 'valueAsInteger' in o)) { medida(o, pref, out); return; }
+    ks.forEach(k => {
+      if (SKIP_SEG.test(k)) return;
+      if (/^(point|location|position|geometry|geoLocation)$/i.test(k) && !pref) return;
+      aplanar(o[k], pref ? pref + '.' + k : k, out, depth + 1);
+    });
+    return;
+  }
+  const seg = pref.split('.').pop();
+  if (SKIP_SEG.test(seg) || SKIP_TIME.test(seg)) return;
+  if (typeof o === 'number') { out.num[pref] = o; return; }
+  if (typeof o === 'string') {
+    if (/^-?\d+([.,]\d+)?$/.test(o.trim())) { out.num[pref] = Number(o.trim().replace(',', '.')); return; }
+    if (o.length <= 40 && !/^\d{4}-\d\d-\d\d/.test(o)) out.cat[pref] = o;
+  }
+}
+function medida(x, ruta, out) {
+  let v = x.valueAsDouble ?? x.valueAsInteger ?? x.value;
+  const unit = x.unit || x.unitId || x.units || '';
+  if (typeof v === 'string' && /^-?\d+([.,]\d+)?$/.test(v.trim())) v = Number(v.trim().replace(',', '.'));
+  if (typeof v === 'number' && isFinite(v)) { const [vv, uu] = convUnidad(v, unit); out.num[ruta] = vv; if (uu) out.unidades[ruta] = uu; }
+  else if (typeof v === 'string' && v.length <= 40) out.cat[ruta] = v;
+}
+function nuevoAplanado() { return { num: {}, cat: {}, unidades: {} }; }
+function coordsDe(v) {
+  const g = v.point || v.location || v.position || v.geoLocation || v;
+  let lat = numO(g.lat ?? g.latitude), lng = numO(g.lon ?? g.lng ?? g.longitude ?? g.long);
+  if ((lat == null || lng == null) && Array.isArray(v.geometry?.coordinates)) { lng = numO(v.geometry.coordinates[0]); lat = numO(v.geometry.coordinates[1]); }
+  return [lat, lng];
+}
+
+// ── Estado global ────────────────────────────────────────────────
+let P = [];                  // puntos ordenados por tiempo
+let CAMPOS = {};             // ruta -> {n,min,max,sum,unidad}
+let ESTADOS = [];
+let maquinas = [], potreros = [], diag = null, rawGuardado = null;
+let selRpm = '', selVel = '';
+let F = { rpm: null, vel: null, t: null };   // rangos activos [min,max]
+let LIM = { rpm: [0, 1], vel: [0, 1], t: [0, 1] };
+let colorEscala = { min: 0, max: 1, cat: false, mapa: {} };
+let dibujados = [];          // puntos que pasan el filtro (en orden)
+let permisosPruebas = {};
+
+// ── Mapa ─────────────────────────────────────────────────────────
+let map, capaBase, capaDatos, capaPot, capaCursor, renderer;
+function initMapa() {
+  map = L.map('mapa', { preferCanvas: true, zoomControl: true }).setView([-36.6, -72.0], 12);
+  renderer = L.canvas({ padding: 0.5 });
+  cambioBase();
+  capaDatos = L.layerGroup().addTo(map);
+  capaPot = L.layerGroup().addTo(map);
+  capaCursor = L.layerGroup().addTo(map);
+}
+window.cambioBase = function () {
+  if (capaBase) map.removeLayer(capaBase);
+  capaBase = $('base').value === 'sat'
+    ? L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, attribution: 'Esri' })
+    : L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' });
+  capaBase.addTo(map); capaBase.bringToBack();
+};
+function normPoligono(pol) { return (pol || []).map(c => Array.isArray(c) ? [Number(c[0]), Number(c[1])] : [Number(c.lat), Number(c.lng)]); }
+function polValido(arr) { return Array.isArray(arr) && arr.length >= 3 && arr.every(pt => Array.isArray(pt) ? isFinite(pt[0]) && isFinite(pt[1]) : pt && isFinite(pt.lat) && isFinite(pt.lng)); }
+function puntoEnPoligono(lat, lng, poly) {
+  let dentro = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const yi = poly[i][0], xi = poly[i][1], yj = poly[j][0], xj = poly[j][1];
+    if (((yi > lat) !== (yj > lat)) && (lng < (xj - xi) * (lat - yi) / (yj - yi) + xi)) dentro = !dentro;
+  }
+  return dentro;
+}
+window.cambioPotreros = function () {
+  capaPot.clearLayers();
+  if (!$('ver-pot').checked) return;
+  potreros.forEach(p => {
+    const l = L.polygon(p.poly, { color: '#FACC15', weight: 1.5, fill: true, fillOpacity: 0.04, interactive: !!$('ver-nom').checked }).addTo(capaPot);
+    if ($('ver-nom').checked) l.bindTooltip(esc(p.nombre), { permanent: true, direction: 'center', className: 'nom-pot' });
+  });
+};
+function asignarPotreros() {
+  const cajas = potreros.map(p => { let a = 90, b = -90, c = 180, d = -180; p.poly.forEach(([la, ln]) => { a = Math.min(a, la); b = Math.max(b, la); c = Math.min(c, ln); d = Math.max(d, ln); }); return [a, b, c, d]; });
+  P.forEach(p => {
+    p.pot = 'Fuera de potreros';
+    for (let i = 0; i < potreros.length; i++) {
+      const [a, b, c, d] = cajas[i];
+      if (p.lat < a || p.lat > b || p.lng < c || p.lng > d) continue;
+      if (puntoEnPoligono(p.lat, p.lng, potreros[i].poly)) { p.pot = potreros[i].nombre; break; }
+    }
+  });
+}
+
+// ── Construcción de puntos ───────────────────────────────────────
+function distKm(a, b) {
+  const R = 6371, rad = x => x * Math.PI / 180;
+  const dLat = rad(b.lat - a.lat), dLng = rad(b.lng - a.lng);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+function construirPuntos(valores) {
+  const out = [];
+  (valores || []).forEach(v => {
+    if (!v || typeof v !== 'object') return;
+    const [lat, lng] = coordsDe(v);
+    const t = tiempoDe(v);
+    if (lat == null || lng == null || !isFinite(t) || (lat === 0 && lng === 0)) return;
+    const ap = nuevoAplanado(); aplanar(v, '', ap, 0);
+    const ms = v.machineState;
+    const estado = (ms && typeof ms === 'object' ? ms.value : (typeof ms === 'string' ? ms : null)) || ap.cat['machineState'] || ap.cat['state'] || null;
+    out.push({ t, lat, lng, estado, f: ap.num, c: ap.cat, u: ap.unidades });
+  });
+  out.sort((a, b) => a.t - b.t);
+  return out.filter((p, i) => i === 0 || p.t !== out[i - 1].t);
+}
+// Mezcla otra serie (RPM, etc.) con el punto GPS más cercano en el tiempo (±2 min)
+function mezclarSerie(puntos, valores, etiqueta) {
+  const reg = [];
+  (valores || []).forEach(v => {
+    if (!v || typeof v !== 'object') return;
+    const t = tiempoDe(v); if (!isFinite(t)) return;
+    const ap = nuevoAplanado(); aplanar(v, '', ap, 0);
+    if (!Object.keys(ap.num).length && !Object.keys(ap.cat).length) return;
+    reg.push({ t, ap });
+  });
+  if (!reg.length || !puntos.length) return 0;
+  reg.sort((a, b) => a.t - b.t);
+  let j = 0, ligados = 0;
+  puntos.forEach(p => {
+    while (j + 1 < reg.length && Math.abs(reg[j + 1].t - p.t) <= Math.abs(reg[j].t - p.t)) j++;
+    const r = reg[j];
+    if (Math.abs(r.t - p.t) > 120000) return;
+    Object.entries(r.ap.num).forEach(([k, val]) => { const kk = etiqueta + '.' + k; if (!(kk in p.f)) { p.f[kk] = val; if (r.ap.unidades[k]) p.u[kk] = r.ap.unidades[k]; } });
+    Object.entries(r.ap.cat).forEach(([k, val]) => { p.c[etiqueta + '.' + k] = val; });
+    ligados++;
+  });
+  return ligados;
+}
+function calcularDerivados() {
+  const GAP = 300000;
+  for (let i = 0; i < P.length; i++) {
+    const a = P[i - 1], b = P[i + 1], p = P[i];
+    let v = null;
+    if (a && b && b.t - a.t <= 2 * GAP && b.t - a.t > 0) v = distKm(a, b) / ((b.t - a.t) / 3600000);
+    else if (a && p.t - a.t <= GAP && p.t - a.t > 0) v = distKm(a, p) / ((p.t - a.t) / 3600000);
+    else if (b && b.t - p.t <= GAP && b.t - p.t > 0) v = distKm(p, b) / ((b.t - p.t) / 3600000);
+    p.f['_vgps'] = v != null && v < 120 ? v : null;
+    const d = new Date(p.t); p.f['_hora'] = d.getHours() + d.getMinutes() / 60 + d.getSeconds() / 3600;
+    p.idx = i;
+  }
+  P.forEach(p => { if (p.f['_vgps'] == null) delete p.f['_vgps']; });
+}
+function resumirCampos() {
+  CAMPOS = {};
+  P.forEach(p => {
+    for (const k in p.f) {
+      const v = p.f[k]; if (v == null || !isFinite(v)) continue;
+      const c = CAMPOS[k] || (CAMPOS[k] = { n: 0, min: Infinity, max: -Infinity, sum: 0, unidad: '' });
+      c.n++; if (v < c.min) c.min = v; if (v > c.max) c.max = v; c.sum += v;
+      if (!c.unidad && p.u[k]) c.unidad = p.u[k];
+    }
+  });
+  if (CAMPOS['_vgps']) CAMPOS['_vgps'].unidad = 'km/h';
+  if (CAMPOS['_hora']) CAMPOS['_hora'].unidad = 'h';
+  const est = new Set(); P.forEach(p => { if (p.estado) est.add(p.estado); }); ESTADOS = [...est].sort();
+}
+const RE_RPM = /(rpm|engine.?speed|enginespeed|motor.?speed|eng.?spd|engine.?rev|revolution)/i;
+const RE_RPM_NO = /(pto|fan|wheel|ground|vehicle|hydraul|pump|rotor|cylinder|drum|shaft)/i;
+const RE_VEL = /(ground.?speed|vehicle.?speed|travel.?speed|speed|velocity|velocidad)/i;
+const RE_VEL_NO = /(engine|rpm|pto|fan|motor|wind|rotor|spindle|drum|shaft|^_)/i;
+function nombreCampo(k) {
+  if (k === '_vgps') return 'Velocidad calculada por GPS';
+  if (k === '_hora') return 'Hora del día';
+  return k;
+}
+function etiquetaCampo(k) { const c = CAMPOS[k]; return nombreCampo(k) + (c && c.unidad ? ` (${c.unidad})` : '') + (c ? ` · ${c.n} pts` : ''); }
+function elegirAuto() {
+  const ks = Object.keys(CAMPOS).filter(k => k[0] !== '_');
+  const pri = (re, no) => ks.filter(k => re.test(k) && !(no && no.test(k))).sort((a, b) => CAMPOS[b].n - CAMPOS[a].n)[0] || '';
+  selRpm = ks.filter(k => RE_RPM.test(k) && !RE_RPM_NO.test(k)).sort((a, b) => CAMPOS[b].n - CAMPOS[a].n)[0] || ks.filter(k => RE_RPM.test(k)).sort((a, b) => CAMPOS[b].n - CAMPOS[a].n)[0] || '';
+  selVel = pri(RE_VEL, RE_VEL_NO) || (CAMPOS['_vgps'] ? '_vgps' : '');
+}
+function llenarSelectores() {
+  const ks = Object.keys(CAMPOS);
+  const opt = (k, sel) => `<option value="${esc(k)}"${k === sel ? ' selected' : ''}>${esc(etiquetaCampo(k))}</option>`;
+  $('sel-rpm').innerHTML = '<option value="">— sin variable —</option>' + ks.filter(k => k[0] !== '_').map(k => opt(k, selRpm)).join('');
+  $('sel-vel').innerHTML = '<option value="">— sin variable —</option>' + ks.map(k => opt(k, selVel)).join('');
+  const cv = $('col-var'); const previo = cv.value;
+  cv.innerHTML = `<option value="vel">Velocidad (filtro)</option><option value="rpm">RPM (filtro)</option>` +
+    (ESTADOS.length ? '<option value="_estado">Estado JDLink</option>' : '') +
+    `<option value="_pot">Potrero</option>` + ks.map(k => `<option value="f:${esc(k)}">${esc(etiquetaCampo(k))}</option>`).join('');
+  cv.value = [...cv.options].some(o => o.value === previo) ? previo : (selVel ? 'vel' : (selRpm ? 'rpm' : '_pot'));
+  $('sel-dia').innerHTML = '<option value="">Todos los días</option>' + [...new Set(P.map(p => diaTxt(p.t)))].map(d => `<option>${d}</option>`).join('');
+  $('f-pot').innerHTML = '<option value="">Todos</option>' + [...new Set(P.map(p => p.pot))].sort().map(n => `<option>${esc(n)}</option>`).join('');
+  $('f-estado').innerHTML = '<option value="">Todos</option>' + ESTADOS.map(n => `<option>${esc(n)}</option>`).join('');
+}
+const diaTxt = t => { const d = new Date(t); return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`; };
+const horaTxt = t => new Date(t).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' });
+const fechaHoraTxt = t => diaTxt(t) + ' ' + new Date(t).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+// ── Valores de filtro ────────────────────────────────────────────
+function factorVel() { return selVel && selVel !== '_vgps' ? Number($('vel-unidad').value) || 1 : 1; }
+const vRpm = p => selRpm ? (p.f[selRpm] ?? null) : null;
+const vVel = p => { if (!selVel) return null; const v = p.f[selVel]; return v == null ? null : v * (selVel === '_vgps' ? 1 : factorVel()); };
+const get = k => k === 'rpm' ? vRpm : vVel;
+
+function limitesVar(k) {
+  const f = get(k); let mn = Infinity, mx = -Infinity;
+  P.forEach(p => { const v = f(p); if (v != null) { if (v < mn) mn = v; if (v > mx) mx = v; } });
+  if (!isFinite(mn)) return [0, 1];
+  if (mn === mx) mx = mn + 1;
+  const paso = (mx - mn) > 200 ? 10 : (mx - mn) > 20 ? 1 : 0.1;
+  return [Math.floor(mn / paso) * paso, Math.ceil(mx / paso) * paso];
+}
+function pasoDe(lim) { const r = lim[1] - lim[0]; return r > 200 ? 1 : r > 20 ? 0.5 : 0.1; }
+function iniciarFiltro(k) {
+  if (k === 't') { LIM.t = [P[0].t, P[P.length - 1].t]; F.t = [...LIM.t]; actualizarTiempoUI(); return; }
+  LIM[k] = limitesVar(k); F[k] = [...LIM[k]];
+  const paso = pasoDe(LIM[k]);
+  ['smin', 'smax'].forEach(s => { const e = $(`${k}-${s}`); e.min = LIM[k][0]; e.max = LIM[k][1]; e.step = paso; });
+  $(`${k}-min`).step = paso; $(`${k}-max`).step = paso;
+  $(`flt-${k}`).style.opacity = (k === 'rpm' ? selRpm : selVel) ? 1 : 0.45;
+  actualizarFiltroUI(k);
+  presets(k);
+}
+function actualizarFiltroUI(k) {
+  const [a, b] = F[k];
+  $(`${k}-min`).value = +a.toFixed(2); $(`${k}-max`).value = +b.toFixed(2);
+  $(`${k}-smin`).value = a; $(`${k}-smax`).value = b;
+  pintarDual(k, LIM[k], F[k]);
+}
+function pintarDual(k, lim, f) {
+  const w = $('dual-' + k).querySelector('.sel'); const r = (lim[1] - lim[0]) || 1;
+  w.style.left = (100 * (f[0] - lim[0]) / r) + '%'; w.style.width = (100 * (f[1] - f[0]) / r) + '%';
+}
+function actualizarTiempoUI() {
+  const e1 = $('t-smin'), e2 = $('t-smax');
+  [e1, e2].forEach(e => { e.min = LIM.t[0]; e.max = LIM.t[1]; e.step = 60000; });
+  e1.value = F.t[0]; e2.value = F.t[1];
+  $('t-min-txt').value = fechaHoraTxt(F.t[0]).slice(0, 16); $('t-max-txt').value = fechaHoraTxt(F.t[1]).slice(0, 16);
+  pintarDual('t', LIM.t, F.t);
+}
+let pend = false;
+function pedirDibujo() { if (pend) return; pend = true; requestAnimationFrame(() => { pend = false; dibujar(); }); }
+window.slFiltro = function (k) {
+  let a = Number($(`${k}-smin`).value), b = Number($(`${k}-smax`).value);
+  if (a > b) { if (document.activeElement === $(`${k}-smin`)) a = b; else b = a; }
+  F[k] = [a, b];
+  if (k === 't') { $('sel-dia').value = ''; actualizarTiempoUI(); } else actualizarFiltroUI(k);
+  pedirDibujo();
+};
+window.numFiltro = function (k) {
+  let a = Number($(`${k}-min`).value), b = Number($(`${k}-max`).value);
+  if (!isFinite(a)) a = LIM[k][0]; if (!isFinite(b)) b = LIM[k][1];
+  if (a > b) [a, b] = [b, a];
+  F[k] = [Math.max(a, LIM[k][0] - 1e9), b];
+  $(`${k}-smin`).value = a; $(`${k}-smax`).value = b; pintarDual(k, LIM[k], [Math.max(a, LIM[k][0]), Math.min(b, LIM[k][1])]);
+  dibujar();
+};
+window.cambioVarFiltro = function (k) {
+  if (k === 'rpm') selRpm = $('sel-rpm').value; else selVel = $('sel-vel').value;
+  if (k === 'vel') $('vel-unidad').disabled = selVel === '_vgps';
+  iniciarFiltro(k); dibujar();
+};
+window.cambioVelUnidad = function () { iniciarFiltro('vel'); dibujar(); };
+function cuantil(k, q) {
+  const vs = P.map(get(k)).filter(v => v != null).sort((a, b) => a - b);
+  return vs.length ? vs[Math.min(vs.length - 1, Math.floor(q * vs.length))] : 0;
+}
+function presets(k) {
+  const w = $('pre-' + k);
+  const sel = k === 'rpm' ? selRpm : selVel;
+  if (!sel) { w.innerHTML = ''; return; }
+  const q1 = cuantil(k, 1 / 3), q2 = cuantil(k, 2 / 3);
+  const btn = (txt, a, b) => `<button class="btn btn-sec btn-mini" onclick="setRango('${k}',${a},${b})">${txt}</button>`;
+  let h = btn('Todo', LIM[k][0], LIM[k][1]);
+  if (k === 'vel') h += btn('Detenido (<1)', LIM[k][0], 1) + btn('Trabajo (1–15)', 1, 15) + btn('Traslado (>15)', 15, LIM[k][1]);
+  h += btn(`Tercio bajo (≤${q1.toFixed(k === 'rpm' ? 0 : 1)})`, LIM[k][0], q1) + btn('Tercio medio', q1, q2) + btn(`Tercio alto (≥${q2.toFixed(k === 'rpm' ? 0 : 1)})`, q2, LIM[k][1]);
+  w.innerHTML = h;
+}
+window.setRango = function (k, a, b) { F[k] = [Math.max(a, LIM[k][0]), Math.min(b, LIM[k][1])]; actualizarFiltroUI(k); dibujar(); };
+window.cambioDia = function () {
+  const d = $('sel-dia').value;
+  if (!d) { F.t = [...LIM.t]; }
+  else { const ts = P.filter(p => diaTxt(p.t) === d).map(p => p.t); F.t = [ts[0], ts[ts.length - 1]]; }
+  actualizarTiempoUI(); dibujar();
+};
+window.resetFiltros = function () {
+  if (!P.length) return;
+  F.rpm = [...LIM.rpm]; F.vel = [...LIM.vel]; F.t = [...LIM.t];
+  actualizarFiltroUI('rpm'); actualizarFiltroUI('vel'); actualizarTiempoUI();
+  $('sel-dia').value = ''; $('f-pot').value = ''; $('f-estado').value = ''; $('sindato').checked = true;
+  dibujar();
+};
+
+// ── Filtrado ─────────────────────────────────────────────────────
+function activoRango(k) { return F[k] && (F[k][0] > LIM[k][0] || F[k][1] < LIM[k][1]); }
+function filtroPasa(p, omitir) {
+  if (p.t < F.t[0] || p.t > F.t[1]) return false;
+  const sd = $('sindato').checked;
+  if (omitir !== 'rpm' && selRpm && activoRango('rpm')) { const v = vRpm(p); if (v == null ? !sd : (v < F.rpm[0] || v > F.rpm[1])) return false; }
+  if (omitir !== 'vel' && selVel && activoRango('vel')) { const v = vVel(p); if (v == null ? !sd : (v < F.vel[0] || v > F.vel[1])) return false; }
+  const fp = $('f-pot').value; if (fp && p.pot !== fp) return false;
+  const fe = $('f-estado').value; if (fe && p.estado !== fe) return false;
+  return true;
+}
+
+// ── Colores ──────────────────────────────────────────────────────
+const PALETAS = {
+  arco: [[0, '#2563EB'], [.25, '#06B6D4'], [.5, '#22C55E'], [.75, '#FACC15'], [1, '#DC2626']],
+  rojoverde: [[0, '#DC2626'], [.5, '#FACC15'], [1, '#16A34A']],
+  verderojo: [[0, '#16A34A'], [.5, '#FACC15'], [1, '#DC2626']],
+  calor: [[0, '#FEF08A'], [.5, '#F97316'], [1, '#7F1D1D']]
+};
+const hex2rgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+function colorEsc(t) {
+  const pal = PALETAS[$('paleta').value]; t = Math.max(0, Math.min(1, t));
+  for (let i = 1; i < pal.length; i++) if (t <= pal[i][0]) {
+    const [t0, c0] = pal[i - 1], [t1, c1] = pal[i]; const u = (t - t0) / (t1 - t0 || 1);
+    const a = hex2rgb(c0), b = hex2rgb(c1);
+    return `rgb(${a.map((x, j) => Math.round(x + (b[j] - x) * u)).join(',')})`;
+  }
+  return pal[pal.length - 1][1];
+}
+const CAT_COL = ['#2563EB', '#DC2626', '#16A34A', '#F59E0B', '#7C3AED', '#0D9488', '#DB2777', '#92400E', '#4B5563', '#EA580C'];
+const ESTADO_COL = { working: '#16A34A', transport: '#2563EB', idle: '#F59E0B', off: '#6B7280', unknown: '#9CA3AF' };
+function valorColor(p, cv) {
+  if (cv === 'vel') return vVel(p);
+  if (cv === 'rpm') return vRpm(p);
+  if (cv.startsWith('f:')) return p.f[cv.slice(2)] ?? null;
+  return null;
+}
+window.cambioColor = function () { $('esc-min').value = ''; $('esc-max').value = ''; dibujar(); };
+function prepararEscala(lista, cv) {
+  const cat = cv === '_estado' || cv === '_pot';
+  if (cat) {
+    const mapa = {}; let i = 0;
+    lista.forEach(p => { const k = cv === '_estado' ? (p.estado || 'sin estado') : p.pot; if (!(k in mapa)) mapa[k] = (cv === '_estado' && ESTADO_COL[String(k).toLowerCase()]) || CAT_COL[(i++) % CAT_COL.length]; });
+    colorEscala = { cat: true, mapa, min: 0, max: 1 }; return;
+  }
+  let vs = lista.map(p => valorColor(p, cv)).filter(v => v != null).sort((a, b) => a - b);
+  let mn = vs.length ? vs[0] : 0, mx = vs.length ? vs[vs.length - 1] : 1;
+  if ($('recorte').checked && vs.length > 50) { mn = vs[Math.floor(vs.length * .02)]; mx = vs[Math.floor(vs.length * .98)]; }
+  const emn = numO($('esc-min').value), emx = numO($('esc-max').value);
+  if (emn != null) mn = emn; if (emx != null) mx = emx;
+  if (mx <= mn) mx = mn + 1;
+  colorEscala = { cat: false, mapa: {}, min: mn, max: mx };
+}
+function colorDe(p, cv) {
+  if (colorEscala.cat) return colorEscala.mapa[cv === '_estado' ? (p.estado || 'sin estado') : p.pot];
+  const v = valorColor(p, cv); if (v == null) return '#9CA3AF';
+  return colorEsc((v - colorEscala.min) / (colorEscala.max - colorEscala.min));
+}
+function pintarLeyenda(cv, n) {
+  const L_ = $('leyenda');
+  if (!P.length) return;
+  const nombre = $('col-var').selectedOptions[0]?.textContent.replace(/ · \d+ pts$/, '') || '';
+  if (colorEscala.cat) {
+    L_.innerHTML = `<b>${esc(nombre)}</b> · ${n} puntos<br>` + Object.entries(colorEscala.mapa).map(([k, c]) => `<span style="display:inline-block;margin:2px 8px 2px 0"><span style="display:inline-block;width:11px;height:11px;border-radius:50%;background:${c};vertical-align:-1px"></span> ${esc(k)}</span>`).join('');
+    return;
+  }
+  const pal = PALETAS[$('paleta').value];
+  const grad = pal.map(([t, c]) => `${c} ${t * 100}%`).join(',');
+  const dec = (colorEscala.max - colorEscala.min) > 50 ? 0 : 1;
+  L_.innerHTML = `<b>${esc(nombre)}</b> · ${n} puntos<div class="barra" style="background:linear-gradient(90deg,${grad})"></div>` +
+    `<div class="ext"><span>${colorEscala.min.toFixed(dec)}</span><span>${((colorEscala.min + colorEscala.max) / 2).toFixed(dec)}</span><span>${colorEscala.max.toFixed(dec)}</span></div>` +
+    `<div class="nota">Gris = sin dato de esta variable</div>`;
+}
+
+// ── Dibujo ───────────────────────────────────────────────────────
+function popupPunto(p) {
+  const filas = [['Hora', fechaHoraTxt(p.t)], ['Potrero', p.pot], ['Estado', p.estado || '—']];
+  const r = vRpm(p), v = vVel(p);
+  if (r != null) filas.push(['RPM', r.toFixed(0)]); if (v != null) filas.push(['Velocidad', v.toFixed(1) + ' km/h']);
+  if (p.f['_vgps'] != null) filas.push(['Vel. GPS', p.f['_vgps'].toFixed(1) + ' km/h']);
+  Object.entries(p.f).filter(([k]) => k[0] !== '_').forEach(([k, val]) => { if (k !== selRpm && k !== selVel) filas.push([k, (+val.toFixed(2)) + (p.u[k] ? ' ' + p.u[k] : '')]); });
+  Object.entries(p.c).forEach(([k, val]) => { if (k !== 'machineState') filas.push([k, val]); });
+  filas.push(['Coord.', p.lat.toFixed(6) + ', ' + p.lng.toFixed(6)]);
+  return '<table class="pt-tab">' + filas.map(([a, b]) => `<tr><td style="color:#6B7280">${esc(a)}</td><td><b>${esc(b)}</b></td></tr>`).join('') + '</table>';
+}
+function dibujar() {
+  if (!map) return;
+  capaDatos.clearLayers();
+  if (!P.length) return;
+  const cv = $('col-var').value;
+  const pasan = [], fuera = [];
+  P.forEach(p => (filtroPasa(p) ? pasan : fuera).push(p));
+  dibujados = pasan;
+  prepararEscala(pasan, cv);
+  const tam = Number($('tam').value) || 4, modo = $('modo').value;
+  const MAX = 40000;
+  const paso = Math.max(1, Math.ceil(pasan.length / MAX));
+  if ($('tenue').checked) {
+    const pf = Math.max(1, Math.ceil(fuera.length / 15000));
+    fuera.forEach((p, i) => { if (i % pf) return; L.circleMarker([p.lat, p.lng], { renderer, radius: Math.max(1.5, tam * 0.5), stroke: false, fillColor: '#9CA3AF', fillOpacity: 0.35, interactive: false }).addTo(capaDatos); });
+  }
+  const gap = Number($('gap').value);
+  if (modo === 'lineas') {
+    for (let i = 1; i < pasan.length; i++) {
+      const a = pasan[i - 1], b = pasan[i];
+      if (i % paso) continue;
+      if (b.idx === a.idx + 1 && b.t - a.t <= gap) {
+        const l = L.polyline([[a.lat, a.lng], [b.lat, b.lng]], { renderer, color: colorDe(b, cv), weight: tam, opacity: 0.9, lineCap: 'round' }).addTo(capaDatos);
+        l.on('click', e => L.popup().setLatLng(e.latlng).setContent(popupPunto(b)).openOn(map));
+      } else {
+        L.circleMarker([b.lat, b.lng], { renderer, radius: tam * 0.6, stroke: false, fillColor: colorDe(b, cv), fillOpacity: 0.9 }).addTo(capaDatos).on('click', e => L.popup().setLatLng(e.latlng).setContent(popupPunto(b)).openOn(map));
+      }
+    }
+  } else {
+    pasan.forEach((p, i) => {
+      if (i % paso) return;
+      L.circleMarker([p.lat, p.lng], { renderer, radius: tam, stroke: false, fillColor: colorDe(p, cv), fillOpacity: 0.9 })
+        .addTo(capaDatos).on('click', e => L.popup().setLatLng(e.latlng).setContent(popupPunto(p)).openOn(map));
+    });
+  }
+  pintarLeyenda(cv, pasan.length);
+  if (paso > 1) $('leyenda').innerHTML += `<div class="nota">Se dibuja 1 de cada ${paso} puntos para que el mapa sea fluido (las cifras usan todos).</div>`;
+  histogramas(); resumen();
+  const cur = $('cursor'); cur.max = Math.max(0, pasan.length - 1); if (+cur.value > +cur.max) cur.value = cur.max;
+  moverCursor(+cur.value, true);
+}
+window.dibujar = dibujar;
+window.ajustar = function () {
+  const pts = dibujados.length ? dibujados : P; if (!pts.length) return;
+  map.fitBounds(L.latLngBounds(pts.map(p => [p.lat, p.lng])), { padding: [20, 20], maxZoom: 18 });
+};
+
+// ── Cursor / reproducción ────────────────────────────────────────
+let playTimer = null;
+window.moverCursor = function (i, silencioso) {
+  capaCursor.clearLayers();
+  const p = dibujados[i];
+  if (!p) { $('cursor-txt').textContent = ''; return; }
+  L.circleMarker([p.lat, p.lng], { radius: 9, color: '#fff', weight: 3, fillColor: '#111', fillOpacity: 0.9, interactive: false }).addTo(capaCursor);
+  const r = vRpm(p), v = vVel(p);
+  $('cursor-txt').innerHTML = `<b>${fechaHoraTxt(p.t)}</b> · ${esc(p.pot)}${r != null ? ` · ⚙️ ${r.toFixed(0)} rpm` : ''}${v != null ? ` · 🚜 ${v.toFixed(1)} km/h` : ''}${p.estado ? ` · ${esc(p.estado)}` : ''}`;
+  if (!silencioso && !map.getBounds().contains([p.lat, p.lng])) map.panTo([p.lat, p.lng]);
+};
+window.reproducir = function () {
+  const b = $('btn-play');
+  if (playTimer) { clearInterval(playTimer); playTimer = null; b.textContent = '▶'; return; }
+  b.textContent = '⏸';
+  playTimer = setInterval(() => {
+    const c = $('cursor'); let i = +c.value + Math.max(1, Math.round(dibujados.length / 400));
+    if (i > +c.max) { i = +c.max; clearInterval(playTimer); playTimer = null; b.textContent = '▶'; }
+    c.value = i; moverCursor(i);
+  }, 80);
+};
+
+// ── Histogramas ──────────────────────────────────────────────────
+function histogramas() { ['rpm', 'vel'].forEach(k => histograma(k)); }
+function histograma(k) {
+  const cv = $('h-' + k), sel = k === 'rpm' ? selRpm : selVel;
+  const ctx = cv.getContext('2d'); const W = cv.width = cv.clientWidth * (window.devicePixelRatio || 1), H = cv.height = cv.clientHeight * (window.devicePixelRatio || 1);
+  ctx.clearRect(0, 0, W, H);
+  if (!sel) { ctx.fillStyle = '#9CA3AF'; ctx.font = `${12 * (window.devicePixelRatio || 1)}px sans-serif`; ctx.fillText('Sin datos de esta variable', 6, H / 2); return; }
+  const NB = 40, bins = new Array(NB).fill(0), [a, b] = LIM[k], f = get(k);
+  P.forEach(p => { if (!filtroPasa(p, k)) return; const v = f(p); if (v == null) return; bins[Math.min(NB - 1, Math.max(0, Math.floor((v - a) / (b - a) * NB)))]++; });
+  const mx = Math.max(1, ...bins), bw = W / NB;
+  bins.forEach((n, i) => {
+    const centro = a + (i + .5) / NB * (b - a); const dentro = centro >= F[k][0] && centro <= F[k][1];
+    ctx.fillStyle = dentro ? '#2D7D46' : '#D1D5DB';
+    const h = n / mx * (H - 4); ctx.fillRect(i * bw + 1, H - h, bw - 2, h);
+  });
+}
+
+// ── Resumen ──────────────────────────────────────────────────────
+const fmtH = ms => { const m = Math.round(ms / 60000); return m >= 60 ? `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')} min` : `${m} min`; };
+function resumen() {
+  const gap = Number($('gap').value);
+  const dt = p => { const n = P[p.idx + 1]; return n ? Math.min(n.t - p.t, gap) : 0; };
+  let tot = 0, totTodo = 0, dist = 0, sr = 0, trpm = 0, sv = 0, tvel = 0, maxR = null, maxV = null;
+  P.forEach(p => { totTodo += dt(p); });
+  const porPot = {}, porEst = {};
+  dibujados.forEach((p, i) => {
+    const d = dt(p); tot += d;
+    const r = vRpm(p), v = vVel(p);
+    if (r != null) { sr += r * d; trpm += d; if (maxR == null || r > maxR) maxR = r; }
+    if (v != null) { sv += v * d; tvel += d; if (maxV == null || v > maxV) maxV = v; }
+    const q = dibujados[i - 1]; if (q && p.idx === q.idx + 1 && p.t - q.t <= gap) dist += distKm(q, p);
+    const a = porPot[p.pot] || (porPot[p.pot] = { ms: 0, sr: 0, tr: 0, sv: 0, tv: 0, n: 0 }); a.ms += d; a.n++;
+    if (r != null) { a.sr += r * d; a.tr += d; } if (v != null) { a.sv += v * d; a.tv += d; }
+    const e = p.estado || 'sin estado'; porEst[e] = (porEst[e] || 0) + d;
+  });
+  const kp = (v, l) => `<div class="kpi"><b>${v}</b><span>${l}</span></div>`;
+  $('kpis').innerHTML =
+    kp(`${dibujados.length} / ${P.length}`, 'puntos filtrados') + kp(fmtH(tot), `tiempo (${totTodo ? Math.round(100 * tot / totTodo) : 0}% del total)`) +
+    kp(dist.toFixed(1) + ' km', 'distancia') +
+    kp(trpm ? (sr / trpm).toFixed(0) : '—', 'RPM promedio') + kp(maxR != null ? maxR.toFixed(0) : '—', 'RPM máximo') +
+    kp(tvel ? (sv / tvel).toFixed(1) : '—', 'km/h promedio') + kp(maxV != null ? maxV.toFixed(1) : '—', 'km/h máximo') +
+    kp(tot ? (dist / (tot / 3600000)).toFixed(1) : '—', 'km/h medio (GPS)');
+  const filas = Object.entries(porPot).sort((a, b) => b[1].ms - a[1].ms);
+  $('tab-pot').innerHTML = filas.length ? `<table><thead><tr><th>Potrero / zona</th><th class="n">Tiempo</th><th class="n">%</th><th class="n">RPM prom.</th><th class="n">km/h prom.</th><th class="n">Puntos</th></tr></thead><tbody>` +
+    filas.map(([n, a]) => `<tr><td>${esc(n)}</td><td class="n">${fmtH(a.ms)}</td><td class="n">${tot ? (100 * a.ms / tot).toFixed(0) : 0}%</td><td class="n">${a.tr ? (a.sr / a.tr).toFixed(0) : '—'}</td><td class="n">${a.tv ? (a.sv / a.tv).toFixed(1) : '—'}</td><td class="n">${a.n}</td></tr>`).join('') + '</tbody></table>' : '';
+  const fe = Object.entries(porEst).sort((a, b) => b[1] - a[1]);
+  $('tab-estado').innerHTML = fe.length > 1 || (fe[0] && fe[0][0] !== 'sin estado') ? `<table><thead><tr><th>Estado JDLink</th><th class="n">Tiempo</th><th class="n">%</th></tr></thead><tbody>` +
+    fe.map(([n, ms]) => `<tr><td>${esc(n)}</td><td class="n">${fmtH(ms)}</td><td class="n">${tot ? (100 * ms / tot).toFixed(0) : 0}%</td></tr>`).join('') + '</tbody></table>' : '';
+}
+function tablaCampos() {
+  const ks = Object.keys(CAMPOS);
+  $('tab-campos').innerHTML = ks.length ? `<table><thead><tr><th>Variable</th><th>Unidad</th><th class="n">Puntos</th><th class="n">Mín</th><th class="n">Media</th><th class="n">Máx</th></tr></thead><tbody>` +
+    ks.map(k => { const c = CAMPOS[k]; return `<tr><td>${esc(nombreCampo(k))}${k === selRpm ? ' <span class="badge">RPM</span>' : ''}${k === selVel ? ' <span class="badge">velocidad</span>' : ''}</td><td>${esc(c.unidad)}</td><td class="n">${c.n}</td><td class="n">${+c.min.toFixed(2)}</td><td class="n">${+(c.sum / c.n).toFixed(2)}</td><td class="n">${+c.max.toFixed(2)}</td></tr>`; }).join('') + '</tbody></table>' : '<span class="nota">Aún no hay datos.</span>';
+}
+
+// ── Carga de datos ───────────────────────────────────────────────
+function aplicarDatos(puntos, origen) {
+  P = puntos;
+  if (!P.length) { $('aviso-datos').innerHTML = '<div class="aviso mal">No llegaron puntos GPS en ese período. Prueba otro día o revisa que la máquina tenga JDLink activo.</div>'; capaDatos.clearLayers(); $('leyenda').innerHTML = '<span class="nota">Sin puntos.</span>'; return; }
+  asignarPotreros(); calcularDerivados(); resumirCampos(); elegirAuto(); llenarSelectores();
+  $('vel-unidad').value = '1'; $('vel-unidad').disabled = selVel === '_vgps';
+  iniciarFiltro('rpm'); iniciarFiltro('vel'); iniciarFiltro('t');
+  $('est-fuente').textContent = `${origen} · ${P.length} puntos · ${fechaHoraTxt(P[0].t)} → ${fechaHoraTxt(P[P.length - 1].t)}`;
+  const av = [];
+  if (!selRpm) av.push('<div class="aviso">⚠️ <b>JDLink no entregó RPM</b> en los recursos consultados, así que el filtro de RPM está inactivo. Abajo (sección 5) están todas las variables que sí llegaron; si hay alguna de RPM con otro nombre, elígela en el selector del filtro. Descarga el diagnóstico para ver qué recursos tiene tu máquina.</div>');
+  if (selVel === '_vgps') av.push('<div class="aviso">ℹ️ JDLink no entregó velocidad directa: se usa la <b>velocidad calculada con las posiciones GPS</b> (distancia/tiempo entre puntos vecinos). Es menos exacta cuando los puntos están muy espaciados.</div>');
+  if (selRpm && selVel && selVel !== '_vgps') av.push('<div class="aviso ok">✅ Se encontraron RPM y velocidad reportadas por la máquina. Si los valores no parecen correctos, cambia la variable o la unidad en los filtros.</div>');
+  $('aviso-datos').innerHTML = av.join('');
+  tablaCampos(); cambioPotreros(); dibujar(); ajustar();
+  $('cursor-info').style.display = '';
+}
+function setProg(t) { $('progreso').textContent = t; }
+window.rangoRapido = function (k) {
+  const ahora = new Date(); let d, h = ahora;
+  const dia0 = x => { const y = new Date(x); y.setHours(0, 0, 0, 0); return y; };
+  if (k === 'hoy') d = dia0(ahora);
+  else if (k === 'ayer') { d = dia0(new Date(ahora.getTime() - 86400000)); h = dia0(ahora); }
+  else d = dia0(new Date(ahora.getTime() - (Number(k) - 1) * 86400000));
+  $('desde').value = aLocal(d); $('hasta').value = aLocal(h);
+};
+const aLocal = d => { const z = new Date(d.getTime() - d.getTimezoneOffset() * 60000); return z.toISOString().slice(0, 16); };
+const nomMaq = m => m.name || m.equipmentName || m.displayName || m.id || 'Máquina';
+
+window.consultar = async function () {
+  const i = Number($('maq').value); const m = maquinas[i];
+  if (!m) { toast('Elige una máquina', false); return; }
+  const desde = new Date($('desde').value).getTime(), hasta = new Date($('hasta').value).getTime();
+  if (!isFinite(desde) || !isFinite(hasta) || hasta <= desde) { toast('Revisa las fechas', false); return; }
+  if (hasta - desde > 8 * 86400000 && !confirm('El período es largo y puede tardar varios minutos. ¿Continuar?')) return;
+  $('btn-consultar').disabled = true; $('aviso-datos').innerHTML = '';
+  diag = { maquina: nomMaq(m), id: m.id, desde: new Date(desde).toISOString(), hasta: new Date(hasta).toISOString(), rels: [], fuenteGps: '', llamadas: [], errores: {}, muestras: {}, extras: [] };
+  try {
+    const principalId = m.organizationRole?.principalId || m.principalId || m.id;
+    const links = m.links || []; diag.rels = links.map(l => l.rel);
+    const link = re => links.find(l => re.test(l.rel || ''));
+    const lBc = link(/breadcrumb/i);
+    const urlBc = lBc ? lBc.uri : `/machines/${principalId}/breadcrumbs`;
+    let loc = await traerRango(urlBc, desde, Math.min(hasta, desde + 86400000), diag, 'Breadcrumbs', setProg);
+    let pts = loc.ok ? construirPuntos(loc.valores) : [];
+    if (pts.length) {
+      diag.fuenteGps = 'breadcrumbs';
+      if (hasta - desde > 86400000) { const resto = await traerRango(urlBc, desde + 86400000, hasta, diag, 'Breadcrumbs', setProg); loc = { valores: [...loc.valores, ...resto.valores] }; }
+    } else {
+      diag.fuenteGps = 'locationHistory';
+      const lLoc = link(/locationhistory/i) || link(/location/i);
+      loc = await traerRango(lLoc ? lLoc.uri : `/machines/${principalId}/locationHistory`, desde, hasta, diag, 'Ubicaciones', setProg);
+    }
+    pts = construirPuntos(loc.valores);
+    rawGuardado = { gps: loc.valores, extras: {} };
+    if (pts.length && $('extra').checked) {
+      const cand = links.filter(l => /(engine|rpm|speed|measure|telemetr|fuel|devicestate|terminal|performance|load|temperature|pto|hydraul)/i.test(l.rel || '') && !/(breadcrumb|locationhistory|hoursofoperation)/i.test(l.rel || ''));
+      diag.extras = cand.map(l => l.rel);
+      for (const l of cand) {
+        setProg(`Buscando variables en «${l.rel}»…`);
+        const r = await traerRango(l.uri, desde, hasta, diag, 'Extra · ' + l.rel, setProg);
+        if (r.ok && r.valores.length) { const n = mezclarSerie(pts, r.valores, l.rel); diag.llamadas.push(`  → «${l.rel}»: ${r.valores.length} registros, ${n} puntos GPS enlazados`); rawGuardado.extras[l.rel] = r.valores; }
+      }
+    }
+    setProg('');
+    aplicarDatos(pts, `JDLink · ${nomMaq(m)}`);
+    $('diag-llamadas').textContent = `Recursos (rel) de la máquina: ${diag.rels.join(', ') || '(la lista no trae links)'}\n\n` + diag.llamadas.join('\n');
+  } catch (e) { toast('Error: ' + e.message, false); setProg(''); console.error(e); }
+  $('btn-consultar').disabled = false;
+};
+
+// Archivo: JSON (respuesta de JD o lista de objetos) o CSV
+function parseCSV(txt) {
+  const lineas = txt.replace(/\r/g, '').split('\n').filter(l => l.trim());
+  if (lineas.length < 2) return [];
+  const sep = (lineas[0].match(/;/g) || []).length > (lineas[0].match(/,/g) || []).length ? ';' : ',';
+  const cab = lineas[0].split(sep).map(s => s.trim().replace(/^"|"$/g, ''));
+  return lineas.slice(1).map(l => { const c = l.split(sep).map(s => s.trim().replace(/^"|"$/g, '')); const o = {}; cab.forEach((h, i) => { o[h] = c[i]; }); return o; });
+}
+window.cargarArchivo = async function (inp) {
+  const f = inp.files[0]; if (!f) return;
+  try {
+    const txt = await f.text(); let valores;
+    if (/\.csv$/i.test(f.name) || !/^\s*[\[{]/.test(txt)) {
+      valores = parseCSV(txt).map(o => { const r = {}; Object.entries(o).forEach(([k, v]) => { const kl = k.toLowerCase(); r[/^(lat|latitude|latitud)$/.test(kl) ? 'lat' : /^(lon|lng|long|longitude|longitud)$/.test(kl) ? 'lon' : /(time|fecha|date|hora)/.test(kl) && !r.timestamp ? 'timestamp' : k] = v; }); return r; });
+    } else {
+      const j = JSON.parse(txt);
+      valores = Array.isArray(j) ? j : (j.values || j.datos || j.ubicaciones || j.gps || []);
+    }
+    diag = { maquina: f.name, rels: [], fuenteGps: 'archivo', llamadas: [`Archivo ${f.name}: ${valores.length} registros`], errores: {}, muestras: { archivo: valores.slice(0, 3) }, extras: [] };
+    rawGuardado = { gps: valores, extras: {} };
+    $('diag-llamadas').textContent = diag.llamadas.join('\n');
+    aplicarDatos(construirPuntos(valores), 'Archivo ' + f.name);
+  } catch (e) { toast('No se pudo leer el archivo: ' + e.message, false); }
+  inp.value = '';
+};
+
+// ── Descargas ────────────────────────────────────────────────────
+function bajar(nombre, txt, tipo) {
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([txt], { type: tipo || 'application/json' })); a.download = nombre;
+  document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+}
+window.descargarDiag = function (completo) {
+  if (!diag) { toast('Primero consulta un recorrido', false); return; }
+  const base = { ...diag, variables: Object.fromEntries(Object.entries(CAMPOS).map(([k, c]) => [k, { unidad: c.unidad, puntos: c.n, min: c.min, max: c.max, media: c.sum / c.n }])), seleccion: { rpm: selRpm, velocidad: selVel }, puntos: P.length };
+  if (completo && rawGuardado) base.datos = rawGuardado;
+  bajar(`analisis-${(diag.maquina || 'tractor').replace(/\W+/g, '_')}${completo ? '-completo' : ''}.json`, JSON.stringify(base));
+};
+window.descargarCSV = function () {
+  if (!dibujados.length) { toast('No hay puntos filtrados', false); return; }
+  const cab = ['hora', 'lat', 'lng', 'potrero', 'estado', 'rpm', 'velocidad_kmh', 'vel_gps_kmh'];
+  const lin = dibujados.map(p => [new Date(p.t).toISOString(), p.lat, p.lng, `"${p.pot}"`, p.estado || '', vRpm(p) ?? '', vVel(p) != null ? vVel(p).toFixed(2) : '', p.f['_vgps'] != null ? p.f['_vgps'].toFixed(2) : ''].join(','));
+  bajar('puntos-filtrados.csv', [cab.join(','), ...lin].join('\n'), 'text/csv');
+};
+window.addEventListener('resize', () => { if (P.length) histogramas(); });
+
+// ── Acceso ───────────────────────────────────────────────────────
+const ADMIN_PIN = '1234', ADMIN_NOMBRE = 'JC Allende', ADMINS_EQUIVALENTES = ['Camila Faundez'];
+const puedeVer = (nombre, admin) => admin || ADMINS_EQUIVALENTES.includes(nombre) || (Array.isArray(permisosPruebas[nombre]) && permisosPruebas[nombre].includes('analisis'));
+let abrirAcceso; const accesoListo = new Promise(r => { abrirAcceso = r; });
+window.entrarAnalisis = async function () {
+  const pin = $('acc-pin').value.trim(), msg = $('acc-msg');
+  if (!pin) { msg.textContent = 'Ingresa tu PIN.'; return; }
+  let nombre = null, admin = false;
+  if (pin === ADMIN_PIN) { nombre = ADMIN_NOMBRE; admin = true; }
+  else if (pin === '0000') { msg.textContent = 'Primero cambia tu PIN inicial en la app.'; return; }
+  else {
+    try { const sp = await getDoc(doc(db, 'config', 'pines')); const op = sp.exists() ? Object.entries(sp.data()).find(([, p]) => p === pin) : null; if (op) nombre = op[0]; }
+    catch (e) { msg.textContent = 'No se pudo verificar: ' + e.message; return; }
+  }
+  if (!nombre) { msg.textContent = 'PIN incorrecto.'; $('acc-pin').value = ''; return; }
+  if (!puedeVer(nombre, admin)) { msg.textContent = 'No tienes acceso al análisis de tractor. Pídeselo al administrador.'; return; }
+  try { sessionStorage.setItem('analisis_usuario', JSON.stringify({ nombre, admin })); } catch (e) {}
+  $('acceso').style.display = 'none'; abrirAcceso();
+};
+function revisarAcceso() {
+  let u = null;
+  try {
+    let pase = JSON.parse(localStorage.getItem('maitenes_pase') || 'null');
+    const hm = /[#&]pase=([^&]+)/.exec(location.hash || '');
+    if (hm) { try { pase = JSON.parse(decodeURIComponent(hm[1])); } catch (e) {} try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {} }
+    if (pase && pase.nombre && Date.now() - pase.ts < 10 * 60000) { u = pase; localStorage.removeItem('maitenes_pase'); sessionStorage.setItem('analisis_usuario', JSON.stringify({ nombre: pase.nombre, admin: !!pase.admin })); }
+    else u = JSON.parse(sessionStorage.getItem('analisis_usuario') || 'null');
+  } catch (e) {}
+  if (u && puedeVer(u.nombre, u.admin)) { abrirAcceso(); return; }
+  try { sessionStorage.removeItem('analisis_usuario'); } catch (e) {}
+  $('acceso').style.display = 'flex';
+  if (u) $('acc-msg').textContent = 'No tienes acceso al análisis de tractor. Pídeselo al administrador.';
+}
+
+(async function iniciar() {
+  let d = {};
+  try { const s = await getDoc(doc(db, 'config', 'datos')); d = s.exists() ? s.data() : {}; } catch (e) { toast('No se pudo leer la configuración: ' + e.message, false); }
+  permisosPruebas = d.permisosPruebas || {};
+  revisarAcceso(); await accesoListo;
+  potreros = (d.potreros || []).filter(p => polValido(p.poligono)).map(p => ({ nombre: p.nombre, poly: normPoligono(p.poligono) }));
+  initMapa(); cambioPotreros();
+  if (potreros.length) map.fitBounds(L.latLngBounds(potreros.flatMap(p => p.poly)));
+  rangoRapido('hoy');
+  await cargarConfigJD();
+  const sel = $('maq');
+  try {
+    if (!(await getTokenValido())) sel.innerHTML = '<option value="">Sin conexión a John Deere: conéctate desde la app</option>';
+    else {
+      if (!jdMachinesLink) await cargarOrganizacionJD();
+      const { status, data } = await callJDApi(jdMachinesLink);
+      maquinas = status === 200 && data ? (data.values || []) : [];
+      sel.innerHTML = maquinas.length ? maquinas.map((m, i) => `<option value="${i}">${esc(nomMaq(m))}</option>`).join('') : `<option value="">No se pudo leer la flota (HTTP ${status})</option>`;
+    }
+  } catch (e) { sel.innerHTML = `<option value="">Error: ${esc(e.message)}</option>`; }
+})();
+</script>
+</body>
+</html>
