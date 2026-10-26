@@ -2898,14 +2898,15 @@ const SECCIONES_TABS = {
 };
 
 window.mostrarSelectorSecciones = function() {
-  const per = isAdmin ? ['tractor', 'reparto', 'cuaderno2', 'energia'] : permisosPruebasDe(currentUser);
+  const per = isAdmin ? ['tractor', 'reparto', 'cuaderno2', 'energia', 'analisis'] : permisosPruebasDe(currentUser);
   ['asistencia', 'campo', 'inventario', 'autorizaciones', 'equipos'].forEach(sec => { const b = document.getElementById('sec-btn-' + sec); if (b) b.style.display = (isAdmin || (sec === 'campo' && campoTambien)) ? '' : 'none'; });
   { const bc = document.getElementById('sec-btn-combustible'); if (bc) bc.style.display = ''; }
   document.getElementById('sec-btn-tractor').style.display = per.includes('tractor') ? '' : 'none';
   document.getElementById('sec-btn-reparto').style.display = per.includes('reparto') ? '' : 'none';
   { const b2 = document.getElementById('sec-btn-cuaderno2'); if (b2) b2.style.display = per.includes('cuaderno2') ? '' : 'none'; }
   { const b3 = document.getElementById('sec-btn-energia'); if (b3) b3.style.display = per.includes('energia') ? '' : 'none'; }
-  document.getElementById('sec-lbl-pruebas').style.display = (per.includes('tractor') || per.includes('reparto') || per.includes('cuaderno2') || per.includes('energia')) ? '' : 'none';
+  { const b4 = document.getElementById('sec-btn-analisis'); if (b4) b4.style.display = per.includes('analisis') ? '' : 'none'; }
+  document.getElementById('sec-lbl-pruebas').style.display = (per.includes('tractor') || per.includes('reparto') || per.includes('cuaderno2') || per.includes('energia') || per.includes('analisis')) ? '' : 'none';
   { const bc = document.getElementById('sec-btn-celulares'); if (bc) bc.style.display = isAdmin ? '' : 'none'; }
   document.getElementById('sec-btn-envivo').style.display = (isAdmin || per.includes('ubicacion')) ? '' : 'none';
   document.getElementById('tabs-bar').style.display = 'none';
@@ -11239,7 +11240,7 @@ window.guardarEdicionEquipoOperador = async function(idx) {
 // Camila siempre tienen acceso (por el menú de secciones). Al abrir una de las
 // páginas desde la app se deja un "pase" en el navegador (misma web), para que
 // no tengan que volver a poner el PIN; las páginas igual revisan el permiso.
-const PRUEBAS_GPS = [ { id: 'tractor', txt: '🚜 Modo tractor' }, { id: 'reparto', txt: '📍 Reparto por potrero' }, { id: 'ubicacion', txt: '📡 Ubicación equipos' }, { id: 'cuaderno2', txt: '🎤 Cuaderno v2 (dictado)' }, { id: 'energia', txt: '⚡ Energía eléctrica' } ];
+const PRUEBAS_GPS = [ { id: 'tractor', txt: '🚜 Modo tractor' }, { id: 'reparto', txt: '📍 Reparto por potrero' }, { id: 'ubicacion', txt: '📡 Ubicación equipos' }, { id: 'cuaderno2', txt: '🎤 Cuaderno v2 (dictado)' }, { id: 'energia', txt: '⚡ Energía eléctrica' }, { id: 'analisis', txt: '🗺️ Análisis de tractor' } ];
 function permisosPruebasDe(op) { const v = (config.permisosPruebas || {})[op]; return Array.isArray(v) ? v : []; }
 window.abrirPrueba = function(cual) {
   const pase = JSON.stringify({ nombre: currentUser, admin: !!isAdmin, ts: Date.now() });
@@ -11249,6 +11250,7 @@ window.abrirPrueba = function(cual) {
   if (cual === 'tractor') window.location.href = '/tractor.html' + h;
   else if (cual === 'cuaderno2') window.open('/cuaderno2.html' + h, '_blank');
   else if (cual === 'energia') window.open('/energia.html' + h, '_blank');
+  else if (cual === 'analisis') window.open('/analisis-tractor.html' + h, '_blank');
   else window.open('/reparto.html' + h, '_blank');
 }
 // ── Aplicadores autorizados (subconjunto de operadores que retiran / devuelven productos) ──
@@ -14013,6 +14015,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       <button class="btn" style="background:#2A2A2A;color:#E5E7EB;justify-content:flex-start;padding:16px 20px;font-size:15px;border-radius:10px" id="sec-btn-reparto" onclick="abrirPrueba('reparto')">📍 Reparto por potrero (prueba)</button>
       <button class="btn" style="background:#2A2A2A;color:#E5E7EB;justify-content:flex-start;padding:16px 20px;font-size:15px;border-radius:10px" id="sec-btn-cuaderno2" onclick="abrirPrueba('cuaderno2')">🎤 Cuaderno de campo v2 · dictado (prueba)</button>
       <button class="btn" style="background:#2A2A2A;color:#E5E7EB;justify-content:flex-start;padding:16px 20px;font-size:15px;border-radius:10px" id="sec-btn-energia" onclick="abrirPrueba('energia')">⚡ Energía eléctrica (facturas y medidores)</button>
+      <button class="btn" style="background:#2A2A2A;color:#E5E7EB;justify-content:flex-start;padding:16px 20px;font-size:15px;border-radius:10px" id="sec-btn-analisis" onclick="abrirPrueba('analisis')">🗺️ Análisis de tractor (mapa RPM y velocidad)</button>
       <button class="btn" style="background:transparent;color:#9CA3AF;border:1px solid #3A3A3A;justify-content:center;padding:10px 14px;font-size:12px;border-radius:10px;margin-top:10px;display:none" id="sec-btn-celulares" onclick="cerrarCelularesRecordados()">🔒 Cerrar sesión en celulares recordados</button>
     </div>
   </div>
