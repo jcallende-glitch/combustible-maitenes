@@ -334,9 +334,9 @@ function formVacio() { return { id: null, suministro: S.filtroSum || (S.sum[0] &
 function rFacturas() {
   const f = S.form;
   const subir = `<div class="panel"><h2>Subir factura de Copelec</h2>
-    <div class="hint" style="margin-bottom:8px">Puedes subir muchas boletas de una vez (PDF de varias páginas, varios PDF o fotos): cada página o foto se lee como una boleta y quedan en una cola para revisar y guardar. Si una sola boleta viene en 2 o 3 archivos, desmarca la casilla de abajo. La app lee con IA y revisa contra los meses anteriores y tus lecturas.</div>
+    <div class="hint" style="margin-bottom:8px">Puedes subir muchas de una vez: cada archivo (PDF o foto) es una factura, aunque el PDF tenga 2 o más páginas. Quedan en una cola para revisar y guardar. Solo si un mismo PDF trae varias facturas distintas, marca la casilla de abajo. La app lee con IA y revisa contra los meses anteriores y tus lecturas.</div>
     <input type="file" id="fac-arch" accept=".pdf,image/*" multiple>
-    <label style="font-size:13px;display:flex;gap:6px;align-items:center;margin-top:8px"><input type="checkbox" id="fac-porpag" checked style="width:auto"> Cada página o foto es una boleta distinta (para subir varias de una vez)</label>
+    <label style="font-size:13px;display:flex;gap:6px;align-items:center;margin-top:8px"><input type="checkbox" id="fac-porpag" style="width:auto"> Un mismo PDF trae varias boletas (separar por página)</label>
     <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap"><button class="btn btn-verde" id="fac-leer" onclick="leerFactura()">🤖 Leer con IA</button><button class="btn btn-secondary" onclick="nuevaFactura()">✍️ Ingresar a mano</button></div><div id="fac-est" class="hint" style="margin-top:6px"></div></div>`;
   const form = f ? formFactura(f) : '';
   const lista = S.sum.map(s => { const fs = facDe(s.id).slice().reverse(); if (!fs.length) return ''; return `<div class="panel"><h2>${escA(s.nombre)}</h2><div class="tw"><table><thead><tr><th>Período</th><th class="n">kWh</th><th class="n">Total factura</th><th class="n">$/kWh energía</th><th>Revisión</th><th></th></tr></thead><tbody>${fs.map(x => { const ch = revisarFactura(x, x.id); return `<tr><td>${fCorta(x.periodoDesde)} → ${fCorta(x.periodoHasta)}<div class="hint">${mesTxt(x.mes)}${x.numeroDoc ? ' · N° ' + escA(x.numeroDoc) : ''}</div></td><td class="n">${num(x.consumoKwh)}</td><td class="n">${pesos(x.total)}</td><td class="n">${precioKwh(x) ? num(precioKwh(x), 1) : '–'}</td><td>${chipNivel(ch)}</td><td style="white-space:nowrap"><button class="btn btn-secondary" onclick="verFactura('${x.id}')">🔍</button> <button class="btn btn-secondary" onclick="editarFactura('${x.id}')">✏️</button> <button class="btn btn-rojo" onclick="borrarFactura('${x.id}')">✕</button></td></tr>`; }).join('')}</tbody></table></div></div>`; }).join('');
@@ -437,7 +437,7 @@ window.leerFactura = async function () {
   $('fac-leer').disabled = true; est.textContent = '📄 Preparando archivos…';
   try {
     let boletas;
-    if (!porPag) { if (files.length > 3) throw new Error('Para una sola boleta, máximo 3 archivos. Si son varias boletas, marca «Cada página o foto es una boleta distinta».'); const documentos = []; for (const f of files) documentos.push(await aDataUrl(f)); boletas = [{ nombre: files.map(f => f.name).join(', '), docs: documentos }]; }
+    if (!porPag) { boletas = []; for (const f of files) boletas.push({ nombre: f.name, docs: [await aDataUrl(f)] }); }
     else boletas = await prepararBoletas(files, true);
     if (boletas.length === 1) {
       est.textContent = '🤖 Leyendo la factura… (puede tardar hasta un minuto)';
