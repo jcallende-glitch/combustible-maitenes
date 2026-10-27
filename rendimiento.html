@@ -1,0 +1,815 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rendimiento por potrero · Los Maitenes</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+  :root { --fondo:#F4F3EF; --blanco:#FFFFFF; --negro:#1A1A1A; --acero:#6B7280; --borde:#E5E2DA; --verde:#2D7D46; --amarillo:#F5A623; --rojo:#B91C1C; --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--fondo); color: var(--negro); font-family: var(--sans); }
+  header { background: var(--negro); color: #fff; padding: 12px 16px; }
+  header h1 { margin: 0; font-size: 17px; }
+  header div { font-size: 12px; color: #D1D5DB; margin-top: 2px; }
+  main { max-width: 1240px; margin: 0 auto; padding: 12px 12px 60px; }
+  .panel { background: var(--blanco); border: 1px solid var(--borde); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+  .ph { font-weight: 700; font-size: 13px; color: var(--acero); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .field { margin: 6px 0; min-width: 0; }
+  .field label { display: block; font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--acero); margin-bottom: 3px; }
+  select, input[type=text], input[type=number], input[type=date], input[type=datetime-local] { width: 100%; min-width: 0; padding: 8px; font-size: 14px; border: 1px solid var(--borde); border-radius: 8px; background: #fff; font-family: inherit; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: none; border-radius: 8px; padding: 9px 12px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit; }
+  .btn-verde { background: var(--verde); color: #fff; }
+  .btn-sec { background: #EEECE6; color: var(--negro); }
+  .btn-mini { padding: 4px 9px; font-size: 12px; border-radius: 999px; }
+  .btn:disabled { opacity: .55; }
+  .chk { display: flex; align-items: center; gap: 6px; font-size: 13px; margin: 4px 0; }
+  .chk input { width: auto; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
+  .nota { font-size: 12px; color: var(--acero); line-height: 1.4; }
+  .aviso { background: #FEF3C7; border: 1px solid #FCD34D; border-radius: 8px; padding: 8px 10px; font-size: 13px; margin: 8px 0; }
+  .aviso.mal { background: #FEE2E2; border-color: #FCA5A5; }
+  .aviso.ok { background: #DCFCE7; border-color: #86EFAC; }
+  #lay { display: block; }
+  #mapa-wrap { position: sticky; top: 0; z-index: 800; background: var(--fondo); padding-bottom: 6px; }
+  #mapa { height: 50vh; min-height: 300px; border-radius: 12px; border: 1px solid var(--borde); }
+  #leyenda { background: #fff; border: 1px solid var(--borde); border-radius: 10px; padding: 6px 10px; margin-top: 6px; font-size: 12px; }
+  #leyenda .barra { height: 12px; border-radius: 6px; margin: 4px 0 2px; }
+  #leyenda .ext { display: flex; justify-content: space-between; font-variant-numeric: tabular-nums; }
+  @media (min-width: 1000px) {
+    #lay { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 12px; align-items: start; }
+    #mapa-wrap { top: 8px; }
+    #mapa { height: 74vh; }
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  thead tr { background: var(--negro); color: #fff; }
+  thead th { padding: 6px 5px; text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; }
+  tbody td { padding: 5px; border-bottom: 1px solid var(--borde); vertical-align: middle; }
+  tbody tr.sel { background: #F0FDF4; }
+  tbody tr.anulada td { color: #9CA3AF; text-decoration: line-through; }
+  tbody tr.raro { background: #FFFBEB; }
+  td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
+  td input[type=number] { width: 90px; padding: 4px 6px; font-size: 13px; text-align: right; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
+  .kpi { background: #F8F7F3; border-radius: 8px; padding: 8px; }
+  .kpi b { display: block; font-size: 19px; font-variant-numeric: tabular-nums; }
+  .kpi span { font-size: 11px; color: var(--acero); text-transform: uppercase; letter-spacing: .04em; }
+  .zona { display: inline-block; padding: 1px 6px; border-radius: 999px; font-size: 11px; font-weight: 700; }
+  .z-b { background: #FEE2E2; color: #991B1B; } .z-m { background: #FEF9C3; color: #854D0E; } .z-a { background: #DCFCE7; color: #166534; }
+  canvas.hist { width: 100%; height: 120px; display: block; }
+  .pot-lbl { background: rgba(17,17,17,.78); color: #fff; border: none; border-radius: 6px; padding: 2px 6px; font-size: 11px; line-height: 1.25; box-shadow: none; text-align: center; }
+  .pot-lbl::before { display: none; }
+  .num-desc { background: #F5A623; color: #1A1A1A; border: 2px solid #fff; border-radius: 50%; width: 22px; height: 22px; line-height: 18px; text-align: center; font-size: 11px; font-weight: 800; box-shadow: 0 0 0 1px #0005; }
+  #toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--negro); color: #fff; padding: 10px 16px; border-radius: 8px; font-size: 14px; display: none; z-index: 9000; max-width: 90%; }
+  #toast.mal { background: #B91C1C; }
+  details summary { cursor: pointer; font-weight: 600; font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🌾 Rendimiento por potrero (cosecha)</h1>
+  <div>Junta el recorrido del celular en la cosechadora (Modo cosecha) con las descargas de tolva: reparte los kilos de cada tolva en lo cosechado y arma el mapa de rendimiento por sectores.</div>
+</header>
+<main>
+
+<div class="panel">
+  <div class="ph"><span>1 · Período</span><span class="nota" id="est-datos"></span></div>
+  <div class="grid">
+    <div class="field"><label>Desde</label><input type="date" id="desde"></div>
+    <div class="field"><label>Hasta</label><input type="date" id="hasta"></div>
+    <div class="field"><label>Máquina</label><select id="f-eq" onchange="procesar()"><option value="">Todas</option></select></div>
+  </div>
+  <div class="chips">
+    <button class="btn btn-sec btn-mini" onclick="rango('hoy')">Hoy</button>
+    <button class="btn btn-sec btn-mini" onclick="rango('ayer')">Ayer</button>
+    <button class="btn btn-sec btn-mini" onclick="rango(7)">7 días</button>
+    <button class="btn btn-sec btn-mini" onclick="rango(30)">30 días</button>
+    <button class="btn btn-sec btn-mini" onclick="rango(120)">Temporada (120 días)</button>
+  </div>
+  <button class="btn btn-verde" id="btn-cargar" style="width:100%" onclick="cargar()">🔎 Cargar cosecha</button>
+  <div id="progreso" class="nota" style="margin-top:6px"></div>
+  <div id="avisos"></div>
+</div>
+
+<div id="lay">
+  <div id="mapa-wrap">
+    <div id="mapa"></div>
+    <div id="leyenda"><span class="nota">Elige el período y toca "Cargar cosecha".</span></div>
+  </div>
+
+  <div id="lateral">
+    <div class="panel">
+      <div class="ph"><span>2 · Cálculo</span></div>
+      <div class="field"><label>Cómo repartir los kg de cada tolva</label>
+        <select id="modo" onchange="procesar()">
+          <option value="sup">Por superficie (rendimiento parejo dentro de cada tolva)</option>
+          <option value="tiempo">Por tiempo cosechando (flujo constante: donde fue más lento, más rinde)</option>
+        </select></div>
+      <div class="grid">
+        <div class="field"><label>Tamaño del sector</label>
+          <select id="celda" onchange="procesar()"><option value="10">10 × 10 m</option><option value="15">15 × 15 m</option><option value="20" selected>20 × 20 m</option><option value="30">30 × 30 m</option><option value="50">50 × 50 m</option></select></div>
+        <div class="field"><label>Sector mínimo cosechado</label>
+          <select id="mincob" onchange="dibujar()"><option value="0.1">10%</option><option value="0.3" selected>30%</option><option value="0.5">50%</option><option value="0.7">70%</option></select></div>
+        <div class="field"><label>Zonas (± del promedio)</label>
+          <select id="zonas" onchange="procesar()"><option value="0.1" selected>±10%</option><option value="0.15">±15%</option><option value="0.2">±20%</option></select></div>
+      </div>
+      <div class="grid">
+        <div class="field"><label>Vel. mín. cosecha (km/h)</label><input type="number" id="vmin" step="0.5" placeholder="del celular" onchange="procesar()"></div>
+        <div class="field"><label>Vel. máx. cosecha (km/h)</label><input type="number" id="vmax" step="0.5" placeholder="del celular" onchange="procesar()"></div>
+        <div class="field"><label>Ancho de corte (m)</label><input type="number" id="ancho" step="0.5" placeholder="del celular" onchange="procesar()"></div>
+      </div>
+      <label class="chk"><input type="checkbox" id="solopot" checked onchange="procesar()"> Contar solo lo cosechado dentro de potreros</label>
+      <label class="chk"><input type="checkbox" id="suave" onchange="procesar()"> Suavizar el mapa (promedia cada sector con sus vecinos)</label>
+      <div class="field" style="margin-top:8px"><label>Calibrar con romana: kg reales del período (opcional)</label>
+        <input type="number" id="kgreal" step="100" placeholder="ej. 152.300" onchange="procesar()">
+        <div class="nota" id="nota-cal">Si pesaste los camiones, pon el total: todos los kilos se ajustan en la misma proporción.</div></div>
+    </div>
+
+    <div class="panel">
+      <div class="ph"><span>3 · Mapa</span><button class="btn btn-sec btn-mini" onclick="ajustarMapa()">🎯 Ajustar</button></div>
+      <div class="field"><label>Pintar los sectores por</label>
+        <select id="pintar" onchange="dibujar()">
+          <option value="kgha">Rendimiento (kg/ha)</option>
+          <option value="rel">% del promedio de su potrero</option>
+          <option value="zona">Zona: baja / media / alta</option>
+          <option value="tolva">Tolva de origen</option>
+          <option value="vel">Velocidad de cosecha</option>
+        </select></div>
+      <div class="grid">
+        <div class="field"><label>Escala mín.</label><input type="number" id="esc-min" placeholder="auto" onchange="dibujar()"></div>
+        <div class="field"><label>Escala máx.</label><input type="number" id="esc-max" placeholder="auto" onchange="dibujar()"></div>
+        <div class="field"><label>Base</label><select id="base" onchange="cambioBase()"><option value="sat">Satélite</option><option value="mapa">Mapa</option></select></div>
+      </div>
+      <label class="chk"><input type="checkbox" id="ver-sec" checked onchange="dibujar()"> Sectores</label>
+      <label class="chk"><input type="checkbox" id="ver-rec" onchange="dibujar()"> Recorrido (color por tolva; gris = no cuenta)</label>
+      <label class="chk"><input type="checkbox" id="ver-desc" checked onchange="dibujar()"> Descargas</label>
+      <label class="chk"><input type="checkbox" id="ver-lbl" checked onchange="dibujar()"> Rendimiento sobre cada potrero</label>
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="ph"><span>4 · Resumen</span><span>
+    <button class="btn btn-sec btn-mini" onclick="guardarResultados()">💾 Guardar resultado por potrero</button></span></div>
+  <div class="kpis" id="kpis"><span class="nota">Sin datos.</span></div>
+</div>
+
+<div class="panel">
+  <div class="ph"><span>5 · Por potrero</span><button class="btn btn-sec btn-mini" onclick="csvPotreros()">⬇️ CSV</button></div>
+  <div style="overflow-x:auto" id="tab-pot"></div>
+  <div class="nota" style="margin-top:6px">Ha cosechadas = superficie real cubierta por el cabezal, sin contar dos veces lo que se pasó encima. Zonas: sectores bajo, cerca o sobre el promedio del potrero. P10–P90: rango donde cae el 80% de la superficie.</div>
+  <div class="grid" style="margin-top:10px"><div class="field"><label>Distribución de rendimiento de</label><select id="hist-pot" onchange="histograma()"></select></div></div>
+  <canvas class="hist" id="hist"></canvas>
+</div>
+
+<div class="panel">
+  <div class="ph"><span>6 · Por tolva (descargas)</span><span>
+    <button class="btn btn-sec btn-mini" onclick="abrirManual()">➕ Agregar descarga olvidada</button>
+    <button class="btn btn-verde btn-mini" id="btn-guardar-desc" onclick="guardarDescargas()" disabled>💾 Guardar cambios</button>
+    <button class="btn btn-sec btn-mini" onclick="csvTolvas()">⬇️ CSV</button></span></div>
+  <div id="manual" style="display:none" class="aviso">
+    <div class="grid">
+      <div class="field"><label>Máquina</label><select id="m-eq"></select></div>
+      <div class="field"><label>Fecha y hora de la descarga</label><input type="datetime-local" id="m-t"></div>
+      <div class="field"><label>Kg</label><input type="number" id="m-kg" step="50"></div>
+    </div>
+    <button class="btn btn-verde btn-mini" onclick="guardarManual()">Guardar descarga</button> <button class="btn btn-sec btn-mini" onclick="document.getElementById('manual').style.display='none'">Cancelar</button>
+  </div>
+  <div style="overflow-x:auto" id="tab-tolvas"></div>
+  <div class="nota" style="margin-top:6px">Puedes corregir los kg de una tolva (si se pesó o se marcó mal) o anularla si se tocó por error, y guardar. Las filas amarillas tienen un kg/ha muy distinto al resto: revisa si la descarga se marcó tarde o temprano.</div>
+</div>
+
+<div class="panel">
+  <div class="ph"><span>7 · Sectores</span><button class="btn btn-sec btn-mini" onclick="csvSectores()">⬇️ CSV de sectores</button></div>
+  <div class="nota" id="info-sec"></div>
+</div>
+
+</main>
+<div id="toast"></div>
+
+<div id="acceso" style="display:none;position:fixed;inset:0;z-index:9500;background:rgba(0,0,0,.6);align-items:center;justify-content:center;padding:16px">
+  <div class="panel" style="width:100%;max-width:380px">
+    <div style="font-weight:700;font-size:16px;margin-bottom:8px">🌾 Rendimiento por potrero</div>
+    <div class="field"><label>Ingresa tu PIN</label><input type="password" id="acc-pin" inputmode="numeric" autocomplete="off" style="font-size:22px;text-align:center;letter-spacing:6px" onkeydown="if(event.key==='Enter')entrarRend()"></div>
+    <div id="acc-msg" style="font-size:13px;color:#B91C1C;min-height:18px"></div>
+    <button class="btn btn-verde" style="width:100%" onclick="entrarRend()">Ingresar</button>
+  </div>
+</div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getFirestore, collection, doc, getDoc, getDocs, query, where, setDoc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+const app = initializeApp({
+  apiKey: "AIzaSyAVsios3N97MQVPJLC94qEOXGJNmKzK9RI",
+  authDomain: "combustible-los-maitenes.firebaseapp.com",
+  projectId: "combustible-los-maitenes",
+  storageBucket: "combustible-los-maitenes.firebasestorage.app",
+  messagingSenderId: "750216939749",
+  appId: "1:750216939749:web:978e4173eaee8235ebac0c"
+});
+const db = getFirestore(app);
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const nf = (n, d = 0) => (n == null || !isFinite(n)) ? '—' : Number(n).toLocaleString('es-CL', { minimumFractionDigits: d, maximumFractionDigits: d });
+const fmtKg = kg => nf(kg, 0) + ' kg';
+const horaTxt = t => new Date(t).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' });
+const diaTxt = t => { const d = new Date(t); return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}`; };
+const diaISO = t => { const d = new Date(t), p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`; };
+const clave = eq => String(eq || '').replace(/\s+/g, '_');
+function toast(msg, ok = true) {
+  const t = $('toast'); t.textContent = msg; t.className = ok ? '' : 'mal'; t.style.display = 'block';
+  clearTimeout(toast._t); toast._t = setTimeout(() => { t.style.display = 'none'; }, 4000);
+}
+
+// ── Datos ────────────────────────────────────────────────────────
+let usuario = null, permisosPruebas = {};
+let potreros = [];          // { nombre, poly:[[lat,lng]], ha, caja }
+let cultivoDe = {};         // potrero → cultivo (última siembra)
+let equiposConfig = [];
+let DESC = [];              // descargas cargadas (todas, incluso anuladas)
+let PTS = {};               // equipo → puntos ordenados
+let cambiosDesc = {};       // id → { kgEditado?, anulada? } sin guardar
+let R = null;               // resultado del cálculo
+
+function normPoly(pol) { return (pol || []).map(c => Array.isArray(c) ? [Number(c[0]), Number(c[1])] : [Number(c.lat), Number(c.lng)]); }
+function polValido(arr) { return Array.isArray(arr) && arr.length >= 3; }
+function enPoly(lat, lng, poly) {
+  let d = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const yi = poly[i][0], xi = poly[i][1], yj = poly[j][0], xj = poly[j][1];
+    if (((yi > lat) !== (yj > lat)) && (lng < (xj - xi) * (lat - yi) / ((yj - yi) || 1e-12) + xi)) d = !d;
+  }
+  return d;
+}
+function areaHa(poly) {
+  if (poly.length < 3) return 0;
+  const lat0 = poly[0][0] * Math.PI / 180, kx = 111320 * Math.cos(lat0), ky = 110540;
+  let a = 0;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) a += (poly[j][1] * kx) * (poly[i][0] * ky) - (poly[i][1] * kx) * (poly[j][0] * ky);
+  return Math.abs(a / 2) / 10000;
+}
+function potreroEn(lat, lng) {
+  for (const p of potreros) { const [a, b, c, d] = p.caja; if (lat < a || lat > b || lng < c || lng > d) continue; if (enPoly(lat, lng, p.poly)) return p.nombre; }
+  return null;
+}
+function distM(a, b) {
+  const R0 = 6371000, rad = x => x * Math.PI / 180;
+  const dLat = rad(b.lat - a.lat), dLng = rad(b.lng - a.lng);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R0 * Math.asin(Math.sqrt(h));
+}
+
+window.rango = function (k) {
+  const hoy = new Date(); let d0 = hoy, d1 = hoy;
+  if (k === 'ayer') { d0 = d1 = new Date(hoy.getTime() - 86400000); }
+  else if (typeof k === 'number') d0 = new Date(hoy.getTime() - (k - 1) * 86400000);
+  $('desde').value = diaISO(d0.getTime()); $('hasta').value = diaISO(d1.getTime());
+};
+const diaMenos = (iso, n) => { const d = new Date(iso + 'T12:00:00'); d.setDate(d.getDate() - n); return diaISO(d.getTime()); };
+
+window.cargar = async function () {
+  const d0 = $('desde').value, d1 = $('hasta').value;
+  if (!d0 || !d1 || d1 < d0) { toast('Revisa las fechas', false); return; }
+  $('btn-cargar').disabled = true; $('avisos').innerHTML = ''; cambiosDesc = {}; pintarBotonGuardar();
+  try {
+    $('progreso').textContent = 'Leyendo descargas…';
+    // Se lee desde el día anterior: la primera tolva del período puede haber empezado antes
+    const dPrev = diaMenos(d0, 1);
+    const sd = await getDocs(query(collection(db, 'cosecha_descargas'), where('dia', '>=', dPrev), where('dia', '<=', d1)));
+    DESC = sd.docs.map(x => ({ id: x.id, ...x.data() })).filter(x => isFinite(x.t)).sort((a, b) => a.t - b.t);
+    const enRango = DESC.filter(x => x.dia >= d0 && x.dia <= d1 && !x.anulada);
+    if (!enRango.length) {
+      PTS = {}; R = null; limpiarMapa();
+      $('avisos').innerHTML = '<div class="aviso">No hay descargas de tolva registradas en ese período. Las descargas se marcan en el celular de la cosechadora (Modo cosecha → ⬇ Descargué).</div>';
+      $('progreso').textContent = ''; $('btn-cargar').disabled = false; pintarTablas(); return;
+    }
+    // Si una tolva empezó varios días antes (lluvia, fin de semana), se leen esos días también
+    let dIni = dPrev;
+    enRango.forEach(x => { if (x.desde && diaISO(x.desde) < dIni) dIni = diaISO(x.desde); });
+    const equipos = [...new Set(DESC.map(x => x.equipo).filter(Boolean))];
+    PTS = {};
+    for (const eq of equipos) {
+      $('progreso').textContent = `Leyendo recorrido de ${eq}…`;
+      const sp = await getDocs(query(collection(db, 'recorridos_tractor', clave(eq), 'lotes'), where('dia', '>=', dIni), where('dia', '<=', d1)));
+      const vistos = new Set(), pts = [];
+      sp.docs.map(x => x.data()).filter(l => l.modo === 'cosecha').forEach(l => {
+        const par = l.cosecha || {};
+        (l.puntos || []).forEach(q => {
+          if (!isFinite(q.t) || vistos.has(q.t) || !isFinite(q.lat) || !isFinite(q.lng)) return;
+          vistos.add(q.t);
+          pts.push({ t: q.t, lat: q.lat, lng: q.lng, acc: q.acc, v: q.v, k: q.k != null ? q.k : q.a, w: q.w || l.ancho || null, vmin: par.vmin, vmax: par.vmax, ap: q.ap || null });
+        });
+      });
+      pts.sort((a, b) => a.t - b.t);
+      PTS[eq] = pts;
+    }
+    $('f-eq').innerHTML = '<option value="">Todas</option>' + equipos.map(e => `<option>${esc(e)}</option>`).join('');
+    $('m-eq').innerHTML = equipos.map(e => `<option>${esc(e)}</option>`).join('');
+    const nPts = Object.values(PTS).reduce((s, a) => s + a.length, 0);
+    $('est-datos').textContent = `${enRango.length} descargas · ${nPts.toLocaleString('es-CL')} puntos GPS · ${equipos.join(', ')}`;
+    $('progreso').textContent = '';
+    procesar(true);
+  } catch (e) { console.error(e); toast('Error al leer: ' + e.message, false); $('progreso').textContent = ''; }
+  $('btn-cargar').disabled = false;
+};
+
+// ── Cálculo ──────────────────────────────────────────────────────
+const kgDe = d => (cambiosDesc[d.id] && cambiosDesc[d.id].kgEditado != null) ? cambiosDesc[d.id].kgEditado : (d.kgEditado != null ? d.kgEditado : d.kg);
+const anuladaDe = d => (cambiosDesc[d.id] && cambiosDesc[d.id].anulada != null) ? cambiosDesc[d.id].anulada : !!d.anulada;
+
+function procesar(encuadrar) {
+  if (!DESC.length) return;
+  const d0 = $('desde').value, d1 = $('hasta').value;
+  const t0 = new Date(d0 + 'T00:00:00').getTime(), t1 = new Date(d1 + 'T23:59:59.999').getTime();
+  const modo = $('modo').value, C = Number($('celda').value) || 20, zonasK = Number($('zonas').value) || 0.1;
+  const vminO = $('vmin').value !== '' ? Number($('vmin').value) : null, vmaxO = $('vmax').value !== '' ? Number($('vmax').value) : null;
+  const anchoO = Number($('ancho').value) || null, soloPot = $('solopot').checked, eqF = $('f-eq').value;
+  // Proyección local en metros
+  const todos = Object.values(PTS).flat();
+  if (!todos.length) { $('avisos').innerHTML = '<div class="aviso mal">Hay descargas pero no llegó el recorrido GPS de la cosechadora. Revisa que el celular haya subido los datos (⬆ en la barra del Modo cosecha).</div>'; return; }
+  const lat0 = todos[0].lat, lng0 = todos[0].lng, kx = 111320 * Math.cos(lat0 * Math.PI / 180), ky = 110540;
+  const xy = q => [(q.lng - lng0) * kx, (q.lat - lat0) * ky];
+  const aLL = (x, y) => [lat0 + y / ky, lng0 + x / kx];
+
+  // 1) Tramos entre puntos consecutivos
+  const segs = [], segsNo = [];
+  let nFueraVel = 0, nFueraPot = 0;
+  for (const [eq, pts] of Object.entries(PTS)) {
+    if (eqF && eq !== eqF) continue;
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1], b = pts[i], dt = b.t - a.t;
+      if (dt <= 0 || dt > 60000) continue;
+      const d = distM(a, b);
+      if (d > 120) continue;
+      const kmh = (a.v != null && b.v != null) ? (a.v + b.v) / 2 * 3.6 : d / (dt / 1000) * 3.6;
+      const vmin = vminO != null ? vminO : (b.vmin != null ? b.vmin : 1), vmax = vmaxO != null ? vmaxO : (b.vmax != null ? b.vmax : 10);
+      const pot = potreroEn((a.lat + b.lat) / 2, (a.lng + b.lng) / 2);
+      const [x0, y0] = xy(a), [x1, y1] = xy(b);
+      const s = { eq, t0: a.t, t1: b.t, x0, y0, x1, y1, a, b, d, dt, kmh, pot, w: anchoO || b.w || 6 };
+      let ok = !!b.k && (b.acc == null || b.acc <= 30);
+      if (ok && (kmh < vmin || kmh > vmax)) { ok = false; nFueraVel += dt; }
+      if (ok && soloPot && !pot) { ok = false; nFueraPot += dt; }
+      (ok ? segs : segsNo).push(s);
+    }
+  }
+  // 2) Cada tramo cosechado pertenece a la tolva que se descargó después
+  const tolvas = [];
+  const porEq = {};
+  DESC.forEach(d => { if (!anuladaDe(d) && (!eqF || d.equipo === eqF)) (porEq[d.equipo] = porEq[d.equipo] || []).push(d); });
+  Object.values(porEq).forEach(l => l.sort((a, b) => a.t - b.t));
+  const tolvaDe = {};
+  Object.entries(porEq).forEach(([eq, l]) => l.forEach((d, i) => {
+    const tv = { id: d.id, d, eq, n: 0, t: d.t, tPrev: i ? l[i - 1].t : -Infinity, kg: kgDe(d), segs: [], m2: 0, m2b: 0, ms: 0, msEf: 0, enRango: d.t >= t0 && d.t <= t1, pots: {}, sv: 0 };
+    tolvas.push(tv); tolvaDe[d.id] = tv;
+  }));
+  const enCurso = { m2: 0, ms: 0 };
+  segs.sort((a, b) => a.t1 - b.t1);
+  segs.forEach(s => {
+    const l = porEq[s.eq] || [];
+    let lo = 0, hi = l.length - 1, k = -1;
+    while (lo <= hi) { const m = (lo + hi) >> 1; if (l[m].t >= s.t1) { k = m; hi = m - 1; } else lo = m + 1; }
+    if (k < 0) { s.tolva = null; return; }
+    s.tolva = tolvaDe[l[k].id];
+  });
+  // 3) Superficie real (sin contar dos veces lo ya cosechado): grilla de 1 m
+  const cub = new Set(), K = 1e6, OFF = 500000;
+  const segsR = segs.filter(s => s.tolva && s.tolva.enRango);
+  segsR.forEach(s => {
+    const dx = s.x1 - s.x0, dy = s.y1 - s.y0, L = Math.hypot(dx, dy), h = s.w / 2;
+    s.m2b = L * s.w; s.m2 = 0; s.celdas = new Map();
+    if (L < 0.2) return;
+    const ux = dx / L, uy = dy / L, nx = -uy, ny = ux;
+    const xs = [s.x0 + nx * h, s.x0 - nx * h, s.x1 + nx * h, s.x1 - nx * h], ys = [s.y0 + ny * h, s.y0 - ny * h, s.y1 + ny * h, s.y1 - ny * h];
+    const ix0 = Math.floor(Math.min(...xs)), ix1 = Math.floor(Math.max(...xs)), iy0 = Math.floor(Math.min(...ys)), iy1 = Math.floor(Math.max(...ys));
+    for (let ix = ix0; ix <= ix1; ix++) for (let iy = iy0; iy <= iy1; iy++) {
+      const rx = ix + 0.5 - s.x0, ry = iy + 0.5 - s.y0, sp = rx * ux + ry * uy;
+      if (sp < 0 || sp >= L || Math.abs(rx * nx + ry * ny) > h) continue;
+      const key = (ix + OFF) * K + (iy + OFF);
+      if (cub.has(key)) continue;
+      cub.add(key); s.m2++;
+      const ck = Math.floor((ix + 0.5) / C) + ':' + Math.floor((iy + 0.5) / C);
+      s.celdas.set(ck, (s.celdas.get(ck) || 0) + 1);
+    }
+    s.msEf = s.dt * (s.m2b > 0 ? Math.min(1, s.m2 / s.m2b) : 0);
+    const tv = s.tolva; tv.segs.push(s); tv.m2 += s.m2; tv.m2b += s.m2b; tv.ms += s.dt; tv.msEf += s.msEf; tv.sv += s.kmh * s.dt;
+    if (s.pot) tv.pots[s.pot] = (tv.pots[s.pot] || 0) + s.m2;
+  });
+  segs.filter(s => !s.tolva).forEach(s => { enCurso.m2 += s.d * s.w; enCurso.ms += s.dt; });
+  // 4) Kilos de cada tolva repartidos en sus tramos + calibración con romana
+  const tolvasR = tolvas.filter(t => t.enRango);
+  tolvasR.sort((a, b) => a.t - b.t).forEach((t, i) => { t.n = i + 1; });
+  const kgBruto = tolvasR.filter(t => t.m2 > 0).reduce((s, t) => s + t.kg, 0);
+  const kgReal = Number($('kgreal').value) || 0;
+  const factor = kgReal > 0 && kgBruto > 0 ? kgReal / kgBruto : 1;
+  $('nota-cal').textContent = kgReal > 0 && kgBruto > 0 ? `Factor de calibración: ${nf(factor, 3)} (tolvas suman ${fmtKg(kgBruto)}; romana ${fmtKg(kgReal)}).` : 'Si pesaste los camiones, pon el total: todos los kilos se ajustan en la misma proporción.';
+  tolvasR.forEach(t => {
+    t.kgCal = t.kg * factor;
+    const base = modo === 'tiempo' ? t.msEf : t.m2;
+    t.segs.forEach(s => { s.kg = base > 0 ? t.kgCal * (modo === 'tiempo' ? s.msEf : s.m2) / base : 0; });
+    t.kgha = t.m2 > 0 ? t.kgCal / (t.m2 / 10000) : null;
+    t.velMedia = t.ms ? t.sv / t.ms : null;
+  });
+  // kg/ha raros: muy lejos de la mediana de las tolvas
+  const kh = tolvasR.map(t => t.kgha).filter(v => v != null).sort((a, b) => a - b);
+  const med = kh.length ? kh[Math.floor(kh.length / 2)] : null;
+  tolvasR.forEach(t => { t.raro = t.m2 <= 0 || (med && t.kgha != null && (t.kgha > med * 1.35 || t.kgha < med * 0.65)); });
+  // 5) Sectores
+  const celdas = new Map();
+  segsR.forEach(s => {
+    if (!s.m2 || !s.celdas) return;
+    const kgM2 = s.kg / s.m2;
+    s.celdas.forEach((m2, ck) => {
+      let c = celdas.get(ck);
+      if (!c) { const [i, j] = ck.split(':').map(Number); c = { ck, i, j, kg: 0, m2: 0, ms: 0, sv: 0, pots: {}, tolvas: {} }; celdas.set(ck, c); }
+      c.kg += kgM2 * m2; c.m2 += m2; const f = m2 / s.m2; c.ms += s.dt * f; c.sv += s.kmh * s.dt * f;
+      if (s.pot) c.pots[s.pot] = (c.pots[s.pot] || 0) + m2;
+      c.tolvas[s.tolva.n] = (c.tolvas[s.tolva.n] || 0) + m2;
+    });
+  });
+  const listaC = [...celdas.values()];
+  listaC.forEach(c => {
+    c.pot = Object.entries(c.pots).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+    c.tolva = +Object.entries(c.tolvas).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+    c.cob = c.m2 / (C * C);
+    c.kgha = c.m2 > 0 ? c.kg / (c.m2 / 10000) : null;
+    c.vel = c.ms ? c.sv / c.ms : null;
+    const [la0, ln0] = aLL(c.i * C, c.j * C), [la1, ln1] = aLL((c.i + 1) * C, (c.j + 1) * C);
+    c.bounds = [[la0, ln0], [la1, ln1]];
+    c.centro = [(la0 + la1) / 2, (ln0 + ln1) / 2];
+  });
+  if ($('suave').checked) {
+    listaC.forEach(c => {
+      let kg = 0, m2 = 0;
+      for (let di = -1; di <= 1; di++) for (let dj = -1; dj <= 1; dj++) {
+        const v = celdas.get((c.i + di) + ':' + (c.j + dj)); if (!v || v.pot !== c.pot) continue;
+        const w = (di || dj) ? 0.5 : 1; kg += v.kg * w; m2 += v.m2 * w;
+      }
+      c.kghaS = m2 > 0 ? kg / (m2 / 10000) : c.kgha;
+    });
+    listaC.forEach(c => { c.kgha = c.kghaS; });
+  }
+  // 6) Potreros
+  const P = {};
+  segsR.forEach(s => {
+    const k = s.pot || 'Fuera de potreros';
+    const p = P[k] || (P[k] = { nombre: k, kg: 0, m2: 0, ms: 0, sv: 0, tolvas: new Set(), equipos: new Set(), dias: new Set() });
+    p.kg += s.kg || 0; p.m2 += s.m2; p.ms += s.dt; p.sv += s.kmh * s.dt; p.tolvas.add(s.tolva.n); p.equipos.add(s.eq); p.dias.add(diaISO(s.t1));
+  });
+  Object.values(P).forEach(p => {
+    const cfg = potreros.find(x => x.nombre === p.nombre);
+    p.haPot = cfg ? cfg.ha : null;
+    p.ha = p.m2 / 10000; p.kgha = p.ha > 0 ? p.kg / p.ha : null;
+    p.pct = p.haPot ? p.ha / p.haPot * 100 : null;
+    p.haH = p.ms ? p.ha / (p.ms / 3600000) : null; p.vel = p.ms ? p.sv / p.ms : null;
+    // estadística de sectores (ponderada por superficie)
+    const cs = listaC.filter(c => c.pot === p.nombre && c.kgha != null).sort((a, b) => a.kgha - b.kgha);
+    const tot = cs.reduce((s, c) => s + c.m2, 0);
+    const pctl = q => { let acc = 0; for (const c of cs) { acc += c.m2; if (acc >= q * tot) return c.kgha; } return cs.length ? cs[cs.length - 1].kgha : null; };
+    p.p10 = pctl(0.1); p.p50 = pctl(0.5); p.p90 = pctl(0.9);
+    const mu = tot ? cs.reduce((s, c) => s + c.kgha * c.m2, 0) / tot : null;
+    p.cv = mu ? Math.sqrt(cs.reduce((s, c) => s + c.m2 * (c.kgha - mu) ** 2, 0) / tot) / mu * 100 : null;
+    p.zonas = { b: { m2: 0, kg: 0 }, m: { m2: 0, kg: 0 }, a: { m2: 0, kg: 0 } };
+    cs.forEach(c => {
+      c.rel = p.kgha ? c.kgha / p.kgha : null;
+      c.zona = c.rel == null ? null : c.rel < 1 - zonasK ? 'b' : c.rel > 1 + zonasK ? 'a' : 'm';
+      if (c.zona) { p.zonas[c.zona].m2 += c.m2; p.zonas[c.zona].kg += c.kg; }
+    });
+    p.cultivo = cultivoDe[p.nombre] || null;
+  });
+  const kgTot = tolvasR.filter(t => t.m2 > 0).reduce((s, t) => s + t.kgCal, 0);
+  const m2Tot = segsR.reduce((s, x) => s + x.m2, 0);
+  const msTot = segsR.reduce((s, x) => s + x.dt, 0);
+  R = { segs: segsR, segsNo, tolvas: tolvasR, celdas: listaC, potreros: P, C, factor, kgTot, m2Tot, msTot, enCurso, nFueraVel, nFueraPot, med, aLL };
+  avisos();
+  pintarTablas();
+  dibujar();
+  if (encuadrar) ajustarMapa();
+}
+window.procesar = procesar;
+
+function avisos() {
+  const a = [];
+  if (R.enCurso.m2 > 500) a.push(`<div class="aviso">🧺 Hay ${nf(R.enCurso.m2 / 10000, 2)} ha cosechadas después de la última descarga (tolva en curso): no se cuentan hasta que se marque la descarga.</div>`);
+  const sinSup = R.tolvas.filter(t => t.m2 <= 0);
+  if (sinSup.length) a.push(`<div class="aviso mal">⚠️ ${sinSup.length} descarga(s) sin superficie cosechada antes (¿se marcó dos veces, o el GPS no grabó?). Sus kilos no se reparten: revísalas en la tabla de tolvas.</div>`);
+  if (R.nFueraVel > 10 * 60000) a.push(`<div class="aviso">ℹ️ ${Math.round(R.nFueraVel / 60000)} min con el botón en "cosechando" pero fuera del rango de velocidad: no se contaron (vueltas, esperas o traslados).</div>`);
+  $('avisos').innerHTML = a.join('');
+}
+
+// ── Tablas ───────────────────────────────────────────────────────
+const fmtH = ms => { const m = Math.round(ms / 60000); return m >= 60 ? `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')}` : `${m} min`; };
+function pintarTablas() {
+  if (!R) { $('kpis').innerHTML = '<span class="nota">Sin datos.</span>'; $('tab-pot').innerHTML = ''; $('tab-tolvas').innerHTML = ''; $('info-sec').textContent = ''; return; }
+  const kp = (v, l) => `<div class="kpi"><b>${v}</b><span>${l}</span></div>`;
+  const ha = R.m2Tot / 10000, kgha = ha ? R.kgTot / ha : null;
+  $('kpis').innerHTML = kp(fmtKg(R.kgTot), R.factor !== 1 ? `cosechados (calibrado ×${nf(R.factor, 3)})` : 'cosechados (según tolvas)') +
+    kp(nf(ha, 2) + ' ha', 'cosechadas') + kp(kgha ? fmtKg(kgha) : '—', 'promedio por ha') + kp(kgha ? nf(kgha / 100, 1) : '—', 'qq/ha') +
+    kp(String(R.tolvas.length), 'tolvas descargadas') + kp(fmtH(R.msTot), 'cosechando') +
+    kp(R.msTot ? nf(ha / (R.msTot / 3600000), 2) : '—', 'ha por hora') + kp(R.msTot ? nf(R.segs.reduce((s, x) => s + x.kmh * x.dt, 0) / R.msTot, 1) : '—', 'km/h promedio cosechando');
+  // Potreros
+  const ps = Object.values(R.potreros).sort((a, b) => b.ha - a.ha);
+  const z = (p, k) => p.zonas[k].m2 ? `${nf(p.zonas[k].m2 / 10000, 1)} ha · ${nf(p.zonas[k].kg / (p.zonas[k].m2 / 10000), 0)}` : '—';
+  $('tab-pot').innerHTML = ps.length ? `<table><thead><tr><th>Potrero</th><th>Cultivo</th><th class="n">Ha potrero</th><th class="n">Ha cosech.</th><th class="n">%</th><th class="n">Kg</th><th class="n">Kg/ha</th><th class="n">qq/ha</th><th class="n">P10–P90</th><th class="n">CV</th><th><span class="zona z-b">baja</span></th><th><span class="zona z-m">media</span></th><th><span class="zona z-a">alta</span></th><th class="n">Tolvas</th><th class="n">Horas</th><th class="n">ha/h</th><th class="n">km/h</th><th></th></tr></thead><tbody>` +
+    ps.map(p => `<tr><td><b>${esc(p.nombre)}</b></td><td>${esc(p.cultivo || '—')}</td><td class="n">${p.haPot ? nf(p.haPot, 1) : '—'}</td><td class="n">${nf(p.ha, 2)}</td><td class="n">${p.pct != null ? nf(p.pct, 0) + '%' : '—'}</td><td class="n">${nf(p.kg, 0)}</td><td class="n"><b>${nf(p.kgha, 0)}</b></td><td class="n">${p.kgha ? nf(p.kgha / 100, 1) : '—'}</td><td class="n">${p.p10 ? nf(p.p10, 0) + '–' + nf(p.p90, 0) : '—'}</td><td class="n">${p.cv != null ? nf(p.cv, 0) + '%' : '—'}</td><td>${z(p, 'b')}</td><td>${z(p, 'm')}</td><td>${z(p, 'a')}</td><td class="n">${p.tolvas.size}</td><td class="n">${fmtH(p.ms)}</td><td class="n">${nf(p.haH, 2)}</td><td class="n">${nf(p.vel, 1)}</td><td><button class="btn btn-sec btn-mini" onclick='verPotrero(${JSON.stringify(p.nombre)})'>Ver</button></td></tr>`).join('') + '</tbody></table>'
+    : '<span class="nota">Sin superficie cosechada en el período.</span>';
+  const hp = $('hist-pot'), prev = hp.value;
+  hp.innerHTML = ps.map(p => `<option>${esc(p.nombre)}</option>`).join('');
+  if (ps.some(p => p.nombre === prev)) hp.value = prev;
+  histograma();
+  // Tolvas
+  $('tab-tolvas').innerHTML = R.tolvas.length || DESC.length ? `<table><thead><tr><th>#</th><th>Máquina</th><th>Día</th><th>Hora</th><th class="n">Kg</th><th class="n">Ha</th><th class="n">Kg/ha</th><th class="n">qq/ha</th><th>Potreros</th><th class="n">Cosechando</th><th class="n">km/h</th><th>Anular</th><th></th></tr></thead><tbody>` +
+    filasTolvas() + '</tbody></table>' : '<span class="nota">Sin descargas.</span>';
+  // Sectores
+  const C = R.C, vis = R.celdas.filter(c => c.cob >= Number($('mincob').value));
+  $('info-sec').textContent = `${R.celdas.length} sectores de ${C} × ${C} m con cosecha; ${vis.length} con al menos ${Math.round(Number($('mincob').value) * 100)}% cosechado se muestran en el mapa.`;
+}
+function filasTolvas() {
+  const d0 = $('desde').value, d1 = $('hasta').value, eqF = $('f-eq').value;
+  const lista = DESC.filter(d => d.dia >= d0 && d.dia <= d1 && (!eqF || d.equipo === eqF)).sort((a, b) => a.t - b.t);
+  return lista.map(d => {
+    const t = R.tolvas.find(x => x.id === d.id), an = anuladaDe(d), kg = kgDe(d), edit = cambiosDesc[d.id] || {};
+    const pots = t ? Object.entries(t.pots).sort((a, b) => b[1] - a[1]).map(([n]) => esc(n)).join(', ') : '';
+    return `<tr class="${an ? 'anulada' : (t && t.raro ? 'raro' : '')}"><td>${t ? t.n : '—'}</td><td>${esc(d.equipo || '')}</td><td>${diaTxt(d.t)}</td><td>${horaTxt(d.t)}${d.manual ? ' ✍️' : ''}</td>
+      <td class="n"><input type="number" step="50" value="${Math.round(kg)}" onchange='editarKg(${JSON.stringify(d.id)}, this.value)'${edit.kgEditado != null || d.kgEditado != null ? ' style="border-color:#F5A623"' : ''}></td>
+      <td class="n">${t ? nf(t.m2 / 10000, 2) : '—'}</td><td class="n">${t && t.kgha ? '<b>' + nf(t.kgha, 0) + '</b>' : '—'}</td><td class="n">${t && t.kgha ? nf(t.kgha / 100, 1) : '—'}</td>
+      <td>${pots || (t && t.m2 <= 0 ? '<span style="color:#B91C1C">sin superficie</span>' : '')}</td><td class="n">${t ? fmtH(t.ms) : '—'}</td><td class="n">${t ? nf(t.velMedia, 1) : '—'}</td>
+      <td><input type="checkbox" ${an ? 'checked' : ''} onchange='anular(${JSON.stringify(d.id)}, this.checked)'></td>
+      <td>${t && t.segs.length ? `<button class="btn btn-sec btn-mini" onclick='verTolva(${t.n})'>Ver</button>` : ''}</td></tr>`;
+  }).join('');
+}
+// Se recalcula fuera del evento: al redibujar la tabla, la casilla editada pierde el foco y volvería a disparar el cambio
+let procT = null;
+function procesarLuego() { clearTimeout(procT); procT = setTimeout(() => procesar(), 0); }
+window.editarKg = (id, v) => { const n = Number(v); if (!(n >= 0)) return; const c = cambiosDesc[id] = cambiosDesc[id] || {}; if (c.kgEditado === n) return; c.kgEditado = n; pintarBotonGuardar(); procesarLuego(); };
+window.anular = (id, v) => { const c = cambiosDesc[id] = cambiosDesc[id] || {}; if (c.anulada === v) return; c.anulada = v; pintarBotonGuardar(); procesarLuego(); };
+function pintarBotonGuardar() { const n = Object.keys(cambiosDesc).length; $('btn-guardar-desc').disabled = !n; $('btn-guardar-desc').textContent = n ? `💾 Guardar ${n} cambio(s)` : '💾 Guardar cambios'; }
+window.guardarDescargas = async function () {
+  try {
+    for (const [id, c] of Object.entries(cambiosDesc)) {
+      const data = { tsEdit: Date.now(), editadoPor: usuario ? usuario.nombre : null };
+      if (c.kgEditado != null) data.kgEditado = c.kgEditado;
+      if (c.anulada != null) data.anulada = c.anulada;
+      await setDoc(doc(db, 'cosecha_descargas', id), data, { merge: true });
+      const d = DESC.find(x => x.id === id); if (d) Object.assign(d, data);
+    }
+    cambiosDesc = {}; pintarBotonGuardar(); procesar(); toast('Cambios guardados');
+  } catch (e) { toast('No se pudo guardar: ' + e.message, false); }
+};
+window.abrirManual = function () {
+  if (!DESC.length) { toast('Primero carga un período con cosecha', false); return; }
+  $('manual').style.display = 'block';
+  const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+  $('m-t').value = d.toISOString().slice(0, 16);
+};
+window.guardarManual = async function () {
+  const eq = $('m-eq').value, t = new Date($('m-t').value).getTime(), kg = Number($('m-kg').value);
+  if (!eq || !isFinite(t) || !(kg > 0)) { toast('Completa máquina, hora y kg', false); return; }
+  const id = 'manual_' + Date.now();
+  const data = { equipo: eq, t, dia: diaISO(t), kg, manual: true, anulada: false, operador: usuario ? usuario.nombre : null, ts: Date.now() };
+  try { await setDoc(doc(db, 'cosecha_descargas', id), data); DESC.push({ id, ...data }); DESC.sort((a, b) => a.t - b.t); $('manual').style.display = 'none'; procesar(); toast('Descarga agregada'); }
+  catch (e) { toast('No se pudo guardar: ' + e.message, false); }
+};
+
+// ── Mapa ─────────────────────────────────────────────────────────
+let map, capaBase, renderer, capaSec, capaRec, capaDesc, capaPot;
+function initMapa() {
+  map = L.map('mapa', { preferCanvas: true }).setView([-36.6, -72.0], 13);
+  renderer = L.canvas({ padding: 0.5 });
+  cambioBase();
+  capaPot = L.layerGroup().addTo(map); capaSec = L.layerGroup().addTo(map); capaRec = L.layerGroup().addTo(map); capaDesc = L.layerGroup().addTo(map);
+}
+window.cambioBase = function () {
+  if (capaBase) map.removeLayer(capaBase);
+  capaBase = $('base').value === 'sat'
+    ? L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 20, maxNativeZoom: 19, attribution: 'Esri' })
+    : L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 20, maxNativeZoom: 19, attribution: '© OpenStreetMap' });
+  capaBase.addTo(map); capaBase.bringToBack();
+};
+function limpiarMapa() { [capaSec, capaRec, capaDesc].forEach(c => c && c.clearLayers()); }
+const PAL = [[0, '#B91C1C'], [0.25, '#F97316'], [0.5, '#FACC15'], [0.75, '#84CC16'], [1, '#15803D']];
+const hex2rgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+function colorEsc(t) {
+  t = Math.max(0, Math.min(1, t));
+  for (let i = 1; i < PAL.length; i++) if (t <= PAL[i][0]) {
+    const [t0, c0] = PAL[i - 1], [t1, c1] = PAL[i], u = (t - t0) / (t1 - t0), a = hex2rgb(c0), b = hex2rgb(c1);
+    return `rgb(${a.map((x, j) => Math.round(x + (b[j] - x) * u)).join(',')})`;
+  }
+  return PAL[PAL.length - 1][1];
+}
+const COL_TOLVA = ['#2563EB', '#DC2626', '#16A34A', '#F59E0B', '#7C3AED', '#0D9488', '#DB2777', '#92400E', '#4B5563', '#EA580C'];
+const COL_ZONA = { b: '#DC2626', m: '#FACC15', a: '#16A34A' };
+function dibujar() {
+  if (!map) return;
+  limpiarMapa(); capaPot.clearLayers();
+  potreros.forEach(p => {
+    const pr = R && R.potreros[p.nombre];
+    const pol = L.polygon(p.poly, { color: '#FACC15', weight: pr ? 2.5 : 1.2, fill: false, interactive: false }).addTo(capaPot);
+    if (pr && $('ver-lbl').checked) L.tooltip({ permanent: true, direction: 'center', className: 'pot-lbl' }).setLatLng(pol.getBounds().getCenter()).setContent(`${esc(p.nombre)}<br><b>${nf(pr.kgha, 0)} kg/ha</b> · ${nf(pr.kgha / 100, 1)} qq`).addTo(capaPot);
+  });
+  if (!R) return;
+  const modoP = $('pintar').value, minCob = Number($('mincob').value);
+  const vis = R.celdas.filter(c => c.cob >= minCob && c.kgha != null);
+  // escala
+  const val = c => modoP === 'kgha' ? c.kgha : modoP === 'rel' ? (c.rel != null ? c.rel * 100 : null) : modoP === 'vel' ? c.vel : null;
+  let mn = 0, mx = 1;
+  if (['kgha', 'rel', 'vel'].includes(modoP)) {
+    const vs = vis.map(val).filter(v => v != null).sort((a, b) => a - b);
+    if (vs.length) { mn = vs[Math.floor(vs.length * 0.05)]; mx = vs[Math.min(vs.length - 1, Math.floor(vs.length * 0.95))]; }
+    if (modoP === 'rel') { mn = Math.min(mn, 80); mx = Math.max(mx, 120); }
+    const emn = $('esc-min').value !== '' ? Number($('esc-min').value) : null, emx = $('esc-max').value !== '' ? Number($('esc-max').value) : null;
+    if (emn != null) mn = emn; if (emx != null) mx = emx;
+    if (mx <= mn) mx = mn + 1;
+  }
+  const colorDe = c => {
+    if (modoP === 'zona') return c.zona ? COL_ZONA[c.zona] : '#9CA3AF';
+    if (modoP === 'tolva') return COL_TOLVA[(c.tolva - 1) % COL_TOLVA.length];
+    const v = val(c); if (v == null) return '#9CA3AF';
+    const t = (v - mn) / (mx - mn);
+    return colorEsc(modoP === 'vel' ? 1 - t : t);
+  };
+  if ($('ver-sec').checked) vis.forEach(c => {
+    L.rectangle(c.bounds, { renderer, stroke: false, fillColor: colorDe(c), fillOpacity: 0.78 }).addTo(capaSec)
+      .on('click', e => L.popup().setLatLng(e.latlng).setContent(popupCelda(c)).openOn(map));
+  });
+  if ($('ver-rec').checked) {
+    const tramo = (s, col, w, dash) => L.polyline([[s.a.lat, s.a.lng], [s.b.lat, s.b.lng]], { renderer, color: col, weight: w, opacity: 0.85, dashArray: dash, interactive: false }).addTo(capaRec);
+    R.segsNo.forEach(s => tramo(s, '#9CA3AF', 1.5, '4 4'));
+    R.segs.forEach(s => tramo(s, COL_TOLVA[(s.tolva.n - 1) % COL_TOLVA.length], 3));
+  }
+  if ($('ver-desc').checked) R.tolvas.forEach(t => {
+    const d = t.d; if (d.lat == null) return;
+    L.marker([d.lat, d.lng], { icon: L.divIcon({ className: '', html: `<div class="num-desc">${t.n}</div>`, iconSize: [22, 22], iconAnchor: [11, 11] }) }).addTo(capaDesc)
+      .bindPopup(`<b>Tolva ${t.n}</b> · ${esc(t.eq)}<br>${diaTxt(t.t)} ${horaTxt(t.t)} · ${fmtKg(t.kgCal)}<br>${nf(t.m2 / 10000, 2)} ha → <b>${nf(t.kgha, 0)} kg/ha</b> (${nf((t.kgha || 0) / 100, 1)} qq/ha)`);
+  });
+  // leyenda
+  const nombres = { kgha: 'Rendimiento (kg/ha)', rel: '% del promedio de su potrero', vel: 'Velocidad de cosecha (km/h) · verde = lento' };
+  if (modoP === 'zona') $('leyenda').innerHTML = `<b>Zonas</b> (±${Math.round(Number($('zonas').value) * 100)}% del promedio de cada potrero): <span class="zona z-b">baja</span> <span class="zona z-m">media</span> <span class="zona z-a">alta</span> · ${vis.length} sectores`;
+  else if (modoP === 'tolva') $('leyenda').innerHTML = `<b>Tolva de origen</b>: cada color es una descarga (número en el mapa) · ${vis.length} sectores`;
+  else {
+    const grad = (modoP === 'vel' ? [...PAL].reverse().map(([t, c]) => [1 - t, c]) : PAL).map(([t, c]) => `${c} ${t * 100}%`).join(',');
+    const f = v => modoP === 'kgha' ? `${nf(v, 0)} <span class="nota">(${nf(v / 100, 1)} qq)</span>` : nf(v, modoP === 'vel' ? 1 : 0) + (modoP === 'rel' ? '%' : '');
+    $('leyenda').innerHTML = `<b>${nombres[modoP]}</b> · ${vis.length} sectores de ${R.C} × ${R.C} m<div class="barra" style="background:linear-gradient(90deg,${grad})"></div><div class="ext"><span>${f(mn)}</span><span>${f((mn + mx) / 2)}</span><span>${f(mx)}</span></div><div class="nota">Toca un sector para ver su detalle. Se ocultan los sectores cosechados menos de ${Math.round(minCob * 100)}%.</div>`;
+  }
+}
+window.dibujar = () => { dibujar(); if (R) pintarTablas(); };
+function popupCelda(c) {
+  return `<b>${esc(c.pot || 'Fuera de potreros')}</b><br>` +
+    `<b>${nf(c.kgha, 0)} kg/ha</b> · ${nf(c.kgha / 100, 1)} qq/ha${c.rel != null ? ` · ${nf(c.rel * 100, 0)}% del promedio` : ''}<br>` +
+    `${nf(c.m2, 0)} m² cosechados (${nf(c.cob * 100, 0)}% del sector) · ${nf(c.kg, 0)} kg<br>` +
+    `Vel. media ${nf(c.vel, 1)} km/h · tolva(s) ${Object.keys(c.tolvas).join(', ')}`;
+}
+window.ajustarMapa = function () {
+  const pts = R && R.celdas.length ? R.celdas.flatMap(c => c.bounds) : potreros.flatMap(p => p.poly);
+  if (pts.length) map.fitBounds(L.latLngBounds(pts), { padding: [20, 20], maxZoom: 18 });
+};
+window.verPotrero = function (n) {
+  const p = potreros.find(x => x.nombre === n);
+  const pts = p ? p.poly : (R ? R.celdas.filter(c => c.pot === n).flatMap(c => c.bounds) : []);
+  if (pts.length) map.fitBounds(L.latLngBounds(pts), { padding: [20, 20], maxZoom: 18 });
+  $('hist-pot').value = n; histograma();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+};
+window.verTolva = function (n) {
+  const t = R.tolvas.find(x => x.n === n); if (!t || !t.segs.length) return;
+  $('ver-rec').checked = true; dibujar();
+  map.fitBounds(L.latLngBounds(t.segs.flatMap(s => [[s.a.lat, s.a.lng], [s.b.lat, s.b.lng]])), { padding: [30, 30], maxZoom: 18 });
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+};
+// Histograma de rendimiento de los sectores de un potrero
+function histograma() {
+  const cv = $('hist'), ctx = cv.getContext('2d'), r = window.devicePixelRatio || 1;
+  const W = cv.width = cv.clientWidth * r, H = cv.height = cv.clientHeight * r;
+  ctx.clearRect(0, 0, W, H);
+  if (!R) return;
+  const n = $('hist-pot').value, p = R.potreros[n];
+  const cs = R.celdas.filter(c => c.pot === n && c.kgha != null && c.cob >= Number($('mincob').value));
+  if (!cs.length || !p) return;
+  const vs = cs.map(c => c.kgha).sort((a, b) => a - b);
+  const a = vs[Math.floor(vs.length * 0.02)], b = vs[Math.min(vs.length - 1, Math.floor(vs.length * 0.98))] || a + 1;
+  const NB = 30, bins = new Array(NB).fill(0);
+  cs.forEach(c => { const i = Math.max(0, Math.min(NB - 1, Math.floor((c.kgha - a) / ((b - a) || 1) * NB))); bins[i] += c.m2; });
+  const mx = Math.max(...bins), bw = (W - 10 * r) / NB, base = H - 18 * r;
+  bins.forEach((m2, i) => {
+    const v = a + (i + 0.5) / NB * (b - a), rel = p.kgha ? v / p.kgha : 1, zk = Number($('zonas').value);
+    ctx.fillStyle = rel < 1 - zk ? '#DC2626' : rel > 1 + zk ? '#16A34A' : '#FACC15';
+    const h = m2 / mx * (base - 4 * r); ctx.fillRect(5 * r + i * bw + 1, base - h, bw - 2, h);
+  });
+  ctx.fillStyle = '#6B7280'; ctx.font = `${10 * r}px sans-serif`;
+  ctx.textAlign = 'left'; ctx.fillText(nf(a, 0) + ' kg/ha', 5 * r, H - 4 * r);
+  ctx.textAlign = 'right'; ctx.fillText(nf(b, 0) + ' kg/ha', W - 5 * r, H - 4 * r);
+  ctx.textAlign = 'center'; ctx.fillText(`promedio ${nf(p.kgha, 0)} kg/ha · barras = superficie`, W / 2, H - 4 * r);
+}
+window.histograma = histograma;
+window.addEventListener('resize', () => { if (R) histograma(); });
+
+// ── Exportar y guardar ───────────────────────────────────────────
+function bajar(nombre, txt) {
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['﻿' + txt], { type: 'text/csv' })); a.download = nombre;
+  document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+}
+const csvN = (v, d = 2) => v == null || !isFinite(v) ? '' : String(+Number(v).toFixed(d)).replace('.', ',');
+const rangoTxt = () => `${$('desde').value}_${$('hasta').value}`;
+window.csvSectores = function () {
+  if (!R) return;
+  const L_ = ['lat;lng;potrero;kg_ha;qq_ha;pct_promedio;zona;m2_cosechados;kg;vel_kmh;tolvas'];
+  R.celdas.forEach(c => L_.push([csvN(c.centro[0], 7), csvN(c.centro[1], 7), c.pot || '', csvN(c.kgha, 0), csvN(c.kgha / 100, 1), csvN(c.rel != null ? c.rel * 100 : null, 0), c.zona || '', csvN(c.m2, 0), csvN(c.kg, 1), csvN(c.vel, 1), Object.keys(c.tolvas).join(' ')].join(';')));
+  bajar(`sectores_${rangoTxt()}.csv`, L_.join('\n'));
+};
+window.csvPotreros = function () {
+  if (!R) return;
+  const L_ = ['potrero;cultivo;ha_potrero;ha_cosechadas;pct;kg;kg_ha;qq_ha;p10;p50;p90;cv_pct;ha_baja;kgha_baja;ha_media;kgha_media;ha_alta;kgha_alta;tolvas;horas;ha_h;kmh'];
+  Object.values(R.potreros).forEach(p => {
+    const z = k => [csvN(p.zonas[k].m2 / 10000), csvN(p.zonas[k].m2 ? p.zonas[k].kg / (p.zonas[k].m2 / 10000) : null, 0)];
+    L_.push([p.nombre, p.cultivo || '', csvN(p.haPot), csvN(p.ha), csvN(p.pct, 0), csvN(p.kg, 0), csvN(p.kgha, 0), csvN(p.kgha / 100, 1), csvN(p.p10, 0), csvN(p.p50, 0), csvN(p.p90, 0), csvN(p.cv, 0), ...z('b'), ...z('m'), ...z('a'), p.tolvas.size, csvN(p.ms / 3600000), csvN(p.haH), csvN(p.vel, 1)].join(';'));
+  });
+  bajar(`potreros_${rangoTxt()}.csv`, L_.join('\n'));
+};
+window.csvTolvas = function () {
+  if (!R) return;
+  const L_ = ['n;maquina;fecha;hora;kg;ha;kg_ha;qq_ha;potreros;minutos_cosechando;kmh;operador'];
+  R.tolvas.forEach(t => L_.push([t.n, t.eq, diaISO(t.t), horaTxt(t.t), csvN(t.kgCal, 0), csvN(t.m2 / 10000), csvN(t.kgha, 0), csvN(t.kgha / 100, 1), Object.keys(t.pots).join(' / '), Math.round(t.ms / 60000), csvN(t.velMedia, 1), t.d.operador || ''].join(';')));
+  bajar(`tolvas_${rangoTxt()}.csv`, L_.join('\n'));
+};
+window.guardarResultados = async function () {
+  if (!R) { toast('Primero carga un período', false); return; }
+  const ps = Object.values(R.potreros).filter(p => p.nombre !== 'Fuera de potreros' && p.ha > 0);
+  if (!ps.length) return;
+  if (!confirm(`¿Guardar el rendimiento de ${ps.length} potrero(s) (${$('desde').value} a ${$('hasta').value})? Queda como registro de la temporada.`)) return;
+  try {
+    for (const p of ps) {
+      const id = `${$('desde').value}_${$('hasta').value}_${p.nombre}`.replace(/[\/\s]+/g, '_');
+      await setDoc(doc(db, 'cosecha_resultados', id), {
+        potrero: p.nombre, cultivo: p.cultivo || null, desde: $('desde').value, hasta: $('hasta').value,
+        kg: Math.round(p.kg), haCosechadas: +p.ha.toFixed(3), haPotrero: p.haPot != null ? +p.haPot.toFixed(2) : null,
+        kgHa: Math.round(p.kgha), qqHa: +(p.kgha / 100).toFixed(1), p10: Math.round(p.p10 || 0), p90: Math.round(p.p90 || 0), cv: p.cv != null ? Math.round(p.cv) : null,
+        zonas: Object.fromEntries(Object.entries(p.zonas).map(([k, z]) => [k, { ha: +(z.m2 / 10000).toFixed(2), kgHa: z.m2 ? Math.round(z.kg / (z.m2 / 10000)) : null }])),
+        tolvas: p.tolvas.size, equipos: [...p.equipos], factorCalibracion: +R.factor.toFixed(4), modo: $('modo').value, sector: R.C,
+        guardadoPor: usuario ? usuario.nombre : null, ts: Date.now()
+      });
+    }
+    toast('Resultados guardados');
+  } catch (e) { toast('No se pudo guardar: ' + e.message, false); }
+};
+
+// ── Acceso ───────────────────────────────────────────────────────
+const ADMIN_PIN = '1234', ADMIN_NOMBRE = 'JC Allende', ADMINS_EQUIVALENTES = ['Camila Faundez'];
+const puedeVer = (nombre, admin) => admin || ADMINS_EQUIVALENTES.includes(nombre) || (Array.isArray(permisosPruebas[nombre]) && permisosPruebas[nombre].includes('rendimiento'));
+let abrirAcceso; const accesoListo = new Promise(r => { abrirAcceso = r; });
+window.entrarRend = async function () {
+  const pin = $('acc-pin').value.trim(), msg = $('acc-msg');
+  if (!pin) { msg.textContent = 'Ingresa tu PIN.'; return; }
+  let nombre = null, admin = false;
+  if (pin === ADMIN_PIN) { nombre = ADMIN_NOMBRE; admin = true; }
+  else if (pin === '0000') { msg.textContent = 'Primero cambia tu PIN inicial en la app.'; return; }
+  else {
+    try { const sp = await getDoc(doc(db, 'config', 'pines')); const op = sp.exists() ? Object.entries(sp.data()).find(([, p]) => p === pin) : null; if (op) nombre = op[0]; }
+    catch (e) { msg.textContent = 'No se pudo verificar: ' + e.message; return; }
+  }
+  if (!nombre) { msg.textContent = 'PIN incorrecto.'; $('acc-pin').value = ''; return; }
+  if (!puedeVer(nombre, admin)) { msg.textContent = 'No tienes acceso a Rendimiento. Pídeselo al administrador.'; return; }
+  usuario = { nombre, admin };
+  try { sessionStorage.setItem('rend_usuario', JSON.stringify(usuario)); } catch (e) {}
+  $('acceso').style.display = 'none'; abrirAcceso();
+};
+function revisarAcceso() {
+  let u = null;
+  try {
+    let pase = JSON.parse(localStorage.getItem('maitenes_pase') || 'null');
+    const hm = /[#&]pase=([^&]+)/.exec(location.hash || '');
+    if (hm) { try { pase = JSON.parse(decodeURIComponent(hm[1])); } catch (e) {} try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {} }
+    if (pase && pase.nombre && Date.now() - pase.ts < 10 * 60000) { u = { nombre: pase.nombre, admin: !!pase.admin }; localStorage.removeItem('maitenes_pase'); sessionStorage.setItem('rend_usuario', JSON.stringify(u)); }
+    else u = JSON.parse(sessionStorage.getItem('rend_usuario') || 'null');
+  } catch (e) {}
+  if (u && puedeVer(u.nombre, u.admin)) { usuario = u; abrirAcceso(); return; }
+  try { sessionStorage.removeItem('rend_usuario'); } catch (e) {}
+  $('acceso').style.display = 'flex';
+  if (u) $('acc-msg').textContent = 'No tienes acceso a Rendimiento. Pídeselo al administrador.';
+}
+
+(async function iniciar() {
+  let d = {};
+  try { const s = await getDoc(doc(db, 'config', 'datos')); d = s.exists() ? s.data() : {}; } catch (e) { toast('No se pudo leer la configuración: ' + e.message, false); }
+  permisosPruebas = d.permisosPruebas || {};
+  revisarAcceso(); await accesoListo;
+  equiposConfig = d.equipos || [];
+  potreros = (d.potreros || []).filter(p => polValido(p.poligono)).map(p => {
+    const poly = normPoly(p.poligono); let a = 90, b = -90, c = 180, e = -180;
+    poly.forEach(([la, ln]) => { a = Math.min(a, la); b = Math.max(b, la); c = Math.min(c, ln); e = Math.max(e, ln); });
+    return { nombre: p.nombre, poly, ha: Number(p.hectareas) > 0 ? Number(p.hectareas) : areaHa(poly), caja: [a, b, c, e] };
+  });
+  try {
+    const s = await getDocs(query(collection(db, 'labores_campo'), where('tipo', '==', 'siembra')));
+    const ult = {};
+    s.docs.forEach(x => { const l = x.data(); const t = l.ts || Date.parse(l.fecha || '') || 0; if (l.potrero && l.cultivo && (!ult[l.potrero] || t > ult[l.potrero].t)) ult[l.potrero] = { t, c: l.cultivo }; });
+    cultivoDe = Object.fromEntries(Object.entries(ult).map(([k, v]) => [k, v.c]));
+  } catch (e) { console.warn('siembras', e); }
+  initMapa(); dibujar();
+  if (potreros.length) map.fitBounds(L.latLngBounds(potreros.flatMap(p => p.poly)));
+  rango('hoy');
+})();
+</script>
+</body>
+</html>
