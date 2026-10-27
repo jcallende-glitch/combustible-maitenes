@@ -12259,7 +12259,7 @@ function estadoItemIngresoHtml(it, idx) {
   }
   const sug = similaresInv(it.nombre);
   const botones = sug.length ? `<div style="font-size:11px;margin-top:4px;color:var(--acero)">¿Es alguno de estos del inventario?</div><div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px">${sug.map(x => `<button type="button" class="btn-secondary" style="padding:4px 10px;font-size:12px;width:auto" onmousedown="event.preventDefault()" onclick="usarProductoInvItem(${idx},'${x.p.id}')">📦 ${escA(x.p.nombre)}</button>`).join('')}</div>` : '';
-  return `${botones}${doc_}<div style="font-size:10px;margin-top:4px;color:#B45309">⚠️ ${sug.length ? 'Si no es ninguno, quedará' : 'Producto nuevo — quedará'} pendiente de registrar</div>`;
+  return `${botones}${doc_}<div style="font-size:10px;margin-top:4px;color:#B45309">⚠️ ${sug.length ? 'Si no es ninguno, quedará' : 'Producto nuevo — quedará'} pendiente de registrar</div>${iaItemHtml(it, idx)}`;
 }
 window.refrescarEstadoItemIngresoInv = function(idx) {
   const el = document.getElementById('inv-item-estado-' + idx);
@@ -12336,7 +12336,7 @@ const fechaLocalDeTs = ts => { const d = new Date(ts); return d.getFullYear() + 
 function listaMovimientosInv() {
   const out = [];
   movimientosInv.forEach(m => out.push({ ts: m.ts || 0, tipo: ['traspaso', 'salida', 'devolucion'].includes(m.tipo) ? m.tipo : 'entrada', producto: m.productoNombre || '', cantidad: m.cantidad || 0, unidad: m.unidad || 'L', bodega: m.tipo === 'traspaso' ? '' : (m.bodega || ''), origen: m.origen, destino: m.destino, detalle: m.detalle || (m.tipo === 'traspaso' ? 'Traspaso entre bodegas' : ''), por: m.autorizo || m.por || '', aplicador: m.aplicador || '', despues: m.stockDespues }));
-  ingresosInv.forEach(i => (i.items || []).forEach(it => out.push({ ts: i.ts || 0, tipo: 'entrada', producto: (it.nombre || '').trim(), cantidad: Number(it.cantidad) || 0, unidad: it.unidad || 'L', bodega: i.bodega || '', detalle: 'Ingreso' + (i.proveedor ? ' · ' + i.proveedor : '') + (i.nroDocumento ? ' · doc ' + i.nroDocumento : ''), por: i.por || '', aplicador: i.recibe || '' })));
+  ingresosInv.forEach(i => (i.items || []).forEach(it => out.push({ ts: i.ts || 0, tipo: 'entrada', producto: (it.nombre || '').trim(), cantidad: Number(it.cantidad) || 0, unidad: it.unidad || 'L', bodega: it.bodega || (i.bodega !== 'Varias' ? i.bodega : '') || '', detalle: 'Ingreso' + (i.proveedor ? ' · ' + i.proveedor : '') + (i.nroDocumento ? ' · doc ' + i.nroDocumento : ''), por: i.por || '', aplicador: i.recibe || '' })));
   return out.sort((a, b) => b.ts - a.ts);
 }
 window.initMovimientosInv = function() {
@@ -13013,7 +13013,12 @@ window.guardarDocInv = async function() {
 function renderItemsIngresoInv() {
   const cont = document.getElementById("inv-items-ingreso");
   if (!cont) return;
-  cont.innerHTML = itemsIngresoInv.map((it, idx) => {
+  // Con 2 o más productos, cada uno elige su bodega (el selector general se oculta)
+  const multi = itemsIngresoInv.length >= 2;
+  { const sb = document.getElementById('inv-ingreso-bodega'), f = sb && sb.closest('.field'); if (f) f.style.display = multi ? 'none' : ''; }
+  const cabecera = multi ? `<div style="background:#FFFBEB;border:1px solid #FCD34D;border-radius:8px;padding:8px 10px;font-size:12px;margin-bottom:8px">📍 Son ${itemsIngresoInv.length} productos: elige en cada uno a qué bodega llega.
+      <span style="white-space:nowrap">Atajo: <a href="#" onclick="event.preventDefault();todosBodegaInv('${BODEGAS_INV[0]}')">todos a ${BODEGAS_INV[0].replace('Bodega ', '')}</a> · <a href="#" onclick="event.preventDefault();todosBodegaInv('${BODEGAS_INV[1]}')">todos a ${BODEGAS_INV[1].replace('Bodega ', '')}</a></span></div>` : '';
+  cont.innerHTML = cabecera + itemsIngresoInv.map((it, idx) => {
     return `<div class="config-item" style="flex-direction:column;align-items:stretch;gap:8px${it._ia ? ';border-left:4px solid #10B981' : ''}">
       ${it._ia ? '<div style="font-size:10px;color:#047857">✨ leído del documento: verifícalo</div>' : ''}
       <div style="display:flex;gap:8px;align-items:flex-start">
@@ -13024,18 +13029,185 @@ function renderItemsIngresoInv() {
         </div>
         <button class="btn-danger" onclick="quitarItemIngresoInv(${idx})">🗑</button>
       </div>
+      ${envaseItemHtml(it, idx)}
       <div class="grid-2" style="grid-template-columns:1fr 1fr 1fr;gap:8px">
-        <div class="field" style="margin-bottom:0"><label>Cantidad</label><input type="number" value="${it.cantidad}" oninput="actualizarItemIngresoInv(${idx},'cantidad',Number(this.value))"></div>
+        <div class="field" style="margin-bottom:0"><label>Cantidad total</label><input type="number" id="inv-item-cant-${idx}" value="${it.cantidad}" oninput="actualizarItemIngresoInv(${idx},'cantidad',Number(this.value))"></div>
         <div class="field" style="margin-bottom:0"><label>Unidad</label><div class="select-wrapper"><select onchange="actualizarItemIngresoInv(${idx},'unidad',this.value)">${UNIDADES_INV.map(u=>`<option ${u===it.unidad?"selected":""}>${u}</option>`).join("")}</select></div></div>
-        <div class="field" style="margin-bottom:0"><label${it._ia && !(it.precioUnitario > 0) ? ' style="color:#B91C1C"' : ''}>Valor neto unit. $${it._ia && !(it.precioUnitario > 0) ? ' (falta)' : ''}</label><input type="number" value="${it.precioUnitario||0}" oninput="actualizarItemIngresoInv(${idx},'precioUnitario',Number(this.value))"></div>
+        <div class="field" style="margin-bottom:0"><label${it._ia && !(it.precioUnitario > 0) ? ' style="color:#B91C1C"' : ''}>Neto por ${escA(it.unidad || 'unidad')} $${it._ia && !(it.precioUnitario > 0) ? ' (falta)' : ''}</label><input type="number" id="inv-item-precio-${idx}" value="${it.precioUnitario ? r4(it.precioUnitario) : 0}" oninput="actualizarItemIngresoInv(${idx},'precioUnitario',Number(this.value))"></div>
       </div>
+      ${bodegaItemHtml(it, idx)}
     </div>`;
   }).join("");
 }
 window.actualizarItemIngresoInv = function(idx, campo, valor) {
-  if (!itemsIngresoInv[idx]) return;
-  itemsIngresoInv[idx][campo] = valor;
+  const it = itemsIngresoInv[idx];
+  if (!it) return;
+  it[campo] = valor;
+  // Si viene en envases, la cantidad total y el precio por L/kg se mantienen coherentes con el documento
+  if (campo === 'cantidad' && it._envases > 0 && valor > 0) {
+    it._contenido = r4(valor / it._envases);
+    if (it._precioEnvase > 0) it.precioUnitario = r4(it._precioEnvase / it._contenido);
+    const c = document.getElementById('inv-item-cont-' + idx); if (c) c.value = it._contenido;
+    refrescarEnvaseItemInv(idx);
+  }
+  if (campo === 'precioUnitario' && it._contenido > 0 && it._envases != null) { it._precioEnvase = r4(valor * it._contenido); refrescarEnvaseItemInv(idx); }
+  if (campo === 'unidad') renderItemsIngresoInv();
 }
+// ── Envases: el documento dice "8 BID 10 LT"; la app calcula 8 × 10 = 80 L y lo revisa con el total de la línea ──
+const r4 = n => Math.round((Number(n) || 0) * 10000) / 10000;
+const nfInv = n => Number(n || 0).toLocaleString('es-CL', { maximumFractionDigits: 3 });
+const pesoInv = n => '$' + Math.round(Number(n) || 0).toLocaleString('es-CL');
+const esUmBaseInv = um => /^(l|lt|lts|ltr|litros?|kg|kgs|kilos?|k)\.?$/i.test(String(um || '').trim());
+const esUmEnvaseInv = um => /(bid|saco|caja|cj|bolsa|tambor|tineta|balde|envase|frasco|botella|garraf|bin|^un|und|unid|pack|sobre|galon|gal[oó]n)/i.test(String(um || ''));
+function recalcEnvaseInv(it) {
+  if (!(it._envases > 0) || !(it._contenido > 0)) return;
+  it.cantidad = r2(it._envases * it._contenido);
+  if (it._precioEnvase > 0) it.precioUnitario = r4(it._precioEnvase / it._contenido);
+}
+function chequeoEnvaseHtml(it) {
+  const out = [];
+  if (!(it._contenido > 0)) out.push(`<div style="color:#B91C1C;font-weight:700">⚠️ Falta cuántos ${escA(it.unidad || 'L')} trae cada envase: complétalo para calcular el total.</div>`);
+  else if (it._contenido === 1 && esUmEnvaseInv(it._umDoc) && !esUmBaseInv(it._umDoc)) out.push(`<div style="color:#B45309">⚠️ ¿Seguro que cada «${escA(it._umDoc)}» trae 1 ${escA(it.unidad)}? Revisa la presentación.</div>`);
+  if (it._totalLinea > 0 && it._precioEnvase > 0 && it._envases > 0) {
+    const calc = it._envases * it._precioEnvase, dif = Math.abs(calc - it._totalLinea) / it._totalLinea;
+    out.push(dif <= 0.01
+      ? `<div style="color:var(--verde)">✓ ${nfInv(it._envases)} × ${pesoInv(it._precioEnvase)} = ${pesoInv(calc)}: cuadra con el total de la línea.</div>`
+      : `<div style="color:#B91C1C;font-weight:700">⚠️ ${nfInv(it._envases)} × ${pesoInv(it._precioEnvase)} = ${pesoInv(calc)}, pero la línea dice ${pesoInv(it._totalLinea)}. Revisa la cantidad o el precio.</div>`);
+  }
+  return out.join('');
+}
+function envaseItemHtml(it, idx) {
+  if (it._envases == null) return `<a href="#" style="font-size:11px;color:var(--acero)" onclick="event.preventDefault();activarEnvaseItemInv(${idx})">📦 ¿Viene en envases (bidones, sacos)? Calcular el total</a>`;
+  return `<div style="background:var(--fondo);border-radius:8px;padding:8px 10px;font-size:12px">
+    <div style="color:var(--acero)">📦 ${it._ia ? 'En el documento' : 'Envases'}: <strong>${nfInv(it._envases)} ${escA(it._umDoc || 'envase(s)')}</strong>${it._precioEnvase ? ` a ${pesoInv(it._precioEnvase)} c/u` : ''}${it._totalLinea ? ` · total línea ${pesoInv(it._totalLinea)}` : ''}</div>
+    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px">
+      <input type="number" id="inv-item-env-${idx}" value="${it._envases}" min="0" step="any" style="width:80px;padding:6px" oninput="envaseItemInv(${idx},'_envases',this.value)">
+      <span>envase(s) ×</span>
+      <input type="number" id="inv-item-cont-${idx}" value="${it._contenido || ''}" placeholder="¿?" min="0" step="any" style="width:80px;padding:6px${it._contenido > 0 ? '' : ';border-color:#B91C1C'}" oninput="envaseItemInv(${idx},'_contenido',this.value)">
+      <span>${escA(it.unidad || 'L')} c/u =</span> <strong id="inv-item-tot-${idx}">${it._contenido > 0 ? nfInv(it.cantidad) + ' ' + escA(it.unidad) : '¿?'}</strong>
+    </div>
+    <div id="inv-item-chk-${idx}" style="margin-top:4px">${chequeoEnvaseHtml(it)}</div>
+  </div>`;
+}
+window.envaseItemInv = function(idx, campo, val) {
+  const it = itemsIngresoInv[idx]; if (!it) return;
+  const n = Number(val);
+  it[campo] = n > 0 ? n : (campo === '_contenido' ? null : 0);
+  recalcEnvaseInv(it);
+  refrescarEnvaseItemInv(idx);
+};
+function refrescarEnvaseItemInv(idx) {
+  const it = itemsIngresoInv[idx]; if (!it) return;
+  const set = (id, v) => { const el = document.getElementById(id); if (el && document.activeElement !== el) el.value = v; };
+  set('inv-item-cant-' + idx, it.cantidad); set('inv-item-precio-' + idx, it.precioUnitario ? r4(it.precioUnitario) : 0);
+  const tot = document.getElementById('inv-item-tot-' + idx); if (tot) tot.textContent = it._contenido > 0 ? nfInv(it.cantidad) + ' ' + it.unidad : '¿?';
+  const chk = document.getElementById('inv-item-chk-' + idx); if (chk) chk.innerHTML = chequeoEnvaseHtml(it);
+  const c = document.getElementById('inv-item-cont-' + idx); if (c) c.style.borderColor = it._contenido > 0 ? '' : '#B91C1C';
+}
+window.activarEnvaseItemInv = function(idx) {
+  const it = itemsIngresoInv[idx]; if (!it) return;
+  it._envases = Number(it.cantidad) > 0 ? Number(it.cantidad) : 1; it._contenido = null; it._umDoc = it._umDoc || ''; it._precioEnvase = 0;
+  renderItemsIngresoInv();
+};
+// ── Bodega de cada producto (cuando el ingreso trae 2 o más) ──
+function bodegaItemHtml(it, idx) {
+  if (itemsIngresoInv.length < 2) return '';
+  const p = it.nombre ? productoInvPorNombre(it.nombre) : null;
+  const con = p ? BODEGAS_INV.filter(b => stockInv(p, b) > 0).map(b => b.replace('Bodega ', '')) : [];
+  return `<div><div style="font-size:11px;font-weight:700;color:${it.bodega ? 'var(--acero)' : '#B91C1C'}">${it.bodega ? '📍 Bodega' : '📍 ¿A qué bodega llega este producto?'}${con.length ? ` <span style="font-weight:400">(hoy tiene stock en ${con.join(' y ')})</span>` : ''}</div>
+    <div class="centros-selector" style="margin-top:4px">${BODEGAS_INV.map(b => `<div class="cultivo-chip ${it.bodega === b ? 'sel' : ''}" onclick='setBodegaItemInv(${idx}, ${JSON.stringify(b)})'>${/frutal/i.test(b) ? '🍒' : '🌾'} ${escA(b.replace('Bodega ', ''))}</div>`).join('')}</div></div>`;
+}
+window.setBodegaItemInv = function(idx, b) { const it = itemsIngresoInv[idx]; if (!it) return; it.bodega = b; renderItemsIngresoInv(); };
+window.todosBodegaInv = function(b) { itemsIngresoInv.forEach(it => { it.bodega = b; }); renderItemsIngresoInv(); };
+// ── Ingrediente activo de los productos que no están en el inventario, y equivalentes que sí tenemos ──
+// Cada ingrediente se compara sin concentración ni sal (ej. "Glifosato 480 g/L (sal isopropilamina)" = "glifosato")
+function activosInv(ia) {
+  let t = String(ia || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  t = t.replace(/\b2\s*[,.]?\s*4\s*-?\s*db\b/g, ' dosCuatroDB ').replace(/\b2\s*[,.]?\s*4\s*-?\s*d\b/g, ' dosCuatroD ');
+  t = t.replace(/\([^)]*\)/g, ' ').replace(/[\d.,]+\s*(%|g\s*\/\s*l|g\s*\/\s*kg|gr\s*\/\s*l|g\s*i\.?\s*a\.?\s*\/\s*l|p\s*\/\s*v|p\s*\/\s*p|w\s*\/\s*v|w\s*\/\s*w|cc\s*\/\s*l|ml\s*\/\s*l)?/g, ' ');
+  return t.split(/\s*\+\s*|\s+y\s+|,|;/).map(x => x
+      .replace(/\b(sal|sales|isopropilamina|isopropilamonio|potasica|potasio|amonio|amonica|dimetilamina|trimetilsulfonio|sodica|sodio|ester|etilhexil|acido|equivalente|eq|de|del|la|el|como|ia|i a|sc|ec|wg|wp|sl|sp|ew|od|cs|se|gr|df|wdg)\b/g, ' ')
+      .replace(/[^a-z]+/g, '').trim())
+    .filter(x => x.length >= 3);
+}
+const mismoActivoInv = (a, b) => a === b || (a.length >= 5 && b.length >= 5 && (a.startsWith(b) || b.startsWith(a)));
+function equivalentesInv(ia) {
+  const A = activosInv(ia), iguales = [], parciales = [];
+  if (!A.length) return { iguales, parciales };
+  productosInv.forEach(p => {
+    const B = activosInv(p.ingredienteActivo); if (!B.length) return;
+    const aEnB = A.filter(a => B.some(b => mismoActivoInv(a, b))).length, bEnA = B.filter(b => A.some(a => mismoActivoInv(a, b))).length;
+    if (aEnB === A.length && bEnA === B.length) iguales.push(p); else if (aEnB) parciales.push(p);
+  });
+  const st = p => BODEGAS_INV.reduce((s, b) => s + stockInv(p, b), 0);
+  iguales.sort((a, b) => st(b) - st(a)); parciales.sort((a, b) => st(b) - st(a));
+  return { iguales, parciales };
+}
+function filaEquivInv(p, idx, parcial) {
+  const st = BODEGAS_INV.map(b => `${b.replace('Bodega ', '')} ${nfInv(stockInv(p, b))}`).join(' · ');
+  return `<div style="display:flex;justify-content:space-between;align-items:center;gap:6px;padding:5px 0;border-top:1px solid #DBEAFE">
+    <div>📦 <strong>${escA(p.nombre)}</strong> <span style="color:var(--acero)">· ${escA(p.ingredienteActivo || '')}<br>Stock: ${st} ${escA(p.unidad || '')}</span></div>
+    ${parcial ? '' : `<button type="button" class="btn-secondary" style="padding:4px 8px;font-size:11px;width:auto;white-space:nowrap" onclick="usarEquivalenteInv(${idx},'${p.id}')">Es el mismo: sumar aquí</button>`}</div>`;
+}
+function iaItemHtml(it, idx) {
+  if (!it.nombre || !it.nombre.trim()) return '';
+  const g = it._ing;
+  if (g === 'buscando') return `<div style="font-size:11px;margin-top:6px;color:#1D4ED8">🔎 Buscando el ingrediente activo y equivalentes…</div>`;
+  if (!g) return `<div style="margin-top:6px"><button type="button" class="btn-secondary" style="padding:4px 10px;font-size:12px;width:auto" onclick="buscarIngItemInv(${idx})">🔬 Buscar ingrediente activo y equivalentes</button></div>`;
+  if (g.error) return `<div style="font-size:11px;margin-top:6px;color:#B45309">🔬 No se pudo buscar el ingrediente activo (${escA(g.error)}). <a href="#" onclick="event.preventDefault();buscarIngItemInv(${idx})">Reintentar</a></div>`;
+  if (!g.ia) return `<div style="font-size:11px;margin-top:6px;color:#B45309">🔬 No pude identificar el ingrediente activo${g.obs ? ': ' + escA(g.obs) : ''}. Complétalo al registrar el producto. <a href="#" onclick="event.preventDefault();buscarIngItemInv(${idx})">Buscar de nuevo</a></div>`;
+  const eq = equivalentesInv(g.ia);
+  const fuente = /^https?:\/\//.test(g.fuente || '') ? ` · <a href="${escA(g.fuente)}" target="_blank" rel="noopener">ver fuente</a>` : (g.fuente ? ` · ${escA(g.fuente)}` : '');
+  let h = `<div style="background:#EFF6FF;border-radius:8px;padding:8px 10px;margin-top:6px;font-size:12px">
+    <div>🔬 Ingrediente activo: <strong>${escA(g.ia)}</strong>${g.categoria ? ' · ' + escA(g.categoria) : ''}${g.fabricante ? ' · ' + escA(g.fabricante) : ''}
+      <span style="color:var(--acero)">${g.nombre && normNom(g.nombre) !== normNom(it.nombre) ? ' · producto: ' + escA(g.nombre) : ''}${g.confianza && g.confianza !== 'alta' ? ' · confianza ' + escA(g.confianza) : ''}${fuente}</span></div>`;
+  if (eq.iguales.length) h += `<div style="margin-top:6px;font-weight:700;color:#1D4ED8">♻️ En el inventario hay ${eq.iguales.length === 1 ? 'un equivalente' : eq.iguales.length + ' equivalentes'} (mismo ingrediente activo):</div>` + eq.iguales.slice(0, 5).map(p => filaEquivInv(p, idx)).join('');
+  else h += `<div style="margin-top:4px;color:var(--acero)">No hay en el inventario otro producto con este ingrediente activo.</div>`;
+  if (eq.parciales.length) h += `<div style="margin-top:6px;color:var(--acero)">Comparten algún ingrediente:</div>` + eq.parciales.slice(0, 3).map(p => filaEquivInv(p, idx, true)).join('');
+  return h + `<div style="margin-top:4px;color:var(--acero);font-size:11px">Al registrarlo se completa con este ingrediente activo (puedes corregirlo).</div></div>`;
+}
+window.usarEquivalenteInv = function(idx, id) {
+  const p = productosInv.find(x => x.id === id), it = itemsIngresoInv[idx]; if (!p || !it) return;
+  if (!confirm(`¿«${it.nombre}» es el mismo producto que «${p.nombre}»?\nLos ${nfInv(it.cantidad)} ${it.unidad} se sumarán al stock de «${p.nombre}».`)) return;
+  usarProductoInvItem(idx, id);
+};
+async function pedirIngredienteIA(nombre, proveedor, sinWeb) {
+  const resp = await fetch(URL_LECTOR_DOC, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ usuario: currentUser, pin: sesionPinIA, modo: 'ingredientes', productos: [{ nombre }], proveedor, sinWeb: !!sinWeb }) });
+  if (resp.status === 401) { sesionPinIA = ''; const e = new Error('PIN no válido'); e.status = 401; throw e; }
+  const d = await resp.json().catch(() => ({}));
+  if (!resp.ok || !d.ok) { const e = new Error(d.error || ('error ' + resp.status)); e.status = resp.status; throw e; }
+  return (d.productos || [])[0] || null;
+}
+async function buscarIngredientesItemsInv(idxs) {
+  const items = idxs.map(i => itemsIngresoInv[i]).filter(it => it && it.nombre && it.nombre.trim());
+  if (!items.length) return;
+  if (!sesionPinIA) { sesionPinIA = (prompt('Ingresa tu PIN para buscar con IA') || '').trim(); if (!sesionPinIA) return; }
+  const prov = (document.getElementById('inv-ingreso-proveedor') || {}).value || '';
+  const refrescar = it => { const i = itemsIngresoInv.indexOf(it); if (i >= 0) refrescarEstadoItemIngresoInv(i); };
+  items.forEach(it => { it._ing = 'buscando'; refrescar(it); });
+  const cola = [...items];
+  const trabajar = async () => {
+    while (cola.length) {
+      const it = cola.shift(), nombre = it.nombre.trim();
+      let r = null, err = null;
+      try { r = await pedirIngredienteIA(nombre, prov, false); }
+      catch (e) {
+        if (e.status === 401) err = e.message;
+        else { try { r = await pedirIngredienteIA(nombre, prov, true); } catch (e2) { err = e2.message; } } // sin búsqueda en internet (más rápido)
+      }
+      if (itemsIngresoInv.indexOf(it) < 0) continue;                      // se quitó mientras buscaba
+      if (normNom(it.nombre) !== normNom(nombre)) { if (it._ing === 'buscando') delete it._ing; refrescar(it); continue; } // cambió el nombre
+      const local = sugerirIngredienteInv(nombre);
+      if (r && r.ingrediente_activo) it._ing = { ia: r.ingrediente_activo, categoria: r.categoria || '', fabricante: r.fabricante || '', nombre: r.nombre_reconocido || '', confianza: r.confianza || 'media', fuente: r.fuente || '', obs: r.observaciones || '' };
+      else if (local) it._ing = { ia: local, categoria: '', fabricante: '', nombre: '', confianza: 'media', fuente: 'catálogo de la app' };
+      else if (err) it._ing = { error: err };
+      else it._ing = { ia: '', obs: (r && r.observaciones) || '' };
+      refrescar(it);
+    }
+  };
+  await Promise.all([trabajar(), trabajar(), trabajar()]);
+}
+window.buscarIngItemInv = idx => buscarIngredientesItemsInv([idx]);
 window.quitarItemIngresoInv = function(idx) {
   itemsIngresoInv.splice(idx, 1);
   if (!itemsIngresoInv.length) itemsIngresoInv.push({nombre:'',cantidad:1,unidad:'L',precioUnitario:0});
@@ -13047,6 +13219,7 @@ window.agregarItemIngresoInv = function() {
 }
 window.onNombreItemIngresoInvChange = function(idx) {
   const val = document.getElementById("inv-item-nombre-"+idx).value;
+  if (itemsIngresoInv[idx] && itemsIngresoInv[idx]._ing && normNom(val) !== normNom(itemsIngresoInv[idx].nombre)) delete itemsIngresoInv[idx]._ing;
   actualizarItemIngresoInv(idx, "nombre", val);
   const cont = document.getElementById("inv-item-autocomplete-"+idx);
   if (!cont) return;
@@ -13075,6 +13248,7 @@ window.renderFotosIngresoInv = function() {
 // ── Lectura del documento con IA: rellena el formulario; las personas confirman, corrigen y completan ──
 const URL_LECTOR_DOC = '/api/leer-documento';
 let camposIAIngreso = { items: [] }; // índices de ítems leídos por IA
+let totalDocIAInv = 0; // total neto que dice el documento leído (para revisar la suma)
 window.leerDocumentoIngresoInv = async function() {
   if (!fotosIngresoInv.length) { toast('Primero agrega la foto del documento', false); return; }
   if (!sesionPinIA) { sesionPinIA = (prompt('Ingresa tu PIN para usar la lectura con IA') || '').trim(); if (!sesionPinIA) return; }
@@ -13098,15 +13272,30 @@ window.leerDocumentoIngresoInv = async function() {
       const nom = String(it.nombre_comercial || '').trim(), n = norm(nom);
       const cands = n ? similaresInv(nom, 3) : [];
       const exacto = cands.length && (cands[0].s === 1 || (cands[0].s >= 0.92 && !(cands[1] && cands[1].s >= 0.92))) ? cands[0].p : null;
-      return { nombre: exacto ? exacto.nombre : nom, _nombreDoc: nom, cantidad: Number(it.cantidad) || 1, unidad: UNIDADES_INV.includes(it.unidad) ? it.unidad : ((exacto && exacto.unidad) || 'L'), precioUnitario: Number(it.valor_neto_unitario) || 0, _ia: true, _unidadIA: UNIDADES_INV.includes(it.unidad) };
+      // La IA entrega lo que dice el documento (envases y precio por envase) y cuánto trae cada envase; la cuenta la hace la app
+      const envases = Number(it.cantidad) || 1, umDoc = String(it.unidad_documento || '').trim();
+      let cont = Number(it.contenido_envase) > 0 ? Number(it.contenido_envase) : null, uni = it.unidad;
+      if (uni === 'mL') { uni = 'L'; if (cont) cont = cont / 1000; } else if (uni === 'g') { uni = 'kg'; if (cont) cont = cont / 1000; }
+      if (!cont && esUmBaseInv(umDoc)) cont = 1;
+      const unidad = UNIDADES_INV.includes(uni) ? uni : ((exacto && exacto.unidad) || 'L');
+      const pEnv = Number(it.valor_neto_unitario) || 0;
+      const r = { nombre: exacto ? exacto.nombre : nom, _nombreDoc: nom, unidad, _ia: true, _unidadIA: UNIDADES_INV.includes(uni),
+        _envases: envases, _umDoc: umDoc, _contenido: cont, _precioEnvase: pEnv, _totalLinea: Number(it.total_neto_linea) || 0,
+        cantidad: envases, precioUnitario: pEnv };
+      recalcEnvaseInv(r);
+      return r;
     });
+    totalDocIAInv = Number(doc_.total_neto) || 0;
     renderItemsIngresoInv();
+    const porBuscar = itemsIngresoInv.map((it, i) => (it.nombre && !productoInvPorNombre(it.nombre)) ? i : -1).filter(i => i >= 0);
+    const faltaCont = itemsIngresoInv.filter(it => !(it._contenido > 0)).length;
+    if (porBuscar.length) buscarIngredientesItemsInv(porBuscar);
     const sinPrecio = itemsIngresoInv.filter(i => !(i.precioUnitario > 0)).length;
     const reconocidos = itemsIngresoInv.filter(i => productoInvPorNombre(i.nombre)).length;
     const conParecido = itemsIngresoInv.filter(i => !productoInvPorNombre(i.nombre) && similaresInv(i.nombre).length).length;
     aviso.innerHTML = `<div style="background:#ECFDF5;color:#047857;border-radius:8px;padding:8px 10px;font-size:12px;margin-top:8px">✨ Leí ${itemsIngresoInv.length} producto(s)${doc_.fecha ? ' · fecha del documento ' + escA(doc_.fecha) : ''}${doc_.total_neto ? ' · total neto leído $' + Math.round(doc_.total_neto).toLocaleString('es-CL') : ''}.
       <strong>Revisa cada dato, corrige lo que esté mal y completa lo que falte</strong> antes de confirmar.
-      ${vacios.length ? '<br>No pude leer: ' + vacios.join(', ') + '.' : ''}${reconocidos ? `<br>📦 ${reconocidos} reconocido(s) en el inventario.` : ''}${conParecido ? `<br>🔎 ${conParecido} con nombre parecido a uno del inventario: elige el correcto abajo.` : ''}${sinPrecio ? `<br>⚠️ ${sinPrecio} producto(s) sin valor neto.` : ''}${doc_.observaciones ? '<br>Nota de la lectura: ' + escA(doc_.observaciones) : ''}</div>`;
+      ${vacios.length ? '<br>No pude leer: ' + vacios.join(', ') + '.' : ''}${reconocidos ? `<br>📦 ${reconocidos} reconocido(s) en el inventario.` : ''}${conParecido ? `<br>🔎 ${conParecido} con nombre parecido a uno del inventario: elige el correcto abajo.` : ''}${sinPrecio ? `<br>⚠️ ${sinPrecio} producto(s) sin valor neto.` : ''}${faltaCont ? `<br>📦 ${faltaCont} producto(s) sin el contenido por envase: complétalo para calcular los litros o kilos.` : ''}${porBuscar.length ? `<br>🔬 Buscando el ingrediente activo de ${porBuscar.length} producto(s) que no están en el inventario…` : ''}${itemsIngresoInv.length >= 2 ? '<br>📍 Elige la bodega de cada producto.' : ''}${doc_.observaciones ? '<br>Nota de la lectura: ' + escA(doc_.observaciones) : ''}</div>`;
     toast('✓ Documento leído: revisa y confirma', true);
   } catch (e) { aviso.innerHTML = `<div style="color:#B91C1C;font-size:12px;margin-top:6px">${escA(e.message)}</div>`; toast(e.message, false); }
   finally { btn.disabled = false; btn.textContent = '✨ Leer el documento y rellenar los campos'; }
@@ -13138,21 +13327,30 @@ window.guardarIngresoInv = function() {
   const items = itemsIngresoInv.filter(it => it.nombre && it.nombre.trim() && it.cantidad > 0);
   if (!nroDocumento) { toast("Ingresa el N° de factura o guía de despacho (es la referencia del valor). Si solo devuelves producto a la bodega, usa ↩️ Devolución", false); return; }
   if (!items.length) { toast("Agrega al menos un producto con nombre y cantidad", false); return; }
+  const sinCont = items.find(it => it._envases != null && !(it._contenido > 0));
+  if (sinCont) { toast(`Falta cuántos ${sinCont.unidad} trae cada envase de «${sinCont.nombre.trim()}»`, false); return; }
+  const multi = itemsIngresoInv.length >= 2;
+  const sinBod = multi ? items.find(it => !it.bodega) : null;
+  if (sinBod) { toast(`Elige a qué bodega llega «${sinBod.nombre.trim()}»`, false); return; }
   const $ = n => '$' + Math.round(n).toLocaleString('es-CL');
   const total = items.reduce((a, it) => a + (Number(it.precioUnitario) || 0) * Number(it.cantidad), 0);
   const sinValor = items.filter(it => !(Number(it.precioUnitario) > 0)).length;
   document.getElementById('inv-ingreso-confirm-body').innerHTML = `
     <div style="background:var(--fondo);border-radius:8px;padding:10px 12px;font-size:13px;margin-bottom:10px">
       <div><strong>Proveedor:</strong> ${escA(proveedor) || '<span style="color:#B45309">sin indicar</span>'}</div>
-      <div><strong>Documento:</strong> ${escA(nroDocumento)} · <strong>Bodega:</strong> ${escA(bodega)}</div>
+      <div><strong>Documento:</strong> ${escA(nroDocumento)} · <strong>Bodega:</strong> ${multi ? 'según cada producto' : escA(bodega)}</div>
       <div><strong>Autoriza:</strong> ${escA(currentUser || '')}${(document.getElementById('inv-ingreso-recibe') || {}).value ? ' · <strong>Recibe:</strong> ' + escA(document.getElementById('inv-ingreso-recibe').value) : ''}</div>
       <div><strong>Foto del documento:</strong> ${fotosIngresoInv.length ? fotosIngresoInv.length + ' adjunta(s)' : '<span style="color:#B45309">sin foto</span>'}</div></div>
     <div class="table-wrap"><table><thead><tr><th>Nombre comercial</th><th>Cantidad</th><th>Neto unit.</th><th>Neto total</th></tr></thead><tbody>${items.map(it => {
       const pInv = productoInvPorNombre(it.nombre), conocido = !!pInv, v = Number(it.precioUnitario) || 0;
       const ren = conocido && it._nuevoNombreInv ? it._nuevoNombreInv : '';
-      return `<tr><td style="font-weight:600">${escA(ren || (conocido ? pInv.nombre : it.nombre.trim()))}<div style="font-size:10px;font-weight:400;color:${conocido ? 'var(--verde)' : '#B45309'}">${conocido ? '✓ suma al stock' : '⚠️ producto nuevo: queda pendiente de registrar'}</div>${ren ? `<div style="font-size:10px;font-weight:400;color:#1D4ED8">✏️ se renombra (antes «${escA(pInv.nombre)}»)</div>` : ''}</td><td style="white-space:nowrap">${Number(it.cantidad).toLocaleString('es-CL')} ${it.unidad}</td><td style="${v ? '' : 'color:#B91C1C;font-weight:700'}">${v ? $(v) : 'sin valor'}</td><td>${v ? $(v * Number(it.cantidad)) : '—'}</td></tr>`;
+      return `<tr><td style="font-weight:600">${escA(ren || (conocido ? pInv.nombre : it.nombre.trim()))}<div style="font-size:10px;font-weight:400;color:${conocido ? 'var(--verde)' : '#B45309'}">${conocido ? '✓ suma al stock' : '⚠️ producto nuevo: queda pendiente de registrar'}</div>${ren ? `<div style="font-size:10px;font-weight:400;color:#1D4ED8">✏️ se renombra (antes «${escA(pInv.nombre)}»)</div>` : ''}${multi ? `<div style="font-size:10px;font-weight:400;color:var(--acero)">📍 ${escA(it.bodega || '')}</div>` : ''}${!conocido && it._ing && it._ing.ia ? `<div style="font-size:10px;font-weight:400;color:#1D4ED8">🔬 ${escA(it._ing.ia)}</div>` : ''}</td><td style="white-space:nowrap">${Number(it.cantidad).toLocaleString('es-CL')} ${it.unidad}${it._envases != null && it._contenido > 0 ? `<div style="font-size:10px;color:var(--acero)">${nfInv(it._envases)} × ${nfInv(it._contenido)} ${it.unidad}</div>` : ''}</td><td style="${v ? '' : 'color:#B91C1C;font-weight:700'}">${v ? $(v) : 'sin valor'}</td><td>${v ? $(v * Number(it.cantidad)) : '—'}</td></tr>`;
     }).join('')}</tbody><tfoot><tr><td colspan="3" style="font-weight:800">Total neto</td><td style="font-weight:800">${$(total)}</td></tr></tfoot></table></div>
     ${sinValor ? `<div style="font-size:12px;color:#B91C1C;margin-top:6px">⚠️ ${sinValor} producto(s) sin valor neto: no se actualizará su precio en Inventario.</div>` : ''}
+    ${items.filter(it => it._totalLinea > 0 && it._precioEnvase > 0 && it._envases > 0 && Math.abs(it._envases * it._precioEnvase - it._totalLinea) / it._totalLinea > 0.01).map(it => `<div style="font-size:12px;color:#B91C1C;margin-top:6px">⚠️ «${escA(it.nombre.trim())}»: ${nfInv(it._envases)} × ${pesoInv(it._precioEnvase)} no cuadra con el total de su línea (${pesoInv(it._totalLinea)}).</div>`).join('')}
+    ${totalDocIAInv > 0 ? (Math.abs(total - totalDocIAInv) / totalDocIAInv <= 0.01
+      ? `<div style="font-size:12px;color:var(--verde);margin-top:6px">✓ La suma cuadra con el total neto del documento (${pesoInv(totalDocIAInv)}).</div>`
+      : `<div style="font-size:12px;color:#B91C1C;font-weight:700;margin-top:6px">⚠️ La suma de los productos (${pesoInv(total)}) no cuadra con el total neto del documento (${pesoInv(totalDocIAInv)}): diferencia ${pesoInv(total - totalDocIAInv)}. Revisa cantidades y precios.</div>`) : ''}
     <div class="hint" style="margin:8px 0">Revisa que los nombres, cantidades y valores coincidan con el documento. Si hay un error, vuelve a corregir.</div>`;
   document.getElementById('modal-inv-ingreso-confirm').style.display = 'flex';
 }
@@ -13167,7 +13365,11 @@ window.confirmarIngresoInv = async function() {
     const nuevo = pInv && it._nuevoNombreInv ? it._nuevoNombreInv.trim() : '';
     if (nuevo) renombres[pInv.id] = { antes: pInv.nombre, nuevo };
     const nombre = nuevo || (pInv ? pInv.nombre : it.nombre.trim());
-    return { nombre, cantidad: it.cantidad, unidad: it.unidad, precioUnitario: it.precioUnitario || 0, _pid: pInv ? pInv.id : '', ...(it._nombreDoc && normNom(it._nombreDoc) !== normNom(nombre) ? { nombreDoc: it._nombreDoc } : {}) };
+    const bodega = itemsIngresoInv.length >= 2 && BODEGAS_INV.includes(it.bodega) ? it.bodega : bodegaDestino;
+    return { nombre, cantidad: it.cantidad, unidad: it.unidad, precioUnitario: it.precioUnitario || 0, bodega, _pid: pInv ? pInv.id : '',
+      ...(it._nombreDoc && normNom(it._nombreDoc) !== normNom(nombre) ? { nombreDoc: it._nombreDoc } : {}),
+      ...(it._envases != null && it._contenido > 0 ? { envases: it._envases, contenidoEnvase: it._contenido, umDoc: it._umDoc || '', precioEnvase: it._precioEnvase || 0 } : {}),
+      ...(!pInv && it._ing && it._ing.ia ? { ingredienteActivo: it._ing.ia, categoria: it._ing.categoria || '', fabricante: it._ing.fabricante || '' } : {}) };
   });
   if (!nroDocumento) { toast("Ingresa el N° de factura o guía de despacho (es la referencia del valor). Si solo devuelves producto a la bodega, usa ↩️ Devolución", false); return; }
   if (!items.length) { toast("Agrega al menos un producto con nombre y cantidad", false); return; }
@@ -13178,7 +13380,7 @@ window.confirmarIngresoInv = async function() {
       const p = productosInv.find(x => x.id === it._pid);
       if (!p) continue;
       const nuevoMapa = stockMapInv(p);
-      nuevoMapa[bodegaDestino] = r2((nuevoMapa[bodegaDestino]||0) + Number(it.cantidad));
+      nuevoMapa[it.bodega] = r2((nuevoMapa[it.bodega]||0) + Number(it.cantidad));
       const cambios = { stock: nuevoMapa, precio: it.precioUnitario || p.precio || 0 };
       const rn = renombres[p.id];
       if (rn && rn.nuevo !== p.nombre) { cambios.nombre = rn.nuevo; cambios.nombresAnteriores = [...new Set([...(p.nombresAnteriores || []), p.nombre])]; }
@@ -13187,17 +13389,24 @@ window.confirmarIngresoInv = async function() {
     const fotoIds = [];
     for (const f of fotosIngresoInv) { const r = await addDoc(collection(dbInv, "docs_fotos"), { tipo: 'ingreso', data: f, ts: Date.now(), por: currentUser || "" }); fotoIds.push(r.id); }
     await addDoc(collection(dbInv, "ingresos"), {
-      proveedor, nroDocumento, bodega: bodegaDestino, items: items.map(({ _pid, ...r }) => r), itemsPendientes: nuevos, fotoIds, recibe: (document.getElementById('inv-ingreso-recibe') || {}).value || '',
+      proveedor, nroDocumento, bodega: [...new Set(items.map(it => it.bodega))].length === 1 ? items[0].bodega : 'Varias', items: items.map(({ _pid, ...r }) => r), itemsPendientes: nuevos, fotoIds, recibe: (document.getElementById('inv-ingreso-recibe') || {}).value || '',
       fecha: new Date().toISOString(), ts: Date.now(), por: currentUser || "",
     });
     fotosIngresoInv = []; renderFotosIngresoInv(); cerrarModalInv('modal-inv-ingreso-confirm');
     { const av = document.getElementById('inv-ingreso-ia-aviso'); if (av) av.innerHTML = ''; }
-    itemsIngresoInv = [{nombre:'',cantidad:1,unidad:'L',precioUnitario:0}];
+    itemsIngresoInv = [{nombre:'',cantidad:1,unidad:'L',precioUnitario:0}]; totalDocIAInv = 0;
     document.getElementById("inv-ingreso-proveedor").value = "";
     document.getElementById("inv-ingreso-nrodoc").value = "";
     renderItemsIngresoInv();
-    toast("✓ Ingreso guardado en " + bodegaDestino + (nuevos.length ? ` · ${nuevos.length} producto(s) nuevo(s) pendiente(s) de registrar` : " y stock actualizado"), true);
+    const bodsUsadas = [...new Set(items.map(it => it.bodega))];
+    renderItemsIngresoInv();
+    toast("✓ Ingreso guardado en " + bodsUsadas.join(' y ') + (nuevos.length ? ` · ${nuevos.length} producto(s) nuevo(s) pendiente(s) de registrar` : " y stock actualizado"), true);
   } catch(e) { toast("Error: " + e.message, false); }
+}
+// Bodega de un producto de un ingreso (los ingresos con varios productos guardan la de cada uno)
+function bodegaItemIngreso(it, ing) {
+  const b = (it && it.bodega) || (ing && ing.bodega) || '';
+  return BODEGAS_INV.includes(b) ? b : BODEGAS_INV[0];
 }
 function renderIngresosInv() {
   const tabBtn = document.getElementById("tab-inv-ingresos");
@@ -13210,8 +13419,8 @@ function renderIngresosInv() {
       panel.innerHTML = `<div style="font-weight:700;color:#92400E;margin-bottom:10px">⚠️ Productos nuevos pendientes de registrar</div>` +
         pendientes.flatMap(ing => (ing.itemsPendientes||[]).map(item => `
           <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid #FDE68A">
-            <div><div style="font-weight:600;font-size:13px">${item.nombre}</div><div style="font-size:11px;color:var(--acero)">${item.cantidad} ${item.unidad} · ${ing.proveedor||"Sin proveedor"}</div></div>
-            <button class="btn-add" onclick="abrirNuevoDesdeIngresoInv('${ing.id}','${item.nombre.replace(/'/g,"\\'")}',${item.cantidad},'${item.unidad}',${item.precioUnitario||0},'${(ing.proveedor||"").replace(/'/g,"\\'")}','${ing.bodega||BODEGAS_INV[0]}')">+ Registrar</button>
+            <div><div style="font-weight:600;font-size:13px">${item.nombre}</div><div style="font-size:11px;color:var(--acero)">${item.cantidad} ${item.unidad} · ${ing.proveedor||"Sin proveedor"}${bodegaItemIngreso(item, ing) ? ' · ' + bodegaItemIngreso(item, ing).replace('Bodega ', '') : ''}</div>${item.ingredienteActivo ? `<div style="font-size:11px;color:#1D4ED8">🔬 ${escA(item.ingredienteActivo)}</div>` : ''}</div>
+            <button class="btn-add" onclick="abrirNuevoDesdeIngresoInv('${ing.id}','${item.nombre.replace(/'/g,"\\'")}',${item.cantidad},'${item.unidad}',${item.precioUnitario||0},'${(ing.proveedor||"").replace(/'/g,"\\'")}','${bodegaItemIngreso(item, ing)}')">+ Registrar</button>
           </div>`)).join("");
     } else { panel.style.display = "none"; }
   }
@@ -13226,7 +13435,7 @@ function renderIngresosInv() {
       </div>
       <div style="display:flex;flex-wrap:wrap;gap:4px">${(ing.items||[]).map(it => {
         const pend = (ing.itemsPendientes||[]).some(p => p.nombre === it.nombre);
-        return `<span class="badge" style="background:${pend?"var(--amarillo-suave)":"var(--verde-suave)"};color:${pend?"#92400E":"var(--verde)"}">${pend?"⚠️ ":""}${it.nombre} · ${it.cantidad} ${it.unidad}</span>`;
+        return `<span class="badge" style="background:${pend?"var(--amarillo-suave)":"var(--verde-suave)"};color:${pend?"#92400E":"var(--verde)"}">${pend?"⚠️ ":""}${it.nombre} · ${it.cantidad} ${it.unidad}${ing.bodega === 'Varias' && it.bodega ? ' · ' + it.bodega.replace('Bodega ', '') : ''}</span>`;
       }).join("")}</div>
     </div>`).join("");
 }
@@ -13236,10 +13445,14 @@ let npIngresoInvId = null, npNombreInv = null, npBodegaInv = null;
 window.abrirNuevoDesdeIngresoInv = function(ingresoId, nombre, cantidad, unidad, precio, proveedor, bodega) {
   npIngresoInvId = ingresoId; npNombreInv = nombre; npBodegaInv = bodega || BODEGAS_INV[0];
   const enCatalogo = CATALOGO_INV.find(c => c.nombre.toLowerCase() === nombre.toLowerCase());
+  const ingDoc = ingresosInv.find(x => x.id === ingresoId);
+  const pend = ingDoc ? (ingDoc.itemsPendientes || []).find(x => x.nombre === nombre) : null;
+  if (!BODEGAS_INV.includes(npBodegaInv)) npBodegaInv = BODEGAS_INV[0];
   document.getElementById("np-inv-nombre").value = nombre;
-  document.getElementById("np-inv-categoria").value = enCatalogo?.categoria || "Herbicida";
-  document.getElementById("np-inv-ingrediente").value = enCatalogo?.ingredienteActivo || "";
-  document.getElementById("np-inv-fabricante").value = enCatalogo?.fabricante || "";
+  { const sel = document.getElementById("np-inv-categoria"), cat = (pend && pend.categoria) || enCatalogo?.categoria || "Herbicida";
+    sel.value = [...sel.options].some(o => o.value === cat) ? cat : (cat === 'Fertilizante' ? 'Foliar' : 'Otros'); }
+  document.getElementById("np-inv-ingrediente").value = (pend && pend.ingredienteActivo) || enCatalogo?.ingredienteActivo || "";
+  document.getElementById("np-inv-fabricante").value = (pend && pend.fabricante) || enCatalogo?.fabricante || "";
   document.getElementById("np-inv-proveedor").value = proveedor || "";
   document.getElementById("np-inv-cultivos").value = "";
   document.getElementById("np-inv-bodega-label").textContent = `Ingresará con ${cantidad} ${unidad} en ${npBodegaInv}`;
