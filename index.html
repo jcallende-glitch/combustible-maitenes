@@ -2901,6 +2901,7 @@ window.mostrarSelectorSecciones = function() {
   const per = isAdmin ? ['tractor', 'reparto', 'cuaderno2', 'energia', 'cosecha', 'rendimiento'] : permisosPruebasDe(currentUser);
   ['asistencia', 'campo', 'inventario', 'autorizaciones', 'equipos'].forEach(sec => { const b = document.getElementById('sec-btn-' + sec); if (b) b.style.display = (isAdmin || (sec === 'campo' && campoTambien)) ? '' : 'none'; });
   { const bc = document.getElementById('sec-btn-combustible'); if (bc) bc.style.display = ''; }
+  { const bi = document.getElementById('sec-btn-inventario'); if (bi && !isAdmin && per.includes('inventario')) bi.style.display = ''; }
   document.getElementById('sec-btn-tractor').style.display = per.includes('tractor') ? '' : 'none';
   document.getElementById('sec-btn-reparto').style.display = per.includes('reparto') ? '' : 'none';
   { const b2 = document.getElementById('sec-btn-cuaderno2'); if (b2) b2.style.display = per.includes('cuaderno2') ? '' : 'none'; }
@@ -2926,6 +2927,17 @@ window.abrirSeccion = function(seccion) {
       document.getElementById('tabs-bar').style.display = 'flex';
       document.getElementById('app-main').style.display = 'block';
       setTab('campo', document.getElementById('tab-campo'));
+    }
+    else if (seccion === 'inventario' && permisosPruebasDe(currentUser).includes('inventario')) {
+      // Operador con acceso al inventario sin valores (precios, facturas y costos solo para JC y Camila)
+      Object.values(SECCIONES_TABS).flat().forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
+      ['tab-registro','tab-historial','tab-mantencion','tab-campo'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
+      SECCIONES_TABS.inventario.forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'block'; });
+      document.getElementById('panel-secciones').style.display = 'none';
+      document.getElementById('tabs-bar').style.display = 'flex';
+      document.getElementById('app-main').style.display = 'block';
+      initInventario();
+      setTab('inv-inventario', document.getElementById('tab-inv-inventario'));
     }
     return;
   }
@@ -11266,7 +11278,7 @@ window.guardarEdicionEquipoOperador = async function(idx) {
 // Camila siempre tienen acceso (por el menú de secciones). Al abrir una de las
 // páginas desde la app se deja un "pase" en el navegador (misma web), para que
 // no tengan que volver a poner el PIN; las páginas igual revisan el permiso.
-const PRUEBAS_GPS = [ { id: 'tractor', txt: '🚜 Modo tractor' }, { id: 'reparto', txt: '📍 Reparto por potrero' }, { id: 'ubicacion', txt: '📡 Ubicación equipos' }, { id: 'cuaderno2', txt: '🎤 Cuaderno v2 (dictado)' }, { id: 'energia', txt: '⚡ Energía eléctrica' }, { id: 'cosecha', txt: '🌾 Modo cosecha (celular)' }, { id: 'rendimiento', txt: '📊 Rendimiento por potrero' } ];
+const PRUEBAS_GPS = [ { id: 'tractor', txt: '🚜 Modo tractor' }, { id: 'reparto', txt: '📍 Reparto por potrero' }, { id: 'ubicacion', txt: '📡 Ubicación equipos' }, { id: 'cuaderno2', txt: '🎤 Cuaderno v2 (dictado)' }, { id: 'energia', txt: '⚡ Energía eléctrica' }, { id: 'cosecha', txt: '🌾 Modo cosecha (celular)' }, { id: 'rendimiento', txt: '📊 Rendimiento por potrero' }, { id: 'inventario', txt: '📦 Inventario (sin valores)' } ];
 function permisosPruebasDe(op) { const v = (config.permisosPruebas || {})[op]; return Array.isArray(v) ? v : []; }
 window.abrirPrueba = function(cual) {
   const pase = JSON.stringify({ nombre: currentUser, admin: !!isAdmin, ts: Date.now() });
@@ -12125,6 +12137,9 @@ const ALIAS_CATEGORIA_INV = {
 // Código interno (color+número) que reemplaza físicamente la etiqueta comercial
 // de algunos agroquímicos. Visibilidad restringida vía config/permisos (dbInv).
 let permisosInv = { verCodigoInterno: [] };
+// Precios, valores de facturas, fotos de facturas y costos: solo JC y Camila. El resto ve cantidades y stock.
+function verValoresInv() { return esAdminPleno(); }
+function aplicarVisibilidadValoresInv() { document.body.classList.toggle('inv-sin-valores', !verValoresInv()); }
 let permisosInvCargados = false;
 function puedeVerCodigoInternoInv() {
   if (esAdminPleno()) return true;
@@ -12307,6 +12322,7 @@ function suscribirProductosInv() {
 }
 
 function initInventario() {
+  aplicarVisibilidadValoresInv();
   { const bc = document.getElementById('btn-conteo-fisico'); if (bc) bc.style.display = isAdmin ? '' : 'none'; }
   cargarSagAbejasRemoto();
   if (!permisosInvCargados) cargarPermisosInv().then(() => { renderInventarioTabla(); renderInventarioHeader(); });
@@ -12870,7 +12886,7 @@ window.guardarProductoInv = async function() {
     },
     unidad: document.getElementById("prod-inv-unidad").value,
     stockMinimo: Number(document.getElementById("prod-inv-minimo").value) || 0,
-    precio: Number(document.getElementById("prod-inv-precio").value) || 0,
+    ...(verValoresInv() ? { precio: Number(document.getElementById("prod-inv-precio").value) || 0 } : {}),
     etiquetaUrl: document.getElementById("prod-inv-etiqueta").value.trim(),
     hojaUrl: document.getElementById("prod-inv-hoja").value.trim(),
     ts: Date.now(),
@@ -13030,10 +13046,10 @@ function renderItemsIngresoInv() {
         <button class="btn-danger" onclick="quitarItemIngresoInv(${idx})">🗑</button>
       </div>
       ${envaseItemHtml(it, idx)}
-      <div class="grid-2" style="grid-template-columns:1fr 1fr 1fr;gap:8px">
+      <div class="grid-2" style="grid-template-columns:${verValoresInv() ? '1fr 1fr 1fr' : '1fr 1fr'};gap:8px">
         <div class="field" style="margin-bottom:0"><label>Cantidad total</label><input type="number" id="inv-item-cant-${idx}" value="${it.cantidad}" oninput="actualizarItemIngresoInv(${idx},'cantidad',Number(this.value))"></div>
         <div class="field" style="margin-bottom:0"><label>Unidad</label><div class="select-wrapper"><select onchange="actualizarItemIngresoInv(${idx},'unidad',this.value)">${UNIDADES_INV.map(u=>`<option ${u===it.unidad?"selected":""}>${u}</option>`).join("")}</select></div></div>
-        <div class="field" style="margin-bottom:0"><label${it._ia && !(it.precioUnitario > 0) ? ' style="color:#B91C1C"' : ''}>Neto por ${escA(it.unidad || 'unidad')} $${it._ia && !(it.precioUnitario > 0) ? ' (falta)' : ''}</label><input type="number" id="inv-item-precio-${idx}" value="${it.precioUnitario ? r4(it.precioUnitario) : 0}" oninput="actualizarItemIngresoInv(${idx},'precioUnitario',Number(this.value))"></div>
+        ${verValoresInv() ? `<div class="field" style="margin-bottom:0"><label${it._ia && !(it.precioUnitario > 0) ? ' style="color:#B91C1C"' : ''}>Neto por ${escA(it.unidad || 'unidad')} $${it._ia && !(it.precioUnitario > 0) ? ' (falta)' : ''}</label><input type="number" id="inv-item-precio-${idx}" value="${it.precioUnitario ? r4(it.precioUnitario) : 0}" oninput="actualizarItemIngresoInv(${idx},'precioUnitario',Number(this.value))"></div>` : ''}
       </div>
       ${bodegaItemHtml(it, idx)}
     </div>`;
@@ -13068,7 +13084,7 @@ function chequeoEnvaseHtml(it) {
   const out = [];
   if (!(it._contenido > 0)) out.push(`<div style="color:#B91C1C;font-weight:700">⚠️ Falta cuántos ${escA(it.unidad || 'L')} trae cada envase: complétalo para calcular el total.</div>`);
   else if (it._contenido === 1 && esUmEnvaseInv(it._umDoc) && !esUmBaseInv(it._umDoc)) out.push(`<div style="color:#B45309">⚠️ ¿Seguro que cada «${escA(it._umDoc)}» trae 1 ${escA(it.unidad)}? Revisa la presentación.</div>`);
-  if (it._totalLinea > 0 && it._precioEnvase > 0 && it._envases > 0) {
+  if (verValoresInv() && it._totalLinea > 0 && it._precioEnvase > 0 && it._envases > 0) {
     const calc = it._envases * it._precioEnvase, dif = Math.abs(calc - it._totalLinea) / it._totalLinea;
     out.push(dif <= 0.01
       ? `<div style="color:var(--verde)">✓ ${nfInv(it._envases)} × ${pesoInv(it._precioEnvase)} = ${pesoInv(calc)}: cuadra con el total de la línea.</div>`
@@ -13079,7 +13095,7 @@ function chequeoEnvaseHtml(it) {
 function envaseItemHtml(it, idx) {
   if (it._envases == null) return `<a href="#" style="font-size:11px;color:var(--acero)" onclick="event.preventDefault();activarEnvaseItemInv(${idx})">📦 ¿Viene en envases (bidones, sacos)? Calcular el total</a>`;
   return `<div style="background:var(--fondo);border-radius:8px;padding:8px 10px;font-size:12px">
-    <div style="color:var(--acero)">📦 ${it._ia ? 'En el documento' : 'Envases'}: <strong>${nfInv(it._envases)} ${escA(it._umDoc || 'envase(s)')}</strong>${it._precioEnvase ? ` a ${pesoInv(it._precioEnvase)} c/u` : ''}${it._totalLinea ? ` · total línea ${pesoInv(it._totalLinea)}` : ''}</div>
+    <div style="color:var(--acero)">📦 ${it._ia ? 'En el documento' : 'Envases'}: <strong>${nfInv(it._envases)} ${escA(it._umDoc || 'envase(s)')}</strong>${verValoresInv() && it._precioEnvase ? ` a ${pesoInv(it._precioEnvase)} c/u` : ''}${verValoresInv() && it._totalLinea ? ` · total línea ${pesoInv(it._totalLinea)}` : ''}</div>
     <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px">
       <input type="number" id="inv-item-env-${idx}" value="${it._envases}" min="0" step="any" style="width:80px;padding:6px" oninput="envaseItemInv(${idx},'_envases',this.value)">
       <span>envase(s) ×</span>
@@ -13293,9 +13309,9 @@ window.leerDocumentoIngresoInv = async function() {
     const sinPrecio = itemsIngresoInv.filter(i => !(i.precioUnitario > 0)).length;
     const reconocidos = itemsIngresoInv.filter(i => productoInvPorNombre(i.nombre)).length;
     const conParecido = itemsIngresoInv.filter(i => !productoInvPorNombre(i.nombre) && similaresInv(i.nombre).length).length;
-    aviso.innerHTML = `<div style="background:#ECFDF5;color:#047857;border-radius:8px;padding:8px 10px;font-size:12px;margin-top:8px">✨ Leí ${itemsIngresoInv.length} producto(s)${doc_.fecha ? ' · fecha del documento ' + escA(doc_.fecha) : ''}${doc_.total_neto ? ' · total neto leído $' + Math.round(doc_.total_neto).toLocaleString('es-CL') : ''}.
+    aviso.innerHTML = `<div style="background:#ECFDF5;color:#047857;border-radius:8px;padding:8px 10px;font-size:12px;margin-top:8px">✨ Leí ${itemsIngresoInv.length} producto(s)${doc_.fecha ? ' · fecha del documento ' + escA(doc_.fecha) : ''}${doc_.total_neto && verValoresInv() ? ' · total neto leído $' + Math.round(doc_.total_neto).toLocaleString('es-CL') : ''}.
       <strong>Revisa cada dato, corrige lo que esté mal y completa lo que falte</strong> antes de confirmar.
-      ${vacios.length ? '<br>No pude leer: ' + vacios.join(', ') + '.' : ''}${reconocidos ? `<br>📦 ${reconocidos} reconocido(s) en el inventario.` : ''}${conParecido ? `<br>🔎 ${conParecido} con nombre parecido a uno del inventario: elige el correcto abajo.` : ''}${sinPrecio ? `<br>⚠️ ${sinPrecio} producto(s) sin valor neto.` : ''}${faltaCont ? `<br>📦 ${faltaCont} producto(s) sin el contenido por envase: complétalo para calcular los litros o kilos.` : ''}${porBuscar.length ? `<br>🔬 Buscando el ingrediente activo de ${porBuscar.length} producto(s) que no están en el inventario…` : ''}${itemsIngresoInv.length >= 2 ? '<br>📍 Elige la bodega de cada producto.' : ''}${doc_.observaciones ? '<br>Nota de la lectura: ' + escA(doc_.observaciones) : ''}</div>`;
+      ${vacios.length ? '<br>No pude leer: ' + vacios.join(', ') + '.' : ''}${reconocidos ? `<br>📦 ${reconocidos} reconocido(s) en el inventario.` : ''}${conParecido ? `<br>🔎 ${conParecido} con nombre parecido a uno del inventario: elige el correcto abajo.` : ''}${sinPrecio && verValoresInv() ? `<br>⚠️ ${sinPrecio} producto(s) sin valor neto.` : ''}${faltaCont ? `<br>📦 ${faltaCont} producto(s) sin el contenido por envase: complétalo para calcular los litros o kilos.` : ''}${porBuscar.length ? `<br>🔬 Buscando el ingrediente activo de ${porBuscar.length} producto(s) que no están en el inventario…` : ''}${itemsIngresoInv.length >= 2 ? '<br>📍 Elige la bodega de cada producto.' : ''}${doc_.observaciones ? '<br>Nota de la lectura: ' + escA(doc_.observaciones) : ''}</div>`;
     toast('✓ Documento leído: revisa y confirma', true);
   } catch (e) { aviso.innerHTML = `<div style="color:#B91C1C;font-size:12px;margin-top:6px">${escA(e.message)}</div>`; toast(e.message, false); }
   finally { btn.disabled = false; btn.textContent = '✨ Leer el documento y rellenar los campos'; }
@@ -13309,6 +13325,7 @@ window.ingresoFotoElegir = async function(inp) {
   inp.value = ''; renderFotosIngresoInv();
 }
 window.verFotoIngresoInv = async function(id) {
+  if (!verValoresInv()) { toast('Las fotos de facturas solo las ven JC y Camila', false); return; }
   try {
     const d = await getDoc(doc(dbInv, 'docs_fotos', id));
     if (!d.exists()) { toast('Foto no disponible', false); return; }
@@ -13334,24 +13351,25 @@ window.guardarIngresoInv = function() {
   if (sinBod) { toast(`Elige a qué bodega llega «${sinBod.nombre.trim()}»`, false); return; }
   const $ = n => '$' + Math.round(n).toLocaleString('es-CL');
   const total = items.reduce((a, it) => a + (Number(it.precioUnitario) || 0) * Number(it.cantidad), 0);
-  const sinValor = items.filter(it => !(Number(it.precioUnitario) > 0)).length;
+  const vv = verValoresInv();
+  const sinValor = vv ? items.filter(it => !(Number(it.precioUnitario) > 0)).length : 0;
   document.getElementById('inv-ingreso-confirm-body').innerHTML = `
     <div style="background:var(--fondo);border-radius:8px;padding:10px 12px;font-size:13px;margin-bottom:10px">
       <div><strong>Proveedor:</strong> ${escA(proveedor) || '<span style="color:#B45309">sin indicar</span>'}</div>
       <div><strong>Documento:</strong> ${escA(nroDocumento)} · <strong>Bodega:</strong> ${multi ? 'según cada producto' : escA(bodega)}</div>
       <div><strong>Autoriza:</strong> ${escA(currentUser || '')}${(document.getElementById('inv-ingreso-recibe') || {}).value ? ' · <strong>Recibe:</strong> ' + escA(document.getElementById('inv-ingreso-recibe').value) : ''}</div>
       <div><strong>Foto del documento:</strong> ${fotosIngresoInv.length ? fotosIngresoInv.length + ' adjunta(s)' : '<span style="color:#B45309">sin foto</span>'}</div></div>
-    <div class="table-wrap"><table><thead><tr><th>Nombre comercial</th><th>Cantidad</th><th>Neto unit.</th><th>Neto total</th></tr></thead><tbody>${items.map(it => {
+    <div class="table-wrap"><table><thead><tr><th>Nombre comercial</th><th>Cantidad</th>${vv ? '<th>Neto unit.</th><th>Neto total</th>' : ''}</tr></thead><tbody>${items.map(it => {
       const pInv = productoInvPorNombre(it.nombre), conocido = !!pInv, v = Number(it.precioUnitario) || 0;
       const ren = conocido && it._nuevoNombreInv ? it._nuevoNombreInv : '';
-      return `<tr><td style="font-weight:600">${escA(ren || (conocido ? pInv.nombre : it.nombre.trim()))}<div style="font-size:10px;font-weight:400;color:${conocido ? 'var(--verde)' : '#B45309'}">${conocido ? '✓ suma al stock' : '⚠️ producto nuevo: queda pendiente de registrar'}</div>${ren ? `<div style="font-size:10px;font-weight:400;color:#1D4ED8">✏️ se renombra (antes «${escA(pInv.nombre)}»)</div>` : ''}${multi ? `<div style="font-size:10px;font-weight:400;color:var(--acero)">📍 ${escA(it.bodega || '')}</div>` : ''}${!conocido && it._ing && it._ing.ia ? `<div style="font-size:10px;font-weight:400;color:#1D4ED8">🔬 ${escA(it._ing.ia)}</div>` : ''}</td><td style="white-space:nowrap">${Number(it.cantidad).toLocaleString('es-CL')} ${it.unidad}${it._envases != null && it._contenido > 0 ? `<div style="font-size:10px;color:var(--acero)">${nfInv(it._envases)} × ${nfInv(it._contenido)} ${it.unidad}</div>` : ''}</td><td style="${v ? '' : 'color:#B91C1C;font-weight:700'}">${v ? $(v) : 'sin valor'}</td><td>${v ? $(v * Number(it.cantidad)) : '—'}</td></tr>`;
-    }).join('')}</tbody><tfoot><tr><td colspan="3" style="font-weight:800">Total neto</td><td style="font-weight:800">${$(total)}</td></tr></tfoot></table></div>
+      return `<tr><td style="font-weight:600">${escA(ren || (conocido ? pInv.nombre : it.nombre.trim()))}<div style="font-size:10px;font-weight:400;color:${conocido ? 'var(--verde)' : '#B45309'}">${conocido ? '✓ suma al stock' : '⚠️ producto nuevo: queda pendiente de registrar'}</div>${ren ? `<div style="font-size:10px;font-weight:400;color:#1D4ED8">✏️ se renombra (antes «${escA(pInv.nombre)}»)</div>` : ''}${multi ? `<div style="font-size:10px;font-weight:400;color:var(--acero)">📍 ${escA(it.bodega || '')}</div>` : ''}${!conocido && it._ing && it._ing.ia ? `<div style="font-size:10px;font-weight:400;color:#1D4ED8">🔬 ${escA(it._ing.ia)}</div>` : ''}</td><td style="white-space:nowrap">${Number(it.cantidad).toLocaleString('es-CL')} ${it.unidad}${it._envases != null && it._contenido > 0 ? `<div style="font-size:10px;color:var(--acero)">${nfInv(it._envases)} × ${nfInv(it._contenido)} ${it.unidad}</div>` : ''}</td>${vv ? `<td style="${v ? '' : 'color:#B91C1C;font-weight:700'}">${v ? $(v) : 'sin valor'}</td><td>${v ? $(v * Number(it.cantidad)) : '—'}</td>` : ''}</tr>`;
+    }).join('')}</tbody>${vv ? `<tfoot><tr><td colspan="3" style="font-weight:800">Total neto</td><td style="font-weight:800">${$(total)}</td></tr></tfoot>` : ''}</table></div>
     ${sinValor ? `<div style="font-size:12px;color:#B91C1C;margin-top:6px">⚠️ ${sinValor} producto(s) sin valor neto: no se actualizará su precio en Inventario.</div>` : ''}
-    ${items.filter(it => it._totalLinea > 0 && it._precioEnvase > 0 && it._envases > 0 && Math.abs(it._envases * it._precioEnvase - it._totalLinea) / it._totalLinea > 0.01).map(it => `<div style="font-size:12px;color:#B91C1C;margin-top:6px">⚠️ «${escA(it.nombre.trim())}»: ${nfInv(it._envases)} × ${pesoInv(it._precioEnvase)} no cuadra con el total de su línea (${pesoInv(it._totalLinea)}).</div>`).join('')}
-    ${totalDocIAInv > 0 ? (Math.abs(total - totalDocIAInv) / totalDocIAInv <= 0.01
+    ${!vv ? '' : items.filter(it => it._totalLinea > 0 && it._precioEnvase > 0 && it._envases > 0 && Math.abs(it._envases * it._precioEnvase - it._totalLinea) / it._totalLinea > 0.01).map(it => `<div style="font-size:12px;color:#B91C1C;margin-top:6px">⚠️ «${escA(it.nombre.trim())}»: ${nfInv(it._envases)} × ${pesoInv(it._precioEnvase)} no cuadra con el total de su línea (${pesoInv(it._totalLinea)}).</div>`).join('')}
+    ${vv && totalDocIAInv > 0 ? (Math.abs(total - totalDocIAInv) / totalDocIAInv <= 0.01
       ? `<div style="font-size:12px;color:var(--verde);margin-top:6px">✓ La suma cuadra con el total neto del documento (${pesoInv(totalDocIAInv)}).</div>`
       : `<div style="font-size:12px;color:#B91C1C;font-weight:700;margin-top:6px">⚠️ La suma de los productos (${pesoInv(total)}) no cuadra con el total neto del documento (${pesoInv(totalDocIAInv)}): diferencia ${pesoInv(total - totalDocIAInv)}. Revisa cantidades y precios.</div>`) : ''}
-    <div class="hint" style="margin:8px 0">Revisa que los nombres, cantidades y valores coincidan con el documento. Si hay un error, vuelve a corregir.</div>`;
+    <div class="hint" style="margin:8px 0">Revisa que los nombres${vv ? ', cantidades y valores' : ' y cantidades'} coincidan con el documento. Si hay un error, vuelve a corregir.</div>`;
   document.getElementById('modal-inv-ingreso-confirm').style.display = 'flex';
 }
 // Paso 2: guarda de verdad
@@ -13430,7 +13448,7 @@ function renderIngresosInv() {
   hist.innerHTML = ingresosInv.slice(0, 25).map(ing => `
     <div class="config-item" style="flex-direction:column;align-items:stretch;gap:6px">
       <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:4px">
-        <strong>${ing.proveedor||"Sin proveedor"}${ing.nroDocumento?" · Doc. "+ing.nroDocumento:""}${(ing.fotoIds||[]).map((fid, i) => ` <span style="cursor:pointer;font-size:12px" onclick="verFotoIngresoInv('${fid}')">📷${(ing.fotoIds.length > 1) ? i + 1 : ''}</span>`).join('')}</strong>
+        <strong>${ing.proveedor||"Sin proveedor"}${ing.nroDocumento?" · Doc. "+ing.nroDocumento:""}${verValoresInv() ? (ing.fotoIds||[]).map((fid, i) => ` <span style="cursor:pointer;font-size:12px" onclick="verFotoIngresoInv('${fid}')">📷${(ing.fotoIds.length > 1) ? i + 1 : ''}</span>`).join('') : ''}</strong>
         <span style="font-size:11px;color:var(--acero)">${ing.fecha ? new Date(ing.ts).toLocaleDateString("es-CL",{day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit"}) : ""}</span>
       </div>
       <div style="display:flex;flex-wrap:wrap;gap:4px">${(ing.items||[]).map(it => {
@@ -13477,7 +13495,7 @@ window.guardarNuevoDesdeIngresoInv = async function() {
     stock: { [BODEGAS_INV[0]]: 0, [BODEGAS_INV[1]]: 0, [npBodegaInv]: r2(document.getElementById("np-inv-stock").value) },
     unidad: document.getElementById("np-inv-unidad").value,
     stockMinimo: Number(document.getElementById("np-inv-minimo").value) || 0,
-    precio: Number(document.getElementById("np-inv-precio").value) || 0,
+    precio: verValoresInv() ? (Number(document.getElementById("np-inv-precio").value) || 0) : 0,
     etiquetaUrl: document.getElementById("np-inv-etiqueta").value.trim(),
     hojaUrl: document.getElementById("np-inv-hoja").value.trim(),
     ts: Date.now(),
@@ -13538,6 +13556,7 @@ function parseNumeroClInv(raw) {
   return isNaN(n) ? 0 : n;
 }
 window.abrirImportarCsvInv = function() {
+  if (!esAdminPleno()) { toast('Solo JC o Camila pueden importar (el archivo trae precios)', false); return; }
   filasImportarInv = [];
   document.getElementById("inv-importar-file").value = "";
   document.getElementById("inv-importar-preview").innerHTML = "";
@@ -13724,7 +13743,7 @@ window.confirmarVaciarInv = async function() {
       const rows = productosInv.map(p => ({
         'Producto': p.nombre, 'Categoría': p.categoria, 'Ingrediente activo': p.ingredienteActivo || '',
         'Fabricante': p.fabricante || '', 'Proveedor': p.proveedor || '', 'Código interno': p.codigoInterno || '',
-        'Unidad': p.unidad || 'L', 'Stock mínimo': p.stockMinimo || 0, 'Precio': p.precio || 0,
+        'Unidad': p.unidad || 'L', 'Stock mínimo': p.stockMinimo || 0, ...(verValoresInv() ? { 'Precio': p.precio || 0 } : {}),
         [BODEGAS_INV[0]]: stockInv(p, BODEGAS_INV[0]), [BODEGAS_INV[1]]: stockInv(p, BODEGAS_INV[1]),
         'Etiqueta': p.etiquetaUrl || '', 'Hoja seguridad': p.hojaUrl || ''
       }));
@@ -14134,6 +14153,7 @@ select:focus,input:focus{outline:none;border-color:var(--amarillo);box-shadow:0 
 .centros-selector{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px;}
 .cultivo-chip{padding:8px 14px;border-radius:20px;border:2px solid var(--borde);font-size:13px;font-weight:500;cursor:pointer;background:var(--blanco);transition:all .15s;user-select:none;}
 .cultivo-chip.sel{background:var(--verde);color:var(--blanco);border-color:var(--verde);}
+.inv-sin-valores .solo-valores-inv, .inv-sin-valores .solo-admin-inv{display:none !important;}
 .cultivo-chip:hover{border-color:var(--verde);}
 .cultivos-dist{background:var(--verde-suave);border:1px solid #A7D7B5;border-radius:6px;padding:12px;margin-top:8px;}
 .dist-title{font-size:11px;font-weight:600;color:var(--verde);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;}
@@ -14914,8 +14934,8 @@ tbody td{padding:10px 12px;vertical-align:middle;}
 
       <div style="font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--acero);margin:18px 4px 8px">Modo tractor, reparto y ubicación</div>
       <div class="panel">
-        <div class="panel-title">🧪 Acceso a Modo tractor, Reparto por potrero, Ubicación equipos y Cuaderno v2</div>
-        <div style="font-size:12px;color:var(--acero);margin-bottom:8px">Marca qué puede abrir cada operador con su PIN. Al entrar le aparece el menú de secciones (Combustible + lo que tenga permitido), y con "☰ Secciones" vuelve a él.</div>
+        <div class="panel-title">🧪 Acceso por operador: Modo tractor, Reparto, Ubicación, Cuaderno v2, Cosecha e Inventario</div>
+        <div style="font-size:12px;color:var(--acero);margin-bottom:8px">Marca qué puede abrir cada operador con su PIN. Al entrar le aparece el menú de secciones (Combustible + lo que tenga permitido), y con "☰ Secciones" vuelve a él. "📦 Inventario (sin valores)": ve stock, movimientos y alertas y puede registrar ingresos, pero no ve precios, valores ni las fotos de facturas (eso solo lo ven JC y Camila).</div>
         <div class="config-lista" id="lista-permisos-pruebas"></div>
       </div>
     </div>
@@ -15339,7 +15359,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
             <input type="checkbox" id="inv-check-avisaje" onchange="toggleSoloAvisajeInv()"> 🐝 Requieren avisaje
           </label>
           <button class="btn btn-secondary" id="inv-btn-vista" onclick="toggleVistaInv()">🔬 Agrupar por ingrediente activo</button>
-          <button class="btn btn-secondary" style="width:auto" onclick="abrirImportarCsvInv()">📄 Importar CSV</button>
+          <button class="btn btn-secondary solo-admin-inv" style="width:auto" onclick="abrirImportarCsvInv()">📄 Importar CSV</button>
           <button class="btn btn-secondary" style="width:auto" onclick="abrirDevolucionInv()">↩️ Devolución</button>
           <button class="btn btn-secondary" style="width:auto" onclick="abrirTraspasoInv()">🔁 Traspaso entre bodegas</button>
           <button class="btn btn-secondary" style="width:auto;display:none" id="btn-conteo-fisico" onclick="abrirConteoFisicoInv()">🧮 Conteo físico</button>
@@ -15605,7 +15625,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     <div class="field"><label>Cultivos compatibles</label><input type="text" id="prod-inv-cultivos" placeholder="Ej: Trigo, maíz, soya, vid"></div>
     <div class="grid-2">
       <div class="field"><label>Proveedor local</label><input type="text" id="prod-inv-proveedor"></div>
-      <div class="field"><label>Precio unit. $</label><input type="number" id="prod-inv-precio"></div>
+      <div class="field solo-valores-inv"><label>Precio unit. $</label><input type="number" id="prod-inv-precio"></div>
       <div class="field"><label>Stock en Bodega Cultivos</label><input type="number" id="prod-inv-stock-b0" step="0.01"></div>
       <div class="field"><label>Stock en Bodega Frutales</label><input type="number" id="prod-inv-stock-b1" step="0.01"></div>
       <div class="field"><label>Unidad</label><div class="select-wrapper"><select id="prod-inv-unidad"><option>L</option><option>kg</option><option>g</option><option>mL</option><option>t</option></select></div></div>
@@ -15690,7 +15710,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     <div class="hint" id="np-inv-bodega-label" style="margin-bottom:10px"></div>
     <div class="grid-2">
       <div class="field"><label>Proveedor</label><input type="text" id="np-inv-proveedor"></div>
-      <div class="field"><label>Precio unit. $</label><input type="number" id="np-inv-precio"></div>
+      <div class="field solo-valores-inv"><label>Precio unit. $</label><input type="number" id="np-inv-precio"></div>
       <div class="field"><label>Stock inicial</label><input type="number" id="np-inv-stock" step="0.01"></div>
       <div class="field"><label>Unidad</label><div class="select-wrapper"><select id="np-inv-unidad"><option>L</option><option>kg</option><option>g</option><option>mL</option><option>t</option></select></div></div>
       <div class="field"><label>Stock mínimo (total ambas bodegas)</label><input type="number" id="np-inv-minimo" value="0"></div>
