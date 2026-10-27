@@ -1,0 +1,1688 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#111111">
+<title>Modo cosecha · Los Maitenes</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/5.2.0/maplibre-gl.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/5.2.0/maplibre-gl.js"></script>
+<style>
+  :root {
+    --fondo: #111111; --panel: #1C1C1C; --borde: #333; --texto: #F5F5F5; --gris: #A3A3A3;
+    --verde: #22C55E; --amarillo: #FACC15; --rojo: #EF4444; --azul: #60A5FA;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--fondo); color: var(--texto); font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; overflow: hidden; }
+  #app { display: flex; flex-direction: column; height: 100%; }
+  #barra { display: flex; gap: 6px; align-items: center; padding: 6px 10px; background: var(--panel); border-bottom: 1px solid var(--borde); font-size: 13px; flex-wrap: wrap; }
+  #barra .eq { font-weight: 700; font-size: 15px; margin-right: auto; }
+  .chip { padding: 3px 8px; border-radius: 999px; background: #262626; white-space: nowrap; }
+  .chip.ok { color: var(--verde); } .chip.mal { color: var(--rojo); } .chip.med { color: var(--amarillo); }
+  #mapa { flex: 1; min-height: 0; background: #1a1a1a; position: relative; }
+  #pie { padding: 8px 10px calc(8px + env(safe-area-inset-bottom)); background: var(--panel); border-top: 1px solid var(--borde); }
+  #ap-linea { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  #ap-info { flex: 1; font-size: 14px; line-height: 1.3; }
+  #ap-info .sub { font-size: 12px; color: var(--gris); }
+  #stats { font-size: 13px; color: var(--gris); margin-bottom: 6px; text-align: center; }
+  #botones { display: flex; gap: 8px; }
+  button { font: inherit; border: none; border-radius: 12px; cursor: pointer; }
+  #btn-aplicar { flex: 1; padding: 18px 10px; font-size: 20px; font-weight: 800; background: #2A2A2A; color: var(--texto); border: 3px solid #444; }
+  #btn-aplicar.on { background: var(--verde); color: #052e12; border-color: #16a34a; }
+  #btn-aplicar.on.fuera { background: var(--amarillo); color: #3b2f00; border-color: #ca8a04; }
+  #tolva-linea { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  #tolva-info { flex: 1; font-size: 14px; line-height: 1.3; }
+  #tolva-info .sub { font-size: 12px; color: var(--gris); }
+  #tolva-barra { height: 6px; background: #333; border-radius: 3px; margin-top: 4px; overflow: hidden; }
+  #tolva-barra div { height: 100%; background: var(--amarillo); }
+  #tolva-barra.llena div { background: var(--rojo); }
+  #btn-tolva { padding: 14px 12px; font-size: 16px; font-weight: 800; background: var(--amarillo); color: #3b2f00; white-space: nowrap; }
+  .desc-fila { display: flex; justify-content: space-between; gap: 6px; padding: 6px 0; border-bottom: 1px solid #333; font-size: 13px; color: var(--texto); }
+  .desc-fila.anulada { text-decoration: line-through; color: var(--gris); }
+  .btn-sec { padding: 14px 16px; font-size: 20px; background: #2A2A2A; color: var(--texto); }
+  .btn-pot { padding: 10px 12px; font-size: 14px; font-weight: 700; background: #2A2A2A; color: var(--amarillo); white-space: nowrap; }
+  #aviso { display: none; position: absolute; left: 10px; right: 10px; top: 56px; z-index: 1000; background: #78350F; color: #FEF3C7; padding: 10px 12px; border-radius: 10px; font-size: 14px; }
+  #banner { display: none; position: absolute; left: 10px; right: 10px; bottom: 10px; z-index: 900; background: #1E3A8A; color: #fff; padding: 12px; border-radius: 12px; font-size: 15px; box-shadow: 0 4px 16px rgba(0,0,0,.5); }
+  #banner .acc { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  #banner button { flex: 1; padding: 12px; font-size: 15px; font-weight: 700; min-width: 110px; }
+  .b-si { background: var(--verde); color: #052e12; } .b-nueva { background: var(--amarillo); color: #3b2f00; } .b-no { background: #374151; color: #fff; }
+  .capa { position: fixed; inset: 0; z-index: 2000; background: rgba(0,0,0,.85); display: none; align-items: center; justify-content: center; padding: 16px; }
+  .caja { background: var(--panel); border: 1px solid var(--borde); border-radius: 14px; padding: 18px; width: 100%; max-width: 440px; max-height: 92vh; overflow: auto; }
+  .caja h2 { margin: 0 0 12px; font-size: 18px; }
+  .caja label { display: block; font-size: 13px; color: var(--gris); margin: 12px 0 4px; }
+  .caja select, .caja input { width: 100%; padding: 12px; font-size: 16px; background: #0F0F0F; color: var(--texto); border: 1px solid var(--borde); border-radius: 10px; }
+  .caja .nota { font-size: 12px; color: var(--gris); margin-top: 6px; line-height: 1.4; }
+  .caja .acciones { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+  .btn-prim { flex: 1; padding: 14px; font-size: 16px; font-weight: 700; background: var(--verde); color: #052e12; }
+  .btn-amar { flex: 1; padding: 14px; font-size: 16px; font-weight: 700; background: var(--amarillo); color: #3b2f00; }
+  .btn-gris { flex: 1; padding: 14px; font-size: 15px; background: #2A2A2A; color: var(--texto); }
+  .lista-pot { display: flex; flex-direction: column; gap: 6px; }
+  .lista-pot button { text-align: left; padding: 12px; background: #262626; color: var(--texto); font-size: 15px; }
+  .lista-pot button .sub { display: block; font-size: 12px; color: var(--gris); margin-top: 2px; }
+  .lista-pot button.aqui { border: 2px solid var(--verde); }
+  .eq-chips { display: flex; flex-direction: column; gap: 8px; }
+  .eq-chips button { padding: 16px; font-size: 18px; font-weight: 700; background: #262626; color: var(--texto); border: 2px solid #444; text-align: left; }
+  .eq-chips button.sel { background: var(--verde); color: #052e12; border-color: #16a34a; }
+  .link-btn { background: none; color: var(--azul); padding: 10px 0; font-size: 14px; text-decoration: underline; }
+  #pin-input { font-size: 28px; text-align: center; letter-spacing: 8px; }
+  .maplibregl-map { background: #1a1a1a; }
+  .pos-icono { width: 22px; height: 22px; border-radius: 50%; background: var(--azul); border: 3px solid #fff; box-shadow: 0 0 0 2px rgba(0,0,0,.4); }
+  .pos-flecha { width: 34px; height: 34px; }
+  .seg { display: flex; gap: 6px; }
+  .seg button { flex: 1; padding: 14px 6px; font-size: 15px; font-weight: 700; background: #262626; color: var(--texto); border: 2px solid #444; }
+  .seg button.sel { background: var(--azul); color: #0b1b33; border-color: #3b82f6; }
+  /* Vista de conducción: solo mapa + un dato grande (entra sola tras 10 s sin tocar) */
+  #hud { display: none; position: absolute; left: 10px; right: 10px; top: 10px; z-index: 950; background: rgba(17,17,17,.88); border: 3px solid #444; border-radius: 16px; padding: 8px 12px 10px; text-align: center; }
+  #hud.ap { border-color: var(--verde); }
+  #hud .h-val { font-size: 64px; font-weight: 800; line-height: 1.05; font-variant-numeric: tabular-nums; }
+  #hud .h-sub { font-size: 14px; color: var(--gris); margin-top: 2px; }
+  #hud .h-sel { display: flex; gap: 6px; margin-top: 8px; }
+  #hud .h-sel button { flex: 1; padding: 8px 2px; font-size: 13px; font-weight: 700; background: #262626; color: var(--texto); border: 2px solid #444; border-radius: 10px; }
+  #hud .h-sel button.sel { background: var(--azul); color: #0b1b33; border-color: #3b82f6; }
+  body.foco #hud { display: block; }
+  body.foco #barra, body.foco #pie { display: none; }
+  body.foco #aviso { top: 190px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="barra">
+    <span class="eq" id="b-equipo" onclick="tocarEquipo()" style="cursor:pointer">Modo cosecha</span>
+    <span class="chip" id="b-gps">📍 GPS…</span>
+    <span class="chip" id="b-red">⚪ —</span>
+    <span class="chip" id="b-pend">⬆ 0</span>
+    <span class="chip" id="b-llave">🔋 —</span>
+  </div>
+  <div id="aviso"></div>
+  <div id="mapa"><div id="banner"></div><div id="hud"></div></div>
+  <div id="pie">
+    <div id="ap-linea">
+      <div id="ap-info">Sin potrero iniciado</div>
+      <button class="btn-pot" id="btn-pot" onclick="abrirPotreros()">🌾 Iniciar potrero</button>
+    </div>
+    <div id="tolva-linea">
+      <div id="tolva-info">🧺 Tolva</div>
+      <button id="btn-tolva" onclick="abrirDescarga()">⬇ DESCARGUÉ</button>
+    </div>
+    <div id="stats"></div>
+    <div id="botones">
+      <button id="btn-aplicar" onclick="toggleAplicar()">▶ EMPEZAR A COSECHAR</button>
+      <button class="btn-sec" title="Vista del mapa" onclick="abrirVista()">🧭</button>
+      <button class="btn-sec" title="Centrar" onclick="centrar()">🎯</button>
+      <button class="btn-sec" title="Ajustes" onclick="abrirAjustes()">⚙️</button>
+    </div>
+  </div>
+</div>
+
+<div class="capa" id="capa-ajustes">
+  <div class="caja">
+    <h2>🌾 Modo cosecha</h2>
+    <div class="nota" id="aj-operador" style="font-size:14px;color:var(--texto)"></div>
+    <label id="aj-lbl-mis">Tus equipos</label>
+    <div class="eq-chips" id="aj-mis-equipos"></div>
+    <button class="link-btn" id="aj-btn-otro" onclick="mostrarOtroEquipo()">Usar otro equipo</button>
+    <div id="aj-otro-wrap" style="display:none">
+      <label>Otro equipo</label>
+      <select id="aj-equipo"></select>
+      <input type="text" id="aj-equipo-libre" placeholder="o escribe el nombre (ej. Cosechadora contratista)" style="margin-top:8px">
+    </div>
+    <label>Ancho de corte / cosecha (metros)</label>
+    <input type="number" id="aj-ancho" min="1" max="60" step="0.5" value="5">
+    <div class="nota">Lo que cosecha en cada pasada (el ancho del cabezal o la plataforma). En frutales se usa el ancho de la entrecalle del cultivo (avellanos 5 m; se cambia en la app → Cuaderno de Campo → 📡 Config. GPS).</div>
+    <label>Peso de la tolva llena (kg)</label>
+    <input type="number" id="aj-tolva" min="1" step="50" inputmode="numeric" placeholder="ej. 6000">
+    <div class="nota">Cada vez que toques "⬇ Descargué" se asumen estos kilos (o la parte que elijas) en lo cosechado desde la descarga anterior.</div>
+    <label>Solo cuenta como cosechado entre estas velocidades (km/h)</label>
+    <div style="display:flex;gap:8px;align-items:center"><input type="number" id="aj-vmin" step="0.5" min="0" inputmode="decimal"><span>y</span><input type="number" id="aj-vmax" step="0.5" min="1" inputmode="decimal"></div>
+    <div class="nota">Más lento (detenido, esperando el camión) o más rápido (traslado) no se pinta ni se cuenta, aunque el botón esté en "cosechando".</div>
+    <div class="nota" id="aj-estado-datos" style="margin-top:12px"></div>
+    <div class="acciones">
+      <button class="btn-gris" onclick="actualizarDatosCampo(true)">🔄 Actualizar potreros</button>
+      <button class="btn-prim" onclick="guardarAjustes()">✓ Listo</button>
+    </div>
+    <div class="acciones"><button class="btn-gris" onclick="rehacerHileras()">↺ Volver a estimar hileras del potrero activo</button></div>
+    <label>Descargas de hoy (este celular)</label>
+    <div id="aj-descargas" class="nota"></div>
+    <div class="acciones"><button class="btn-gris" onclick="deshacerDescarga()">↩ Deshacer la última descarga</button></div>
+    <div class="acciones"><button class="btn-gris" onclick="cerrarSesion()">🔒 Cambiar de operador</button></div>
+    <div class="nota" style="margin-top:14px">Deja esta pantalla abierta y el celular conectado al cargador de la máquina (al contacto). Si no hay señal, guarda todo y lo sube cuando vuelva el internet o el WiFi.</div>
+  </div>
+</div>
+
+<div class="capa" id="capa-vista" style="align-items:flex-end;background:rgba(0,0,0,.35)">
+  <div class="caja">
+    <h2>🧭 Vista del mapa</h2>
+    <label>Inclinación</label>
+    <div class="seg" id="vista-incl">
+      <button data-v="0">⬇ Desde arriba</button><button data-v="45">45°</button><button data-v="60">60°</button>
+    </div>
+    <label>Seguimiento</label>
+    <div class="seg" id="vista-modo">
+      <button data-v="fijo">📌 Fijo</button><button data-v="norte">⬆ Norte arriba</button><button data-v="rumbo">🚜 Hacia adelante</button>
+    </div>
+    <label>Zoom</label>
+    <div class="seg" id="vista-zoom">
+      <button data-v="auto">🔍 Automático</button><button data-v="manual">✋ Manual</button>
+    </div>
+    <div class="nota">Zoom automático: se acerca cuando va lento o gira (cabeceras) y se aleja en traslado. Si haces zoom con los dedos, se respeta por 30 segundos.</div>
+    <div class="nota">Hacia adelante: el mapa gira para que el tractor siempre avance hacia arriba de la pantalla, como al mirar por el parabrisas. Fijo: el mapa no se mueve solo (se mueve con el dedo; con dos dedos se gira).</div>
+    <div class="acciones"><button class="btn-prim" onclick="cerrarCapa('capa-vista')">✓ Listo</button></div>
+  </div>
+</div>
+
+<div class="capa" id="capa-login">
+  <div class="caja">
+    <h2>🌾 Modo cosecha · Los Maitenes</h2>
+    <label>Ingresa tu PIN (el mismo de la app de combustible)</label>
+    <input type="password" id="pin-input" inputmode="numeric" autocomplete="off" maxlength="8" onkeydown="if(event.key==='Enter')intentarLogin()">
+    <div class="nota" id="login-msg"></div>
+    <div class="acciones"><button class="btn-prim" id="btn-login" onclick="intentarLogin()">Ingresar</button></div>
+  </div>
+</div>
+
+<div class="capa" id="capa-potreros">
+  <div class="caja">
+    <h2>🌾 ¿En qué potrero vas a cosechar?</h2>
+    <div class="lista-pot" id="lista-pot"></div>
+    <div class="acciones" id="acc-pot-terminar"></div>
+    <div class="acciones"><button class="btn-gris" onclick="cerrarCapa('capa-potreros')">Cancelar</button></div>
+  </div>
+</div>
+
+<div class="capa" id="capa-jornada">
+  <div class="caja">
+    <h2 id="jor-titulo">🌾 ¿Con qué máquina cosechas hoy?</h2>
+    <div id="jor-texto" style="font-size:15px;line-height:1.5"></div>
+    <div id="jor-botones" style="display:flex;flex-direction:column;gap:8px;margin-top:14px"></div>
+    <div class="nota" id="jor-nota"></div>
+  </div>
+</div>
+
+<div class="capa" id="capa-continuar">
+  <div class="caja">
+    <h2 id="cont-titulo">Cosecha sin terminar</h2>
+    <div id="cont-texto" style="font-size:15px;line-height:1.5"></div>
+    <div class="acciones">
+      <button class="btn-prim" id="cont-si">↪ Es continuación</button>
+      <button class="btn-amar" id="cont-nueva">✳ Nueva cosecha</button>
+    </div>
+    <div class="acciones"><button class="btn-gris" onclick="cerrarCapa('capa-continuar')">Cancelar</button></div>
+    <div class="nota">Continuación: se sigue pintando sobre lo ya cosechado. Nueva: lo anterior se da por cerrado y se empieza de cero.</div>
+  </div>
+</div>
+
+<div class="capa" id="capa-descarga">
+  <div class="caja">
+    <h2>⬇ ¿Cuánto descargaste?</h2>
+    <div id="desc-resumen" class="nota" style="font-size:14px;color:var(--texto)"></div>
+    <div style="display:flex;flex-direction:column;gap:8px;margin-top:12px">
+      <button class="btn-prim" style="flex:none;padding:18px;font-size:20px" onclick="confirmarDescarga(1)">🧺 Tolva llena · <span id="desc-kg-llena"></span></button>
+      <div class="seg"><button onclick="confirmarDescarga(0.75)">¾ tolva</button><button onclick="confirmarDescarga(0.5)">½ tolva</button><button onclick="confirmarDescarga(0.25)">¼ tolva</button></div>
+    </div>
+    <label>U otra cantidad (kg)</label>
+    <div style="display:flex;gap:8px"><input type="number" id="desc-kg" inputmode="numeric" placeholder="kg"><button class="btn-amar" style="flex:none;padding:12px 16px" onclick="confirmarDescargaKg()">Guardar</button></div>
+    <div class="acciones"><button class="btn-gris" onclick="cerrarCapa('capa-descarga')">Cancelar</button></div>
+    <div class="nota">Los kilos se reparten en lo cosechado desde la descarga anterior. Si te equivocas, en ⚙️ puedes deshacer la última descarga (hasta 30 min).</div>
+  </div>
+</div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getFirestore, doc, getDoc, setDoc, collection, getDocs, query, where, arrayUnion } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+const app = initializeApp({
+  apiKey: "AIzaSyAVsios3N97MQVPJLC94qEOXGJNmKzK9RI",
+  authDomain: "combustible-los-maitenes.firebaseapp.com",
+  projectId: "combustible-los-maitenes",
+  storageBucket: "combustible-los-maitenes.firebasestorage.app",
+  messagingSenderId: "750216939749",
+  appId: "1:750216939749:web:978e4173eaee8235ebac0c"
+});
+const db = getFirestore(app);
+
+// ── Ajustes guardados en el equipo ──────────────────────────────
+const ls = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+};
+let ajustes = ls.get('cosecha_ajustes', { equipo: '', ancho: 6, pesoTolva: 0, vmin: 1, vmax: 10 });
+let sesion = ls.get('cosecha_sesion', null); // { nombre, admin }
+let datosCampo = ls.get('cosecha_datos_campo', null); // { equipos, potreros, zonas, ts }
+let dispositivo = ls.get('cosecha_dispositivo', null);
+if (!dispositivo) { dispositivo = 'd' + Math.random().toString(36).slice(2, 10); ls.set('cosecha_dispositivo', dispositivo); }
+let aplicando = ls.get('cosecha_aplicando', false);
+// Aplicaciones por potrero: { id, potrero, inicio, fin, estado: 'abierta' | 'terminada', km }
+let aplicaciones = ls.get('cosecha_aplicaciones', []);
+let activaId = ls.get('cosecha_aplicacion_activa', null);
+const activa = () => aplicaciones.find(a => a.id === activaId) || null;
+const guardarAplicaciones = () => { ls.set('cosecha_aplicaciones', aplicaciones); ls.set('cosecha_aplicacion_activa', activaId); };
+
+// ── Puntos en IndexedDB (sobreviven a cortes de señal, recargas y días) ──
+let idb = null;
+function abrirIDB() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open('modo_cosecha', 2);
+    r.onupgradeneeded = ev => {
+      const db = r.result;
+      const st = ev.oldVersion < 1 ? db.createObjectStore('puntos', { keyPath: 't' }) : r.transaction.objectStore('puntos');
+      if (!st.indexNames.contains('enviado')) st.createIndex('enviado', 'e');
+      if (!st.indexNames.contains('aplicacion')) st.createIndex('aplicacion', 'ap');
+    };
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+function idbTx(modo, fn) {
+  return new Promise((res, rej) => {
+    const tx = idb.transaction('puntos', modo); const st = tx.objectStore('puntos');
+    let out; Promise.resolve(fn(st)).then(v => { out = v; });
+    tx.oncomplete = () => res(out); tx.onerror = () => rej(tx.error);
+  });
+}
+const reqP = r => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+async function guardarPunto(p) { await idbTx('readwrite', st => st.put(p)); }
+async function puntosDesde(t0) { return idbTx('readonly', st => reqP(st.getAll(IDBKeyRange.lowerBound(t0)))); }
+async function puntosDeAplicacion(id) { return idbTx('readonly', st => reqP(st.index('aplicacion').getAll(id))); }
+async function pendientes(max) { return idbTx('readonly', st => reqP(st.index('enviado').getAll(0, max))); }
+async function contarPendientes() { return idbTx('readonly', st => reqP(st.index('enviado').count(0))); }
+async function marcarEnviados(ts) { await idbTx('readwrite', async st => { for (const t of ts) { const p = await reqP(st.get(t)); if (p) { p.e = 1; st.put(p); } } }); }
+// Borra puntos ya enviados de más de 4 días, salvo los de aplicaciones abiertas (para seguir mostrándolos)
+async function limpiarViejos() {
+  const lim = Date.now() - 4 * 86400000;
+  const abiertas = new Set(aplicaciones.filter(a => a.estado === 'abierta').map(a => a.id));
+  await idbTx('readwrite', st => { st.openCursor(IDBKeyRange.upperBound(lim)).onsuccess = ev => { const c = ev.target.result; if (c) { if (c.value.e === 1 && !abiertas.has(c.value.ap)) c.delete(); c.continue(); } }; });
+}
+
+// ── Mapa (MapLibre: permite inclinar y girar la vista) ───────────
+const vacio = () => ({ type: 'FeatureCollection', features: [] });
+const aLngLat = c => [c[1], c[0]];             // [lat, lng] → [lng, lat]
+let vista = Object.assign({ incl: 0, modo: 'norte', zoom: 'auto' }, ls.get('cosecha_vista', {})); // incl: 0 | 45 | 60 · modo: fijo | norte | rumbo
+let seguir = vista.modo !== 'fijo', rumbo = null, previoRumbo = null;
+const mapa = new maplibregl.Map({
+  container: 'mapa', center: [-72.15, -36.83], zoom: 15, pitch: vista.incl, maxPitch: 70,
+  attributionControl: { compact: true }, pitchWithRotate: false, fadeDuration: 0,
+  style: { version: 8, sources: { sat: { type: 'raster', tileSize: 256, maxzoom: 18, attribution: 'Tiles &copy; Esri',
+    tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'] } },
+    layers: [{ id: 'sat', type: 'raster', source: 'sat' }] }
+});
+mapa.addControl(new maplibregl.NavigationControl({ showZoom: false, visualizePitch: true }), 'top-right');
+// Grosor en metros reales: píxeles por metro a zoom 0 (k) × 2^zoom
+const anchoEnMetros = ['interpolate', ['exponential', 2], ['zoom'], 0, ['*', ['get', 'w'], ['get', 'k']], 24, ['*', ['get', 'w'], ['get', 'k'], 16777216]];
+const kLat = lat => 512 / (40075016.686 * Math.cos(lat * Math.PI / 180));
+const FUENTES = ['potreros', 'zonas', 'caminos', 'guias', 'otros', 'aplicadoPrev', 'aplicado', 'repetido', 'recorrido', 'precision'];
+const datosFuente = {};
+let mapaListo = false;
+function setFuente(id, fc) { datosFuente[id] = fc; if (mapaListo) mapa.getSource(id).setData(fc); }
+mapa.on('load', () => {
+  FUENTES.forEach(id => mapa.addSource(id, { type: 'geojson', data: datosFuente[id] || vacio() }));
+  mapa.addLayer({ id: 'potreros-f', type: 'fill', source: 'potreros', paint: { 'fill-color': ['case', ['get', 'act'], '#22C55E', '#FACC15'], 'fill-opacity': ['case', ['get', 'act'], 0.1, 0.05] } });
+  mapa.addLayer({ id: 'potreros-l', type: 'line', source: 'potreros', paint: { 'line-color': ['case', ['get', 'act'], '#22C55E', '#FACC15'], 'line-width': ['case', ['get', 'act'], 4, 2] } });
+  mapa.addLayer({ id: 'zonas-f', type: 'fill', source: 'zonas', paint: { 'fill-color': ['get', 'col'], 'fill-opacity': 0.1 } });
+  mapa.addLayer({ id: 'zonas-l', type: 'line', source: 'zonas', paint: { 'line-color': ['get', 'col'], 'line-width': 2, 'line-dasharray': [3, 2] } });
+  mapa.addLayer({ id: 'caminos', type: 'line', source: 'caminos', paint: { 'line-color': '#E5E7EB', 'line-width': 3, 'line-dasharray': [3, 2] } });
+  mapa.addLayer({ id: 'guias', type: 'line', source: 'guias', paint: { 'line-color': ['case', ['get', 'sig'], '#FACC15', '#FFFFFF'], 'line-opacity': ['case', ['get', 'sig'], 0.9, 0.35], 'line-width': ['case', ['get', 'sig'], 4, 1], 'line-dasharray': [2, 2] } });
+  mapa.addLayer({ id: 'otros', type: 'line', source: 'otros', layout: { 'line-cap': 'butt', 'line-join': 'round' }, paint: { 'line-color': '#22D3EE', 'line-opacity': 0.4, 'line-width': anchoEnMetros } });
+  mapa.addLayer({ id: 'aplicadoPrev', type: 'line', source: 'aplicadoPrev', layout: { 'line-cap': 'butt', 'line-join': 'round' }, paint: { 'line-color': '#C084FC', 'line-opacity': 0.5, 'line-width': anchoEnMetros } });
+  mapa.addLayer({ id: 'aplicado', type: 'line', source: 'aplicado', layout: { 'line-cap': 'butt', 'line-join': 'round' }, paint: { 'line-color': '#22C55E', 'line-opacity': 0.45, 'line-width': anchoEnMetros } });
+  mapa.addLayer({ id: 'repetido', type: 'line', source: 'repetido', layout: { 'line-cap': 'butt', 'line-join': 'round' }, paint: { 'line-color': '#EF4444', 'line-opacity': 0.7, 'line-width': anchoEnMetros } });
+  mapa.addLayer({ id: 'recorrido', type: 'line', source: 'recorrido', paint: { 'line-color': '#FFFFFF', 'line-opacity': 0.35, 'line-width': 1 } });
+  mapa.addLayer({ id: 'precision', type: 'fill', source: 'precision', paint: { 'fill-color': '#60A5FA', 'fill-opacity': 0.08 } });
+  mapaListo = true;
+  if (encuadrePendiente) { const b = encuadrePendiente; encuadrePendiente = null; encuadrar(b); }
+});
+// Tocar o arrastrar el mapa pausa el seguimiento; 🎯 lo retoma
+mapa.on('dragstart', e => { if (e.originalEvent) seguir = false; });
+mapa.on('rotatestart', e => { if (e.originalEvent && vista.modo === 'rumbo') seguir = false; });
+let encuadrePendiente = null;
+function encuadrar(b) {
+  if (!mapaListo) { encuadrePendiente = b; return; }
+  mapa.fitBounds(b, { padding: 30, duration: 0, pitch: vista.incl, bearing: 0 });
+}
+function circuloGeo(lat, lng, r, n = 32) {
+  const pts = [], dLat = r / 110540, dLng = r / (111320 * Math.cos(lat * Math.PI / 180));
+  for (let i = 0; i <= n; i++) { const a = 2 * Math.PI * i / n; pts.push([lng + dLng * Math.cos(a), lat + dLat * Math.sin(a)]); }
+  return pts;
+}
+// Marcador: punto azul sin rumbo; flecha cuando se sabe hacia dónde avanza
+const elMarcador = document.createElement('div');
+elMarcador.innerHTML = '<div class="pos-icono"></div>';
+let marcador = null;
+function pintarMarcador() {
+  elMarcador.innerHTML = rumbo == null ? '<div class="pos-icono"></div>'
+    : '<svg class="pos-flecha" viewBox="0 0 34 34"><path d="M17 2 L30 31 L17 24 L4 31 Z" fill="#60A5FA" stroke="#fff" stroke-width="3" stroke-linejoin="round"/></svg>';
+  if (marcador) marcador.setRotation(rumbo || 0);
+}
+function rumboEntre(a, b) { // grados desde el norte, de a hacia b ([lat, lng])
+  const r = x => x * Math.PI / 180, y = Math.sin(r(b[1] - a[1])) * Math.cos(r(b[0])),
+    x = Math.cos(r(a[0])) * Math.sin(r(b[0])) - Math.sin(r(a[0])) * Math.cos(r(b[0])) * Math.cos(r(b[1] - a[1]));
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+function actualizarRumbo(p) {
+  if (p.h != null && p.v != null && p.v >= 0.6) { rumbo = p.h; previoRumbo = [p.lat, p.lng]; return; }
+  if (!previoRumbo) { previoRumbo = [p.lat, p.lng]; return; }
+  if (distM(previoRumbo, [p.lat, p.lng]) >= 4) { rumbo = rumboEntre(previoRumbo, [p.lat, p.lng]); previoRumbo = [p.lat, p.lng]; }
+}
+// Zoom automático según velocidad y giro
+let zoomManualHasta = 0, histRumbo = [];
+mapa.on('zoomstart', e => { if (e.originalEvent) zoomManualHasta = Date.now() + 30000; });
+function velocidadKmh() {
+  if (!ultimaPos) return null;
+  if (ultimaPos.v != null) return ultimaPos.v * 3.6;
+  const h = histRumbo.filter(x => ultimaPos.t - x.t <= 8000);
+  if (h.length < 2) return null;
+  const a = h[0], b = h[h.length - 1];
+  return b.t > a.t ? distM([a.lat, a.lng], [b.lat, b.lng]) / ((b.t - a.t) / 1000) * 3.6 : null;
+}
+function zoomObjetivo() {
+  const v = velocidadKmh();
+  const h = histRumbo.filter(x => x.r != null && ultimaPos.t - x.t <= 6000);
+  let giro = 0; for (let i = 1; i < h.length; i++) giro += Math.abs(((h[i].r - h[i - 1].r + 540) % 360) - 180);
+  if (giro > 35) return 19.5;                     // vuelta en la cabecera
+  if (v == null || v < 3) return 19.2;
+  if (v < 7) return 18.7;
+  if (v < 12) return 18.2;
+  return 17;                                       // traslado
+}
+// Mueve la cámara según la vista elegida
+function moverCamara(inmediato) {
+  if (!ultimaPos || !seguir || vista.modo === 'fijo') return;
+  const h = mapa.getContainer().clientHeight;
+  const adelante = vista.modo === 'rumbo' || vista.incl > 0;     // tractor más abajo para ver lo que viene
+  let zoom = mapa.getZoom();
+  if (vista.zoom === 'auto' && Date.now() > zoomManualHasta) { const zt = zoomObjetivo(); if (Math.abs(zt - zoom) > 0.25) zoom = zoom + (zt - zoom) * 0.5; }
+  mapa.easeTo({ zoom, center: [ultimaPos.lng, ultimaPos.lat], bearing: vista.modo === 'rumbo' && rumbo != null ? rumbo : (vista.modo === 'norte' ? 0 : mapa.getBearing()),
+    pitch: vista.incl, padding: { top: adelante ? Math.round(h * 0.4) : 0, bottom: 0, left: 0, right: 0 }, duration: inmediato ? 0 : 900, essential: true });
+}
+function pintarVista() {
+  document.querySelectorAll('#vista-incl button').forEach(b => b.classList.toggle('sel', Number(b.dataset.v) === vista.incl));
+  document.querySelectorAll('#vista-modo button').forEach(b => b.classList.toggle('sel', b.dataset.v === vista.modo));
+  document.querySelectorAll('#vista-zoom button').forEach(b => b.classList.toggle('sel', b.dataset.v === vista.zoom));
+}
+function cambiarVista(cambio) {
+  vista = { ...vista, ...cambio }; ls.set('cosecha_vista', vista);
+  seguir = vista.modo !== 'fijo';
+  pintarVista();
+  if (vista.modo === 'fijo') mapa.easeTo({ pitch: vista.incl, duration: 600 });
+  else if (vista.modo === 'norte' && !ultimaPos) mapa.easeTo({ pitch: vista.incl, bearing: 0, duration: 600 });
+  else moverCamara(false);
+}
+document.querySelectorAll('#vista-incl button').forEach(b => b.onclick = () => cambiarVista({ incl: Number(b.dataset.v) }));
+document.querySelectorAll('#vista-modo button').forEach(b => b.onclick = () => cambiarVista({ modo: b.dataset.v }));
+document.querySelectorAll('#vista-zoom button').forEach(b => b.onclick = () => { zoomManualHasta = 0; cambiarVista({ zoom: b.dataset.v }); });
+window.abrirVista = function () { pintarVista(); document.getElementById('capa-vista').style.display = 'flex'; };
+
+// Ancho de aplicación según el cultivo del potrero (se configura en la app: Config. GPS)
+const ANCHOS_POR_DEFECTO = { 'Avellanos': 5, 'Cerezos': 4.5 };
+const normCult = t => String(t || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().replace(/e?s$/, '');
+function anchoDePotrero(nombre) {
+  const pot = (datosCampo && datosCampo.potreros || []).find(p => p.nombre === nombre);
+  const tabla = (datosCampo && datosCampo.anchosCultivo) || ANCHOS_POR_DEFECTO;
+  if (pot && pot.cultivo) {
+    const k = Object.keys(tabla).find(c => normCult(c) === normCult(pot.cultivo));
+    if (k && Number(tabla[k]) > 0) return Number(tabla[k]);
+  }
+  return Number(ajustes.ancho) || 5;
+}
+// En cosecha el ancho es el del cabezal (Ajustes); solo en frutales se usa el de la entrecalle del cultivo
+const anchoActual = () => { const a = activa(); return (a && a.ancho && esFrutal(a.potrero) ? a.ancho : null) || Number(ajustes.ancho) || 5; };
+// Potreros normalizados para saber en cuál está el tractor
+let potrerosGeo = [];
+const normPoly = pol => (pol || []).map(c => Array.isArray(c) ? [Number(c[0]), Number(c[1])] : [Number(c.lat), Number(c.lng)]);
+function enPoligono(lat, lng, poly) {
+  let d = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const yi = poly[i][0], xi = poly[i][1], yj = poly[j][0], xj = poly[j][1];
+    if (((yi > lat) !== (yj > lat)) && (lng < (xj - xi) * (lat - yi) / ((yj - yi) || 1e-12) + xi)) d = !d;
+  }
+  return d;
+}
+function potreroEn(lat, lng) { const p = potrerosGeo.find(x => enPoligono(lat, lng, x.poly)); return p ? p.nombre : null; }
+function areaHa(poly) { // área aproximada en hectáreas (proyección plana local)
+  if (poly.length < 3) return 0;
+  const lat0 = poly[0][0] * Math.PI / 180, kx = 111320 * Math.cos(lat0), ky = 110540;
+  let a = 0;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) a += (poly[j][1] * kx) * (poly[i][0] * ky) - (poly[i][1] * kx) * (poly[j][0] * ky);
+  return Math.abs(a / 2) / 10000;
+}
+
+function dibujarCampo() {
+  if (!datosCampo) return;
+  potrerosGeo = (datosCampo.potreros || []).filter(p => Array.isArray(p.poligono) && p.poligono.length >= 3).map(p => ({ nombre: p.nombre, poly: normPoly(p.poligono) }));
+  potrerosGeo.forEach(p => { p.ha = areaHa(p.poly); });
+  const actPot = activa() ? activa().potrero : null;
+  const anillo = poly => { const r = poly.map(aLngLat); r.push(r[0]); return [r]; };
+  setFuente('potreros', { type: 'FeatureCollection', features: potrerosGeo.map(p => ({ type: 'Feature', properties: { act: p.nombre === actPot }, geometry: { type: 'Polygon', coordinates: anillo(p.poly) } })) });
+  const zonas = [], caminos = [];
+  (datosCampo.zonas || []).forEach(z => {
+    try {
+      if (z.tipo === 'camino') caminos.push({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: normPoly(z.linea).map(aLngLat) } });
+      else if (z.tipo === 'circulo') zonas.push({ type: 'Feature', properties: { col: '#60A5FA' }, geometry: { type: 'Polygon', coordinates: [circuloGeo(Number(z.centro.lat), Number(z.centro.lng), Number(z.radio))] } });
+      else zonas.push({ type: 'Feature', properties: { col: z.tipo === 'carga' ? '#14B8A6' : '#60A5FA' }, geometry: { type: 'Polygon', coordinates: anillo(normPoly(z.poligono)) } });
+    } catch (e) {}
+  });
+  setFuente('zonas', { type: 'FeatureCollection', features: zonas });
+  setFuente('caminos', { type: 'FeatureCollection', features: caminos });
+  const todos = potrerosGeo.flatMap(p => p.poly);
+  if (todos.length && !ultimaPos) {
+    const lats = todos.map(c => c[0]), lngs = todos.map(c => c[1]);
+    encuadrar([[Math.min(...lngs), Math.min(...lats)], [Math.max(...lngs), Math.max(...lats)]]);
+  }
+}
+
+function distM(a, b) {
+  const R = 6371000, rad = x => x * Math.PI / 180;
+  const dLat = rad(b[0] - a[0]), dLng = rad(b[1] - a[1]);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a[0])) * Math.cos(rad(b[0])) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+// Lo aplicado de la aplicación activa (todos sus días)
+let tramosAplicados = [], tramoActual = null, ultimoAplicado = null, kmAplicacion = 0;
+function agregarAplicado(p) {
+  const ll = [p.lat, p.lng, p.t];
+  const cont = ultimoAplicado && (p.t - ultimoAplicado.t) < 30000 && distM([ultimoAplicado.lat, ultimoAplicado.lng], ll) < 60;
+  if (!tramoActual || !cont) { tramoActual = []; tramosAplicados.push(tramoActual); }
+  if (tramoActual.length && cont) kmAplicacion += distM(tramoActual[tramoActual.length - 1], ll) / 1000;
+  tramoActual.push(ll);
+  ultimoAplicado = p;
+}
+let trazosOtros = [], kmOtros = 0, equiposOtros = [];
+// Totalizador 2: hectáreas aplicadas desde el último reinicio (para calibrar). Independiente del potrero; queda en el celular.
+let parcial = ls.get('cosecha_parcial', null) || { m2: 0, km: 0, ms: 0, desde: Date.now() };
+function sumarParcial(dKm, dMs) {
+  if (!(dKm > 0)) return;
+  parcial.km += dKm; parcial.m2 += dKm * 1000 * anchoActual(); if (dMs > 0 && dMs < 30000) parcial.ms += dMs;
+  ls.set('cosecha_parcial', parcial);
+}
+window.reiniciarParcial = function () {
+  if (!confirm('¿Reiniciar el totalizador 2 (T2) a 0 ha? El total de la cosecha no cambia.')) return;
+  parcial = { m2: 0, km: 0, ms: 0, desde: Date.now() }; ls.set('cosecha_parcial', parcial);
+  pintarAplicacion(); if (typeof hudPintar === 'function') hudPintar();
+};
+// ── Hileras, lo aplicado y lo repetido ───────────────────────────
+// En frutales (potrero con cultivo) el tractor pasa por entrecalles paralelas separadas
+// por el ancho del cultivo. La app estima la dirección y la posición de las entrecalles
+// con las primeras pasadas rectas (o usa las ya guardadas para ese potrero) y dibuja
+// cada pasada derecha sobre su entrecalle: así el error del GPS del celular (±3–5 m)
+// no ensucia el mapa. Lo que se vuelve a pasar por una entrecalle ya aplicada se pinta rojo.
+let hileras = ls.get('cosecha_hileras', {});          // { potrero: { az, off, sp, lat0, lng0, m, fija, ts } } — estimación del tractor (con sus pasadas)
+// Hileras definidas en la app (Config. Potreros → 🌳 Hileras, sobre la imagen satelital): solo para NUMERAR las entrecalles
+// de forma aproximada. El dibujo y el ajuste de las pasadas usan siempre la estimación del tractor, que calza con su GPS.
+let hilerasRef = ls.get('cosecha_hileras_ref', {});
+Object.keys(hileras).forEach(k => { const g = hileras[k]; if (g && (g.manual || g.v === 3)) { hilerasRef[k] = g; delete hileras[k]; } });
+ls.set('cosecha_hileras', hileras); ls.set('cosecha_hileras_ref', hilerasRef);
+let repetidoM = 0, repitiendoAhora = false, avisoRepetir = 0, hayDiasAnteriores = false, reestimando = false;
+const VIGENCIA_HILERAS_MS = 2 * 3600000; // cada 2 horas (y cada día nuevo) se vuelven a estimar las hileras
+const hilerasVencidas = g => { const t = g.tsEst || g.ts || 0; return Date.now() - t > VIGENCIA_HILERAS_MS || new Date(t).toDateString() !== new Date().toDateString(); };
+const MIN_M_HILERAS = 500;                            // metros rectos reales (≈ 2 pasadas largas) para dejar fija la estimación
+const VERSION_HILERAS = 2;
+// ── GRILLA DE HILERAS (compartida: app, reparto y modo tractor) ─────────
+// v2: uniforme { az, off, sp }  → entrecalle k centrada en d = off + k·sp
+// v3: filas de árboles reales  { az, nudos:[s…], filas:[{d:[…]}…] } → cada fila
+//     de árboles tiene su posición lateral d en cada nudo (a lo largo de la
+//     hilera) y se interpola entre nudos; la entrecalle k va entre la fila k y
+//     la k+1. Así se pueden corregir sectores con hileras más separadas o que
+//     se van corriendo a lo largo.
+function grillaDe(g) {
+  if (!g || g.az == null || g.lat0 == null) return null;
+  const kx = 111320 * Math.cos(g.lat0 * Math.PI / 180), ky = 110540, az = g.az * Math.PI / 180;
+  const ux = Math.sin(az), uy = Math.cos(az), nx = Math.cos(az), ny = -Math.sin(az);
+  const sd = (lat, lng) => { const x = (lng - g.lng0) * kx, y = (lat - g.lat0) * ky; return [x * ux + y * uy, x * nx + y * ny]; };
+  const ll = (s, d) => { const x = s * ux + d * nx, y = s * uy + d * ny; return [g.lat0 + y / ky, g.lng0 + x / kx]; };
+  if (g.v === 3 && Array.isArray(g.filas) && g.filas.length >= 2 && Array.isArray(g.nudos) && g.nudos.length) {
+    const K = g.nudos, F = g.filas.map(f => f.d || f), sp = g.sp || 5;
+    const dF = (i, s) => {
+      const f = F[i];
+      if (K.length === 1) return f[0];
+      let j = 0; while (j < K.length - 2 && s > K[j + 1]) j++;
+      const t = (s - K[j]) / ((K[j + 1] - K[j]) || 1);
+      return f[j] + (f[j + 1] - f[j]) * t;
+    };
+    const n = F.length - 1;
+    return {
+      tipo: 3, sd, ll, n, nFilas: F.length, sp,
+      fila: dF,
+      bordes: (k, s) => [dF(k, s), dF(k + 1, s)],
+      centro: (k, s) => (dF(k, s) + dF(k + 1, s)) / 2,
+      k: (s, d) => {
+        const ult = F.length - 1, d0 = dF(0, s), dn = dF(ult, s);
+        if (d < d0) return -1 - Math.floor((d0 - d) / sp);
+        if (d >= dn) return n + Math.floor((d - dn) / sp);
+        let lo = 0, hi = ult;
+        while (hi - lo > 1) { const m = (lo + hi) >> 1; if (dF(m, s) <= d) lo = m; else hi = m; }
+        return lo;
+      }
+    };
+  }
+  const sp = g.sp || 5, off = g.off || 0;
+  return {
+    tipo: 2, sd, ll, n: null, sp,
+    fila: i => off + (i - 0.5) * sp,
+    bordes: k => [off + (k - 0.5) * sp, off + (k + 0.5) * sp],
+    centro: k => off + k * sp,
+    k: (s, d) => Math.round((d - off) / sp)
+  };
+}
+function gPip(lat, lng, poly) {
+  let c = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const yi = poly[i][0], xi = poly[i][1], yj = poly[j][0], xj = poly[j][1];
+    if (((yi > lat) !== (yj > lat)) && (lng < (xj - xi) * (lat - yi) / ((yj - yi) || 1e-12) + xi)) c = !c;
+  }
+  return c;
+}
+function gRangoS(G, poly) { const ss = poly.map(c => G.sd(c[0], c[1])[0]); return [Math.min(...ss), Math.max(...ss)]; }
+// Partes dentro del potrero de la línea d = fn(s): [{ s0, s1, pts:[[lat,lng]…] }]
+function gTramos(G, poly, fn, paso) {
+  const [a, b] = gRangoS(G, poly); paso = paso || 2;
+  const out = []; let cur = null;
+  for (let s = a; ; s += paso) {
+    const sv = Math.min(s, b), p = G.ll(sv, fn(sv));
+    if (gPip(p[0], p[1], poly)) { if (!cur) cur = { s0: sv, s1: sv, pts: [] }; cur.pts.push(p); cur.s1 = sv; }
+    else if (cur) { out.push(cur); cur = null; }
+    if (sv >= b) break;
+  }
+  if (cur) out.push(cur);
+  return out.filter(t => t.pts.length >= 2);
+}
+// Puntos [lat,lng] de la línea d = fn(s) entre s0 y s1
+function gLinea(G, fn, s0, s1, paso) {
+  paso = paso || 3; const out = [];
+  if (s1 < s0) [s0, s1] = [s1, s0];
+  for (let s = s0; s < s1; s += paso) out.push(G.ll(s, fn(s)));
+  out.push(G.ll(s1, fn(s1)));
+  return out;
+}
+// Número (1..N) de la entrecalle k; null si está fuera de las numeradas
+function gNumero(g, k) {
+  if (!g) return null;
+  if (g.v === 3) { const n = (g.filas || []).length - 1; if (k < 0 || k >= n) return null; return g.dir === -1 ? n - k : k + 1; }
+  if (g.kIni == null || !g.nHileras) return null;
+  const n = (g.dir === -1 ? g.kIni - k : k - g.kIni) + 1;
+  return n >= 1 && n <= g.nHileras ? n : null;
+}
+// Entrecalles del potrero: [{ k, n, tramos }] ordenadas por número
+function gEntrecalles(g, poly) {
+  const G = grillaDe(g); if (!G) return [];
+  const ks = [];
+  if (G.tipo === 3) { for (let k = 0; k < G.n; k++) ks.push(k); }
+  else {
+    const ds = poly.map(c => G.sd(c[0], c[1])[1]), sp = g.sp || 5, off = g.off || 0;
+    for (let k = Math.ceil((Math.min(...ds) - off) / sp); k <= Math.floor((Math.max(...ds) - off) / sp) && ks.length < 3000; k++) ks.push(k);
+  }
+  const filas = ks.map(k => ({ k, tramos: gTramos(G, poly, s => G.centro(k, s)).filter(t => t.s1 - t.s0 >= 3) })).filter(f => f.tramos.length);
+  if (G.tipo === 3) { filas.forEach(f => f.n = gNumero(g, f.k)); filas.sort((a, b) => a.n - b.n); }
+  else { if (g.dir === -1) filas.reverse(); filas.forEach((f, i) => f.n = i + 1); }
+  return filas;
+}
+
+function proyector(g) {
+  const kx = 111320 * Math.cos(g.lat0 * Math.PI / 180), ky = 110540, az = g.az * Math.PI / 180;
+  const ux = Math.sin(az), uy = Math.cos(az), nx = Math.cos(az), ny = -Math.sin(az);
+  return {
+    sd(lat, lng) { const x = (lng - g.lng0) * kx, y = (lat - g.lat0) * ky; return [x * ux + y * uy, x * nx + y * ny]; },
+    ll(sv, d) { const x = sv * ux + d * nx, y = sv * uy + d * ny; return [g.lat0 + y / ky, g.lng0 + x / kx]; }
+  };
+}
+const esFrutal = nombre => { const p = (datosCampo && datosCampo.potreros || []).find(x => x.nombre === nombre); return !!(p && p.cultivo); };
+// Dirección de avance de cada punto (con los vecinos del mismo tramo, a ≥ 6 m)
+function direcciones(tr) {
+  const out = [];
+  for (let i = 0; i < tr.length; i++) {
+    let a = i, b = i;
+    while (a > 0 && distM(tr[a], tr[i]) < 6) a--;
+    while (b < tr.length - 1 && distM(tr[b], tr[i]) < 6) b++;
+    out.push(a === b || distM(tr[a], tr[b]) < 6 ? null : rumboEntre(tr[a], tr[b]));
+  }
+  return out;
+}
+const difAxial = (a, b) => { const d = Math.abs(((a - b) % 180 + 180) % 180); return Math.min(d, 180 - d); };
+// Estima la grilla de entrecalles con los tramos aplicados en el potrero
+function estimarHileras(potrero, tramos, sp) {
+  const pg = potrerosGeo.find(x => x.nombre === potrero); if (!pg) return null;
+  const segs = [];
+  tramos.forEach(tr => {
+    for (let i = 0; i + 1 < tr.length; i++) {
+      let j = i + 1; while (j < tr.length - 1 && distM(tr[i], tr[j]) < 8) j++;
+      const L = distM(tr[i], tr[j]); if (L >= 6 && L < 40) segs.push({ az: rumboEntre(tr[i], tr[j]), L, a: tr[i], b: tr[j] });
+    }
+  });
+  if (!segs.length) return null;
+  const media = lista => { let c = 0, s2 = 0; lista.forEach(x => { c += x.L * Math.cos(2 * x.az * Math.PI / 180); s2 += x.L * Math.sin(2 * x.az * Math.PI / 180); }); return ((Math.atan2(s2, c) * 90 / Math.PI) + 360) % 180; };
+  let az = media(segs);
+  let rectos = segs.filter(x => difAxial(x.az, az) < 20);
+  if (rectos.length < 3) return null;
+  az = media(rectos); rectos = segs.filter(x => difAxial(x.az, az) < 15);
+  // metros rectos REALES (sin contar dos veces el mismo tramo)
+  let m = 0;
+  tramos.forEach(tr => {
+    for (let i = 0; i + 1 < tr.length;) {
+      let j = i + 1; while (j < tr.length - 1 && distM(tr[i], tr[j]) < 8) j++;
+      const L = distM(tr[i], tr[j]); if (L >= 6 && L < 40 && difAxial(rumboEntre(tr[i], tr[j]), az) < 15) m += L;
+      i = j;
+    }
+  });
+  if (m < 50) return null;                              // muy poco para estimar
+  const g = { az: +az.toFixed(2), off: 0, sp, lat0: pg.poly[0][0], lng0: pg.poly[0][1] };
+  const pr = proyector(g);
+  let c = 0, s2 = 0;
+  tramos.forEach(tr => { const dirs = direcciones(tr); tr.forEach((q, i) => { if (dirs[i] != null && difAxial(dirs[i], az) < 15) { const f = 2 * Math.PI * pr.sd(q[0], q[1])[1] / sp; c += Math.cos(f); s2 += Math.sin(f); } }); });
+  g.off = +((Math.atan2(s2, c) / (2 * Math.PI)) * sp).toFixed(2);
+  g.m = Math.round(m); g.fija = m >= MIN_M_HILERAS; g.ts = Date.now(); g.v = VERSION_HILERAS;
+  return g;
+}
+function guardarHileras(potrero, g) {
+  hileras[potrero] = g; ls.set('cosecha_hileras', hileras);
+  // Se comparte entre tractores en config/hileras_tractor (no se toca la numeración de la app en config/hileras)
+  if (g.fija && navigator.onLine) setDoc(doc(db, 'config', 'hileras_tractor'), { [potrero]: g }, { merge: true }).catch(e => console.warn('hileras', e));
+}
+window.rehacerHileras = function () {
+  const a = activa(); if (!a) return;
+  if (!confirm(`¿Volver a estimar las hileras de ${a.potrero}? Se calculan de nuevo con las próximas pasadas rectas.${hilerasRef[a.potrero] ? '\n(La numeración de la app no cambia.)' : ''}`)) return;
+  delete hileras[a.potrero]; ls.set('cosecha_hileras', hileras);
+  if (navigator.onLine) {
+    setDoc(doc(db, 'config', 'hileras_tractor'), { [a.potrero]: null }, { merge: true }).catch(() => {});
+    // estimación antigua del tractor guardada donde ahora va la numeración: se borra solo si no es una grilla de la app
+    if (!hilerasRef[a.potrero]) setDoc(doc(db, 'config', 'hileras'), { [a.potrero]: null }, { merge: true }).catch(() => {});
+  }
+  cerrarCapa('capa-ajustes'); redibujarAplicado();
+};
+function entrecalleActual() {
+  try {
+    const a = activa();
+    if (!a || !ultimaPos || !hilerasRef[a.potrero] || potreroEn(ultimaPos.lat, ultimaPos.lng) !== a.potrero) return null;
+    return numeroEntrecalleAprox(a.potrero, ultimaPos.lat, ultimaPos.lng);
+  } catch (e) { return null; }
+}
+// Número aproximado de la entrecalle (según la grilla de la app) en un punto
+function numeroEntrecalleAprox(potrero, lat, lng) {
+  const ref = hilerasRef[potrero], G = ref ? grillaDe(ref) : null;
+  if (!G) return null;
+  const [sv, d] = G.sd(lat, lng);
+  return gNumero(ref, G.k(sv, d));
+}
+// Une intervalos [a,b] y devuelve las partes de [a,b] que ya estaban cubiertas
+function restar(cub, a, b) {
+  const nuevas = [], rep = [];
+  let x = a;
+  cub.filter(c => c[1] > a && c[0] < b).sort((p, q) => p[0] - q[0]).forEach(c => {
+    if (c[0] > x) nuevas.push([x, Math.min(c[0], b)]);
+    const r0 = Math.max(c[0], x), r1 = Math.min(c[1], b);
+    if (r1 > r0) rep.push([r0, r1]);
+    x = Math.max(x, c[1]);
+  });
+  if (x < b) nuevas.push([x, b]);
+  return { nuevas, rep };
+}
+function unir(cub, a, b) {
+  cub.push([a, b]); cub.sort((p, q) => p[0] - q[0]);
+  const out = [];
+  cub.forEach(c => { if (out.length && c[0] <= out[out.length - 1][1]) out[out.length - 1][1] = Math.max(out[out.length - 1][1], c[1]); else out.push([...c]); });
+  cub.length = 0; out.forEach(c => cub.push(c));
+}
+let redibujoT = null;
+function redibujarAplicado() { if (!redibujoT) redibujoT = setTimeout(() => { redibujoT = null; calcularCobertura(); }, 300); }
+function calcularCobertura() {
+  const a = activa(), w = anchoActual();
+  const linea = (coords, props) => ({ type: 'Feature', properties: { w, k: kLat(coords[0][1]), ...props }, geometry: { type: 'LineString', coordinates: coords } });
+  const verde = [], rojo = [], cian = [], guias = [], violeta = [];
+  const hoy0 = new Date().setHours(0, 0, 0, 0);
+  const destYo = t => (t && t < hoy0) ? violeta : verde; // lo de días anteriores se pinta aparte
+  repetidoM = 0; repitiendoAhora = false;
+  let g = a && esFrutal(a.potrero) ? hileras[a.potrero] : null;
+  if (g && !(g.v === VERSION_HILERAS || g.v === 3)) g = null; // estimaciones viejas (fijadas con muy pocos datos): se rehacen
+  // Se estima mientras no esté fija; ya fija, se sigue afinando cada 1 min si hay más pasadas.
+  // (Las hileras de la app, sobre la imagen satelital, solo se usan para numerar.)
+  if (g && (g.manual || g.v === 3)) g = null;
+  // El GPS del celular se corre de un día a otro (y durante el día): la estimación vale 2 horas y solo usa las
+  // pasadas de las últimas 2 horas. Vencida (o de otro día), se sigue usando hasta que haya una nueva fija.
+  reestimando = false;
+  if (a && esFrutal(a.potrero)) {
+    const vencida = g && g.fija && hilerasVencidas(g);
+    if (!(g && g.fija) || vencida || Date.now() - (g.ts || 0) > 60000) {
+      const desde = Date.now() - VIGENCIA_HILERAS_MS;
+      const recientes = [...tramosAplicados, ...trazosOtros].map(tr => tr.filter(q => (q[2] || 0) >= desde)).filter(tr => tr.length >= 2);
+      const est = estimarHileras(a.potrero, recientes, w);
+      if (est) est.tsEst = Date.now();
+      if (est && (!g || (!g.fija && est.m >= (g.m || 0)) || (vencida && est.m >= 200) || (!vencida && g.fija && est.fija && est.m >= g.m))) { g = est; guardarHileras(a.potrero, est); }
+      else if (g) { g.ts = Date.now(); if (vencida) reestimando = true; }
+    }
+  }
+  if (g) {
+    const G = grillaDe(g), pr = G, sp = G.sp || w;
+    const kDe = (sv, d) => G.k(sv, d);
+    const cub = {};                                      // entrecalle k → intervalos ya aplicados
+    // Pasadas sobre entrecalles: puntos alineados con las hileras, agrupados por entrecalle
+    // Pasadas sobre entrecalles. La entrecalle de cada punto se decide con la
+    // MEDIANA de la posición lateral de los puntos vecinos (±12 m de avance), no
+    // con el primer punto: así, al entrar a la hilera terminando la vuelta, el
+    // error del GPS no "engancha" la entrecalle de al lado. Los cambios de
+    // entrecalle de menos de 15 m se juntan con el tramo vecino.
+    const VENT_M = 12, MIN_TRAMO_M = 15;
+    const pasadas = (trs, quien) => {
+      const out = [];
+      trs.forEach(tr => {
+        const dirs = direcciones(tr);
+        const corridas = []; let cur = null;
+        tr.forEach((q, i) => {
+          const [sv, d] = pr.sd(q[0], q[1]);
+          const alineado = dirs[i] != null && difAxial(dirs[i], g.az) < 25;
+          const t = q[2] || 0;
+          const corta = !alineado || (cur && (Math.abs(d - cur[cur.length - 1].d) > sp || (t && cur[cur.length - 1].t && t - cur[cur.length - 1].t > 30000)));
+          if (corta && cur) { corridas.push(cur); cur = null; }
+          if (!alineado) return;
+          (cur || (cur = [])).push({ sv, d, t });
+        });
+        if (cur) corridas.push(cur);
+        corridas.filter(c => c.length >= 2).forEach(c => {
+          // mediana lateral en una ventana de avance
+          let lo = 0, hi = 0;
+          const ks = c.map((p, i) => {
+            while (Math.abs(c[lo].sv - p.sv) > VENT_M && lo < i) lo++;
+            while (hi + 1 < c.length && Math.abs(c[hi + 1].sv - p.sv) <= VENT_M) hi++;
+            if (hi < i) hi = i;
+            const ds = c.slice(Math.min(lo, i), Math.max(hi, i) + 1).map(x => x.d).sort((x, y) => x - y);
+            return kDe(p.sv, ds[Math.floor(ds.length / 2)]);
+          });
+          // grupos de igual entrecalle; los cortos (< 15 m) se pegan al vecino más largo
+          const grupos = [];
+          ks.forEach((k, i) => { const gq = grupos[grupos.length - 1]; if (gq && gq.k === k) gq.i1 = i; else grupos.push({ k, i0: i, i1: i }); });
+          const largo = gq => Math.abs(c[gq.i1].sv - c[gq.i0].sv);
+          for (let pasada = 0; pasada < 2 && grupos.length > 1; pasada++) {
+            for (let x = 0; x < grupos.length; x++) {
+              const gq = grupos[x];
+              if (grupos.length > 1 && largo(gq) < MIN_TRAMO_M) {
+                const ant = grupos[x - 1], sig = grupos[x + 1];
+                const dest = !ant ? sig : !sig ? ant : (largo(ant) >= largo(sig) ? ant : sig);
+                if (dest === ant) ant.i1 = gq.i1; else sig.i0 = gq.i0;
+                grupos.splice(x, 1); x--;
+                // unir vecinos que quedaron con la misma entrecalle
+                for (let y = 1; y < grupos.length; y++) if (grupos[y].k === grupos[y - 1].k) { grupos[y - 1].i1 = grupos[y].i1; grupos.splice(y, 1); y--; }
+              }
+            }
+          }
+          grupos.forEach(gq => {
+            const pts = c.slice(gq.i0, gq.i1 + 1);
+            if (pts.length >= 2) out.push({ k: gq.k, s: pts.map(x => x.sv), t0: pts[0].t, t1: pts[pts.length - 1].t, quien });
+          });
+        });
+      });
+      return out;
+    };
+    const todas = [...pasadas(trazosOtros, 'otro'), ...pasadas(tramosAplicados, 'yo')].sort((x, y) => x.t0 - y.t0);
+    const ultima = todas.filter(x => x.quien === 'yo').slice(-1)[0];
+    const segLL = (k, s0, s1) => gLinea(G, s => G.centro(k, s), s0, s1).map(aLngLat);
+    todas.forEach(ps => {
+      const a0 = Math.min(...ps.s), a1 = Math.max(...ps.s);
+      const c = cub[ps.k] || (cub[ps.k] = []);
+      const { nuevas, rep } = restar(c, a0, a1);
+      nuevas.forEach(([x0, x1]) => (ps.quien === 'yo' ? destYo(ps.t1) : cian).push(linea(segLL(ps.k, x0, x1), {})));
+      rep.filter(([x0, x1]) => x1 - x0 >= 8).forEach(([x0, x1]) => {
+        (ps.quien === 'yo' ? rojo : cian).push(linea(segLL(ps.k, x0, x1), {}));
+        if (ps.quien === 'yo') { repetidoM += x1 - x0; if (ps === ultima && ultimaPos && Date.now() - ps.t1 < 20000) { const sv = pr.sd(ultimaPos.lat, ultimaPos.lng)[0]; if (sv >= x0 - 8 && sv <= x1 + 8) repitiendoAhora = true; } }
+      });
+      unir(c, a0, a1);
+    });
+    // Cabeceras y vueltas (no alineadas): se dibujan tal cual
+    const crudos = (trs, destino) => trs.forEach(tr => {
+      const dirs = direcciones(tr); let seg = [], dst = null;
+      const cerrar = () => { if (seg.length >= 2) (dst || verde).push(linea(seg, {})); seg = []; };
+      tr.forEach((q, i) => {
+        const al = dirs[i] != null && difAxial(dirs[i], g.az) < 25;
+        const d = destino === 'yo' ? destYo(q[2]) : destino;
+        if (!al) { if (dst && d !== dst) cerrar(); dst = d; seg.push(aLngLat(q)); } else cerrar();
+      });
+      cerrar();
+    });
+    crudos(tramosAplicados, 'yo'); crudos(trazosOtros, cian);
+    // Guías: entrecalles del potrero (las sin aplicar en blanco; la más cercana sin aplicar en amarillo)
+    const pg = potrerosGeo.find(x => x.nombre === a.potrero);
+    if (pg) {
+      const clave = a.potrero + '|' + (g.ts || 0) + '|' + g.v + '|' + (g.off || 0) + '|' + g.az;
+      if (!calcularCobertura._ent || calcularCobertura._ent.clave !== clave) calcularCobertura._ent = { clave, filas: gEntrecalles(g, pg.poly) };
+      const entrecalles = calcularCobertura._ent.filas;
+      let kAqui = null, sAqui = null;
+      if (ultimaPos) { const [sv, d] = pr.sd(ultimaPos.lat, ultimaPos.lng); kAqui = kDe(sv, d); sAqui = sv; }
+      let mejor = null;
+      entrecalles.forEach(f => {
+        const k = f.k;
+        f.tramos.forEach(t => {
+          const { nuevas } = restar(cub[k] || [], t.s0, t.s1);
+          nuevas.filter(([x0, x1]) => x1 - x0 >= 5).forEach(([x0, x1]) => {
+            guias.push({ type: 'Feature', properties: { sig: false, k, n: f.n || null }, geometry: { type: 'LineString', coordinates: segLL(k, x0, x1) } });
+            if (kAqui != null && k !== kAqui && sAqui >= x0 - 40 && sAqui <= x1 + 40 && Math.abs(k - kAqui) <= 6 && (!mejor || Math.abs(k - kAqui) < Math.abs(mejor - kAqui))) mejor = k;
+          });
+        });
+      });
+      if (mejor != null) guias.forEach(f => { if (f.properties.k === mejor) f.properties.sig = true; });
+    }
+  } else {
+    // Sin hileras (potrero sin cultivo, o todavía sin estimar): se dibuja tal cual y se marca
+    // como repetido lo que pasa a menos de medio ancho de algo aplicado hace más de 1 minuto
+    const celda = Math.max(w, 3), idx = new Map();
+    const clave = (x, y) => Math.floor(x / celda) + ':' + Math.floor(y / celda);
+    const lat0 = ultimaPos ? ultimaPos.lat : -36.8, kx = 111320 * Math.cos(lat0 * Math.PI / 180), ky = 110540;
+    const xy = q => [q[1] * kx, q[0] * ky];
+    trazosOtros.forEach(tr => { tr.forEach(q => { const [x, y] = xy(q), c = clave(x, y); if (!idx.has(c)) idx.set(c, []); idx.get(c).push({ x, y, t: 0 }); }); if (tr.length >= 2) cian.push(linea(tr.map(aLngLat), {})); });
+    tramosAplicados.forEach(tr => {
+      let segV = [], segR = [], prev = null;
+      tr.forEach(q => {
+        const [x, y] = xy(q), t = q[2] || 0;
+        let r = false;
+        for (let dx = -1; dx <= 1 && !r; dx++) for (let dy = -1; dy <= 1 && !r; dy++) {
+          const l = idx.get((Math.floor(x / celda) + dx) + ':' + (Math.floor(y / celda) + dy)) || [];
+          r = l.some(o => t - o.t > 60000 && Math.hypot(o.x - x, o.y - y) < w * 0.5);
+        }
+        const ll = aLngLat(q);
+        if (r) { segR.push(...(segR.length || !prev ? [] : [prev]), ll); if (prev && segR.length >= 2) repetidoM += distM([q[0], q[1]], [prev[1], prev[0]]); }
+        else if (segR.length) { if (segR.length >= 2) rojo.push(linea(segR, {})); segR = []; }
+        const dv = destYo(t);
+        if (segV.length && segV._d && segV._d !== dv) { if (segV.length >= 2) segV._d.push(linea(segV, {})); const ult = segV[segV.length - 1]; segV = [ult]; }
+        segV._d = dv;
+        segV.push(ll); prev = ll;
+        const c = clave(x, y); if (!idx.has(c)) idx.set(c, []); idx.get(c).push({ x, y, t });
+      });
+      if (segV.length >= 2) (segV._d || verde).push(linea(segV, {}));
+      if (segR.length >= 2) { rojo.push(linea(segR, {})); const u = tr[tr.length - 1]; if (Date.now() - (u[2] || 0) < 20000) repitiendoAhora = true; }
+    });
+  }
+  setFuente('otros', { type: 'FeatureCollection', features: cian });
+  setFuente('aplicado', { type: 'FeatureCollection', features: verde });
+  setFuente('aplicadoPrev', { type: 'FeatureCollection', features: violeta });
+  hayDiasAnteriores = violeta.length > 0;
+  setFuente('repetido', { type: 'FeatureCollection', features: rojo });
+  setFuente('guias', { type: 'FeatureCollection', features: guias });
+  if (repitiendoAhora && aplicando && Date.now() - avisoRepetir > 30000) {
+    avisoRepetir = Date.now(); mostrarAviso('🔴 Estás pasando por donde ya se cosechó.');
+    if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+  }
+  pintarAplicacion();
+}
+async function cargarAplicadoActivo() {
+  tramosAplicados = []; tramoActual = null; ultimoAplicado = null; kmAplicacion = 0;
+  const a = activa();
+  const guardado = a ? ls.get('cosecha_otros_' + a.id, null) : null;
+  trazosOtros = guardado ? guardado.trazos : []; kmOtros = guardado ? guardado.km : 0; equiposOtros = guardado ? guardado.equipos : [];
+  if (a && idb) {
+    try { (await puntosDeAplicacion(a.id)).sort((x, y) => x.t - y.t).filter(p => p.a).forEach(agregarAplicado); } catch (e) { console.warn(e); }
+  }
+  redibujarAplicado(); pintarAplicacion();
+}
+
+// Recorrido del día (línea fina)
+let recorridoCoords = [];
+const recorridoLinea = { addLatLng(ll) { recorridoCoords.push(aLngLat(ll)); pintarRecorrido(); } };
+let recorridoT = null;
+function pintarRecorrido() { // como mucho una vez por segundo
+  if (recorridoT) return;
+  recorridoT = setTimeout(() => { recorridoT = null; setFuente('recorrido', { type: 'FeatureCollection', features: recorridoCoords.length >= 2 ? [{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: recorridoCoords } }] : [] }); }, 1000);
+}
+
+// ── Línea de la aplicación actual y estadísticas ─────────────────
+const fechaCorta = t => new Date(t).toLocaleDateString('es-CL', { day: '2-digit', month: '2-digit' });
+function pintarAplicacion() {
+  const a = activa(), info = document.getElementById('ap-info'), btn = document.getElementById('btn-pot');
+  const ancho = anchoActual();
+  const ha = kmAplicacion * 1000 * ancho / 10000;
+  if (a) {
+    const pg = potrerosGeo.find(p => p.nombre === a.potrero);
+    const pct = pg && pg.ha ? Math.min(100, ha / pg.ha * 100) : null;
+    const haOtros = kmOtros * 1000 * ancho / 10000, haTot = ha + haOtros;
+    const pctT = pg && pg.ha ? Math.min(100, haTot / pg.ha * 100) : null;
+    info.innerHTML = `🌾 <strong>${a.potrero}</strong><div class="sub">Desde ${fechaCorta(a.inicio)} · esta máquina ${kmAplicacion.toFixed(1).replace('.', ',')} km${kmOtros ? ` · otros (${equiposOtros.join(', ')}) ${kmOtros.toFixed(1).replace('.', ',')} km` : ''} · ≈ ${haTot.toFixed(1).replace('.', ',')} ha${pctT != null ? ` (~${pctT.toFixed(0)}% de ${pg.ha.toFixed(1).replace('.', ',')} ha)` : ''}</div>`;
+    resumenAp = { haTot, pct: pctT, haPot: pg && pg.ha ? pg.ha : null };
+    info.innerHTML += textoParcial();
+    btn.textContent = '🌾 Cambiar / terminar';
+  } else {
+    resumenAp = null;
+    info.innerHTML = 'Sin potrero iniciado<div class="sub">Toca "Iniciar potrero" antes de cosechar</div>' + (parcial.m2 > 0 ? textoParcial() : '');
+    btn.textContent = '🌾 Iniciar potrero';
+  }
+  const g = a ? hileras[a.potrero] : null;
+  document.getElementById('btn-aplicar').classList.toggle('fuera', !!(aplicando && fueraDeVelocidad));
+  document.getElementById('stats').innerHTML = avisoVelocidad() + `Ancho ${String(ancho).replace('.', ',')} m${a && a.ancho && esFrutal(a.potrero) ? ' (según cultivo)' : ''}${a ? ' · 🟩 hoy' + (hayDiasAnteriores ? ' · 🟪 días anteriores' : '') + ' · 🟦 otros' : ''}${repetidoM >= 5 ? ` · <span style="color:var(--rojo);font-weight:700">🟥 ${Math.round(repetidoM)} m repetidos</span>` : ''}${a && esFrutal(a.potrero) ? (g ? (g.fija ? (reestimando ? ' · hileras ✓ (re-estimando con las pasadas de ahora…)' : ' · hileras ✓') : ' · hileras estimándose…') : ' · hileras: haz una pasada recta') : ''}${(() => { const n = entrecalleActual(); return n ? ` · <strong>≈ entrecalle ${n}</strong>` : ''; })()}`;
+  a && (a.km = +kmAplicacion.toFixed(2));
+}
+
+function textoParcial() {
+  const ha = parcial.m2 / 10000, min = Math.round(parcial.ms / 60000);
+  const desde = new Date(parcial.desde), hoy = new Date().toDateString() === desde.toDateString();
+  return `<div class="sub" style="margin-top:3px">🔢 <strong style="color:#FACC15">T2: ${ha.toFixed(2).replace('.', ',')} ha</strong> · ${parcial.km.toFixed(2).replace('.', ',')} km · ${min} min cosechando · desde ${hoy ? '' : fechaCorta(parcial.desde) + ' '}${desde.toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' })} <button type="button" onclick="reiniciarParcial()" style="margin-left:4px;padding:2px 8px;font-size:12px;border-radius:6px;border:1px solid #9CA3AF;background:#fff">↺ 0</button></div>`;
+}
+
+
+// ── Tolva: kilos por descarga, repartidos en lo cosechado desde la descarga anterior ──
+let fueraDeVelocidad = false, avisoLlena = false;
+let tolva = ls.get('cosecha_tolva', null) || { m2: 0, ms: 0, km: 0, desde: Date.now() };
+let descargasLoc = ls.get('cosecha_descargas_loc', []);   // historial en el celular (más nueva primero)
+let colaDescargas = ls.get('cosecha_cola_descargas', []); // por subir: [{ id, data }]
+const pesoTolva = () => Number(ajustes.pesoTolva) || 0;
+const velMin = () => (ajustes.vmin != null && ajustes.vmin !== '' && isFinite(Number(ajustes.vmin))) ? Number(ajustes.vmin) : 1;
+const velMax = () => Number(ajustes.vmax) || 10;
+const fmtKg = kg => Math.round(kg).toLocaleString('es-CL') + ' kg';
+const horaCorta = t => new Date(t).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' });
+function avisoVelocidad() {
+  if (!(aplicando && fueraDeVelocidad)) return '';
+  const v = velocidadKmh();
+  return `<span style="color:var(--amarillo);font-weight:700">⚠ ${v != null ? nf(v, 1) + ' km/h' : 'velocidad'} fuera del rango de cosecha (${nf(velMin(), 1)}–${nf(velMax(), 1)}): no se cuenta</span><br>`;
+}
+function sumarTolva(dKm, dMs) {
+  if (!(dKm > 0)) return;
+  tolva.km += dKm; tolva.m2 += dKm * 1000 * anchoActual(); if (dMs > 0 && dMs < 30000) tolva.ms += dMs;
+  ls.set('cosecha_tolva', tolva);
+  pintarTolva();
+}
+// kg/ha de las últimas tolvas completas de esta máquina (de la cosecha activa si hay)
+function kgHaReciente() {
+  const a = activa();
+  let ds = descargasLoc.filter(d => !d.anulada && d.equipo === ajustes.equipo && d.m2 > 1500);
+  const enPot = a ? ds.filter(d => d.cosecha === a.id) : [];
+  ds = (enPot.length ? enPot : ds).slice(0, 3);
+  const kg = ds.reduce((s, d) => s + d.kg, 0), m2 = ds.reduce((s, d) => s + d.m2, 0);
+  return m2 > 0 ? kg / (m2 / 10000) : null;
+}
+function estadoTolva() {
+  const k = kgHaReciente(), p = pesoTolva();
+  if (!k || !p) return { kg: null, pct: null };
+  const kg = tolva.m2 / 10000 * k;
+  return { kg, pct: kg / p * 100 };
+}
+function pintarTolva() {
+  const info = document.getElementById('tolva-info'); if (!info) return;
+  const ha = tolva.m2 / 10000, e = estadoTolva();
+  let h = `🧺 Tolva: <strong>${nf(ha, 2)} ha</strong> cosechadas${e.pct != null ? ` · ≈ <strong>${Math.round(e.pct)}%</strong> (${fmtKg(e.kg)})` : ''}`;
+  const ult = descargasLoc.find(d => !d.anulada && d.equipo === ajustes.equipo);
+  if (ult) h += `<div class="sub">Última descarga ${horaCorta(ult.t)}: ${fmtKg(ult.kg)}${ult.m2 > 0 ? ` en ${nf(ult.m2 / 10000, 2)} ha → ≈ ${fmtKg(ult.kg / (ult.m2 / 10000))}/ha (${nf(ult.kg / (ult.m2 / 10000) / 100, 1)} qq/ha)` : ''}</div>`;
+  else if (!pesoTolva()) h += '<div class="sub">Falta el peso de la tolva llena: ⚙️ Ajustes</div>';
+  if (e.pct != null) h += `<div id="tolva-barra" class="${e.pct >= 95 ? 'llena' : ''}"><div style="width:${Math.min(100, e.pct).toFixed(0)}%"></div></div>`;
+  info.innerHTML = h;
+  if (e.pct != null && e.pct >= 95 && !avisoLlena) { avisoLlena = true; mostrarAviso('🧺 La tolva debería estar llena. Al descargar, toca "⬇ Descargué".'); if (navigator.vibrate) navigator.vibrate([200, 100, 200]); }
+}
+window.abrirDescarga = function () {
+  if (!sesion) { document.getElementById('capa-login').style.display = 'flex'; return; }
+  if (!pesoTolva()) { alert('Primero indica en ⚙️ Ajustes el peso de la tolva llena (kg).'); abrirAjustes(); return; }
+  const a = activa();
+  document.getElementById('desc-kg-llena').textContent = fmtKg(pesoTolva());
+  document.getElementById('desc-resumen').innerHTML = `Desde ${tolva.desde ? (new Date(tolva.desde).toDateString() === new Date().toDateString() ? 'las ' + horaCorta(tolva.desde) : fechaCorta(tolva.desde) + ' ' + horaCorta(tolva.desde)) : 'el inicio'}: <strong>${nf(tolva.m2 / 10000, 2)} ha</strong> cosechadas${a ? ' en ' + a.potrero : ''}.`;
+  document.getElementById('desc-kg').value = '';
+  document.getElementById('capa-descarga').style.display = 'flex';
+};
+window.confirmarDescarga = fr => registrarDescarga(fr, Math.round(pesoTolva() * fr));
+window.confirmarDescargaKg = function () {
+  const kg = Number(document.getElementById('desc-kg').value);
+  if (!(kg > 0)) { alert('Indica los kg descargados'); return; }
+  registrarDescarga(pesoTolva() ? +(kg / pesoTolva()).toFixed(3) : null, Math.round(kg));
+};
+function registrarDescarga(fr, kg) {
+  const t = Date.now(), id = `${dispositivo}_${t}`, a = activa(), pos = ultimaPos;
+  const d = {
+    equipo: ajustes.equipo, operador: sesion ? sesion.nombre : null, dispositivo, t, dia: diaLocal(t),
+    lat: pos ? pos.lat : null, lng: pos ? pos.lng : null,
+    potrero: a ? a.potrero : (pos ? potreroEn(pos.lat, pos.lng) : null), cosecha: a ? a.id : null,
+    fraccion: fr, kg, pesoTolva: pesoTolva(), ancho: anchoActual(), vmin: velMin(), vmax: velMax(),
+    m2: Math.round(tolva.m2), msCosecha: Math.round(tolva.ms), km: +tolva.km.toFixed(3), desde: tolva.desde || null,
+    anulada: false, ts: t
+  };
+  descargasLoc.unshift({ id, ...d }); descargasLoc = descargasLoc.slice(0, 400); ls.set('cosecha_descargas_loc', descargasLoc);
+  colaDescargas.push({ id, data: d }); ls.set('cosecha_cola_descargas', colaDescargas);
+  tolva = { m2: 0, ms: 0, km: 0, desde: t }; ls.set('cosecha_tolva', tolva); avisoLlena = false;
+  cerrarCapa('capa-descarga'); pintarTolva(); actualizarPendientes();
+  if (navigator.vibrate) navigator.vibrate([100, 60, 100]);
+  mostrarAviso(`✓ Descarga guardada: ${fmtKg(kg)}${d.m2 > 0 ? ` en ${nf(d.m2 / 10000, 2)} ha → ≈ ${fmtKg(kg / (d.m2 / 10000))}/ha` : ''}. Si fue un error, se deshace en ⚙️.`);
+  subir();
+}
+window.deshacerDescarga = function () {
+  const d = descargasLoc.find(x => !x.anulada && x.dispositivo === dispositivo);
+  if (!d) { alert('No hay descargas para deshacer en este celular.'); return; }
+  if (Date.now() - d.t > 30 * 60000) { alert('Solo se puede deshacer hasta 30 minutos después. El administrador puede anularla en la página de Rendimiento.'); return; }
+  if (!confirm(`¿Deshacer la descarga de las ${horaCorta(d.t)} (${fmtKg(d.kg)})? Lo cosechado vuelve a la tolva actual.`)) return;
+  d.anulada = true; ls.set('cosecha_descargas_loc', descargasLoc);
+  colaDescargas.push({ id: d.id, data: { anulada: true, tsAnulada: Date.now() } }); ls.set('cosecha_cola_descargas', colaDescargas);
+  tolva = { m2: tolva.m2 + (d.m2 || 0), ms: tolva.ms + (d.msCosecha || 0), km: tolva.km + (d.km || 0), desde: d.desde || tolva.desde };
+  ls.set('cosecha_tolva', tolva); avisoLlena = false;
+  pintarTolva(); pintarDescargasHoy(); subir();
+};
+function pintarDescargasHoy() {
+  const w = document.getElementById('aj-descargas'); if (!w) return;
+  const hoy = new Date().toDateString();
+  const ds = descargasLoc.filter(d => new Date(d.t).toDateString() === hoy);
+  if (!ds.length) { w.textContent = 'Todavía no hay descargas hoy.'; return; }
+  const ok = ds.filter(d => !d.anulada), kg = ok.reduce((s, d) => s + d.kg, 0), m2 = ok.reduce((s, d) => s + (d.m2 || 0), 0);
+  w.innerHTML = `<div style="color:var(--texto);margin-bottom:4px"><strong>${ok.length} descargas · ${fmtKg(kg)} · ${nf(m2 / 10000, 2)} ha${m2 ? ` · ≈ ${fmtKg(kg / (m2 / 10000))}/ha` : ''}</strong></div>` +
+    ds.map(d => `<div class="desc-fila${d.anulada ? ' anulada' : ''}"><span>${horaCorta(d.t)} · ${d.potrero || '—'}</span><span>${fmtKg(d.kg)} · ${nf((d.m2 || 0) / 10000, 2)} ha${d.m2 ? ` · ${fmtKg(d.kg / (d.m2 / 10000))}/ha` : ''}</span></div>`).join('');
+}
+
+// ── Elegir potrero, continuar o empezar nueva aplicación ─────────
+function cerrarCapa(id) { document.getElementById(id).style.display = 'none'; }
+window.cerrarCapa = cerrarCapa;
+let despuesDeElegir = null; // acción a ejecutar después (p. ej. empezar a aplicar)
+window.abrirPotreros = function (luego) {
+  despuesDeElegir = typeof luego === 'function' ? luego : null;
+  const aqui = ultimaPos ? potreroEn(ultimaPos.lat, ultimaPos.lng) : null;
+  const orden = [...potrerosGeo].sort((x, y) => (y.nombre === aqui) - (x.nombre === aqui) || x.nombre.localeCompare(y.nombre));
+  const abiertaDe = n => aplicaciones.find(a => a.potrero === n && a.estado === 'abierta');
+  document.getElementById('lista-pot').innerHTML = orden.length ? orden.map(p => {
+    const ab = abiertaDe(p.nombre);
+    return `<button class="${p.nombre === aqui ? 'aqui' : ''}" onclick="elegirPotrero('${p.nombre.replace(/'/g, "\\'")}')">${p.nombre === aqui ? '📍 ' : ''}${p.nombre}
+      <span class="sub">${p.nombre === aqui ? 'Estás aquí · ' : ''}${ab ? `cosecha sin terminar desde ${fechaCorta(ab.inicio)} (${(ab.km || 0).toFixed(1).replace('.', ',')} km)` : 'sin cosecha abierta'}</span></button>`;
+  }).join('') : '<div class="nota">No hay potreros guardados en este celular. Ve a ⚙️ → Actualizar potreros (con internet).</div>';
+  const a = activa();
+  document.getElementById('acc-pot-terminar').innerHTML = a ? `<button class="btn-amar" onclick="terminarPotrero()">✔ Terminar ${a.potrero}</button>` : '';
+  document.getElementById('capa-potreros').style.display = 'flex';
+};
+window.elegirPotrero = async function (nombre) {
+  cerrarCapa('capa-potreros');
+  await traerAbiertasCompartidas();
+  const ab = aplicaciones.filter(a => a.potrero === nombre && a.estado === 'abierta').sort((x, y) => y.inicio - x.inicio)[0];
+  if (ab && ab.id === activaId) { ejecutarDespues(); return; }      // ya es la activa
+  if (ab) preguntarContinuacion(ab); else nuevaAplicacion(nombre);
+};
+function preguntarContinuacion(ab) {
+  document.getElementById('cont-titulo').textContent = `🌾 ${ab.potrero}`;
+  document.getElementById('cont-texto').innerHTML = `Este potrero tiene una cosecha <strong>sin terminar</strong> desde el <strong>${fechaCorta(ab.inicio)}</strong> (${(ab.km || 0).toFixed(1).replace('.', ',')} km cosechados).<br>¿Es continuación de esa cosecha o una cosecha nueva?`;
+  document.getElementById('cont-si').onclick = () => { cerrarCapa('capa-continuar'); activarAplicacion(ab.id); };
+  document.getElementById('cont-nueva').onclick = () => { cerrarCapa('capa-continuar'); nuevaAplicacion(ab.potrero); };
+  document.getElementById('capa-continuar').style.display = 'flex';
+}
+async function activarAplicacion(id) {
+  activaId = id; guardarAplicaciones();
+  ocultarBanner(); dibujarCampo();
+  await cargarAplicadoActivo();
+  traerTrazosOtros();
+  sincronizarAplicacion(activa());
+  ejecutarDespues();
+}
+async function nuevaAplicacion(potrero) {
+  const ahora = Date.now();
+  aplicaciones.forEach(a => { if (a.potrero === potrero && a.estado === 'abierta') { a.estado = 'terminada'; a.fin = ahora; a.cerradaPor = 'nueva'; sincronizarAplicacion(a); } });
+  const a = { id: `${dispositivo}_${ahora}`, potrero, inicio: ahora, fin: null, estado: 'abierta', km: 0, equipo: ajustes.equipo, operador: sesion ? sesion.nombre : null, ancho: anchoDePotrero(potrero) };
+  aplicaciones.push(a);
+  aplicaciones = aplicaciones.filter(x => x.estado === 'abierta' || ahora - (x.fin || x.inicio) < 60 * 86400000); // historial de 60 días
+  await activarAplicacion(a.id);
+}
+window.terminarPotrero = async function () {
+  const a = activa(); if (!a) return;
+  if (!confirm(`¿Terminar la cosecha de ${a.potrero}? Lo cosechado se deja de mostrar en el mapa (queda guardado).${tolva.m2 > 500 ? `\n\nOjo: la tolva tiene ${nf(tolva.m2 / 10000, 2)} ha cosechadas sin descarga registrada. Si ya descargaste, regístralo antes de terminar.` : ''}`)) return;
+  a.estado = 'terminada'; a.fin = Date.now(); a.km = +kmAplicacion.toFixed(2);
+  activaId = null; aplicando = false; ls.set('cosecha_aplicando', false); guardarAplicaciones();
+  cerrarCapa('capa-potreros'); pintarBotonAplicar(); dibujarCampo();
+  sincronizarAplicacion(a);
+  await cargarAplicadoActivo();
+};
+function ejecutarDespues() { const f = despuesDeElegir; despuesDeElegir = null; if (f) f(); }
+
+// Aviso al entrar a un potrero distinto del activo (no bloquea la pantalla)
+let potAqui = null, potAquiDesde = 0, bannerDescartado = {};
+function ocultarBanner() { document.getElementById('banner').style.display = 'none'; }
+window.ocultarBanner = ocultarBanner;
+function revisarEntradaPotrero(p) {
+  const aqui = potreroEn(p.lat, p.lng);
+  if (aqui !== potAqui) { potAqui = aqui; potAquiDesde = p.t; ocultarBanner(); return; }
+  const a = activa();
+  if (!aqui || (a && a.potrero === aqui)) return;
+  if (p.t - potAquiDesde < 20000) return;                               // al menos 20 s dentro
+  if (bannerDescartado[aqui] && Date.now() - bannerDescartado[aqui] < 15 * 60000) return;
+  const b = document.getElementById('banner');
+  if (b.style.display === 'block') return;
+  const ab = aplicaciones.find(x => x.potrero === aqui && x.estado === 'abierta');
+  const n = aqui.replace(/'/g, "\\'");
+  b.innerHTML = ab
+    ? `Estás en <strong>${aqui}</strong>, con una cosecha sin terminar desde el ${fechaCorta(ab.inicio)}.<div class="acc">
+        <button class="b-si" onclick="activarDesdeBanner('${ab.id}')">↪ Continuar</button>
+        <button class="b-nueva" onclick="nuevaDesdeBanner('${n}')">✳ Nueva</button>
+        <button class="b-no" onclick="descartarBanner('${n}')">Ahora no</button></div>`
+    : `Estás en <strong>${aqui}</strong>.${a ? ` (Cosecha activa: ${a.potrero})` : ''}<div class="acc">
+        <button class="b-si" onclick="nuevaDesdeBanner('${n}')">🌾 Iniciar aquí</button>
+        <button class="b-no" onclick="descartarBanner('${n}')">Ahora no</button></div>`;
+  b.style.display = 'block';
+}
+window.activarDesdeBanner = id => { ocultarBanner(); activarAplicacion(id); };
+window.nuevaDesdeBanner = n => { ocultarBanner(); nuevaAplicacion(n); };
+window.descartarBanner = n => { bannerDescartado[n] = Date.now(); ocultarBanner(); };
+
+// ── GPS ──────────────────────────────────────────────────────────
+let ultimaPos = null, ultimoGuardado = null, cargando = null;
+const MIN_MS = 2000, MIN_M = 3, MAX_PREC = 40;
+function onPos(pos) {
+  const c = pos.coords;
+  const a = activa();
+  const p = { t: pos.timestamp || Date.now(), lat: +c.latitude.toFixed(7), lng: +c.longitude.toFixed(7), acc: Math.round(c.accuracy || 0),
+    v: c.speed != null ? +c.speed.toFixed(1) : null, h: c.heading != null && !isNaN(c.heading) ? Math.round(c.heading) : null,
+    c: cargando, a: aplicando && a ? 1 : 0, k: aplicando && a ? 1 : 0, w: aplicando && a ? anchoActual() : null, ap: aplicando && a ? a.id : null, pot: null, e: 0 };
+  ultimaPos = p;
+  if (Date.now() - (window.__ultStats || 0) > 3000) { window.__ultStats = Date.now(); try { pintarAplicacion(); } catch (e) {} } // actualiza "≈ entrecalle N"
+  const chip = document.getElementById('b-gps');
+  chip.textContent = `📍 ±${p.acc} m`;
+  chip.className = 'chip ' + (p.acc <= 8 ? 'ok' : p.acc <= 20 ? 'med' : 'mal');
+  const ll = [p.lat, p.lng];
+  const habiaRumbo = rumbo != null;
+  if (p.acc <= MAX_PREC) { actualizarRumbo(p); histRumbo.push({ t: p.t, lat: p.lat, lng: p.lng, r: rumbo }); if (histRumbo.length > 30) histRumbo.shift(); }
+  if (!marcador) {
+    marcador = new maplibregl.Marker({ element: elMarcador, rotationAlignment: 'map', pitchAlignment: 'map' }).setLngLat([p.lng, p.lat]).addTo(mapa);
+    pintarMarcador();
+    mapa.jumpTo({ center: [p.lng, p.lat], zoom: 18 });
+    moverCamara(true);
+  } else {
+    marcador.setLngLat([p.lng, p.lat]);
+    if (habiaRumbo !== (rumbo != null)) pintarMarcador(); else marcador.setRotation(rumbo || 0);
+    moverCamara(false);
+  }
+  setFuente('precision', { type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [circuloGeo(p.lat, p.lng, Math.max(1, p.acc), 24)] } }] });
+  if (p.acc > MAX_PREC) return; // punto demasiado impreciso: se muestra pero no se guarda
+  // Cosecha: solo cuenta (y se pinta) dentro del rango de velocidad de cosecha
+  const vk = velocidadKmh();
+  fueraDeVelocidad = !!(p.k && vk != null && (vk < velMin() || vk > velMax()));
+  if (fueraDeVelocidad) p.a = 0;
+  p.pot = potreroEn(p.lat, p.lng);
+  revisarEntradaPotrero(p);
+  const mover = !ultimoGuardado || distM([ultimoGuardado.lat, ultimoGuardado.lng], ll) >= MIN_M;
+  const tiempo = !ultimoGuardado || p.t - ultimoGuardado.t >= MIN_MS;
+  if (!(tiempo && (mover || p.t - ultimoGuardado.t >= 15000) || (ultimoGuardado && ultimoGuardado.a !== p.a))) return;
+  ultimoGuardado = p;
+  if (!p.ap) delete p.ap; // los índices de IndexedDB no aceptan null
+  guardarPunto(p).then(actualizarPendientes).catch(e => console.warn('No se pudo guardar el punto', e));
+  recorridoLinea.addLatLng(ll);
+  if (p.a) {
+    const km0 = kmAplicacion, t0 = ultimoAplicado ? ultimoAplicado.t : null;
+    agregarAplicado(p);
+    sumarParcial(kmAplicacion - km0, t0 ? p.t - t0 : 0);
+    sumarTolva(kmAplicacion - km0, t0 ? p.t - t0 : 0);
+    redibujarAplicado(); pintarAplicacion(); guardarAplicaciones();
+  }
+}
+window.__simPos = onPos; // usado solo en pruebas
+function onPosError(err) {
+  const chip = document.getElementById('b-gps');
+  chip.className = 'chip mal';
+  chip.textContent = err.code === 1 ? '📍 sin permiso' : '📍 sin señal GPS';
+  if (err.code === 1) mostrarAviso('El celular no dio permiso de ubicación. Actívalo para este sitio en los ajustes del navegador.');
+}
+let watchId = null;
+function iniciarGPS() {
+  if (!('geolocation' in navigator)) { mostrarAviso('Este equipo no tiene GPS disponible para el navegador.'); return; }
+  if (watchId != null) navigator.geolocation.clearWatch(watchId);
+  watchId = navigator.geolocation.watchPosition(onPos, onPosError, { enableHighAccuracy: true, maximumAge: 0, timeout: 30000 });
+}
+
+// ── Pantalla siempre encendida ───────────────────────────────────
+let ocultoDesde = null;
+async function pedirPantalla() {
+  try { if ('wakeLock' in navigator) await navigator.wakeLock.request('screen'); } catch (e) { console.warn('Wake lock', e); }
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    pedirPantalla(); iniciarGPS();
+    if (ocultoDesde && Date.now() - ocultoDesde > 60000) mostrarAviso(`La app estuvo cerrada o en segundo plano ${Math.round((Date.now() - ocultoDesde) / 60000)} min: ese tiempo no quedó registrado. Déjala siempre abierta.`);
+    ocultoDesde = null;
+  } else ocultoDesde = Date.now();
+});
+
+// ── Llave puesta = cargando ──────────────────────────────────────
+function pintarLlave() {
+  const ch = document.getElementById('b-llave');
+  ch.textContent = cargando === true ? '🔌 llave' : cargando === false ? '🔋 sin carga' : '🔋 —';
+  ch.className = 'chip ' + (cargando === true ? 'ok' : cargando === false ? 'med' : '');
+}
+let bateria = null;
+if (navigator.getBattery) navigator.getBattery().then(b => { bateria = b; cargando = b.charging; pintarLlave(); b.addEventListener('chargingchange', () => { cargando = b.charging; pintarLlave(); }); }).catch(() => {});
+
+// ── Dónde está el tractor (para el mapa "Tractores en vivo" de la app) ──
+// Un documento por equipo con la última posición; se pisa cada 20 s y al empezar/pausar.
+let ultimoInforme = 0;
+async function informarUbicacion(forzar) {
+  if (!navigator.onLine || !ajustes.equipo || !sesion || !ultimaPos) return;
+  if (!forzar && Date.now() - ultimoInforme < 18000) return;
+  ultimoInforme = Date.now();
+  const a = activa(), v = velocidadKmh();
+  try {
+    await conTimeout(setDoc(doc(db, 'ubicacion_actual', claveEquipo(ajustes.equipo)), {
+      equipo: ajustes.equipo, operador: sesion.nombre, lat: ultimaPos.lat, lng: ultimaPos.lng, acc: ultimaPos.acc,
+      t: ultimaPos.t, kmh: v != null ? +v.toFixed(1) : null, rumbo: rumbo != null ? Math.round(rumbo) : null,
+      aplicando: !!aplicando, potrero: a ? a.potrero : null, aqui: potreroEn(ultimaPos.lat, ultimaPos.lng),
+      llave: cargando, bateria: bateria ? Math.round(bateria.level * 100) : null, dispositivo, ts: Date.now()
+    }), 15000);
+  } catch (e) { ultimoInforme = 0; }
+}
+setInterval(() => informarUbicacion(false), 20000);
+
+// ── Envío a la app (Firestore) ───────────────────────────────────
+const claveEquipo = eq => String(eq || '').replace(/\s+/g, '_');
+const diaLocal = t => { const d = new Date(t), p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`; };
+let subiendo = false;
+async function actualizarPendientes() {
+  try { const n = await contarPendientes() + colaDescargas.length; const ch = document.getElementById('b-pend'); ch.textContent = `⬆ ${n}`; ch.className = 'chip ' + (n > 300 ? 'med' : 'ok'); } catch (e) {}
+}
+function conTimeout(prom, ms) { return Promise.race([prom, new Promise((_, rej) => setTimeout(() => rej(new Error('tiempo agotado')), ms))]); }
+let aplicacionesPorSubir = new Set(ls.get('cosecha_ap_por_subir', []));
+// Aplicaciones compartidas entre tractores: aplicaciones_campo/{id} (+ subcolección trazos)
+async function traerAbiertasCompartidas() {
+  if (!navigator.onLine) return;
+  try {
+    const s = await conTimeout(getDocs(query(collection(db, 'cosechas_campo'), where('estado', '==', 'abierta'))), 10000);
+    s.docs.forEach(d => {
+      const x = d.data();
+      if (!aplicaciones.some(a => a.id === d.id)) aplicaciones.push({ id: d.id, potrero: x.potrero, inicio: x.inicio, fin: null, estado: 'abierta', km: 0, ancho: x.ancho || null, compartida: true, equipo: (x.equipos || [])[0] || '' });
+    });
+    // las que otro tractor cerró
+    const abiertas = new Set(s.docs.map(d => d.id));
+    aplicaciones.forEach(a => { if (a.estado === 'abierta' && (a.compartidaSubida || a.compartida) && !abiertas.has(a.id) && !aplicacionesPorSubir.has(a.id)) { a.estado = 'terminada'; a.fin = a.fin || Date.now(); if (a.id === activaId) { mostrarAviso(`La cosecha de ${a.potrero} fue terminada (o reemplazada por una nueva) en otra máquina.`); activaId = null; aplicando = false; ls.set('cosecha_aplicando', false); pintarBotonAplicar(); dibujarCampo(); cargarAplicadoActivo(); } } });
+    guardarAplicaciones();
+  } catch (e) { console.warn('aplicaciones compartidas', e); }
+}
+async function traerTrazosOtros() {
+  const a = activa();
+  if (!a || !navigator.onLine) return;
+  try {
+    const s = await conTimeout(getDocs(collection(db, 'cosechas_campo', a.id, 'trazos')), 15000);
+    const tr = [], eqs = new Set(); let km = 0;
+    s.docs.map(d => d.data()).filter(x => x.dispositivo !== dispositivo).forEach(x => {
+      eqs.add(x.equipo || 'otro');
+      let actual = null, ult = null;
+      (x.puntos || []).sort((p, q) => p.t - q.t).forEach(p => {
+        const ll = [p.lat, p.lng];
+        const cont = ult && p.t - ult.t < 30000 && distM([ult.lat, ult.lng], ll) < 60;
+        if (!actual || !cont) { actual = []; tr.push(actual); }
+        if (actual.length && cont) km += distM(actual[actual.length - 1], ll) / 1000;
+        actual.push(ll); ult = p;
+      });
+    });
+    if (activaId !== a.id) return;
+    trazosOtros = tr; kmOtros = km; equiposOtros = [...eqs];
+    ls.set('cosecha_otros_' + a.id, { trazos: tr, km, equipos: equiposOtros });
+    redibujarAplicado(); pintarAplicacion();
+  } catch (e) { console.warn('trazos de otros tractores', e); }
+}
+function sincronizarAplicacion(a) {
+  if (!a) return;
+  aplicacionesPorSubir.add(a.id); ls.set('cosecha_ap_por_subir', [...aplicacionesPorSubir]);
+  subir();
+}
+async function subir() {
+  if (subiendo || !navigator.onLine || !ajustes.equipo) return;
+  subiendo = true;
+  try {
+    while (colaDescargas.length) {
+      const x = colaDescargas[0];
+      await conTimeout(setDoc(doc(db, 'cosecha_descargas', x.id), x.data, { merge: true }), 15000);
+      colaDescargas.shift(); ls.set('cosecha_cola_descargas', colaDescargas);
+    }
+    for (let vuelta = 0; vuelta < 20; vuelta++) {
+      const lote = (await pendientes(400)).sort((a, b) => a.t - b.t);
+      if (!lote.length) break;
+      const id = `${dispositivo}_${lote[0].t}`;
+      await conTimeout(setDoc(doc(db, 'recorridos_tractor', claveEquipo(ajustes.equipo), 'lotes', id), {
+        equipo: ajustes.equipo, operador: sesion ? sesion.nombre : null, dia: diaLocal(lote[0].t), desde: lote[0].t, hasta: lote[lote.length - 1].t, n: lote.length,
+        ancho: Number(ajustes.ancho) || null, dispositivo, ts: Date.now(),
+        modo: 'cosecha', cosecha: { pesoTolva: pesoTolva(), vmin: velMin(), vmax: velMax() },
+        puntos: lote.map(p => ({ t: p.t, lat: p.lat, lng: p.lng, acc: p.acc, v: p.v, h: p.h, c: p.c, a: p.a, k: p.k || 0, w: p.w || null, ap: p.ap || null, pot: p.pot || null }))
+      }), 25000);
+      const porAp = {};
+      lote.filter(p => p.a && p.ap).forEach(p => { (porAp[p.ap] = porAp[p.ap] || []).push({ t: p.t, lat: p.lat, lng: p.lng }); });
+      for (const [ap, pts] of Object.entries(porAp)) {
+        await conTimeout(setDoc(doc(db, 'cosechas_campo', ap, 'trazos', `${dispositivo}_${pts[0].t}`), { equipo: ajustes.equipo, operador: sesion ? sesion.nombre : null, dispositivo, puntos: pts, ts: Date.now() }), 20000);
+      }
+      await marcarEnviados(lote.map(p => p.t));
+    }
+    for (const id of [...aplicacionesPorSubir]) {
+      const a = aplicaciones.find(x => x.id === id);
+      if (a) {
+        await conTimeout(setDoc(doc(db, 'recorridos_tractor', claveEquipo(ajustes.equipo), 'cosechas', a.id), { ...a, km: a.km || 0, ancho: a.ancho || Number(ajustes.ancho) || null, dispositivo, ts: Date.now() }), 20000);
+        const comp = { potrero: a.potrero, inicio: a.inicio, estado: a.estado, ancho: a.ancho || null, equipos: arrayUnion(ajustes.equipo), ts: Date.now() };
+        if (a.fin) comp.fin = a.fin;
+        await conTimeout(setDoc(doc(db, 'cosechas_campo', a.id), comp, { merge: true }), 20000);
+        a.compartidaSubida = true;
+      }
+      aplicacionesPorSubir.delete(id); ls.set('cosecha_ap_por_subir', [...aplicacionesPorSubir]); guardarAplicaciones();
+    }
+  } catch (e) { console.warn('No se pudo subir (se reintenta después)', e); }
+  subiendo = false;
+  actualizarPendientes(); pintarRed();
+}
+function pintarRed() {
+  const ch = document.getElementById('b-red');
+  ch.textContent = navigator.onLine ? '🟢 en línea' : '⚪ sin señal';
+  ch.className = 'chip ' + (navigator.onLine ? 'ok' : 'med');
+}
+window.addEventListener('online', () => { pintarRed(); subir(); actualizarDatosCampo(false); traerAbiertasCompartidas().then(traerTrazosOtros); });
+window.addEventListener('offline', pintarRed);
+setInterval(() => { if (activa()) aplicacionesPorSubir.add(activaId); subir(); }, 30000);
+setInterval(() => { traerAbiertasCompartidas(); traerTrazosOtros(); }, 60000);
+
+// ── Potreros, zonas y equipos desde la app (se guardan para usar sin señal) ──
+async function actualizarDatosCampo(manual) {
+  const est = document.getElementById('aj-estado-datos');
+  if (!navigator.onLine) { if (manual) est.textContent = 'Sin internet: se usan los potreros guardados en el celular.'; return; }
+  try {
+    if (manual) est.textContent = 'Descargando potreros…';
+    const [sd, sz, sh, st] = await conTimeout(Promise.all([getDoc(doc(db, 'config', 'datos')), getDoc(doc(db, 'config', 'zonas_sin_cultivo')), getDoc(doc(db, 'config', 'hileras')), getDoc(doc(db, 'config', 'hileras_tractor')).catch(() => null)]), 20000);
+    const d = sd.exists() ? sd.data() : {};
+    datosCampo = {
+      equipos: d.equipos || [],
+      equipoOperador: d.equipoOperador || {},
+      permisosPruebas: d.permisosPruebas || {},
+      potreros: (d.potreros || []).filter(p => Array.isArray(p.poligono) && p.poligono.length >= 3).map(p => ({ nombre: p.nombre, poligono: p.poligono, cultivo: p.tipo === 'frutal' ? (p.cultivoPermanente || null) : null })),
+      zonas: sz.exists() ? (sz.data().zonas || []) : [],
+      anchosCultivo: sz.exists() && sz.data().anchosCultivo ? sz.data().anchosCultivo : null,
+      ts: Date.now()
+    };
+    ls.set('cosecha_datos_campo', datosCampo);
+    if (sh.exists()) {
+      const hr = sh.data();
+      Object.keys(hr).forEach(k => {
+        const g = hr[k];
+        if (g && (g.manual || g.v === 3)) hilerasRef[k] = g;               // grilla de la app → solo numeración
+        else { delete hilerasRef[k]; if (g && g.fija && !hileras[k]) hileras[k] = g; } // estimación antigua del tractor
+      });
+    }
+    if (st && st.exists()) {
+      const ht = st.data();
+      Object.keys(ht).forEach(k => { const g = ht[k]; if (g && g.fija && !hileras[k]) hileras[k] = g; }); // solo como punto de partida: cada celular afina la suya
+    }
+    ls.set('cosecha_hileras', hileras); ls.set('cosecha_hileras_ref', hilerasRef);
+    if (sesion && !tienePermiso(sesion)) quitarSesion('Ya no tienes acceso al modo cosecha. Pídeselo al administrador.');
+    dibujarCampo(); if (document.getElementById('capa-ajustes').style.display === 'flex') llenarEquipos(); mostrarEstadoDatos(); pintarAplicacion();
+    if (manual) est.textContent += ' ✓ Actualizado.';
+  } catch (e) { if (manual) est.textContent = 'No se pudo descargar: ' + e.message; }
+}
+function mostrarEstadoDatos() {
+  const est = document.getElementById('aj-estado-datos');
+  if (!datosCampo) { est.textContent = 'Todavía no hay potreros guardados en este celular. Conéctate a internet y toca "Actualizar potreros".'; return; }
+  est.textContent = `${datosCampo.potreros.length} potreros y ${datosCampo.zonas.length} zonas guardados (${new Date(datosCampo.ts).toLocaleString('es-CL')}).`;
+}
+// Equipos del operador: los mismos 1 a 3 equipos asignados en la app de combustible
+// (Configurar → equipo por operador). Puede cambiar a cualquier otro, igual que al cargar.
+const ADMIN_PIN = '1234', ADMIN_NOMBRE = 'JC Allende', PIN_INICIAL = '0000';
+const ADMINS_EQUIVALENTES = ['Camila Faundez'];
+function equiposDe(op) {
+  const v = datosCampo && datosCampo.equipoOperador ? datosCampo.equipoOperador[op] : null;
+  if (!v) return [];
+  return (Array.isArray(v) ? v : [v]).map(e => e === '5082 E' ? 'JD 5082E' : e);
+}
+let eqElegido = '';
+function tienePermiso(ses) {
+  if (!ses) return false;
+  if (ses.admin) return true;
+  const v = datosCampo && datosCampo.permisosPruebas ? datosCampo.permisosPruebas[ses.nombre] : null;
+  return Array.isArray(v) && v.includes('cosecha');
+}
+function quitarSesion(msj) {
+  sesion = null; ls.set('cosecha_sesion', null);
+  if (aplicando) { aplicando = false; ls.set('cosecha_aplicando', false); pintarBotonAplicar(); }
+  cerrarCapa('capa-ajustes');
+  document.getElementById('login-msg').textContent = msj || '';
+  document.getElementById('capa-login').style.display = 'flex';
+  pintarBarraEquipo();
+}
+// Después de entrar (con PIN o desde la app): elige equipo y parte
+function entrarComo(nombre, admin) {
+  sesion = { nombre, admin, ts: Date.now() }; ls.set('cosecha_sesion', sesion);
+  cerrarCapa('capa-login');
+  const mios = equiposDe(nombre);
+  eqElegido = '';
+  if (admin || !mios.length) { eqElegido = mios[0] || ''; abrirAjustes(); return; }
+  if (jornadaVigente()) { pintarBarraEquipo(); redibujarAplicado(); pintarAplicacion(); pedirPantalla(); iniciarGPS(); subir(); return; }
+  if (mios.length === 1) aplicarTractor(mios[0]);   // un solo tractor: parte con él y pregunta por el potrero
+  else pintarElegirTractor(mios);                   // dos o más: elige con cuál trabaja hoy
+}
+
+// ── Inicio de jornada: ¿con qué tractor? y ¿sigue en el potrero anterior? ──
+const JORNADA_MS = 6 * 3600000;
+function jornadaVigente() {
+  const j = ls.get('cosecha_jornada', null);
+  return !!(j && sesion && j.op === sesion.nombre && Date.now() - j.ts < JORNADA_MS && ajustes.equipo === j.eq);
+}
+window.tocarEquipo = function () {
+  const mios = sesion && !sesion.admin ? equiposDe(sesion.nombre) : [];
+  if (mios.length >= 2) pintarElegirTractor(mios); else abrirAjustes();
+};
+function pintarElegirTractor(lista) {
+  document.getElementById('jor-titulo').textContent = '🌾 ¿Con qué máquina cosechas hoy?';
+  document.getElementById('jor-texto').innerHTML = `Hola ${sesion ? sesion.nombre.split(' ')[0] : ''}. Elige la máquina donde llevas el celular: lo que se registre queda a su nombre.`;
+  document.getElementById('jor-botones').innerHTML = lista.map(e => {
+    const ab = aplicaciones.filter(a => a.estado === 'abierta' && a.equipo === e).sort((x, y) => y.inicio - x.inicio)[0];
+    return `<button type="button" class="btn-prim" style="flex:none" data-eq="${e.replace(/"/g, '&quot;')}">🚜 ${e}${ab ? `<div style="font-size:12px;font-weight:400;opacity:.85">última cosecha: ${ab.potrero}</div>` : ''}</button>`;
+  }).join('') + '<button type="button" class="btn-gris" style="flex:none" onclick="cerrarCapa(\'capa-jornada\');abrirAjustes()">Otro equipo…</button>';
+  document.querySelectorAll('#jor-botones [data-eq]').forEach(b => b.onclick = () => aplicarTractor(b.dataset.eq));
+  document.getElementById('jor-nota').textContent = 'Si cambias de máquina durante el día, toca el nombre del equipo arriba para elegir de nuevo.';
+  document.getElementById('capa-jornada').style.display = 'flex';
+}
+function aplicarTractor(eq) {
+  if (ajustes.equipo !== eq) {
+    aplicando = false; ls.set('cosecha_aplicando', false);
+    const a = activa();
+    if (a && a.equipo && a.equipo !== eq) { activaId = null; guardarAplicaciones(); } // la aplicación abierta era de otro tractor
+    ajustes = { ...ajustes, equipo: eq, ancho: ajustes.ancho || 5 }; ls.set('cosecha_ajustes', ajustes);
+  }
+  ls.set('cosecha_jornada', { op: sesion ? sesion.nombre : '', eq, ts: Date.now() });
+  cerrarCapa('capa-jornada');
+  pintarBarraEquipo(); pintarBotonAplicar(); dibujarCampo();
+  cargarAplicadoActivo().then(() => { redibujarAplicado(); pintarAplicacion(); }).catch(() => {});
+  pedirPantalla(); iniciarGPS(); subir();
+  preguntarPotreroAnterior(eq);
+}
+async function preguntarPotreroAnterior(eq) {
+  try { await traerAbiertasCompartidas(); } catch (e) {}
+  const ab = aplicaciones.filter(a => a.estado === 'abierta' && a.equipo === eq).sort((x, y) => y.inicio - x.inicio)[0];
+  if (!ab) return; // sin aplicación abierta: sigue el flujo normal al empezar a aplicar
+  if (ab.id === activaId && aplicando) return;
+  document.getElementById('jor-titulo').textContent = '🌾 ¿Sigues en el potrero anterior?';
+  document.getElementById('jor-texto').innerHTML = `Con <strong>${eq}</strong> quedó una cosecha sin terminar en <strong>${ab.potrero}</strong>, desde el ${fechaCorta(ab.inicio)} (${(ab.km || 0).toFixed(1).replace('.', ',')} km).`;
+  document.getElementById('jor-botones').innerHTML = `<button type="button" class="btn-prim" style="flex:none" id="jor-cont">↪ Continuar en ${ab.potrero}</button>
+    <button type="button" class="btn-amar" style="flex:none" id="jor-otro">🌾 Pasar a otro potrero</button>
+    <button type="button" class="btn-gris" style="flex:none" onclick="cerrarCapa('capa-jornada')">Decidir después</button>`;
+  document.getElementById('jor-cont').onclick = () => { cerrarCapa('capa-jornada'); activarAplicacion(ab.id); };
+  document.getElementById('jor-otro').onclick = () => { cerrarCapa('capa-jornada'); abrirPotreros(null); };
+  document.getElementById('jor-nota').textContent = 'Continuar: se sigue pintando sobre lo ya cosechado. Otro potrero: eliges de la lista y, si ese tiene una cosecha abierta, se te pregunta si es continuación.';
+  document.getElementById('capa-jornada').style.display = 'flex';
+}
+
+// ── Vista de conducción ──────────────────────────────────────────
+// Tras 10 s sin tocar la pantalla (con un potrero iniciado) se oculta todo salvo el mapa y un
+// cuadro arriba con un dato grande a elegir. Cualquier toque vuelve a la vista normal.
+const FOCO_MS = 10000;
+const HUD_DATOS = [ { id: 'vel', t: '🚜 km/h' }, { id: 'tol', t: '🧺 Tolva' }, { id: 'kgha', t: '⚖️ kg/ha' }, { id: 'pct', t: '🌾 % potrero' }, { id: 'ha', t: '≈ ha' }, { id: 'pre', t: '📍 GPS' } ];
+let hudDato = ls.get('cosecha_hud', 'vel'), focoActivo = false, ultimoToque = Date.now(), resumenAp = null;
+const nf = (n, d) => n.toFixed(d).replace('.', ',');
+function hudPintar() {
+  const hud = document.getElementById('hud'); if (!hud) return;
+  const a = activa(), pos = ultimaPos;
+  let val = '—', sub = '';
+  if (hudDato === 'vel') { val = pos && pos.v != null ? nf(pos.v * 3.6, 1) : '—'; sub = 'km/h'; }
+  else if (hudDato === 'pre') { val = pos ? '±' + pos.acc : '—'; sub = 'metros de precisión del GPS'; }
+  else if (hudDato === 'pct') { val = resumenAp && resumenAp.pct != null ? Math.round(resumenAp.pct) + '%' : '—'; sub = resumenAp && resumenAp.haPot ? `de ${nf(resumenAp.haPot, 1)} ha de ${a ? a.potrero : ''}` : 'del potrero'; }
+  else if (hudDato === 'ent') { const n = entrecalleActual(); val = n ? '≈ ' + n : '—'; sub = n ? 'entrecalle aproximada (numeración de la app)' : 'sin numeración para este potrero'; }
+  else if (hudDato === 'tol') { const e = estadoTolva(); val = e.pct != null ? Math.round(e.pct) + '%' : nf(tolva.m2 / 10000, 2); sub = e.pct != null ? `tolva ≈ ${fmtKg(e.kg)} · ${nf(tolva.m2 / 10000, 2)} ha desde la última descarga` : 'ha cosechadas desde la última descarga'; }
+  else if (hudDato === 'kgha') { const k = kgHaReciente(); val = k ? fmtKg(k) : '—'; sub = k ? `kg/ha de las últimas tolvas (${nf(k / 100, 1)} qq/ha)` : 'kg/ha: aparece después de la primera descarga'; }
+  else if (hudDato === 'ha2') { val = nf(parcial.m2 / 10000, 2); sub = 'ha T2 desde ' + new Date(parcial.desde).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' }) + ' (reinícialo abajo con ↺ 0)'; }
+  else { val = resumenAp ? nf(resumenAp.haTot, 1) : '—'; sub = 'ha cosechadas' + (a ? ' en ' + a.potrero : ''); }
+  hud.className = aplicando ? 'ap' : '';
+  hud.innerHTML = `<div class="h-val">${val}</div><div class="h-sub">${sub} · ${aplicando ? (fueraDeVelocidad ? '⚠ fuera de la velocidad de cosecha' : '▶ cosechando') : '⏸ sin cosechar'}</div>
+    <div class="h-sel">${HUD_DATOS.map(d => `<button type="button" data-d="${d.id}" class="${d.id === hudDato ? 'sel' : ''}">${d.t}</button>`).join('')}</div>
+    <div class="h-sel"><button type="button" data-desc="1" style="background:#FACC15;color:#3b2f00;border-color:#ca8a04;padding:12px 2px;font-size:16px">⬇ DESCARGUÉ LA TOLVA</button></div>`;
+  const bd = hud.querySelector('[data-desc]'); if (bd) bd.onclick = e => { e.stopPropagation(); ultimoToque = Date.now(); salirFoco(); abrirDescarga(); };
+  hud.querySelectorAll('[data-d]').forEach(b => b.onclick = e => { e.stopPropagation(); ultimoToque = Date.now(); hudDato = b.dataset.d; ls.set('cosecha_hud', hudDato); hudPintar(); });
+}
+function hayCapaAbierta() {
+  return [...document.querySelectorAll('.capa')].some(c => c.style.display === 'flex' || c.style.display === 'block') || document.getElementById('banner').style.display === 'block';
+}
+function entrarFoco() {
+  if (focoActivo) return; focoActivo = true;
+  document.body.classList.add('foco'); hudPintar();
+  setTimeout(() => { try { mapa.resize(); moverCamara(true); } catch (e) {} }, 60);
+}
+function salirFoco() {
+  if (!focoActivo) return; focoActivo = false;
+  document.body.classList.remove('foco');
+  setTimeout(() => { try { mapa.resize(); } catch (e) {} }, 60);
+}
+['pointerdown', 'touchstart', 'mousedown', 'keydown'].forEach(ev => document.addEventListener(ev, e => { ultimoToque = Date.now(); if (focoActivo && e.target && e.target.closest && e.target.closest('.h-sel')) return; salirFoco(); }, true));
+setInterval(() => {
+  try {
+    if (focoActivo) { if (hayCapaAbierta()) salirFoco(); else hudPintar(); return; }
+    if (sesion && activa() && !hayCapaAbierta() && Date.now() - ultimoToque >= FOCO_MS) entrarFoco();
+  } catch (e) {}
+}, 1000);
+// Pase que deja la app al tocar "🚜 Tractor" (válido 10 minutos)
+async function usarPaseDeLaApp() {
+  let pase = null;
+  try { pase = JSON.parse(localStorage.getItem('maitenes_pase') || 'null'); localStorage.removeItem('maitenes_pase'); } catch (e) {}
+  const hm = /[#&]pase=([^&]+)/.exec(location.hash || '');
+  if (hm) { try { pase = JSON.parse(decodeURIComponent(hm[1])); } catch (e) {} try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {} }
+  if (!pase || !pase.nombre || Date.now() - pase.ts > 10 * 60000) return false;
+  if (sesion && sesion.nombre === pase.nombre) return false; // ya estaba adentro
+  await actualizarDatosCampo(false);
+  if (!tienePermiso({ nombre: pase.nombre, admin: pase.admin })) { quitarSesion('No tienes acceso al modo cosecha. Pídeselo al administrador.'); return true; }
+  entrarComo(pase.nombre, !!pase.admin);
+  return true;
+}
+function llenarEquipos() {
+  const op = sesion ? sesion.nombre : '';
+  document.getElementById('aj-operador').textContent = op ? '👤 ' + op : '';
+  const todos = (datosCampo && datosCampo.equipos.length) ? datosCampo.equipos : (ajustes.equipo ? [ajustes.equipo] : []);
+  const mios = equiposDe(op);
+  if (!eqElegido) eqElegido = ajustes.equipo || mios[0] || '';
+  const chips = document.getElementById('aj-mis-equipos');
+  chips.innerHTML = mios.map(e => `<button type="button" class="${e === eqElegido ? 'sel' : ''}" data-eq="${e}">🚜 ${e}</button>`).join('');
+  chips.querySelectorAll('button').forEach(b => b.onclick = () => { eqElegido = b.dataset.eq; document.getElementById('aj-equipo').value = ''; llenarEquipos(); });
+  document.getElementById('aj-lbl-mis').style.display = mios.length ? 'block' : 'none';
+  const otros = todos.filter(e => !mios.includes(e));
+  const sel = document.getElementById('aj-equipo');
+  sel.innerHTML = '<option value="">— Elegir equipo —</option>' + otros.map(e => `<option value="${e}" ${e === eqElegido ? 'selected' : ''}>${e}</option>`).join('');
+  sel.onchange = () => { eqElegido = sel.value; chips.querySelectorAll('button').forEach(b => b.classList.remove('sel')); };
+  // Sin equipos asignados, o eligió uno que no es suyo: se muestra la lista completa
+  const verOtro = !mios.length || (eqElegido && !mios.includes(eqElegido));
+  document.getElementById('aj-otro-wrap').style.display = verOtro ? 'block' : 'none';
+  document.getElementById('aj-btn-otro').style.display = verOtro ? 'none' : 'block';
+}
+window.mostrarOtroEquipo = function () {
+  document.getElementById('aj-otro-wrap').style.display = 'block';
+  document.getElementById('aj-btn-otro').style.display = 'none';
+};
+function pintarBarraEquipo() {
+  const op = sesion ? sesion.nombre.split(' ')[0] : '';
+  document.getElementById('b-equipo').textContent = ajustes.equipo ? `🌾 ${ajustes.equipo}${op ? ' · ' + op : ''}` : 'Modo cosecha';
+}
+
+// ── Ingreso con PIN (el mismo de la app) ─────────────────────────
+window.intentarLogin = async function () {
+  const inp = document.getElementById('pin-input'), msg = document.getElementById('login-msg'), btn = document.getElementById('btn-login');
+  const pin = inp.value.trim();
+  if (!pin) { msg.textContent = 'Ingresa tu PIN.'; return; }
+  if (!navigator.onLine) { msg.textContent = 'Para ingresar la primera vez necesitas internet (WiFi o datos). Después funciona sin señal.'; return; }
+  btn.disabled = true; btn.textContent = 'Verificando…'; msg.textContent = '';
+  try {
+    let nombre = null, admin = false;
+    if (pin === ADMIN_PIN) { nombre = ADMIN_NOMBRE; admin = true; }
+    else if (pin === PIN_INICIAL) { msg.textContent = 'Tu PIN todavía es el inicial (0000). Entra primero a la app de combustible y cámbialo; después úsalo aquí.'; }
+    else {
+      const sp = await conTimeout(getDoc(doc(db, 'config', 'pines')), 20000);
+      const op = sp.exists() ? Object.entries(sp.data()).find(([, p]) => p === pin) : null;
+      if (op) { nombre = op[0]; admin = ADMINS_EQUIVALENTES.includes(nombre); }
+      else msg.textContent = 'PIN incorrecto.';
+    }
+    if (nombre) {
+      inp.value = '';
+      await actualizarDatosCampo(false);
+      if (!tienePermiso({ nombre, admin })) msg.textContent = 'No tienes acceso al modo cosecha. Pídeselo al administrador.';
+      else entrarComo(nombre, admin);
+    }
+  } catch (e) { msg.textContent = 'No se pudo verificar: ' + e.message; }
+  btn.disabled = false; btn.textContent = 'Ingresar';
+};
+window.cerrarSesion = function () {
+  if (!confirm('¿Cerrar la sesión de ' + (sesion ? sesion.nombre : '') + '? Lo que no se ha subido queda guardado en el celular.')) return;
+  sesion = null; ls.set('cosecha_sesion', null);
+  cerrarCapa('capa-ajustes');
+  document.getElementById('capa-login').style.display = 'flex';
+};
+
+// ── Botones ──────────────────────────────────────────────────────
+function pintarBotonAplicar() {
+  const b = document.getElementById('btn-aplicar');
+  b.classList.toggle('on', aplicando);
+  b.textContent = aplicando ? '⏸ COSECHANDO · tocar para pausar' : '▶ EMPEZAR A COSECHAR';
+  informarUbicacion(true);
+}
+function empezarAplicar() { aplicando = true; ls.set('cosecha_aplicando', true); pintarBotonAplicar(); if (navigator.vibrate) navigator.vibrate(80); }
+window.toggleAplicar = function () {
+  if (!aplicando && !activa()) { abrirPotreros(empezarAplicar); return; } // primero elegir el potrero
+  if (aplicando) { aplicando = false; ls.set('cosecha_aplicando', false); pintarBotonAplicar(); if (navigator.vibrate) navigator.vibrate(80); }
+  else empezarAplicar();
+};
+window.centrar = function () {
+  if (!ultimaPos) return;
+  seguir = vista.modo !== 'fijo';
+  if (mapa.getZoom() < 17) mapa.setZoom(17);
+  if (seguir) moverCamara(false); else mapa.easeTo({ center: [ultimaPos.lng, ultimaPos.lat], duration: 600 });
+};
+window.abrirAjustes = function () {
+  if (!sesion) { document.getElementById('capa-login').style.display = 'flex'; return; }
+  eqElegido = ajustes.equipo || eqElegido; llenarEquipos(); mostrarEstadoDatos();
+  document.getElementById('aj-ancho').value = ajustes.ancho;
+  document.getElementById('aj-tolva').value = ajustes.pesoTolva || '';
+  document.getElementById('aj-vmin').value = velMin(); document.getElementById('aj-vmax').value = velMax();
+  document.getElementById('aj-equipo-libre').value = '';
+  pintarDescargasHoy();
+  document.getElementById('capa-ajustes').style.display = 'flex';
+};
+window.guardarAjustes = function () {
+  const libre = document.getElementById('aj-equipo-libre').value.trim();
+  const eq = libre || eqElegido || document.getElementById('aj-equipo').value;
+  const an = Number(document.getElementById('aj-ancho').value);
+  if (!eq) { alert('Elige el equipo'); return; }
+  if (!(an > 0)) { alert('Indica el ancho de corte'); return; }
+  const pt = Number(document.getElementById('aj-tolva').value);
+  const v0 = Number(document.getElementById('aj-vmin').value), v1 = Number(document.getElementById('aj-vmax').value);
+  if (!(pt > 0)) { alert('Indica el peso de la tolva llena (kg)'); return; }
+  if (!(v1 > v0) || v0 < 0) { alert('Revisa las velocidades: la máxima debe ser mayor que la mínima'); return; }
+  if (ajustes.equipo && eq !== ajustes.equipo && aplicando) {
+    if (!confirm(`Estás cosechando con ${ajustes.equipo}. ¿Cambiar a ${eq}? Se pausa la cosecha.`)) return;
+    aplicando = false; ls.set('cosecha_aplicando', false); pintarBotonAplicar();
+  }
+  ajustes = { ...ajustes, equipo: eq, ancho: an, pesoTolva: pt, vmin: v0, vmax: v1 }; ls.set('cosecha_ajustes', ajustes);
+  pintarTolva();
+  pintarBarraEquipo();
+  cerrarCapa('capa-ajustes');
+  redibujarAplicado(); pintarAplicacion();
+  pedirPantalla(); iniciarGPS(); subir();
+};
+window.actualizarDatosCampo = actualizarDatosCampo;
+function mostrarAviso(txt) {
+  const a = document.getElementById('aviso'); a.textContent = txt; a.style.display = 'block';
+  clearTimeout(mostrarAviso._t); mostrarAviso._t = setTimeout(() => { a.style.display = 'none'; }, 12000);
+}
+document.getElementById('aviso').onclick = e => { e.target.style.display = 'none'; };
+
+// ── Inicio ───────────────────────────────────────────────────────
+(async function iniciar() {
+  try { idb = await abrirIDB(); } catch (e) { mostrarAviso('No se pudo abrir el almacenamiento del celular: los puntos no se guardarán sin señal.'); }
+  pintarRed(); pintarLlave(); pintarBotonAplicar(); dibujarCampo();
+  if (idb) {
+    try {
+      const hoy = new Date(); hoy.setHours(0, 0, 0, 0);
+      const pts = (await puntosDesde(hoy.getTime())).sort((a, b) => a.t - b.t);
+      pts.forEach(p => recorridoLinea.addLatLng([p.lat, p.lng]));
+      if (pts.length) ultimoGuardado = pts[pts.length - 1];
+      await cargarAplicadoActivo();
+      limpiarViejos(); actualizarPendientes();
+    } catch (e) { console.warn(e); }
+  }
+  pintarAplicacion(); pintarTolva();
+  pintarBarraEquipo();
+  if (!(await usarPaseDeLaApp())) {
+    if (!sesion) document.getElementById('capa-login').style.display = 'flex';
+    else if (ajustes.equipo) {
+      pedirPantalla(); iniciarGPS();
+      const mios = sesion.admin ? [] : equiposDe(sesion.nombre);
+      if (mios.length >= 2 && !jornadaVigente()) pintarElegirTractor(mios);
+    }
+    else abrirAjustes();
+  }
+  actualizarDatosCampo(false);
+  subir();
+  traerAbiertasCompartidas().then(traerTrazosOtros);
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw-cosecha.js', { scope: '/cosecha' }).catch(e => console.warn('SW', e));
+})();
+</script>
+</body>
+</html>
