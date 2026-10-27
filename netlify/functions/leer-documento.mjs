@@ -27,11 +27,13 @@ const HERRAMIENTA = {
         items: {
           type: 'object',
           properties: {
-            nombre_comercial: { type: 'string', description: 'Nombre del producto tal como figura en el documento' },
-            cantidad: { type: 'number' },
-            unidad: { type: 'string', enum: ['L', 'kg', 'g', 'mL', 't'], description: 'Unidad de medida del producto; omitir si no se puede saber' },
-            valor_neto_unitario: { type: 'number', description: 'Precio unitario NETO en pesos (sin IVA); omitir si el documento no trae precios' },
-            total_neto_linea: { type: 'number' },
+            nombre_comercial: { type: 'string', description: 'Nombre del producto tal como figura en el documento (con la presentación si viene en el nombre)' },
+            cantidad: { type: 'number', description: 'Cantidad TAL COMO FIGURA en la columna cantidad (normalmente número de envases: bidones, sacos, cajas, unidades). No multiplicar.' },
+            unidad_documento: { type: 'string', description: 'Unidad de medida (UM) tal como figura en el documento. Ej: "BID", "UN", "LT", "KG", "SACO", "CJ", "BIDON 20 LT"' },
+            contenido_envase: { type: 'number', description: 'Litros o kilos que trae CADA unidad del documento. Ej: UM "BIDON 20 LT" o nombre "... X 20 L" → 20; caja de 12 × 1 L → 12. Si la cantidad ya viene en litros o kilos (UM "LT", "KG"), poner 1. Omitir si no se puede saber.' },
+            unidad: { type: 'string', enum: ['L', 'kg'], description: 'Unidad del contenido: L (líquidos) o kg (sólidos). 500 mL = 0,5 L; 250 g = 0,25 kg.' },
+            valor_neto_unitario: { type: 'number', description: 'Precio unitario NETO en pesos (sin IVA) tal como figura: por cada unidad del documento (por bidón si la UM es bidón). Omitir si el documento no trae precios.' },
+            total_neto_linea: { type: 'number', description: 'Total neto de la línea tal como figura' },
           },
           required: ['nombre_comercial', 'cantidad'],
         },
@@ -144,8 +146,71 @@ Reglas:
 - No inventes datos. Si algo no se ve con claridad, omítelo y explícalo en "observaciones".
 - Si el precio unitario viene con IVA incluido, conviértelo a neto y dilo en observaciones.
 - Cantidades con coma decimal chilena (1.234,5) deben salir como número normal.
-- Si ves un envase como "20 L" o "25 kg", la cantidad es cuántos envases o cuántos litros/kilos según cómo lo cobra el documento; indica en observaciones cómo la interpretaste.
+- Cantidad y envases: entrega la cantidad TAL COMO FIGURA (normalmente número de envases) y, aparte, en contenido_envase cuántos litros o kilos trae cada envase. NO multipliques: la app hace la cuenta y la revisa contra el total de la línea.
+  Ej: cantidad 8, UM "BID 10 LT" → cantidad 8, unidad_documento "BID 10 LT", contenido_envase 10, unidad L (la app calcula 80 L).
+- El contenido del envase puede venir en la UM, en el nombre (ej. "ROUNDUP 20 L", "KERB 50 WP X 1 KG") o en la descripción. Si la UM ya es litros o kilos (LT, L, KG), contenido_envase = 1.
+- El valor neto unitario va tal como figura (por envase si la UM es envase). Copia también el total neto de la línea.
+- Si no se sabe cuánto trae cada envase, omite contenido_envase y explícalo en observaciones.
 Responde solo usando la herramienta registrar_documento.`;
+
+// ── Ingrediente activo de productos que no están en el inventario (busca en internet si puede) ──
+const HERRAMIENTA_ING = {
+  name: 'registrar_ingredientes',
+  description: 'Registra el ingrediente activo de cada producto agroquímico o fertilizante consultado.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      productos: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            consulta: { type: 'string', description: 'El nombre tal como se consultó' },
+            nombre_reconocido: { type: 'string', description: 'Nombre comercial correcto del producto, si se reconoce' },
+            ingrediente_activo: { type: 'string', description: 'Ingrediente(s) activo(s) con concentración, en español, como en la etiqueta chilena. Ej: "Glifosato 480 g/L" o "Piraclostrobina 5% + Metiram 55%". Vacío si no se sabe.' },
+            categoria: { type: 'string', enum: ['Herbicida', 'Fungicida', 'Insecticida', 'Foliar', 'Coadyuvante', 'Fertilizante', 'Otros'] },
+            fabricante: { type: 'string' },
+            formulacion: { type: 'string', description: 'Ej: SC, EC, WG, SL' },
+            confianza: { type: 'string', enum: ['alta', 'media', 'baja'] },
+            fuente: { type: 'string', description: 'De dónde sale el dato: sitio web consultado (URL) o "conocimiento general"' },
+            observaciones: { type: 'string' },
+          },
+          required: ['consulta', 'confianza'],
+        },
+      },
+    },
+    required: ['productos'],
+  },
+};
+const PROMPT_ING = `Eres asesor agronómico en Chile. Para cada producto (nombre comercial como viene en una factura o guía de despacho chilena; puede venir abreviado, con la presentación o con errores de tipeo), indica su ingrediente activo y concentración según la etiqueta autorizada en Chile (SAG) o la ficha técnica del fabricante.
+Si no estás seguro, búscalo en internet (etiquetas SAG, fichas técnicas de fabricantes y distribuidores chilenos).
+Reglas:
+- Nombres de ingredientes activos en español, como en las etiquetas chilenas (ej. "Glifosato", "Lambda-cihalotrina", "Clorpirifós", "2,4-D").
+- Concentración con su unidad tal como en la etiqueta (ej. "480 g/L" o "48% p/v").
+- Si es fertilizante o foliar, pon la composición principal (ej. "Nitrógeno 15% + Boro 2%").
+- Si no puedes identificar el producto con seguridad, deja ingrediente_activo vacío y confianza "baja". No inventes.
+- Categoría: una de la lista. Acaricidas y nematicidas van como Insecticida; reguladores de crecimiento y otros, como Otros.
+Responde solo usando la herramienta registrar_ingredientes, con un elemento por producto, en el mismo orden.`;
+async function llamarIngredientes(env, texto, conWeb) {
+  const tools = conWeb ? [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3, user_location: { type: 'approximate', country: 'CL' } }, HERRAMIENTA_ING] : [HERRAMIENTA_ING];
+  let messages = [{ role: 'user', content: texto }];
+  for (let vuelta = 0; vuelta < 3; vuelta++) {
+    let r;
+    try {
+      r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({ model: MODELO, max_tokens: 4000, thinking: { type: 'between_tools' }, tools, tool_choice: { type: 'auto' }, messages }) });
+    } catch (e) { return { ok: false, status: 0, error: 'No se pudo contactar el servicio de IA' }; }
+    if (!r.ok) { let d = ''; try { const e = await r.json(); d = (e && e.error && e.error.message) || ''; } catch (e) {} return { ok: false, status: r.status, error: d }; }
+    const data = await r.json();
+    const uso = (data.content || []).find(b => b.type === 'tool_use' && b.name === 'registrar_ingredientes');
+    if (uso) return { ok: true, productos: (uso.input && uso.input.productos) || [], web: conWeb };
+    if (data.stop_reason === 'pause_turn') { messages = [...messages, { role: 'assistant', content: data.content }]; continue; }
+    const t = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n'), m = t.match(/\{[\s\S]*\}/);
+    if (m) { try { const j = JSON.parse(m[0]); if (Array.isArray(j.productos)) return { ok: true, productos: j.productos, web: conWeb }; } catch (e) {} }
+    return { ok: false, status: 502, error: 'La IA no devolvió los ingredientes' };
+  }
+  return { ok: false, status: 502, error: 'La búsqueda tardó demasiado' };
+}
 
 const json = (obj, status = 200) => new Response(JSON.stringify(obj), { status, headers: { 'Content-Type': 'application/json; charset=utf-8' } });
 
@@ -171,6 +236,16 @@ export default async function handler(request) {
   try { body = await request.json(); } catch (e) { return json({ error: 'Solicitud inválida' }, 400); }
   const { usuario, pin, imagenes } = body || {};
   if (!(await pinValido(usuario, pin, env))) return json({ error: 'No autorizado' }, 401);
+  if (body.modo === 'ingredientes') {
+    const prods = (Array.isArray(body.productos) ? body.productos : []).map(x => String((x && x.nombre) || '').trim().slice(0, 120)).filter(Boolean).slice(0, 8);
+    if (!prods.length) return json({ error: 'Faltan los nombres de los productos' }, 400);
+    const texto = PROMPT_ING + '\n\nProveedor del documento: ' + (String(body.proveedor || '').trim().slice(0, 120) || 'sin dato') + '\nProductos:\n' + prods.map((n, i) => `${i + 1}. ${n}`).join('\n');
+    let r = await llamarIngredientes(env, texto, !body.sinWeb);
+    // Si la búsqueda en internet no está habilitada en la cuenta de IA, responde con lo que sabe
+    if (!r.ok && r.status >= 400 && r.status < 500 && r.status !== 401 && r.status !== 429) r = await llamarIngredientes(env, texto, false);
+    if (!r.ok) return json({ error: 'No se pudo buscar el ingrediente activo' + (r.error ? ': ' + r.error : '') }, 502);
+    return json({ ok: true, productos: r.productos, web: r.web });
+  }
   if (body.modo === 'electricidad') {
     const docs = body.documentos;
     if (!Array.isArray(docs) || !docs.length || docs.length > 3) return json({ error: 'Envía entre 1 y 3 archivos' }, 400);
