@@ -6352,13 +6352,14 @@ async function sincronizarHextraConCombustible(operador, fecha) {
   } catch (e) { console.warn('hextra/combustible', e); }
 }
 window.sincronizarHextraConCombustible = sincronizarHextraConCombustible;
+const optsMesesTemporada = sel => '<option value="">—</option>' + ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'].map((m, k) => { const v = String(k + 1).padStart(2, '0'); return `<option value="${v}" ${v === sel ? 'selected' : ''}>${m}</option>`; }).join('');
 function renderHorariosTemporada() {
   const c = document.getElementById('horarios-temporada'); if (!c) return;
   const L = config.horariosTemporada || [];
   c.innerHTML = L.length ? L.map((t, i) => `<div style="border:1px solid #E5E7EB;border-radius:8px;padding:8px;margin-bottom:6px">
     <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px"><input type="text" value="${escA(t.nombre || '')}" placeholder="Nombre (ej: Verano)" style="flex:1" onchange="editarHorarioTemporada(${i},'nombre',this.value)"><button class="btn btn-danger" onclick="eliminarHorarioTemporada(${i})">✕</button></div>
-    <div class="grid-2" style="gap:6px"><div class="field" style="margin:0"><label>Desde</label><input type="date" value="${escA(t.desde ? '2026-' + t.desde : '')}" onchange="editarHorarioTemporada(${i},'desde',this.value.slice(5))"></div>
-    <div class="field" style="margin:0"><label>Hasta</label><input type="date" value="${escA(t.hasta ? '2026-' + t.hasta : '')}" onchange="editarHorarioTemporada(${i},'hasta',this.value.slice(5))"></div>
+    <div class="grid-2" style="gap:6px"><div class="field" style="margin:0"><label>Desde (mes)</label><select onchange="editarHorarioTemporada(${i},'desde',this.value ? this.value + '-01' : '')">${optsMesesTemporada((t.desde || '').slice(0, 2))}</select></div>
+    <div class="field" style="margin:0"><label>Hasta (mes, completo)</label><select onchange="editarHorarioTemporada(${i},'hasta',this.value ? this.value + '-31' : '')">${optsMesesTemporada((t.hasta || '').slice(0, 2))}</select></div>
     <div class="field" style="margin:0"><label>Salida lun–vie</label><input type="time" value="${escA(t.salida || '')}" onchange="editarHorarioTemporada(${i},'salida',this.value)"></div>
     <div class="field" style="margin:0"><label>Salida sábado</label><input type="time" value="${escA(t.salidaSab || '')}" onchange="editarHorarioTemporada(${i},'salidaSab',this.value)"></div></div></div>`).join('') : '<div style="color:#9CA3AF;font-size:13px">Sin temporadas: se usa la hora general todos los días.</div>';
 }
@@ -15084,7 +15085,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         <div class="field" style="margin-top:10px"><label>🗓️ Horarios por temporada (el horario cambia en 3 etapas del año)</label>
           <div id="horarios-temporada"></div>
           <button class="btn" style="margin-top:6px" onclick="agregarHorarioTemporada()">+ Agregar temporada</button>
-          <div class="hint">Cada temporada tiene su salida de lunes a viernes y la del sábado (el domingo usa la del sábado). Fuera de estas fechas se usa la hora general de abajo. El año de las fechas no importa.</div></div>
+          <div class="hint">Cada temporada abarca meses completos (de «desde» hasta «hasta», ambos incluidos; puede cruzar el fin de año) y se repite todos los años. Tiene su salida de lunes a viernes y la del sábado (el domingo usa la del sábado). Fuera de las temporadas se usa la hora general de abajo.</div></div>
         <div class="field" style="margin-top:10px"><label>🕔 Hora de salida según contrato (general)</label>
           <input type="time" id="hsalida-general" onchange="guardarHoraSalidaTrab('', this.value)">
           <div class="field" style="margin-top:8px"><label>Margen sin contar como hora extra (minutos)</label>
