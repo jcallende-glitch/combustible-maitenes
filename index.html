@@ -15900,5 +15900,97 @@ tbody td{padding:10px 12px;vertical-align:middle;}
 
 <div id="toast" class="toast"></div>
 
+<script>
+/* Listas ordenadas A→Z y con buscador (máquinas, potreros, labores, operadores, etc.).
+   Se aplica solo a selectores y botones/chips con varias opciones; no cambia los datos, solo cómo se muestran. */
+(function () {
+  var norm = function (s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim(); };
+  var SKIP_ID = /periodo|anio|tipo|unidad|categoria|estado|bodega|hora|mes|dosis|filtro-anio/i;
+  var HEAD = /^(todos|todas|sin |ninguno|ninguna|—|-|seleccion)/i, TAIL = /^(otros?|otras?)\b|especificar/i;
+  var queries = {}, obs = null, timer = null;
+  function pausa(fn) { if (obs) obs.disconnect(); try { fn(); } finally { if (obs) { obs.takeRecords(); obs.observe(document.body, { childList: true, subtree: true }); } } }
+  function ordenar(items, texto, esHead) {
+    var head = [], mid = [], tail = [];
+    items.forEach(function (x) { var t = texto(x); if (esHead(x) || HEAD.test(t)) head.push(x); else if (TAIL.test(t)) tail.push(x); else mid.push(x); });
+    mid.sort(function (a, b) { return texto(a).localeCompare(texto(b), 'es', { numeric: true, sensitivity: 'base' }); });
+    return head.concat(mid, tail);
+  }
+  function crearBuscador(antesDe, onInput, valor) {
+    var i = document.createElement('input');
+    i.type = 'search'; i.placeholder = '🔍 Buscar…'; i.className = 'buscador-lista'; i.autocomplete = 'off'; i.value = valor || '';
+    i.style.cssText = 'width:100%;box-sizing:border-box;padding:8px 10px;margin:0 0 6px;border:1px solid #D1D5DB;border-radius:8px;font-size:14px;background:#fff';
+    i.addEventListener('input', function () { onInput(i.value); });
+    antesDe.parentNode.insertBefore(i, antesDe);
+    return i;
+  }
+  // ── selectores ──
+  function mejorarSelect(sel) {
+    if (sel.multiple || sel.hasAttribute('data-no-mejorar') || sel.closest('[data-no-mejorar]')) return;
+    if (sel._full) { // ¿cambiaron las opciones por fuera? entonces se reinicia
+      var set = sel._fullSet; var ext = [].some.call(sel.options, function (o) { return !set.has(o); });
+      if (!ext) return;
+      sel._full = null; sel._fullSet = null; if (sel._buscador) sel._buscador.value = '';
+    }
+    var opts = [].slice.call(sel.options), reales = opts.filter(function (o) { return o.value !== ''; });
+    if (reales.length < 5) return;
+    var cur = sel.value;
+    if (!SKIP_ID.test(sel.id || '')) {
+      var ord = ordenar(opts, function (o) { return o.textContent; }, function (o) { return o.value === ''; });
+      if (ord.some(function (o, i) { return o !== opts[i]; })) pausa(function () { ord.forEach(function (o) { sel.appendChild(o); }); sel.value = cur; });
+    }
+    if (reales.length >= 8 && !sel._buscador) {
+      sel._buscador = crearBuscador(sel, function (q) { filtrarSelect(sel, q); });
+    }
+  }
+  function filtrarSelect(sel, q) {
+    if (!sel._full) { sel._full = [].slice.call(sel.options); sel._fullSet = new Set(sel._full); }
+    var nq = norm(q), cur = sel.value, coinc = [];
+    pausa(function () {
+      var frag = document.createDocumentFragment();
+      sel._full.forEach(function (o) {
+        var head = o.value === '' || HEAD.test(o.textContent), ok = !nq || norm(o.textContent).indexOf(nq) >= 0;
+        if (!head && ok) coinc.push(o);
+        if (head || ok || o.value === cur) frag.appendChild(o);
+      });
+      while (sel.firstChild) sel.removeChild(sel.firstChild);
+      sel.appendChild(frag);
+      sel.value = cur;
+    });
+    if (nq && coinc.length === 1 && sel.value !== coinc[0].value) { sel.value = coinc[0].value; sel.dispatchEvent(new Event('change', { bubbles: true })); }
+  }
+  // ── botones / chips (cuaderno de campo, labores, potreros, equipos…) ──
+  function claveContenedor(c) {
+    if (c.id) return c.id;
+    var a = c.parentElement; while (a && !a.id) a = a.parentElement;
+    var hermanos = a ? [].slice.call(a.querySelectorAll('.centros-selector')) : [];
+    return (a ? a.id : 'x') + ':' + hermanos.indexOf(c);
+  }
+  function chipsDe(c) { return [].filter.call(c.children, function (e) { return e.classList.contains('cultivo-chip'); }); }
+  function mejorarChips(c) {
+    if (c.hasAttribute('data-no-mejorar') || c.closest('[data-no-mejorar]')) return;
+    var chips = chipsDe(c); if (chips.length < 8) return;
+    var key = claveContenedor(c), esCultivos = chips.some(function (x) { return /toggleCultivo|toggleManualCultivo|elAsig\(.?cultivo/i.test(x.getAttribute('onclick') || ''); });
+    if (!esCultivos && !c.hasAttribute('data-no-ordenar')) {
+      var ord = ordenar(chips, function (x) { return x.textContent; }, function () { return false; });
+      if (ord.some(function (x, i) { return x !== chips[i]; })) pausa(function () { ord.forEach(function (x) { c.appendChild(x); }); });
+    }
+    var b = c.previousElementSibling && c.previousElementSibling.classList && c.previousElementSibling.classList.contains('buscador-lista') ? c.previousElementSibling : null;
+    if (!b) pausa(function () { b = crearBuscador(c, function (q) { queries[key] = q; filtrarChips(c, q); }, queries[key] || ''); });
+    if (queries[key]) filtrarChips(c, queries[key]);
+  }
+  function filtrarChips(c, q) {
+    var nq = norm(q);
+    pausa(function () { chipsDe(c).forEach(function (x) { x.style.display = (!nq || x.classList.contains('sel') || norm(x.textContent).indexOf(nq) >= 0) ? '' : 'none'; }); });
+  }
+  function barrer() {
+    document.querySelectorAll('select').forEach(mejorarSelect);
+    document.querySelectorAll('.centros-selector').forEach(mejorarChips);
+  }
+  function programar() { clearTimeout(timer); timer = setTimeout(barrer, 120); }
+  function iniciar() { obs = new MutationObserver(programar); obs.observe(document.body, { childList: true, subtree: true }); barrer(); }
+  window.ordenarYBuscarListas = barrer;
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', iniciar); else iniciar();
+})();
+</script>
 </body>
 </html>
