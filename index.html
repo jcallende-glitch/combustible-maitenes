@@ -7973,6 +7973,21 @@ window.campoFotoElegir = async function(inp) {
   }
   inp.value = ''; renderCampoFotosPrev();
 }
+// Pregunta si lo que se registra es la continuación de una labor en curso o una labor nueva en paralelo (otro equipo, otra tarea). null = cancelar
+function elegirContinuarLabor(msg, dia) {
+  return new Promise(res => {
+    const ov = document.createElement('div');
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+    ov.innerHTML = `<div style="background:#fff;border-radius:14px;padding:18px;max-width:380px;width:100%;font-size:15px;line-height:1.4">
+      <div style="margin-bottom:12px">${escA(msg)}</div>
+      <button type="button" class="btn btn-verde btn-full" id="clc-cont" style="margin-bottom:8px">↪️ Es la misma: continuarla el ${escA(dia)}</button>
+      <button type="button" class="btn btn-full" id="clc-nueva" style="margin-bottom:8px">➕ Es otra labor, en paralelo (queda también en curso)</button>
+      <button type="button" class="btn btn-full" id="clc-cancel" style="background:#fff;color:#6B7280">Cancelar</button></div>`;
+    const fin = v => { ov.remove(); res(v); };
+    ov.querySelector('#clc-cont').onclick = () => fin(true); ov.querySelector('#clc-nueva').onclick = () => fin(false); ov.querySelector('#clc-cancel').onclick = () => fin(null);
+    document.body.appendChild(ov);
+  });
+}
 window.registrarLaborCampo = async function() {
   if (!camposLaborPotrerosSel.length) { toast('Selecciona al menos un potrero', false); return; }
   if (!campoTipoLaborSeleccionado) { toast('Selecciona el tipo de labor', false); return; }
@@ -7989,11 +8004,17 @@ window.registrarLaborCampo = async function() {
   const multiDia = campoMultiDia && fechaFin !== fecha;
   // ¿Ya hay una labor igual en curso en estos potreros? Ofrece marcarla como continuación en vez de duplicarla
   if (!campoMultiId) {
-    const mismas = (laboresCampoTodos || []).filter(l => l.enCurso && l.fecha && l.fecha < fecha && tipoDocCoincide(l, tipo) && camposLaborPotrerosSel.some(u => laborEsDeUnidad(l, u)));
+    const eqSel = (document.getElementById('campo-labor-equipo') || {}).value || '', opSel = (document.getElementById('campo-labor-operador') || {}).value || '';
+    const equiposDe = l => new Set([l.equipo, ...Object.values(l.diasDetalle || {}).flat().map(x => x && x.equipo)].filter(Boolean));
+    // Varios equipos pueden trabajar a la vez en un mismo potrero: si el equipo elegido no es de la labor en curso, se registra otra labor en paralelo sin preguntar
+    const mismas = (laboresCampoTodos || []).filter(l => l.enCurso && l.fecha && l.fecha < fecha && tipoDocCoincide(l, tipo) && camposLaborPotrerosSel.some(u => laborEsDeUnidad(l, u)) && !(eqSel && equiposDe(l).size && !equiposDe(l).has(eqSel)));
     if (mismas.length) {
       const k0 = [...new Set(mismas.map(claveEnCurso))];
-      if (confirm(`Ya hay una labor de ${labelTipoLabor(tipo)} en curso en este potrero desde el ${fCorta(mismas.map(l => l.fecha).sort()[0])}.\n\n¿Es la continuación? (Aceptar = marcarla como continuada el ${fCorta(fecha)}; Cancelar = registrar una labor nueva)`)) {
-        const par = { equipo: (document.getElementById('campo-labor-equipo') || {}).value || '', operador: (document.getElementById('campo-labor-operador') || {}).value || '' };
+      const eqsTxt = [...new Set(mismas.flatMap(l => [...equiposDe(l)]))].join(', ');
+      const continuar = await elegirContinuarLabor(`Ya hay una labor de ${labelTipoLabor(tipo)} en curso en este potrero desde el ${fCorta(mismas.map(l => l.fecha).sort()[0])}${eqsTxt ? ' (' + eqsTxt + ')' : ''}.`, fCorta(fecha));
+      if (continuar === null) return;
+      if (continuar) {
+        const par = { equipo: eqSel, operador: opSel };
         for (const k of k0) await continuarLaborEnCurso(k, fecha, par);
         return;
       }
