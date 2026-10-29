@@ -1585,12 +1585,29 @@ function renderEnVivo() {
   document.getElementById('envivo-lista').innerHTML = lista.length ? `<table style="width:100%;min-width:0;font-size:13px;border-collapse:collapse">
     <thead><tr><th style="text-align:left;padding:6px">Equipo</th><th style="text-align:left;padding:6px">Estado</th><th style="text-align:left;padding:6px">Dónde</th><th style="text-align:left;padding:6px">Último dato</th></tr></thead><tbody>
     ${lista.map(x => { const viejo = ahora - (x.ts || 0) > 10 * 60000; return `<tr style="cursor:pointer;border-top:1px solid var(--borde)" onclick="envivoIr(${x.lat},${x.lng});envivoVerRuta('${String(x.equipo).replace(/'/g, "\\'")}')">
-      <td style="padding:6px"><strong>${x.equipo}</strong><div style="font-size:11px;color:var(--acero)">${x.fuente === 'jdlink' ? '📡 JDLink' : '📱 ' + (x.operador || '')}${otraFuente(x)}${envivoFuenteEq[x.equipo] ? ' · 📌' : ''}</div></td>
+      <td style="padding:6px"><strong>${x.equipo}</strong>${isAdmin && (x.fuente === 'celular' || x._ambas) ? ` <button type="button" title="Quitar este equipo de la lista (entró por error o prueba)" style="border:0;background:none;font-size:15px;cursor:pointer;padding:0 4px" onclick="event.stopPropagation();envivoEliminar('${String(x.equipo).replace(/'/g, "\\'")}')">🗑</button>` : ''}<div style="font-size:11px;color:var(--acero)">${x.fuente === 'jdlink' ? '📡 JDLink' : '📱 ' + (x.operador || '')}${otraFuente(x)}${envivoFuenteEq[x.equipo] ? ' · 📌' : ''}</div></td>
       <td style="padding:6px">${viejo ? '⚫ sin señal' : x.aplicando ? '🟢 aplicando' : (x.kmh || 0) >= 1 ? `🔵 ${x.kmh} km/h` : '⚪ detenido'}</td>
       <td style="padding:6px">${x.aqui || '—'}${x.potrero && x.potrero !== x.aqui ? `<div style="font-size:11px;color:var(--acero)">aplicación: ${x.potrero}</div>` : ''}</td>
       <td style="padding:6px;color:${viejo ? '#B91C1C' : 'inherit'}">${haceTexto(ahora - (x.ts || 0))}</td></tr>`; }).join('')}
     </tbody></table>` : '<div style="color:var(--acero);font-size:13px">Todavía ningún equipo ha mandado su posición. Aparecen apenas un tractor abre el modo tractor con señal, o cuando JDLink informa.</div>';
   document.getElementById('envivo-lista').insertAdjacentHTML('beforeend', `<div style="font-size:11px;color:var(--acero);margin-top:6px">${envivoJDEstado || 'JDLink: consultando…'}</div>`);
+}
+// Quita de la lista un equipo que mandó su posición desde el celular por error o de prueba (y, si se quiere, sus recorridos guardados)
+window.envivoEliminar = async function(eq) {
+  if (!isAdmin) return;
+  if (!confirm(`¿Quitar «${eq}» de Ubicación equipos?\n\nSe borra su última posición enviada desde el celular. Si ese celular vuelve a abrir el modo tractor con ese equipo, aparecerá de nuevo.`)) return;
+  try {
+    const snap = await getDocs(query(collection(db, 'ubicacion_actual'), where('equipo', '==', eq)));
+    await Promise.all(snap.docs.map(d => deleteDoc(d.ref)));
+    let msg = '✓ «' + eq + '» quitado de la lista';
+    if (confirm(`¿Borrar también los recorridos guardados de «${eq}» en el modo tractor?\n\nAceptar = se borran (no se puede deshacer)\nCancelar = se conservan`)) {
+      const clave = eq.replace(/\s+/g, '_'), ls = await getDocs(collection(db, 'recorridos_tractor', clave, 'lotes'));
+      await Promise.all(ls.docs.map(d => deleteDoc(d.ref)));
+      try { await deleteDoc(doc(db, 'recorridos_tractor', clave)); } catch (e) {}
+      msg += ' y sus recorridos (' + ls.size + ')';
+    }
+    toast(msg, true);
+  } catch (e) { toast('Error: ' + e.message, false); }
 }
 window.envivoIr = (lat, lng) => { envivoMapa.setView([lat, lng], 17); };
 
