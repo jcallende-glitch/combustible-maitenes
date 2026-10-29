@@ -6584,7 +6584,60 @@ function suscribirLaboresCampo() {
     laboresCampoTodos = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     recalcularLaboresCampoSeleccion();
     try { renderLaboresEnCurso(); } catch (e) { console.warn(e); }
+    try { renderRevisionCampo(); } catch (e) { console.warn(e); }
   });
+}
+
+// ─── REVISIÓN DE REGISTROS (solo administrador): todo lo que se ingresa, en orden cronológico ─────
+let revFiltro = 'pend', revOrden = 'asc', revUsuario = '', revMostrar = 30, revAbierto = false;
+function renderRevisionCampo() {
+  const w = document.getElementById('campo-revision-wrap'); if (!w) return;
+  if (!isAdmin) { w.innerHTML = ''; return; }
+  const todas = (laboresCampoTodos || []).filter(l => l.ts);
+  const pend = todas.filter(l => !l.revisado);
+  const head = `<div class="panel-title" style="cursor:pointer;display:flex;align-items:center;gap:8px" onclick="revToggle()">📥 Revisar registros <span style="background:${pend.length ? '#DC2626' : '#16A34A'};color:#fff;border-radius:10px;padding:1px 8px;font-size:12px">${pend.length ? pend.length + ' por revisar' : '✓ al día'}</span><span style="margin-left:auto;font-size:12px;color:#6B7280">${revAbierto ? '▲' : '▼'}</span></div>`;
+  if (!revAbierto) { w.innerHTML = `<div class="panel">${head}</div>`; return; }
+  const quienes = [...new Set(todas.map(l => l.operador).filter(Boolean))].sort(cmpEs);
+  let lista = todas.filter(l => (revFiltro === 'todos' || (revFiltro === 'pend' ? !l.revisado : !!l.revisado)) && (!revUsuario || l.operador === revUsuario));
+  lista.sort((a, b) => revOrden === 'asc' ? a.ts - b.ts : b.ts - a.ts);
+  const vis = lista.slice(0, revMostrar);
+  const btn = (act, txt, on, extra) => `<button type="button" class="btn ${on ? 'btn-verde' : 'btn-secondary'}" style="padding:6px 10px;margin:2px 4px 2px 0;${extra || ''}" onclick="${act}">${txt}</button>`;
+  const fh = ts => { const d = new Date(ts); return d.toLocaleDateString('es-CL', { day: '2-digit', month: '2-digit' }) + ' ' + d.toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' }); };
+  const tipoTxt = l => l.tipo === 'personalizado' ? '🧩 ' + escA(l.nombreTipo || '') : labelTipoLaborHtml(l.tipo);
+  const fila = l => `<tr style="background:${l.revisado ? '#F0FDF4' : '#FFFBEB'}">
+    <td class="td-mono" style="white-space:nowrap;font-size:12px">${fh(l.ts)}<div style="color:#6B7280">labor ${l.fecha ? fCorta(l.fecha) : 's/f'}</div></td>
+    <td style="font-size:13px;font-weight:700">📍 ${escA(l.lote ? l.potrero + ' › ' + l.lote : (l.potrero || '—'))}</td>
+    <td style="font-size:13px;font-weight:600">${tipoTxt(l)}</td>
+    <td style="font-size:12px">${detalleLaborCampo(l)}${l.obs ? `<div style="color:#6B7280;margin-top:3px">💬 ${escA(l.obs)}</div>` : ''}</td>
+    <td style="font-size:13px;font-weight:700">${escA(l.operador || '—')}</td>
+    <td style="white-space:nowrap">${l.revisado ? `<span style="font-size:11px;color:#047857">✓ ${escA(l.revisadoPor || '')}</span> <button type="button" class="btn btn-secondary" style="padding:4px 8px" title="Quitar revisado" onclick="revMarcar('${l.id}',false)">↩️</button>` : `<button type="button" class="btn btn-verde" style="padding:6px 10px" onclick="revMarcar('${l.id}',true)">✓</button>`}
+      <button type="button" class="btn btn-secondary" style="padding:6px 9px" title="Editar" onclick="editarLaborCampo('${l.id}')">✏️</button></td></tr>`;
+  const pendVis = vis.filter(l => !l.revisado).length;
+  w.innerHTML = `<div class="panel">${head}
+    <div style="margin-bottom:8px">${btn("revSet('revFiltro','pend')", 'Por revisar (' + pend.length + ')', revFiltro === 'pend')}${btn("revSet('revFiltro','rev')", 'Revisados', revFiltro === 'rev')}${btn("revSet('revFiltro','todos')", 'Todos', revFiltro === 'todos')}
+      ${btn("revSet('revOrden','" + (revOrden === 'asc' ? 'desc' : 'asc') + "')", revOrden === 'asc' ? '↑ Más antiguo primero' : '↓ Más reciente primero', false)}</div>
+    <div style="margin-bottom:8px"><select onchange="revSet('revUsuario',this.value)" style="width:auto"><option value="">Todos los que registran</option>${quienes.map(q => `<option value="${escA(q)}" ${q === revUsuario ? 'selected' : ''}>${escA(q)}</option>`).join('')}</select></div>
+    ${vis.length ? `<div class="table-wrap"><table><thead><tr><th>Ingresado</th><th>Potrero</th><th>Labor</th><th>Detalle</th><th>Registró</th><th></th></tr></thead><tbody>${vis.map(fila).join('')}</tbody></table></div>` : '<div class="empty" style="padding:10px;font-size:13px">Nada por mostrar con este filtro. ✓</div>'}
+    ${lista.length > vis.length ? `<button type="button" class="btn btn-secondary btn-full" onclick="revMas()">Ver ${Math.min(30, lista.length - vis.length)} más (quedan ${lista.length - vis.length})</button>` : ''}
+    ${pendVis ? `<button type="button" class="btn btn-verde btn-full" style="margin-top:8px" onclick="revMarcarVisibles()">✓ Marcar como revisados los ${pendVis} que se ven</button>` : ''}
+  </div>`;
+}
+window.revToggle = () => { revAbierto = !revAbierto; renderRevisionCampo(); };
+window.revSet = (k, v) => { if (k === 'revFiltro') revFiltro = v; else if (k === 'revOrden') revOrden = v; else revUsuario = v; revMostrar = 30; renderRevisionCampo(); };
+window.revMas = () => { revMostrar += 30; renderRevisionCampo(); };
+window.revMarcar = async function(id, ok) {
+  try { await updateDoc(doc(db, 'labores_campo', id), ok ? { revisado: true, revisadoPor: currentUser || '', revisadoTs: Date.now() } : { revisado: false, revisadoPor: null, revisadoTs: null }); }
+  catch (e) { toast('Error: ' + e.message, false); }
+}
+window.revMarcarVisibles = async function() {
+  const todas = (laboresCampoTodos || []).filter(l => l.ts && !l.revisado && (!revUsuario || l.operador === revUsuario));
+  todas.sort((a, b) => revOrden === 'asc' ? a.ts - b.ts : b.ts - a.ts);
+  const ids = todas.slice(0, revMostrar).map(l => l.id).filter(id => (laboresCampoTodos.find(l => l.id === id) || {}).revisado !== true);
+  if (!ids.length || !confirm(`¿Marcar ${ids.length} registro(s) como revisados?`)) return;
+  try {
+    for (let i = 0; i < ids.length; i += 400) { const b = writeBatch(db); ids.slice(i, i + 400).forEach(id => b.update(doc(db, 'labores_campo', id), { revisado: true, revisadoPor: currentUser || '', revisadoTs: Date.now() })); await b.commit(); }
+    toast('✓ ' + ids.length + ' marcados como revisados', true);
+  } catch (e) { toast('Error: ' + e.message, false); }
 }
 
 function recalcularLaboresCampoSeleccion() {
@@ -6623,6 +6676,19 @@ function formatoSiembra(s) {
 }
 
 // Muestra un resumen por cada potrero elegido ahora (pueden ser varios a la vez).
+// Días transcurridos entre la siembra del cultivo actual y hoy (si ya se cosechó, hasta la cosecha)
+function diasDesdeSiembraHtml(nombre, lote) {
+  const del = tipo => (laboresCampoTodos || []).filter(l => l.potrero === nombre && l.tipo === tipo && l.fecha && !l.pendiente && (!lote || !l.lote || l.lote === lote));
+  const sie = del('siembra').sort((a, b) => b.fecha.localeCompare(a.fecha) || (b.ts || 0) - (a.ts || 0))[0];
+  if (!sie) return '';
+  const hoy = hoyCampoStr(), cos = del('cosecha').filter(l => l.fecha >= sie.fecha).sort((a, b) => a.fecha.localeCompare(b.fecha)).pop();
+  const f = x => x.slice(8, 10) + '-' + x.slice(5, 7) + '-' + x.slice(0, 4), cult = sie.cultivo ? ' · ' + escA(sie.cultivo) : '';
+  let txt;
+  if (sie.fecha > hoy) txt = `faltan ${diasEntre(hoy, sie.fecha)} días para la siembra (${f(sie.fecha)})`;
+  else if (cos) txt = `${diasEntre(sie.fecha, cos.fecha)} días de ciclo · cosechado el ${f(cos.fecha)}`;
+  else { const d = diasEntre(sie.fecha, hoy); txt = `${d} ${d === 1 ? 'día' : 'días'} desde la siembra (${f(sie.fecha)})`; }
+  return `<div style="background:#ECFDF5;border:1px solid #A7F3D0;color:#047857;border-radius:8px;padding:6px 10px;margin-bottom:6px;font-weight:700;font-size:14px">🌱 ${txt}${cult}</div>`;
+}
 function renderEstadoPotreros() {
   const cont = document.getElementById('campo-estado-potrero');
   if (!cont) return;
@@ -6637,6 +6703,7 @@ function renderEstadoPotreros() {
     const lote = loteDeUnidad(unidad);
     if (lote) return `
     <div class="anterior-box" style="margin-bottom:8px">
+      ${diasDesdeSiembraHtml(nombre, lote.nombre)}
       <div class="anterior-row"><span>Lote:</span><strong>${escA(lote.nombre)}</strong></div>
       <div class="anterior-row"><span>Potrero:</span><strong>${escA(nombre)}</strong></div>
       <div class="anterior-row"><span>Hectáreas:</span><strong>${lote.hectareas != null ? lote.hectareas.toFixed(1) + ' ha' : '—'}</strong></div>
@@ -6651,6 +6718,7 @@ function renderEstadoPotreros() {
     }
     return `
     <div class="anterior-box" style="margin-bottom:8px">
+      ${p.tipo === 'frutal' ? '' : diasDesdeSiembraHtml(nombre, null)}
       <div class="anterior-row"><span>Potrero:</span><strong>${nombre}</strong></div>
       <div class="anterior-row"><span>Hectáreas:</span><strong>${p.hectareas != null ? p.hectareas + ' ha' : '—'}</strong></div>
       <div class="anterior-row"><span>Tipo:</span><strong>${p.tipo === 'frutal' ? '🌳 Frutal' : '🌾 Anual'}</strong></div>
@@ -15123,6 +15191,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     <div id="tc-campo" class="tab-content">
       <button type="button" class="btn btn-secondary btn-full" style="margin-bottom:10px" onclick="abrirPrueba('cuaderno2')">🎤 Probar el cuaderno v2 por dictado (prueba, no toca este cuaderno)</button>
       <div id="campo-en-curso"></div>
+      <div id="campo-revision-wrap"></div>
       <div class="panel">
         <div class="panel-title">🌱 Potreros trabajados</div>
         <div class="hint" style="margin-bottom:10px">El campo es una sola unidad: elige uno o más potreros — por nombre, en el mapa, o ambos — y todo lo de abajo se basa en esa elección.</div>
