@@ -5711,18 +5711,20 @@ window.iniciarCompletarAsistencia = async function(fechaForzada) {
   const comb = {};
   try {
     const snap = await getDocs(query(collection(db, 'registros'), where('fecha', '==', fecha)));
-    const por = {}, eqs = {}, horas = {};
+    const por = {}, eqs = {}, horas = {}, trabs = {}, aps = {};
     snap.docs.map(d => d.data()).forEach(r => {
       if (!r.operador) return;
       const dist = (r.distribucion && r.distribucion.length) ? r.distribucion : (r.centro ? [{ centro: r.centro, litros: r.litros || 0 }] : []);
       dist.forEach(x => { por[r.operador] = por[r.operador] || {}; por[r.operador][x.centro] = (por[r.operador][x.centro] || 0) + (x.litros || 0); });
       if (r.equipo) { eqs[r.operador] = eqs[r.operador] || new Set(); eqs[r.operador].add(r.equipo); }
       if (r.hora && (!horas[r.operador] || r.hora > horas[r.operador])) horas[r.operador] = r.hora;
+      { const ts = (Array.isArray(r.trabajos) && r.trabajos.length ? r.trabajos : (r.trabajo ? [r.trabajo] : [])).filter(x => x && !/^otro/i.test(x)); if (ts.length) { trabs[r.operador] = trabs[r.operador] || new Set(); ts.forEach(x => trabs[r.operador].add(x)); } }
+      { const as = (Array.isArray(r.aperos) && r.aperos.length ? r.aperos : (r.apero ? [r.apero] : [])).filter(x => x && !/^otro|^libre/i.test(x)); if (as.length) { aps[r.operador] = aps[r.operador] || new Set(); as.forEach(x => aps[r.operador].add(x)); } }
     });
     Object.entries(por).forEach(([op, cs]) => {
       const tot = Object.values(cs).reduce((a, b) => a + b, 0);
       const lista = Object.entries(cs).map(([centro, l]) => ({ centro, pct: tot > 0 ? Math.round(l / tot * 100) : 0 })).sort((a, b) => b.pct - a.pct);
-      comb[op] = { lista, equipos: [...(eqs[op] || [])], ultimaHora: horas[op] || '', texto: lista.map(x => x.centro + ' ' + x.pct + '%').join(' · ') };
+      comb[op] = { lista, equipos: [...(eqs[op] || [])], ultimaHora: horas[op] || '', trabajos: [...(trabs[op] || [])], aperos: [...(aps[op] || [])], texto: lista.map(x => x.centro + ' ' + x.pct + '%').join(' · ') };
     });
   } catch (e) { console.warn('wizard combustible', e); }
   // Cuaderno de campo: labores del día / en curso (se suscribe una vez y se espera la primera carga)
@@ -5746,16 +5748,14 @@ function wzCargarTrabajador() {
   const cuCentros = cu && cu.centros.length ? cu.centros : null;
   const maq = (cu && cu.equipos.length ? cu.equipos.join(' + ') : '') || maqComb || (ultMaq ? ultMaq.maquinaria : '');
   const eq1 = maq.split(' + ')[0], ultAp = prev.find(r => Array.isArray(r.aperos) && r.aperos.length && (!eq1 || r.maquinaria === maq || String(r.maquinaria || '').split(' + ')[0] === eq1));
+  const rec = recientesAsist(trab, WZ.fecha);
   WZ.cur = {
-    trab, cu, cuConfirmar: !!cu,
-    centroModo: cuCentros ? 'cuad' : (c ? 'comb' : (ultCentro ? 'prev' : 'manual')),
-    centros: cuCentros ? cuCentros.map(x => ({ ...x })) : (c ? [] : (ultCentro ? centrosDeReg(ultCentro) : [])),
-    centroCambiar: !cuCentros && !c && !ultCentro,
-    labor: cu && cu.labor ? cu.labor : (ultLabor ? ultLabor.labor : ''), laborDe: cu && cu.labor ? '' : (ultLabor ? ultLabor.fecha : ''), laborCambiar: !(cu && cu.labor) && !ultLabor, laborCuad: !!(cu && cu.labor),
-    maq, maqModo: cu && cu.equipos.length ? 'cuad' : (maqComb ? 'comb' : (ultMaq ? 'prev' : '')), maqCambiar: false,
-    aperos: cu && cu.aperos.length ? [...cu.aperos] : (ultAp ? [...ultAp.aperos] : []),
-    recientes: recientesAsist(trab, WZ.fecha), verRec: false, estado: 'presente', motivo: '',
-    detalle: ultLabor && !(cu && cu.labor) ? (ultLabor.labor_detalle || '') : '', detalleCambiar: false
+    trab, cu, cuConfirmar: false, opcion: null,
+    centroModo: 'manual', centros: [], centroCambiar: true,
+    labor: '', laborDe: '', laborCambiar: true, laborCuad: false,
+    maq: '', maqModo: '', maqCambiar: false, aperos: [],
+    recientes: rec, verRec: false, estado: 'presente', motivo: '',
+    detalle: '', detalleCambiar: false, verTodasLab: false
   };
   WZ.cur.hExtra = horasExtraPorCombustible(trab, c, WZ.fecha);
   { const h1 = document.getElementById('wiz-hreg'), h2 = document.getElementById('wiz-htrab'); if (h1) h1.value = WZ.cur.hExtra && WZ.cur.hExtra.horas > 0 ? String(WZ.cur.hExtra.horas) : ''; if (h2) h2.value = ''; } // las horas no pasan al siguiente trabajador; si cargó combustible, se sugiere la diferencia con su salida
@@ -5789,9 +5789,9 @@ window.wzRender = function() {
     centroHtml = `<div style="padding:10px;background:${cur.centroModo === 'cuad' ? '#EFF6FF' : '#ECFDF5'};border:1px solid ${cur.centroModo === 'cuad' ? '#93C5FD' : '#6EE7B7'};border-radius:8px">${cur.centroModo === 'cuad' ? '📒' : '✓'} <b>${chipCentros(cList)}</b> ${origen ? `<span style="font-size:12px;color:#6B7280">(${origen})</span>` : ''} <button type="button" style="${WZ_SMALL}" onclick="WZ.cur.centroCambiar=true;wzRender()">Cambiar</button></div>`;
   } else {
     WZ.optsC = (config.centros || []).filter(x => !/^otros/i.test(x));
+    if (!WZ.optsC.some(esAdministracion)) WZ.optsC.push('Administración');
     const sel = new Set(cList.map(x => x.centro));
-    centroHtml = (c ? `<button type="button" style="${WZ_BTN};background:#EFF6FF;border-color:#93C5FD" onclick="wzCentroComb()">⛽ Usar el del combustible: ${puntosTexto(c.texto)}</button>` : '') +
-      `<div style="font-size:12px;color:#6B7280;margin:4px 0">Toca uno o más cultivos / frutales</div>` +
+    centroHtml = `<div style="font-size:12px;color:#6B7280;margin:4px 0">Toca uno o más cultivos / frutales (o Administración)</div>` +
       WZ.optsC.map((x, i) => `<button type="button" style="${WZ_BTN};${sel.has(x) ? 'background:#16A34A;color:#fff;border-color:#16A34A;font-weight:700' : ''}" onclick="wzCentroTog(${i})"><span style="display:flex;align-items:center;justify-content:center">${sel.has(x) ? '✓ ' : ''}${puntoCentro(x)}${escA(x)}</span></button>`).join('') +
       (cList.length > 1 ? `<div style="padding:8px;background:#F9FAFB;border:1px solid #E5E7EB;border-radius:8px;margin-top:6px"><div style="font-size:12px;color:#6B7280;margin-bottom:4px">¿Qué porcentaje del día en cada uno? (suma ${cList.reduce((a, x) => a + (x.pct || 0), 0)} %)</div>${cList.map((x, i) => `<div style="display:flex;align-items:center;gap:6px;margin:3px 0"><span style="flex:1">${puntoCentro(x.centro)}${escA(x.centro)}</span><input type="number" min="0" max="100" value="${x.pct}" style="width:70px" onchange="wzPct(${i},this.value)"> %</div>`).join('')}<button type="button" style="${WZ_SMALL}" onclick="WZ.cur.centros=repartirPct(WZ.cur.centros.map(x=>x.centro));wzRender()">Partes iguales</button></div>` : '') +
       (cList.length ? `<button type="button" class="btn btn-verde btn-full" style="margin-top:8px" onclick="wzCentrosListo()">✓ Listo${cList.length > 1 ? ' (' + cList.length + ' cultivos)' : ''}</button>` : '');
@@ -5801,15 +5801,20 @@ window.wzRender = function() {
   if (!cur.laborCambiar && cur.labor) {
     laborHtml = `<div style="padding:10px;background:#ECFDF5;border:1px solid #6EE7B7;border-radius:8px">✓ <b>${escA(cur.labor)}</b> <span style="font-size:12px;color:#6B7280">${cur.laborDe ? '(última: ' + cur.laborDe + ')' : ''}</span> <button type="button" style="${WZ_SMALL}" onclick="WZ.cur.laborCambiar=true;wzRender()">Cambiar</button></div>`;
   } else {
-    const comunes = laboresComunesDe(cur.trab);
-    const base = laboresBaseAsist();
-    WZ.opts = wzUnicos([...comunes.map(x => x[0]), ...laboresAsistExtra(), ...base]);
-    laborHtml = (comunes.length ? `<div style="font-size:12px;color:#6B7280">Primero las más comunes de ${escA(cur.trab)}</div>` : '') +
-      WZ.opts.map((l, i) => { const k = comunes.find(x => x[0] === l); return `<button type="button" style="${WZ_BTN}" onclick="wzLabor(${i})">${escA(l)}${k ? ' <span style="color:#9CA3AF">×' + k[1] + '</span>' : ''}</button>`; }).join('') +
-      `<div style="display:flex;gap:6px;margin-top:6px"><input type="text" id="wiz-labor-otra" placeholder="Otra labor..." style="flex:1"><button type="button" style="${WZ_SMALL}" onclick="wzLabor(-1)">OK</button></div>`;
+    const comunes = laboresComunesDe(cur.trab), base = laboresBaseAsist();
+    const nombresC = cur.centroModo === 'comb' && c ? (c.lista || []).map(x => x.centro) : cList.map(x => x.centro);
+    const delCultivo = nombresC.length ? laboresDeCentros(nombresC) : [];
+    const todas = wzUnicos([...comunes.map(x => x[0]), ...laboresAsistExtra(), ...base]);
+    const mostrarTodas = !delCultivo.length || cur.verTodasLab;
+    WZ.opts = mostrarTodas ? wzUnicos([...delCultivo.map(x => x[0]), ...todas]) : delCultivo.map(x => x[0]);
+    const cnt = Object.fromEntries(delCultivo), nTxt = nombresC.join(' + ');
+    laborHtml = (nombresC.length ? `<div style="font-size:12px;color:#6B7280;margin-bottom:4px">${delCultivo.length ? 'Labores de <b>' + escA(nTxt) + '</b> (las más usadas primero)' : 'Aún no hay labores guardadas para <b>' + escA(nTxt) + '</b>: escribe la primera abajo.'}</div>` : (comunes.length ? `<div style="font-size:12px;color:#6B7280">Primero las más comunes de ${escA(cur.trab)}</div>` : '')) +
+      WZ.opts.map((l, i) => `<button type="button" style="${WZ_BTN}" onclick="wzLabor(${i})">${escA(l)}${cnt[l] ? ' <span style="color:#9CA3AF">×' + cnt[l] + '</span>' : ''}</button>`).join('') +
+      `<div style="display:flex;gap:6px;margin-top:6px"><input type="text" id="wiz-labor-otra" placeholder="${nombresC.length ? 'Nueva labor para ' + escA(nTxt) + '…' : 'Otra labor...'}" style="flex:1"><button type="button" style="${WZ_SMALL}" onclick="wzLabor(-1)">+ Agregar</button></div>` +
+      (nombresC.length && delCultivo.length ? `<button type="button" style="${WZ_SMALL};margin-top:6px" onclick="WZ.cur.verTodasLab=!WZ.cur.verTodasLab;wzRender()">${cur.verTodasLab ? '▲ Solo las de este cultivo' : '▼ Ver todas las labores'}</button>` : '');
   }
   // ── 3) MAQUINARIA Y APEROS (cuando aplica: no se pregunta en riego) ──
-  const aplicaMaq = !/riego/i.test(cur.labor || '');
+  const aplicaMaq = !/riego/i.test(cur.labor || '') && !soloAdministracion(cList);
   let maqHtml = '';
   if (aplicaMaq) {
     let inner;
@@ -5833,23 +5838,24 @@ window.wzRender = function() {
     }
   }
   const detHtml = cur.labor ? `<div class="field"><label>🔎 Detalle de la labor (opcional)</label>${cur.detalle && !cur.detalleCambiar ? `<div style="padding:10px;background:#ECFDF5;border:1px solid #6EE7B7;border-radius:8px">✓ <b>${escA(cur.detalle)}</b> <button type="button" style="${WZ_SMALL}" onclick="WZ.cur.detalleCambiar=true;wzRender()">Cambiar</button> <button type="button" style="${WZ_SMALL}" onclick="WZ.cur.detalle='';WZ.cur.detalleCambiar=false;wzRender()">Quitar</button></div>` : `<input type="text" id="wiz-det-q" autocomplete="off" placeholder="Escribe o busca el detalle…" oninput="wzDetFiltrar()" onkeydown="if(event.key==='Enter'){event.preventDefault();wzDetOk()}"><div id="wiz-det-lista" style="margin-top:4px"></div>`}</div>` : '';
-  const cu = cur.cu, cuadHtml = cu && cur.cuConfirmar && cur.estado === 'presente' ? `<div style="padding:12px;background:#DBEAFE;border:2px solid #3B82F6;border-radius:10px;margin-bottom:12px">
-      <div style="font-weight:700">📒 Cuaderno de campo ${cu.enCurso ? '(labor en curso)' : 'de este día'}</div>
-      <div style="font-size:14px;margin:6px 0;line-height:1.6">${cu.labores.length ? '<b>' + cu.labores.map(escA).join(' + ') + '</b><br>' : ''}${cu.potreros.length ? '🌿 ' + cu.potreros.map(escA).join(', ') + '<br>' : ''}${cu.centros.length ? 'Cultivo: <b>' + puntosTexto(centrosTexto(cu.centros)) + '</b><br>' : ''}${cu.equipos.length ? '🚜 ' + cu.equipos.map(escA).join(' + ') : ''}${cu.aperos.length ? ' · ' + cu.aperos.map(escA).join(' + ') : ''}</div>
-      ${cu.sinCultivo.length ? `<div style="font-size:12px;color:#B45309;margin-bottom:6px">No pude saber el cultivo de: ${cu.sinCultivo.map(escA).join(', ')}. Elígelo abajo.</div>` : ''}
-      ${cu.labores.length > 1 ? `<div style="font-size:12px;color:#6B7280;margin-bottom:6px">Hizo varias labores: se anota «${escA(cur.labor)}»; cámbiala si corresponde.</div>` : ''}
-      <button type="button" style="${WZ_SMALL};background:#16A34A;color:#fff;border-color:#16A34A" onclick="wzConfirmarCuad()">✅ Confirmar y guardar</button>
-      <button type="button" style="${WZ_SMALL}" onclick="WZ.cur.cuConfirmar=false;wzRender()">✏️ Revisar o cambiar</button></div>` : '';
-  const rec = cur.recientes || [];
-  const txtRec = x => [x.centro || x.centroComb ? puntosTexto(x.centro || x.centroComb) : '', x.labor ? escA(x.labor) + (x.detalle ? ' › ' + escA(x.detalle) : '') : '', x.maq ? '🚜 ' + escA(x.maq) + ((x.aperos || []).length ? ' › ' + x.aperos.map(escA).join(' + ') : '') : ''].filter(Boolean).join(' · ');
-  const recHtml = rec.length ? `<div style="padding:10px;background:#FEF9C3;border:1px solid #FDE047;border-radius:8px;margin-bottom:12px">
-      <div style="font-size:12px;color:#6B7280">Lo último que hizo (${fechaBonita(rec[0].fecha)}):</div>
-      <div style="font-size:14px;margin:4px 0 6px"><b>${txtRec(rec[0])}</b></div>
-      <button type="button" style="${WZ_SMALL};background:#16A34A;color:#fff;border-color:#16A34A" onclick="wzReciente(0,true)">⚡ Igual y guardar</button>
-      <button type="button" style="${WZ_SMALL}" onclick="wzReciente(0,false)">✓ Igual, para editar</button>
-      ${rec.length > 1 ? `<button type="button" style="${WZ_SMALL}" onclick="WZ.cur.verRec=!WZ.cur.verRec;wzRender()">📜 Últimas ${rec.length} ${cur.verRec ? '▲' : '▼'}</button>` : ''}
-      ${cur.verRec ? rec.map((x, i) => `<button type="button" style="${WZ_BTN};text-align:left" onclick="wzReciente(${i},false)"><span style="color:#6B7280;font-size:12px">${fechaBonita(x.fecha)}</span><br>${txtRec(x) || '—'}</button>`).join('') : ''}
-    </div>` : '';
+  // ── LAS 3 OPCIONES: lo que hizo el día anterior, lo que dice el cuaderno de campo y lo que dice el combustible ──
+  const rec = cur.recientes || [], cu = cur.cu;
+  const lineaOp = (cult, labor, maq, aperos) => `<div style="font-size:14px;line-height:1.6;margin:4px 0 6px">${cult ? '🌿 <b>' + cult + '</b><br>' : ''}${labor ? '🛠️ ' + escA(labor) + '<br>' : ''}${maq ? '🚜 ' + escA(maq) + ((aperos || []).length ? ' › ' + aperos.map(escA).join(' + ') : '') : ''}${!cult && !labor && !maq ? '<span style="color:#9CA3AF">sin datos</span>' : ''}</div>`;
+  const tarjeta = (k, titulo, color, borde, cuerpo, ok, extra) => `<div style="padding:10px;background:${cur.opcion === k ? '#DCFCE7' : color};border:2px solid ${cur.opcion === k ? '#16A34A' : borde};border-radius:10px;margin-bottom:8px;${ok ? '' : 'opacity:.75'}">
+      <div style="font-weight:700;font-size:13px">${cur.opcion === k ? '✅ ' : ''}${titulo}</div>${cuerpo}
+      ${ok ? `<button type="button" style="${WZ_SMALL};background:#16A34A;color:#fff;border-color:#16A34A" onclick="wzOpcion('${k}',false)">✓ Usar esta</button><button type="button" style="${WZ_SMALL}" onclick="wzOpcion('${k}',true)">⚡ Usar y guardar</button>` : ''}${extra || ''}</div>`;
+  const op1 = rec[0] ? tarjeta('prev', `1️⃣ 🕘 Lo que hizo el día anterior (${fechaBonita(rec[0].fecha)})`, '#FEF9C3', '#FDE047',
+      lineaOp(rec[0].centrosAll.length ? puntosTexto(centrosTexto(rec[0].centrosAll)) : '', rec[0].labor + (rec[0].detalle ? ' › ' + rec[0].detalle : ''), rec[0].maq, rec[0].aperos), true,
+      (rec.length > 1 ? `<button type="button" style="${WZ_SMALL}" onclick="WZ.cur.verRec=!WZ.cur.verRec;wzRender()">📜 Últimas ${rec.length} labores ${cur.verRec ? '▲' : '▼'}</button>` : '') +
+      (cur.verRec ? rec.map((x, i) => `<button type="button" style="${WZ_BTN};text-align:left;${cur.opcion === 'prev' + i ? 'border-color:#16A34A;background:#DCFCE7' : ''}" onclick="wzReciente(${i},false)"><span style="color:#6B7280;font-size:12px">${fechaBonita(x.fecha)}</span><br>${[x.centrosAll.length ? puntosTexto(centrosTexto(x.centrosAll)) : '', x.labor ? escA(x.labor) + (x.detalle ? ' › ' + escA(x.detalle) : '') : '', x.maq ? '🚜 ' + escA(x.maq) : ''].filter(Boolean).join(' · ') || '—'}</button>`).join('') : ''))
+    : tarjeta('prev', '1️⃣ 🕘 Lo que hizo el día anterior', '#F3F4F6', '#E5E7EB', '<div style="font-size:13px;color:#6B7280;margin-top:4px">Sin registros anteriores de esta persona.</div>', false);
+  const op2 = cu ? tarjeta('cuad', `2️⃣ 📒 Según el cuaderno de campo${cu.enCurso ? ' (labor en curso)' : ''}`, '#EFF6FF', '#93C5FD',
+      lineaOp(cu.centros.length ? puntosTexto(centrosTexto(cu.centros)) : '', cu.labores.join(' + '), cu.equipos.join(' + '), cu.aperos) + (cu.potreros.length ? `<div style="font-size:12px;color:#6B7280;margin-bottom:6px">📍 ${cu.potreros.map(escA).join(', ')}</div>` : '') + (cu.sinCultivo.length ? `<div style="font-size:12px;color:#B45309;margin-bottom:6px">No pude saber el cultivo de: ${cu.sinCultivo.map(escA).join(', ')} (elígelo abajo).</div>` : ''), true)
+    : tarjeta('cuad', '2️⃣ 📒 Según el cuaderno de campo', '#F3F4F6', '#E5E7EB', '<div style="font-size:13px;color:#6B7280;margin-top:4px">No hay labor registrada ese día ni en curso.</div>', false);
+  const op3 = c ? tarjeta('comb', '3️⃣ ⛽ Según el combustible de ese día', '#EFF6FF', '#93C5FD',
+      lineaOp(puntosTexto(c.texto), (c.trabajos || []).join(' + '), (c.equipos || []).join(' + '), c.aperos) + (c.ultimaHora ? `<div style="font-size:12px;color:#6B7280;margin-bottom:6px">Última carga a las ${escA(c.ultimaHora)}</div>` : ''), true)
+    : tarjeta('comb', '3️⃣ ⛽ Según el combustible de ese día', '#F3F4F6', '#E5E7EB', '<div style="font-size:13px;color:#6B7280;margin-top:4px">No cargó combustible ese día.</div>', false);
+  const opcionesHtml = `<div style="font-weight:700;margin:2px 0 6px">¿Qué hizo ese día? Elige una opción:</div>${op1}${op2}${op3}<div style="font-weight:700;margin:12px 0 6px;padding-top:8px;border-top:1px dashed #D1D5DB">✍️ Otra cosa: elegir a mano cualquier cultivo y labor</div>`;
   w.innerHTML = `<div class="panel">
     <div style="font-size:12px;color:#6B7280;margin-bottom:6px">Último día con registro: <b>${WZ.ult ? fechaBonita(WZ.ult) : '—'}</b></div>
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">
@@ -5861,19 +5867,19 @@ window.wzRender = function() {
     <div style="height:6px;background:#E5E7EB;border-radius:4px;margin-bottom:14px"><div style="height:6px;width:${Math.round(WZ.i / WZ.total * 100)}%;background:#16A34A;border-radius:4px"></div></div>
     <div style="font-size:22px;font-weight:700;margin-bottom:10px">${escA(cur.trab)}</div>
     ${botonesEstadoAsist(cur.estado, 'wzEstado')}
-    ${cur.estado !== 'presente' ? `<div class="field"><label>${cur.estado === 'permiso' ? 'Motivo del permiso (opcional)' : 'Observación (opcional)'}</label><input type="text" id="wiz-motivo" value="${escA(cur.motivo || '')}" placeholder="${cur.estado === 'permiso' ? 'Ej: trámite, salud, con goce / sin goce' : 'Ej: avisó, sin aviso'}"></div>` : `    <div style="padding:10px;background:#F0F9FF;border:1px solid #BAE6FD;border-radius:8px;margin-bottom:12px">
+    ${cur.estado !== 'presente' ? `<div class="field"><label>${cur.estado === 'permiso' ? 'Motivo del permiso (opcional)' : 'Observación (opcional)'}</label><input type="text" id="wiz-motivo" value="${escA(cur.motivo || '')}" placeholder="${cur.estado === 'permiso' ? 'Ej: trámite, salud, con goce / sin goce' : 'Ej: avisó, sin aviso'}"></div>` : `${opcionesHtml}
+    <div class="field"><label>Cultivo(s) / frutal / administración (centro de costo)</label>${centroHtml}</div>
+    <div class="field"><label>Labor del día</label>${laborHtml}</div>
+    ${detHtml}
+    ${maqHtml}
+    <div style="padding:10px;background:#F0F9FF;border:1px solid #BAE6FD;border-radius:8px;margin-bottom:12px">
       ${hxHtml}
       <div class="grid-2" style="margin-bottom:4px">
         <div class="field" style="margin:0"><label>⏱️ Horas extra aprox. del día (si trabajó)</label><input type="number" id="wiz-hreg" min="0" step="0.5" inputmode="decimal" placeholder="0" value="${escA(hr)}"></div>
         <div class="field" style="margin:0"><label>Según el trabajador (opcional)</label><input type="number" id="wiz-htrab" min="0" step="0.5" inputmode="decimal" placeholder="Pendiente" value="${escA(ht)}"></div>
       </div>
       <div>${[0, 0.5, 1, 1.5, 2, 3, 4].map(h => `<button type="button" style="${WZ_SMALL}" onclick="document.getElementById('wiz-hreg').value='${h}'">${String(h).replace('.', ',')} h</button>`).join('')}</div>
-    </div>
-    ${cuadHtml}${cuadHtml ? '' : recHtml}
-    <div class="field"><label>Cultivo(s) / frutal (centro de costo)</label>${centroHtml}</div>
-    <div class="field"><label>Labor del día</label>${laborHtml}</div>
-    ${detHtml}
-    ${maqHtml}`}
+    </div>`}
     <button type="button" class="btn btn-verde btn-full" onclick="wzGuardar()">✓ Guardar y siguiente</button>
     <div style="display:flex;gap:8px;margin-top:8px">
       <button type="button" class="btn" style="flex:1" onclick="wzSaltar()">Saltar →</button>
@@ -5915,22 +5921,37 @@ window.wzConfirmarCuad = function() {
   if (cur.centroModo !== 'comb' && !(cur.centros || []).length) { toast('Falta el cultivo: toca «Revisar o cambiar» y elígelo', false); return; }
   wzGuardar();
 }
+// Aplica una de las 3 opciones (prev = día anterior, cuad = cuaderno, comb = combustible) a lo que se va a guardar
+function wzAplicar(cur, o, modo) {
+  cur.centros = (o.centros || []).map(y => ({ ...y })); cur.centroModo = modo; cur.centroCambiar = modo !== 'comb' && !cur.centros.length;
+  cur.labor = o.labor || ''; cur.laborDe = ''; cur.laborCambiar = !cur.labor; cur.detalle = o.detalle || ''; cur.detalleCambiar = false;
+  cur.maq = o.maq || ''; cur.maqModo = o.maq ? modo : ''; cur.maqCambiar = false; cur.aperos = [...(o.aperos || [])];
+}
+window.wzOpcion = function(k, guardar) {
+  const cur = WZ && WZ.cur; if (!cur) return;
+  const c = WZ.comb[cur.trab], cu = cur.cu, rec = cur.recientes || [];
+  if (k === 'prev' && rec[0]) wzAplicar(cur, { centros: rec[0].centrosAll, labor: rec[0].labor, detalle: rec[0].detalle, maq: rec[0].maq, aperos: rec[0].aperos }, 'prev');
+  else if (k === 'cuad' && cu) wzAplicar(cur, { centros: cu.centros, labor: cu.labor, maq: cu.equipos.join(' + '), aperos: cu.aperos }, 'cuad');
+  else if (k === 'comb' && c) wzAplicar(cur, { centros: [], labor: (c.trabajos || []).join(' + '), maq: (c.equipos || []).join(' + '), aperos: c.aperos }, 'comb');
+  else return;
+  cur.opcion = k;
+  if (guardar) {
+    if (!cur.labor) { toast('Esta opción no trae labor: elígela abajo y guarda', false); wzRender(); return; }
+    if (cur.centroModo !== 'comb' && !(cur.centros || []).length) { toast('Esta opción no trae cultivo: elígelo abajo y guarda', false); wzRender(); return; }
+    wzGuardar(); return;
+  }
+  wzRender();
+}
 window.wzReciente = function(i, guardar) {
   const cur = WZ && WZ.cur, x = cur && (cur.recientes || [])[i]; if (!x) return;
-  const c = WZ.comb[cur.trab];
-  cur.cuConfirmar = false;
-  if (x.centros && x.centros.length) { cur.centros = x.centros.map(y => ({ ...y })); if (!c || cur.centroModo === 'cuad') { cur.centroModo = 'prev'; cur.centroCambiar = false; } }
-  else if (!c && !(cur.centros || []).length) cur.centroCambiar = true;
-  if (x.labor) { cur.labor = x.labor; cur.laborDe = x.fecha; cur.laborCambiar = false; cur.detalle = x.detalle || ''; cur.detalleCambiar = false; }
-  if (!(c && c.equipos && c.equipos.length)) { cur.maq = x.maq || ''; cur.maqModo = x.maq ? 'prev' : ''; cur.maqCambiar = false; }
-  cur.aperos = [...(x.aperos || [])];
+  wzAplicar(cur, { centros: x.centrosAll, labor: x.labor, detalle: x.detalle, maq: x.maq, aperos: x.aperos }, 'prev'); cur.opcion = 'prev' + i;
   if (guardar) { if (!cur.labor) { toast('Esa fila no tiene labor: elígela primero', false); wzRender(); return; } wzGuardar(); }
   else wzRender();
 }
 window.wzLabor = function(i) {
   const v = i >= 0 ? (WZ.opts[i] || '') : (document.getElementById('wiz-labor-otra')?.value || '').trim();
   if (!v) return;
-  if (i < 0) agregarLaborAsistencia(v);
+  if (i < 0) { agregarLaborAsistencia(v); const cs = WZ.cur.centroModo === 'comb' && WZ.comb[WZ.cur.trab] ? (WZ.comb[WZ.cur.trab].lista || []).map(x => x.centro) : (WZ.cur.centros || []).map(x => x.centro); if (cs.length) agregarLaborCentro(cs, v); }
   if (WZ.cur.labor !== v) { WZ.cur.detalle = ''; WZ.cur.detalleCambiar = false; }
   WZ.cur.labor = v; WZ.cur.laborDe = ''; WZ.cur.laborCambiar = false; wzRender();
 }
@@ -5948,7 +5969,7 @@ window.wzGuardar = async function() {
   const usaComb = !aus && cur.centroModo === 'comb' && c && !(cur.centros || []).length;
   const cList = aus ? [] : (cur.centros || []), multi = !usaComb && cList.length > 1;
   const centro = aus ? '' : (usaComb ? c.texto : centrosTexto(cList));
-  const aplicaMaq = !aus && !/riego/i.test(cur.labor || '');
+  const aplicaMaq = !aus && !/riego/i.test(cur.labor || '') && !soloAdministracion(cList);
   let det = aus ? null : (cur.detalle || null);
   if (!aus && !det && cur.labor) { const qd = document.getElementById('wiz-det-q'), vd = ((qd && qd.value) || '').trim(); if (vd) { det = detalleCoincidente(cur.labor, vd); agregarDetalleLabor(cur.labor, det); } }
   try {
@@ -6122,9 +6143,32 @@ function recientesAsist(trab, fecha) {
       const comb = r.centro_origen === 'combustible', cs = centrosDeReg(r), ap = Array.isArray(r.aperos) ? r.aperos : [], k = (comb ? '' : centrosTexto(cs)) + '|' + (r.labor || '') + '|' + (r.labor_detalle || '') + '|' + (r.maquinaria || '') + '|' + ap.join(',');
       if (vistos.has(k) || out.length >= 10) return;
       vistos.add(k);
-      out.push({ fecha: r.fecha, centros: cs, centro: comb ? '' : centrosTexto(cs), centroComb: comb ? (r.centro_costo || '') : '', labor: r.labor || '', detalle: r.labor_detalle || '', maq: r.maquinaria || '', aperos: ap });
+      out.push({ fecha: r.fecha, centros: cs, centrosAll: (r.centros_dist && r.centros_dist.length) ? r.centros_dist.map(x => ({ centro: x.centro, pct: x.pct || 0 })) : (r.centro_costo ? [{ centro: r.centro_costo, pct: 100 }] : []), centro: comb ? '' : centrosTexto(cs), centroComb: comb ? (r.centro_costo || '') : '', labor: r.labor || '', detalle: r.labor_detalle || '', maq: r.maquinaria || '', aperos: ap });
     });
   return out;
+}
+const esAdministracion = n => normNom(n) === 'administracion';
+const soloAdministracion = l => !!(l && l.length) && l.every(x => esAdministracion(x.centro));
+// Labores de uno o más cultivos: las agregadas a mano a ese cultivo + las que ya se anotaron en la asistencia con él (las más usadas primero)
+function laboresDeCentros(nombres) {
+  const set = new Set((nombres || []).map(normNom)), cnt = {};
+  const lp = config.laboresPorCentro || {};
+  (nombres || []).forEach(n => (lp[n] || []).forEach(l => { if (l) cnt[l] = cnt[l] || 0; }));
+  asistenciaRegistros.forEach(r => {
+    if (!r.labor || (r.estado && r.estado !== 'presente')) return;
+    const cs = (r.centros_dist && r.centros_dist.length) ? r.centros_dist.map(x => x.centro) : (r.centro_costo ? [r.centro_costo] : []);
+    if (cs.some(c => set.has(normNom(c)))) cnt[r.labor] = (cnt[r.labor] || 0) + 1;
+  });
+  return Object.entries(cnt).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'es'));
+}
+async function agregarLaborCentro(nombres, labor) {
+  labor = String(labor || '').trim(); if (!labor || !(nombres || []).length) return;
+  const m = { ...(config.laboresPorCentro || {}) }; let cambio = false;
+  nombres.forEach(n => { const l = m[n] || []; if (!l.some(x => normNom(x) === normNom(labor))) { m[n] = [...l, labor]; cambio = true; } });
+  if (!cambio) return;
+  config.laboresPorCentro = m;
+  try { await setDoc(doc(db, 'config', 'datos'), { laboresPorCentro: m }, { merge: true }); toast('✓ "' + labor + '" agregada a ' + nombres.join(', '), true); }
+  catch (e) { console.warn('labor por centro', e); }
 }
 function laboresComunesDe(trab) {
   const cuenta = {};
@@ -11497,6 +11541,16 @@ window.toggleAplicadorAutorizado = async function(n) {
   config.aplicadoresAutorizados = sel; renderPanelAplicadores();
   try { await updateDoc(doc(db, 'config', 'datos'), { aplicadoresAutorizados: sel }); } catch (e) { toast('Error: ' + e.message, false); }
 }
+// Aplicadores a quienes se entrega (uno o más): botones que se tocan para elegir; se guardan como "Ana + Pedro"
+const aplicadoresElegidos = {};
+function renderAplicadoresChips(id) {
+  const w = document.getElementById(id); if (!w) return;
+  const sel = aplicadoresElegidos[id] || (aplicadoresElegidos[id] = []);
+  w.innerHTML = aplicadoresLista().map(n => `<div class="cultivo-chip ${sel.includes(n) ? 'sel' : ''}" onclick='toggleAplicadorInv(${JSON.stringify(id)},${JSON.stringify(n)})'>${escA(n)}</div>`).join('') || '<div style="font-size:12px;color:#6B7280">No hay aplicadores en la lista de operadores.</div>';
+}
+window.toggleAplicadorInv = (id, n) => { const sel = aplicadoresElegidos[id] || (aplicadoresElegidos[id] = []), k = sel.indexOf(n); if (k >= 0) sel.splice(k, 1); else sel.push(n); renderAplicadoresChips(id); };
+const aplicadoresDe = id => [...(aplicadoresElegidos[id] || [])];
+const aplicadoresTexto = id => aplicadoresDe(id).join(' + ');
 const opcionesAplicador = (placeholder) => `<option value="">${placeholder}</option>` + aplicadoresLista().map(n => `<option value="${escA(n)}">${escA(n)}</option>`).join('');
 function renderPanelPermisosPruebas() {
   const cont = document.getElementById('lista-permisos-pruebas');
@@ -12546,7 +12600,7 @@ function listaMovimientosInv() {
 window.initMovimientosInv = function() {
   const dl = document.getElementById('mov-producto-lista');
   if (dl) dl.innerHTML = productosInv.map(p => `<option value="${escA(p.nombre)}">`).join('');
-  { const sa = document.getElementById('mov-aplicador'); if (sa) { const v = sa.value; sa.innerHTML = '<option value="">Todos</option>' + [...new Set([...(config.operadores || []).filter(n => n !== 'Otros (especificar)'), ...listaMovimientosInv().map(m => m.aplicador).filter(Boolean)])].sort(cmpEs).map(n => `<option value="${escA(n)}">${escA(n)}</option>`).join(''); sa.value = v; } }
+  { const sa = document.getElementById('mov-aplicador'); if (sa) { const v = sa.value; sa.innerHTML = '<option value="">Todos</option>' + [...new Set([...(config.operadores || []).filter(n => n !== 'Otros (especificar)'), ...listaMovimientosInv().flatMap(m => String(m.aplicador || '').split(' + ')).filter(Boolean)])].sort(cmpEs).map(n => `<option value="${escA(n)}">${escA(n)}</option>`).join(''); sa.value = v; } }
   const d = document.getElementById('mov-desde');
   if (d && !d.value && !document.getElementById('mov-hasta').value) movRango('mes'); else renderMovimientosInv();
 }
@@ -12567,7 +12621,7 @@ function movimientosFiltrados() {
     if (desde && f < desde) return false; if (hasta && f > hasta) return false;
     if (prod && !normNom(m.producto).includes(prod)) return false;
     if (tipo && m.tipo !== tipo) return false;
-    const ap = (document.getElementById('mov-aplicador') || {}).value || ''; if (ap && m.aplicador !== ap) return false;
+    const ap = (document.getElementById('mov-aplicador') || {}).value || ''; if (ap && !String(m.aplicador || '').split(' + ').includes(ap)) return false;
     if (bod && !(m.bodega === bod || m.origen === bod || m.destino === bod)) return false;
     return true;
   });
@@ -12826,7 +12880,7 @@ window.abrirAjusteInv = function(id, bodega) {
   actualizarAjusteStockActualInv();
   document.getElementById("inv-ajuste-cantidad").value = "";
   { const m = document.getElementById("inv-ajuste-motivo"); if (m) m.value = ""; }
-  { const a = document.getElementById("inv-ajuste-aplicador"); if (a) a.innerHTML = opcionesAplicador('— elegir —'); const u = document.getElementById("inv-ajuste-autoriza"); if (u) u.textContent = currentUser || ''; }
+  { const a = document.getElementById("inv-ajuste-aplicador"); if (a) { aplicadoresElegidos['inv-ajuste-aplicador'] = []; renderAplicadoresChips('inv-ajuste-aplicador'); } const u = document.getElementById("inv-ajuste-autoriza"); if (u) u.textContent = currentUser || ''; }
   document.getElementById("inv-ajuste-tipo-entrada").classList.add("active");
   document.getElementById("inv-ajuste-tipo-salida").classList.remove("active");
   document.getElementById("modal-inv-ajuste").style.display = "flex";
@@ -12850,8 +12904,8 @@ window.confirmarAjusteInv = async function() {
   const entrada = document.getElementById("inv-ajuste-tipo-entrada").classList.contains("active");
   const cant = r2(document.getElementById("inv-ajuste-cantidad").value);
   if (!cant) { toast("Ingresa una cantidad", false); return; }
-  const aplicador = (document.getElementById("inv-ajuste-aplicador") || {}).value || '';
-  if (!aplicador) { toast(entrada ? "Elige el aplicador que devuelve o entrega el producto" : "Elige el aplicador al que se entrega el producto", false); return; }
+  const aplicador = aplicadoresTexto('inv-ajuste-aplicador');
+  if (!aplicador) { toast(entrada ? "Elige al menos un aplicador que devuelve o entrega el producto" : "Elige al menos un aplicador al que se entrega el producto", false); return; }
   const actual = stockInv(p, ajusteBodegaInv);
   const nuevoStock = r2(entrada ? actual + cant : Math.max(0, actual - cant));
   const nuevoMapa = stockMapInv(p); nuevoMapa[ajusteBodegaInv] = nuevoStock;
@@ -12911,7 +12965,7 @@ window.abrirDevolucionInv = function() {
   document.getElementById('inv-dev-producto').innerHTML = productosInv.slice().sort((a, b) => a.nombre.localeCompare(b.nombre)).map(p => `<option value="${p.id}">${escA(p.nombre)}</option>`).join('');
   document.getElementById('inv-dev-bodega').innerHTML = BODEGAS_INV.map(b => `<option value="${b}">${b}</option>`).join('');
   document.getElementById('inv-dev-cantidad').value = ''; document.getElementById('inv-dev-detalle').value = '';
-  document.getElementById('inv-dev-aplicador').innerHTML = opcionesAplicador('— elegir —'); document.getElementById('inv-dev-autoriza').textContent = currentUser || '';
+  aplicadoresElegidos['inv-dev-aplicador'] = []; renderAplicadoresChips('inv-dev-aplicador'); document.getElementById('inv-dev-autoriza').textContent = currentUser || '';
   onProductoDevolucionInvChange();
   document.getElementById('modal-inv-devolucion').style.display = 'flex';
 }
@@ -12925,8 +12979,8 @@ window.confirmarDevolucionInv = async function() {
   const bod = document.getElementById('inv-dev-bodega').value;
   const cant = r2(Number(String(document.getElementById('inv-dev-cantidad').value).trim().replace(',', '.')));
   if (!(cant > 0)) { toast('Ingresa la cantidad devuelta', false); return; }
-  const aplicador = document.getElementById('inv-dev-aplicador').value;
-  if (!aplicador) { toast('Elige el aplicador que devuelve el producto', false); return; }
+  const aplicador = aplicadoresTexto('inv-dev-aplicador');
+  if (!aplicador) { toast('Elige al menos un aplicador que devuelve el producto', false); return; }
   const antes = stockInv(p, bod), despues = r2(antes + cant);
   const mapa = stockMapInv(p); mapa[bod] = despues;
   try {
@@ -15717,7 +15771,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       </div>
     </div>
     <div class="field"><label>Cantidad</label><input type="number" id="inv-ajuste-cantidad" min="0" step="0.01"></div>
-    <div class="field"><label>Aplicador (a quien se entrega o devuelve)</label><div class="select-wrapper"><select id="inv-ajuste-aplicador"></select></div></div>
+    <div class="field"><label>Aplicador(es) (a quien se entrega o devuelve; puedes elegir más de uno)</label><div class="centros-selector" id="inv-ajuste-aplicador"></div></div>
     <div class="hint" style="margin-bottom:8px">Queda registrado quién autoriza: quien está ingresado en la app (<strong id="inv-ajuste-autoriza"></strong>).</div>
     <div class="field"><label>Motivo (opcional)</label><input type="text" id="inv-ajuste-motivo" placeholder="Ej: aplicación en potrero, merma, conteo físico..."></div>
     <div class="modal-actions">
@@ -15942,7 +15996,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     <div class="field"><label>Producto</label><div class="select-wrapper"><select id="inv-dev-producto" onchange="onProductoDevolucionInvChange()"></select></div></div>
     <div class="field"><label>Bodega a la que vuelve</label><div class="select-wrapper"><select id="inv-dev-bodega" onchange="onProductoDevolucionInvChange()"></select></div></div>
     <div class="hint" id="inv-dev-stock-info" style="margin-bottom:10px"></div>
-    <div class="field"><label>Aplicador que devuelve</label><div class="select-wrapper"><select id="inv-dev-aplicador"></select></div></div>
+    <div class="field"><label>Aplicador(es) que devuelve(n) (puedes elegir más de uno)</label><div class="centros-selector" id="inv-dev-aplicador"></div></div>
     <div class="field"><label>Cantidad devuelta</label><input type="text" inputmode="decimal" id="inv-dev-cantidad" placeholder="Cantidad"></div>
     <div class="hint" style="margin-bottom:8px">Autoriza: <strong id="inv-dev-autoriza"></strong> (quien está ingresado en la app).</div>
     <div class="field"><label>Detalle (opcional)</label><input type="text" id="inv-dev-detalle" placeholder="Ej: sobrante de la fumigación en pivote 1, devuelve Eduardo"></div>
