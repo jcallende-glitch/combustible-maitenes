@@ -1729,15 +1729,22 @@ function envivoRecta(P) {
   const A = [mx + ux * t0, my + uy * t0], B = [mx + ux * t1, my + uy * t1];
   return dirOk ? [A, B] : [B, A];
 }
+// Vista del recorrido: 'vel' = colores por velocidad; 'contado' = verde lo que SÍ cuenta como trabajado, rojo/gris lo que no
+let envivoVista = 'vel', envivoVer = { trabajo: true, traslado: true, parado: true };
+window.envivoSetVista = v => { envivoVista = v; envivoRenderRuta(); };
+let envivoForma = 'franja';
+window.envivoSoloContado = () => { const solo = envivoVer.trabajo && !envivoVer.traslado && !envivoVer.parado; envivoVer = solo ? { trabajo: true, traslado: true, parado: true } : { trabajo: true, traslado: false, parado: false }; if (!solo) envivoVista = 'contado'; envivoRenderRuta(); };
+window.envivoSetForma = f => { envivoForma = f; envivoRenderRuta(); };
+window.envivoToggleVer = k => { envivoVer[k] = !envivoVer[k]; envivoRenderRuta(); };
 function envivoDibujarRuta(tr, puntos) {
   envivoRutaCapa.clearLayers();
   if (!puntos.length) return;
   const P0 = envivoProy(puntos[0].lat, puntos[0].lng);
-  const col = { traslado: '#38BDF8', parado: '#F97316' };
+  const contado = envivoVista === 'contado', col = contado ? { traslado: '#DC2626', parado: '#6B7280' } : { traslado: '#38BDF8', parado: '#F97316' };
   const tramos = tr.tramos;
   // 1) detenido y traslados (línea fina)
   tramos.forEach(t => {
-    if (t.clase === 'parado') L.circleMarker([t.b.lat, t.b.lng], { radius: 3, color: col.parado, weight: 1, fillOpacity: 0.8, interactive: false }).addTo(envivoRutaCapa);
+    if (t.clase === 'parado' && envivoVer.parado) L.circleMarker([t.b.lat, t.b.lng], { radius: 3, color: col.parado, weight: 1, fillOpacity: 0.8, interactive: false }).addTo(envivoRutaCapa);
   });
   const trasl = []; let cur = [];
   tramos.forEach((t, i) => {
@@ -1745,7 +1752,7 @@ function envivoDibujarRuta(tr, puntos) {
     else if (cur.length) { trasl.push(cur); cur = []; }
   });
   if (cur.length) trasl.push(cur);
-  trasl.forEach(pts => L.polyline(pts.map(q => [q.lat, q.lng]), { color: col.traslado, weight: 2.5, opacity: 0.8, interactive: false }).addTo(envivoRutaCapa));
+  if (envivoVer.traslado) trasl.forEach(pts => L.polyline(pts.map(q => [q.lat, q.lng]), { color: col.traslado, weight: 2.5, opacity: 0.8, interactive: false }).addTo(envivoRutaCapa));
   // 2) trabajo: corridas continuas dentro de un potrero → pasadas rectas dibujadas al ancho de trabajo
   const corridas = []; let run = null;
   tramos.forEach(t => {
@@ -1753,7 +1760,10 @@ function envivoDibujarRuta(tr, puntos) {
     if (run && run.pot === t.pot && run.pts[run.pts.length - 1] === t.a) run.pts.push(t.b);
     else { run = { pot: t.pot, pts: [t.a, t.b] }; corridas.push(run); }
   });
-  corridas.forEach(c => {
+  if (envivoVer.trabajo && envivoForma === 'linea') { // cada tramo GPS que se suma a las hectáreas, como línea
+    tramos.filter(t => t.clase === 'trabajo').forEach(t => L.polyline([[t.a.lat, t.a.lng], [t.b.lat, t.b.lng]], { color: contado ? '#16A34A' : '#EAB308', weight: 3, opacity: 0.95, interactive: false }).addTo(envivoRutaCapa));
+  }
+  (envivoVer.trabajo && envivoForma === 'franja' ? corridas : []).forEach(c => {
     const w = envivoAnchoPotrero(c.pot);
     const XY = c.pts.map(P0.xy);
     const idx = envivoDP(XY, 2.5);
@@ -1767,7 +1777,7 @@ function envivoDibujarRuta(tr, puntos) {
     rectas.forEach(r => {
       if (r.len < 20 || r.sub.length < 3) { // giro o tramo corto: línea tal cual
         const hc = (c.pts[r.b].t - c.pts[r.a].t) / 3600000, vc = hc > 0 ? (r.len / 1000) / hc : null;
-        L.polyline(c.pts.slice(r.a, r.b + 1).map(q => [q.lat, q.lng]), { color: hilColorVel(vc), weight: 2.5, opacity: 0.9, dashArray: '3 3', interactive: false }).addTo(envivoRutaCapa);
+        L.polyline(c.pts.slice(r.a, r.b + 1).map(q => [q.lat, q.lng]), { color: contado ? '#16A34A' : hilColorVel(vc), weight: 2.5, opacity: 0.9, dashArray: '3 3', interactive: false }).addTo(envivoRutaCapa);
         return;
       }
       const [A, B] = envivoRecta(r.sub);
@@ -1786,7 +1796,7 @@ function envivoDibujarRuta(tr, puntos) {
         const t0 = ts[k], t1 = ts[k + 1]; if (t1 - t0 < 0.05) continue;
         const pa = [A[0] + ux * t0, A[1] + uy * t0], pb = [A[0] + ux * t1, A[1] + uy * t1];
         const poly = [[pa[0] + nx, pa[1] + ny], [pb[0] + nx, pb[1] + ny], [pb[0] - nx, pb[1] - ny], [pa[0] - nx, pa[1] - ny]].map(q => P0.ll(q[0], q[1]));
-        L.polygon(poly, { stroke: false, fillColor: hilColorVel(vs[k]), fillOpacity: 0.55 }).addTo(envivoRutaCapa)
+        L.polygon(poly, { stroke: false, fillColor: contado ? '#16A34A' : hilColorVel(vs[k]), fillOpacity: contado ? 0.6 : 0.55 }).addTo(envivoRutaCapa)
           .bindTooltip(`<b>${c.pot}</b><br>ancho ${String(w).replace('.', ',')} m · pasada de ${L2.toFixed(0)} m<br>${vs[k] != null ? vs[k].toFixed(1).replace('.', ',') + ' km/h aquí' : ''}${h > 0 ? ' · prom. ' + (km / h).toFixed(1).replace('.', ',') + ' km/h' : ''} · ${hora}`, { sticky: true });
       }
       L.polyline([P0.ll(A[0], A[1]), P0.ll(B[0], B[1])], { color: '#111827', weight: 1, opacity: 0.55, interactive: false }).addTo(envivoRutaCapa); // eje de la pasada
@@ -1843,6 +1853,18 @@ function envivoRenderRuta() {
     <div style="font-size:22px;font-weight:800;margin:4px 0">${haH != null ? f1(haH) + ' ha/h' : '— ha/h'}<span style="font-size:12px;font-weight:400;color:var(--acero)"> de avance, sin contar paradas</span></div>
     <div style="font-size:12px;color:var(--acero)">⏱ Trabajando ${envivoH(tot.trabajo)} · ⚪ detenido ${envivoH(tot.detenido)} · 🚜 traslados ${envivoH(tot.mov - tot.trabajo)}<br>≈ <strong style="color:var(--negro)">${f1(tot.ha)} ha</strong> en ${f1(tot.kmTrabajo)} km de trabajo · ${f1(tot.km)} km recorridos</div>
     ${respaldo}
+    <div style="margin-top:8px;font-size:12px"><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
+      <button class="btn-pin" style="font-size:12px;padding:5px 10px${envivoVer.trabajo && !envivoVer.traslado && !envivoVer.parado ? ';background:var(--amarillo);color:#111;font-weight:700' : ''}" onclick="envivoSoloContado()">👁 Solo lo que suma al área</button>
+      <button class="btn-pin" style="font-size:11px;padding:3px 8px${envivoForma === 'franja' ? ';background:var(--amarillo);color:#111;font-weight:700' : ''}" onclick="envivoSetForma('franja')">▮ Franjas</button>
+      <button class="btn-pin" style="font-size:11px;padding:3px 8px${envivoForma === 'linea' ? ';background:var(--amarillo);color:#111;font-weight:700' : ''}" onclick="envivoSetForma('linea')">〰 Líneas</button></div>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><span style="color:var(--acero)">Ver el mapa por:</span>
+      <button class="btn-pin" style="font-size:11px;padding:3px 8px${envivoVista === 'contado' ? ';background:var(--amarillo);color:#111;font-weight:700' : ''}" onclick="envivoSetVista('contado')">✅ Lo que cuenta</button>
+      <button class="btn-pin" style="font-size:11px;padding:3px 8px${envivoVista === 'vel' ? ';background:var(--amarillo);color:#111;font-weight:700' : ''}" onclick="envivoSetVista('vel')">🎨 Velocidad</button></div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:6px">
+        <label style="display:flex;gap:4px;align-items:center"><input type="checkbox" ${envivoVer.trabajo ? 'checked' : ''} onchange="envivoToggleVer('trabajo')"><span style="display:inline-block;width:14px;height:10px;background:${envivoVista === 'contado' ? '#16A34A' : '#EAB308'};border-radius:2px"></span> Trabajado (cuenta)</label>
+        <label style="display:flex;gap:4px;align-items:center"><input type="checkbox" ${envivoVer.traslado ? 'checked' : ''} onchange="envivoToggleVer('traslado')"><span style="display:inline-block;width:14px;height:3px;background:${envivoVista === 'contado' ? '#DC2626' : '#38BDF8'}"></span> Traslado (no cuenta)</label>
+        <label style="display:flex;gap:4px;align-items:center"><input type="checkbox" ${envivoVer.parado ? 'checked' : ''} onchange="envivoToggleVer('parado')"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${envivoVista === 'contado' ? '#6B7280' : '#F97316'}"></span> Detenido (no cuenta)</label></div>
+      <div style="color:var(--acero);margin-top:4px">Cuenta = en movimiento (más de 1 km/h) dentro de un potrero. Toca una franja para ver su detalle.</div></div>
     ${botones}
     ${fuenteEq}
     <div style="font-size:11px;color:var(--acero);margin-top:4px">🔎 Datos recibidos (${envivoNomFuente(fuente)}): ${diagTxt}</div>
@@ -2378,6 +2400,13 @@ let aperoObsTexto = '';
 let centroObsTexto = '';
 let medidorFuenteActual = 'manual';
 let litrosFuenteActual = 'manual';
+// Los inputs (oninput) no ven las variables del módulo: se cambian vía estas funciones
+window.setTrabajoObs = v => { trabajoObsTexto = v; validarPaso1(); };
+window.setAperoObs = (v, libre) => { aperoObsTexto = v; if (libre) aperoSeleccionado = 'LIBRE'; validarPaso1(); };
+window.setCentroObs = v => { centroObsTexto = v; validarPaso1(); };
+window.setMedidorManual = () => { medidorFuenteActual = 'manual'; validarPaso1(); };
+window.setLitrosManual = () => { litrosFuenteActual = 'manual'; calcularEficiencia(); };
+window.setPresetAperoObs = v => { presetEdicionAperoObs = v; };
 
 // ─── RAZÓN SOCIAL (Los Maitenes / JCAR / Ambos) ─────────────
 // JC trabaja con 2 razones sociales: Agrícola Los Maitenes (predeterminada,
@@ -3447,7 +3476,7 @@ function renderCentroOtroInput() {
   const wrap = document.getElementById('centro-otro-wrap');
   if (!wrap) return;
   if (centrosSeleccionados.includes('Otros (especificar)')) {
-    wrap.innerHTML = `<div class="field" style="margin-top:8px"><input type="text" id="centro-otro-input" placeholder="Especificar cultivo/centro de costo..." value="${centroObsTexto}" oninput="centroObsTexto=this.value;validarPaso1()"></div>`;
+    wrap.innerHTML = `<div class="field" style="margin-top:8px"><input type="text" id="centro-otro-input" placeholder="Especificar cultivo/centro de costo..." value="${centroObsTexto}" oninput="setCentroObs(this.value)"></div>`;
   } else {
     wrap.innerHTML = '';
     centroObsTexto = '';
@@ -3529,7 +3558,7 @@ function aperosParaLabores() {
 function renderTrabajoOtro() {
   const wrap = document.getElementById('trabajo-otro-wrap');
   if (!wrap) return;
-  wrap.innerHTML = `<div class="field" style="margin-top:8px"><input type="text" id="trabajo-otro-input" placeholder="Especificar trabajo realizado..." value="${trabajoObsTexto}" oninput="trabajoObsTexto=this.value;validarPaso1()"></div>`;
+  wrap.innerHTML = `<div class="field" style="margin-top:8px"><input type="text" id="trabajo-otro-input" placeholder="Especificar trabajo realizado..." value="${trabajoObsTexto}" oninput="setTrabajoObs(this.value)"></div>`;
 }
 
 // ─── APERO/IMPLEMENTO (depende de trabajo + tractor) ────
@@ -3546,7 +3575,7 @@ function renderAperoSinFiltro(wrap) {
     wrap.innerHTML = `
       <div style="margin-top:10px">
         <div class="cultivos-label">Detalle del riego (texto libre)</div>
-        <div class="field"><input type="text" id="apero-otro-input" placeholder="Ej: Riego por pivote sector norte..." value="${aperoObsTexto}" oninput="aperoObsTexto=this.value;aperoSeleccionado='LIBRE';validarPaso1()"></div>
+        <div class="field"><input type="text" id="apero-otro-input" placeholder="Ej: Riego por pivote sector norte..." value="${aperoObsTexto}" oninput="setAperoObs(this.value,true)"></div>
       </div>`;
     return;
   }
@@ -3610,7 +3639,7 @@ function renderAperoGeneral(wrap, equipoActual) {
     wrap.innerHTML = `
       <div style="margin-top:10px">
         <div class="cultivos-label">Detalle del riego (texto libre)</div>
-        <div class="field"><input type="text" id="apero-otro-input" placeholder="Ej: Riego por pivote sector norte..." value="${aperoObsTexto}" oninput="aperoObsTexto=this.value;aperoSeleccionado='LIBRE';validarPaso1()"></div>
+        <div class="field"><input type="text" id="apero-otro-input" placeholder="Ej: Riego por pivote sector norte..." value="${aperoObsTexto}" oninput="setAperoObs(this.value,true)"></div>
       </div>`;
     return;
   }
@@ -3657,7 +3686,7 @@ window.seleccionarApero = function(a) {
 function renderAperoOtro() {
   const wrap = document.getElementById('apero-otro-wrap');
   if (!wrap) return;
-  wrap.innerHTML = `<div class="field" style="margin-top:8px"><input type="text" id="apero-otro-input" placeholder="Especificar apero utilizado..." value="${aperoObsTexto}" oninput="aperoObsTexto=this.value;validarPaso1()"></div>`;
+  wrap.innerHTML = `<div class="field" style="margin-top:8px"><input type="text" id="apero-otro-input" placeholder="Especificar apero utilizado..." value="${aperoObsTexto}" oninput="setAperoObs(this.value)"></div>`;
 }
 
 window.validarPaso1 = function() {
@@ -11664,7 +11693,7 @@ function renderEditorPresetOperador() {
       </div>` : ''}
 
       ${necesitaObs ? `
-      <div class="field" style="margin-top:10px"><label>Detalle (para "Otro")</label><input type="text" id="preset-apero-obs-input" value="${presetEdicionAperoObs}" oninput="presetEdicionAperoObs=this.value"></div>` : ''}
+      <div class="field" style="margin-top:10px"><label>Detalle (para "Otro")</label><input type="text" id="preset-apero-obs-input" value="${presetEdicionAperoObs}" oninput="setPresetAperoObs(this.value)"></div>` : ''}
 
       <button class="btn btn-verde" style="width:100%;justify-content:center;margin-top:12px" onclick="guardarPresetOperador()">✓ Guardar preset</button>
     </div>`;
@@ -14611,7 +14640,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
             <button class="medidor-btn active" id="btn-hr" onclick="setMedidor('hr')">HORAS</button>
           </div>
           <div style="display:flex;gap:8px;align-items:center;margin-top:8px;">
-            <input type="number" id="medidor-valor" min="0" step="0.1" placeholder="0" style="flex:1" oninput="medidorFuenteActual='manual';validarPaso1()">
+            <input type="number" id="medidor-valor" min="0" step="0.1" placeholder="0" style="flex:1" oninput="setMedidorManual()">
             <span style="font-size:12px;color:var(--acero)" id="medidor-unidad">hr</span>
           </div>
           <div class="hint" id="medidor-label-hint">Horómetro actual (hr)</div>
@@ -14658,7 +14687,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         <div class="grid-2">
           <div class="field">
             <label>Litros despachados</label>
-            <input type="number" id="litros" min="0" step="0.1" placeholder="0.0" oninput="litrosFuenteActual='manual';calcularEficiencia()">
+            <input type="number" id="litros" min="0" step="0.1" placeholder="0.0" oninput="setLitrosManual()">
           </div>
           <div class="field">
             <label>Totalizador digital</label>
