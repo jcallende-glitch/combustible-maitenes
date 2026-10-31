@@ -5492,7 +5492,7 @@ function ultimaFechaAsistencia() { return asistenciaRegistros.reduce((m, r) => (
 window.renderModoAsistencia = function() {
   const m = document.getElementById('asistencia-modo'), w = document.getElementById('asistencia-wizard'), pl = document.getElementById('asistencia-planilla');
   if (!m) return;
-  w.style.display = asistEstado === 'wizard' ? 'block' : 'none';
+  w.style.display = asistEstado === 'wizard' || asistEstado === 'hextra' ? 'block' : 'none';
   pl.style.display = asistEstado === 'planilla' ? 'block' : 'none';
   const btn = 'padding:14px;border-radius:10px;border:1px solid #D1D5DB;background:#fff;font-size:15px;cursor:pointer;flex:1';
   if (asistEstado === 'elegir') {
@@ -5502,12 +5502,15 @@ window.renderModoAsistencia = function() {
       <div style="display:flex;gap:10px;flex-wrap:wrap">
         <button type="button" style="${btn};background:#16A34A;color:#fff;border-color:#16A34A" onclick="iniciarCompletarAsistencia()">✍️ Completar</button>
         <button type="button" style="${btn}" onclick="asistEstado='planilla';renderModoAsistencia()">📋 Revisar</button>
+        <button type="button" style="${btn}" onclick="abrirRevisionHextra()">⏱️ Horas extra</button>
+        <button type="button" style="${btn}" onclick="marcarFeriado()">🎌 Feriado</button>
         ${esAdminPleno() ? `<button type="button" style="${btn}" onclick="abrirSueldos()">💰 Sueldos del mes</button>` : ''}
       </div></div>`;
   } else {
     m.innerHTML = `<div style="display:flex;gap:8px;margin-bottom:10px">
       <button type="button" class="btn" style="flex:1" onclick="iniciarCompletarAsistencia()">✍️ Completar</button>
       <button type="button" class="btn" style="flex:1" onclick="asistEstado='planilla';renderModoAsistencia()">📋 Planilla</button>
+      <button type="button" class="btn" style="flex:1" onclick="abrirRevisionHextra()">⏱️ Horas extra</button>
       ${esAdminPleno() ? `<button type="button" class="btn" style="flex:1" onclick="abrirSueldos()">💰 Sueldos</button>` : ''}</div>`;
   }
 }
@@ -5632,6 +5635,7 @@ function sueCalcular() {
   const porTrab = {}, porDia = {};
   regs.forEach(r => {
     const t0 = porTrab[r.trabajador] = porTrab[r.trabajador] || { dias: new Set(), items: [], perm: new Set(), falt: new Set() };
+    if (r.estado === 'feriado') return;
     if (r.estado === 'vacaciones') { (t0.vac = t0.vac || new Set()).add(r.fecha); return; }
     if (r.estado === 'permiso') { t0.perm.add(r.fecha); return; }
     if (r.estado === 'falta') { t0.falt.add(r.fecha); return; }
@@ -5759,8 +5763,14 @@ window.iniciarCompletarAsistencia = async function(fechaForzada) {
   // Cuaderno de campo: labores del día / en curso (se suscribe una vez y se espera la primera carga)
   try { suscribirLaboresCampo(); for (let i = 0; i < 16 && !(laboresCampoTodos || []).length; i++) await new Promise(r => setTimeout(r, 250)); if (!Object.keys(cultivoActualPorPotrero).length) await cargarCultivosActualesPotreros(); } catch (e) { console.warn('wizard cuaderno', e); }
   const yaTienen = new Set(asistenciaRegistros.filter(r => r.fecha === fecha).map(r => r.trabajador));
-  const cola = trabajadoresAsistenciaConfig.filter(t => !yaTienen.has(t));
-  WZ = { fecha, ult, comb, cola, total: cola.length, i: 0, guardados: 0, saltados: 0, yaTienen: yaTienen.size };
+  let cola = trabajadoresAsistenciaConfig.filter(t => !yaTienen.has(t));
+  const feriado = esFeriado(fecha);
+  if (feriado) { // todos quedan libres; solo se pregunta por quienes cargaron combustible (trabajaron)
+    const libres = cola.filter(t => !comb[t]);
+    try { await Promise.all(libres.map(t => addDoc(collection(db, 'asistencia'), { trabajador: t, fecha, estado: 'feriado', centro_costo: null, labor: null, labor_detalle: null, maquinaria: null, aperos: null, centro_origen: null, centros_dist: null, horas_trabajador: null, horas_registro: 0, hextra_auto: false, obs: 'Feriado', registrado_por: currentUser, ts: Date.now() }))); } catch (e) { toast('Error: ' + e.message, false); }
+    cola = cola.filter(t => comb[t]);
+  }
+  WZ = { feriado, libres: feriado ? trabajadoresAsistenciaConfig.length - cola.length - yaTienen.size : 0, fecha, ult, comb, cola, total: cola.length, i: 0, guardados: 0, saltados: 0, yaTienen: yaTienen.size };
   wzCargarTrabajador();
 }
 
@@ -5802,8 +5812,96 @@ const WZ_SMALL = 'padding:8px 12px;border-radius:8px;border:1px solid #D1D5DB;ba
 const fCortaAsist = f => f ? f.slice(8, 10) + '-' + f.slice(5, 7) : '';
 const wzUnicos = arr => [...new Set(arr.filter(x => typeof x === 'string' && x.trim()))];
 
+const esFeriado = f => !!f && (config.feriados || []).includes(f);
 const wzJor = cur => ({ corrido: !!cur.corrido, ingreso: cur.dif ? cur.ingreso : '' });
 // modo: 'normal' | 'corrido' | 'dif' | 'difcorrido' | 'difnormal' | 'ingreso' (cambió la hora)
+
+// ─── ⏱️ REVISIÓN DE HORAS EXTRA: lo que anoté yo (estimado) vs lo que sale del combustible, por trabajador y día ───
+let HX = null;
+window.abrirRevisionHextra = async function() {
+  asistEstado = 'hextra'; renderModoAsistencia();
+  const w = document.getElementById('asistencia-wizard'), hoy = getNow().fecha;
+  const d0 = HX ? HX.desde : fechaMasDias(hoy, -30), h0 = HX ? HX.hasta : hoy;
+  w.innerHTML = `<div class="panel"><div class="panel-title">⏱️ Revisión de horas extra</div>
+    <div class="grid-2" style="margin-bottom:8px"><div class="field" style="margin:0"><label>Desde</label><input type="date" id="hx-desde" value="${d0}" onchange="hxCalcular()"></div>
+    <div class="field" style="margin:0"><label>Hasta</label><input type="date" id="hx-hasta" value="${h0}" onchange="hxCalcular()"></div></div>
+    <div style="margin-bottom:8px">${[['Esta semana', 'sem'], ['Este mes', 'mes'], ['Mes anterior', 'ant'], ['Últimos 30 días', '30']].map(([t, k]) => `<button type="button" style="${WZ_SMALL}" onclick="hxPeriodo('${k}')">${t}</button>`).join('')}</div>
+    <div id="hx-res" style="font-size:13px">Cargando…</div></div>`;
+  hxCalcular();
+}
+window.hxPeriodo = function(k) {
+  const hoy = getNow().fecha, d = new Date(hoy + 'T12:00:00');
+  let a = hoy, b = hoy;
+  if (k === 'sem') { const dow = (d.getDay() + 6) % 7; a = fechaMasDias(hoy, -dow); }
+  else if (k === 'mes') a = hoy.slice(0, 8) + '01';
+  else if (k === 'ant') { const p = new Date(d.getFullYear(), d.getMonth() - 1, 1, 12), u = new Date(d.getFullYear(), d.getMonth(), 0, 12); a = p.toISOString().slice(0, 10); b = u.toISOString().slice(0, 10); }
+  else a = fechaMasDias(hoy, -30);
+  document.getElementById('hx-desde').value = a; document.getElementById('hx-hasta').value = b; hxCalcular();
+}
+const hxN = v => (Math.round((v || 0) * 10) / 10).toLocaleString('es-CL', { maximumFractionDigits: 1 });
+window.hxCalcular = async function() {
+  const dEl = document.getElementById('hx-desde'), hEl = document.getElementById('hx-hasta'), out = document.getElementById('hx-res');
+  if (!dEl || !hEl || !out) return;
+  const desde = dEl.value, hasta = hEl.value;
+  if (!desde || !hasta || desde > hasta) { out.innerHTML = 'Elige un período válido.'; return; }
+  HX = { desde, hasta, rows: [] };
+  out.innerHTML = 'Calculando…';
+  const ult = {};
+  try {
+    const snap = await getDocs(query(collection(db, 'registros'), where('fecha', '>=', desde), where('fecha', '<=', hasta)));
+    snap.docs.forEach(d => { const r = d.data(); if (!r.operador || !r.hora) return; const k = r.operador + '|' + r.fecha; if (!ult[k] || r.hora > ult[k]) ult[k] = r.hora; });
+  } catch (e) { out.innerHTML = 'Error leyendo combustible: ' + escA(e.message); return; }
+  const regs = asistenciaRegistros.filter(r => r.fecha >= desde && r.fecha <= hasta && (!r.estado || r.estado === 'presente'));
+  const rows = regs.map(r => {
+    const u = ult[r.trabajador + '|' + r.fecha] || '';
+    const jor = { corrido: r.jornada === 'corrido' || (r.jornada === 'diferenciado' && r.jornada_corrido === true), ingreso: r.jornada === 'diferenciado' ? (r.hora_ingreso || '') : '' };
+    const hx = u ? horasExtraPorCombustible(r.trabajador, { ultimaHora: u }, r.fecha, jor) : null;
+    return { id: r.id, trab: r.trabajador, fecha: r.fecha, est: Number(r.horas_registro) || 0, trabH: r.horas_trabajador, hx, ult: u, manual: !(r.hextra_auto === true) && (Number(r.horas_registro) || 0) > 0 };
+  }).filter(x => x.est > 0 || x.hx).sort((a, b) => a.fecha.localeCompare(b.fecha));
+  HX.rows = rows;
+  const por = {};
+  rows.forEach(x => { const t = por[x.trab] = por[x.trab] || { est: 0, auto: 0, estCon: 0, dias: 0, difDias: 0, rows: [] }; t.est += x.est; t.dias++; if (x.hx) { t.auto += x.hx.horas; t.estCon += x.est; } if (x.hx && Math.abs(x.hx.horas - x.est) >= 0.5) t.difDias++; t.rows.push(x); });
+  const trabs = Object.keys(por).sort((a, b) => a.localeCompare(b, 'es'));
+  if (!trabs.length) { out.innerHTML = '<div class="empty">Sin horas extra ni cargas de combustible en ese período.</div>'; return; }
+  const tot = trabs.reduce((a, t) => ({ est: a.est + por[t].est, auto: a.auto + por[t].auto, estCon: a.estCon + por[t].estCon }), { est: 0, auto: 0, estCon: 0 });
+  const celda = 'padding:4px 6px;border-bottom:1px solid #E5E7EB;text-align:right';
+  out.innerHTML = `<div style="margin-bottom:6px">Total período: <b>${hxN(tot.est)} h</b> anotadas · <b>${hxN(tot.auto)} h</b> según combustible · en los días con combustible: anotadas ${hxN(tot.estCon)} h vs combustible ${hxN(tot.auto)} h (diferencia <b style="color:${Math.abs(tot.auto - tot.estCon) >= 0.5 ? '#DC2626' : '#16A34A'}">${hxN(tot.auto - tot.estCon)} h</b>)</div>
+    <div style="font-size:11px;color:#6B7280;margin-bottom:8px">«Anotadas» = las horas extra que quedaron en la tarja (tu estimación o la sugerida). «Combustible» = hora de la última carga − salida (según contrato, de corrido, diferenciado o feriado). Solo se calcula en los días en que cargó combustible.</div>
+    <div style="display:flex;gap:6px;margin-bottom:8px"><button type="button" class="btn" onclick="hxExcel()">⬇️ Excel</button></div>
+    ${trabs.map(t => { const p = por[t], dif = p.auto - p.estCon; return `<details style="border:1px solid #E5E7EB;border-radius:8px;margin-bottom:6px;background:#fff"${p.difDias ? ' open' : ''}>
+      <summary style="padding:8px;cursor:pointer;display:flex;gap:8px;flex-wrap:wrap;align-items:center"><b style="flex:1;min-width:120px">${escA(t)}</b><span>anotadas <b>${hxN(p.est)}</b> h</span><span>combustible <b>${hxN(p.auto)}</b> h</span>${p.difDias ? `<span style="color:#DC2626;font-weight:600">⚠️ ${p.difDias} día${p.difDias > 1 ? 's' : ''} con diferencia</span>` : '<span style="color:#16A34A">✓</span>'}</summary>
+      <div style="overflow-x:auto;padding:0 8px 8px"><table style="width:100%;font-size:12px;border-collapse:collapse;min-width:0"><thead><tr style="color:#6B7280"><th style="text-align:left;padding:4px 6px">Día</th><th style="${celda}">Anotadas</th><th style="${celda}">Última carga</th><th style="${celda}">Salida</th><th style="${celda}">Combustible</th><th style="${celda}">Dif.</th><th></th></tr></thead><tbody>
+      ${p.rows.map(x => { const i = HX.rows.indexOf(x), d = x.hx ? x.hx.horas - x.est : null, malo = d != null && Math.abs(d) >= 0.5; return `<tr${malo ? ' style="background:#FFF5F5"' : ''}><td style="padding:4px 6px;border-bottom:1px solid #E5E7EB">${fechaBonita(x.fecha)}${esFeriado(x.fecha) ? ' 🎌' : ''}</td><td style="${celda}">${hxN(x.est)}${x.manual ? ' ✍️' : ''}</td><td style="${celda}">${x.ult || '—'}</td><td style="${celda}">${x.hx ? escA(x.hx.salida) : '—'}</td><td style="${celda}">${x.hx ? hxN(x.hx.horas) : '—'}</td><td style="${celda};color:${malo ? '#DC2626' : '#6B7280'}">${d != null ? (d > 0 ? '+' : '') + hxN(d) : ''}</td><td style="${celda}">${malo ? `<button type="button" style="${WZ_SMALL};margin:0;padding:3px 8px" onclick="hxUsar(${i})">Usar ${hxN(x.hx.horas)}</button>` : ''}</td></tr>`; }).join('')}
+      </tbody></table>${p.difDias > 1 ? `<button type="button" class="btn" style="margin-top:6px" onclick="hxUsarTodos('${escA(t).replace(/'/g, "\\'")}')">Usar combustible en los ${p.difDias} días con diferencia</button>` : ''}</div></details>`; }).join('')}
+    <div style="font-size:11px;color:#6B7280">✍️ = horas escritas a mano. «Usar» reemplaza las horas anotadas por las del combustible en ese día.</div>`;
+}
+async function hxAplicar(x) { await updateDoc(doc(db, 'asistencia', x.id), { horas_registro: x.hx.horas, hextra_auto: x.hx.horas > 0, hextra_carga: x.ult }); const r = asistenciaRegistros.find(a => a.id === x.id); if (r) { r.horas_registro = x.hx.horas; r.hextra_auto = x.hx.horas > 0; } }
+window.hxUsar = async function(i) { const x = HX && HX.rows[i]; if (!x || !x.hx) return; try { await hxAplicar(x); toast('✓ Actualizado', true); hxCalcular(); } catch (e) { toast('Error: ' + e.message, false); } }
+window.hxUsarTodos = async function(trab) {
+  if (!HX) return; const xs = HX.rows.filter(x => x.trab === trab && x.hx && Math.abs(x.hx.horas - x.est) >= 0.5);
+  if (!xs.length || !confirm('¿Reemplazar las horas anotadas de ' + trab + ' por las del combustible en ' + xs.length + ' días?')) return;
+  try { for (const x of xs) await hxAplicar(x); toast('✓ ' + xs.length + ' días actualizados', true); hxCalcular(); } catch (e) { toast('Error: ' + e.message, false); }
+}
+window.hxExcel = function() {
+  if (!HX || !HX.rows.length || typeof XLSX === 'undefined') { toast('No se puede generar el Excel ahora', false); return; }
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(HX.rows.map(x => ({ Trabajador: x.trab, Fecha: x.fecha, 'H. extra anotadas': x.est, 'Última carga': x.ult, 'Salida considerada': x.hx ? x.hx.salida : '', 'H. extra según combustible': x.hx ? x.hx.horas : '', Diferencia: x.hx ? Math.round((x.hx.horas - x.est) * 10) / 10 : '', Feriado: esFeriado(x.fecha) ? 'Sí' : '' }))), 'Horas extra');
+  XLSX.writeFile(wb, 'horas-extra-' + HX.desde + '_' + HX.hasta + '.xlsx');
+}
+window.marcarFeriado = async function() {
+  const hoy = getNow().fecha, ult = ultimaFechaAsistencia();
+  const sug = ult && fechaMasDias(ult, 1) <= hoy ? fechaMasDias(ult, 1) : hoy;
+  const f = (prompt('Fecha del feriado (AAAA-MM-DD).\nTodos quedan como libres; solo se te preguntará por quienes cargaron combustible ese día.', sug) || '').trim();
+  if (!f) return;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(f)) { toast('Fecha inválida, usa AAAA-MM-DD', false); return; }
+  if (f > hoy) { toast('Esa fecha aún no llega', false); return; }
+  try {
+    if (esFeriado(f)) { if (!confirm(f + ' ya está marcado como feriado. ¿Quitarlo? (los registros ya creados no se borran)')) return; config.feriados = config.feriados.filter(x => x !== f); await setDoc(doc(db, 'config', 'datos'), { feriados: config.feriados }, { merge: true }); toast('Feriado quitado', true); return; }
+    config.feriados = [...(config.feriados || []), f].sort();
+    await setDoc(doc(db, 'config', 'datos'), { feriados: config.feriados }, { merge: true });
+  } catch (e) { toast('Error: ' + e.message, false); return; }
+  iniciarCompletarAsistencia(f);
+}
 window.wzJornada = function(modo, val) {
   const cur = WZ.cur; if (!cur) return;
   if (modo === true) modo = 'corrido'; if (modo === false) modo = 'normal';
@@ -5827,7 +5925,7 @@ window.wzRender = function() {
   const hrEl = document.getElementById('wiz-hreg');
   const hr = hrEl ? hrEl.value : (cur.hExtra && cur.hExtra.horas > 0 ? String(cur.hExtra.horas) : ''), ht = document.getElementById('wiz-htrab')?.value ?? '';
   const hx = cur.hExtra;
-  const hxHtml = hx ? `<div style="font-size:12px;margin:0 0 6px;padding:6px 8px;border-radius:8px;background:${hx.horas > 0 ? '#EFF6FF' : '#F3F4F6'};color:${hx.horas > 0 ? '#1D4ED8' : '#6B7280'}">⛽ Última carga de combustible: <b>${escA(hx.carga)}</b> · salida ${hx.ingreso ? 'diferenciada (ingreso ' + escA(hx.ingreso) + (hx.corrido ? ', de corrido' : '') + ')' : hx.corrido ? 'de corrido (' + escA(hx.salidaNormal) + ' − ' + (config.horasAlmuerzoCorrido != null ? Number(config.horasAlmuerzoCorrido) : 2) + ' h)' : 'según contrato'}: <b>${escA(hx.salida)}</b> → ${hx.horas > 0 ? `<b>${String(hx.horas).replace('.', ',')} h extra</b> aprox. <button type="button" style="${WZ_SMALL};margin:0 0 0 4px;padding:3px 8px" onclick="document.getElementById('wiz-hreg').value='${hx.horas}'">usar</button>` : (hx.margen && hx.difExacta > 0 ? `dentro del margen de ${hx.margen} min: sin horas extra` : 'sin horas extra')}</div>` : '';
+  const hxHtml = hx ? `<div style="font-size:12px;margin:0 0 6px;padding:6px 8px;border-radius:8px;background:${hx.horas > 0 ? '#EFF6FF' : '#F3F4F6'};color:${hx.horas > 0 ? '#1D4ED8' : '#6B7280'}">⛽ Última carga de combustible: <b>${escA(hx.carga)}</b> · ${hx.feriado ? '🎌 feriado, todo es hora extra desde el ingreso' : 'salida ' + (hx.ingreso ? 'diferenciada (ingreso ' + escA(hx.ingreso) + (hx.corrido ? ', de corrido' : '') + ')' : hx.corrido ? 'de corrido (' + escA(hx.salidaNormal) + ' − ' + (config.horasAlmuerzoCorrido != null ? Number(config.horasAlmuerzoCorrido) : 2) + ' h)' : 'según contrato')}: <b>${escA(hx.salida)}</b> → ${hx.horas > 0 ? `<b>${String(hx.horas).replace('.', ',')} h extra</b> aprox. <button type="button" style="${WZ_SMALL};margin:0 0 0 4px;padding:3px 8px" onclick="document.getElementById('wiz-hreg').value='${hx.horas}'">usar</button>` : (hx.margen && hx.difExacta > 0 ? `dentro del margen de ${hx.margen} min: sin horas extra` : 'sin horas extra')}</div>` : '';
   // ── 1) CENTRO(S) DE COSTO (uno o más cultivos) ──
   const cList = cur.centros || [];
   const chipCentros = l => l.map(x => puntoCentro(x.centro) + escA(x.centro) + (l.length > 1 ? ' ' + x.pct + '%' : '')).join(' · ');
@@ -5923,7 +6021,7 @@ window.wzRender = function() {
     ${detHtml}
     ${maqHtml}
     <div style="padding:10px;background:#F0F9FF;border:1px solid #BAE6FD;border-radius:8px;margin-bottom:12px">
-      <div style="margin-bottom:8px">${cur.difPrev ? `<div style="font-size:12px;margin-bottom:6px;padding:6px 8px;border-radius:8px;background:#FEF3C7;color:#92400E">🕕 Último día trabajó con horario diferenciado (ingreso ${escA(cur.difPrev.ingreso)}${cur.difPrev.corrido ? ', de corrido' : ''}). ¿Lo mantiene?</div><div style="display:flex;gap:6px;margin-bottom:6px"><button type="button" style="${WZ_SMALL};margin:0;flex:1;${cur.dif && cur.ingreso === cur.difPrev.ingreso && cur.corrido === cur.difPrev.corrido ? 'background:#2563EB;color:#fff;border-color:#2563EB;font-weight:700' : ''}" onclick="wzMantenerDif()">Mantener diferenciado</button><button type="button" style="${WZ_SMALL};margin:0;flex:1;${!cur.dif && !cur.corrido ? 'background:#2563EB;color:#fff;border-color:#2563EB;font-weight:700' : ''}" onclick="wzJornada('normal')">Horario normal</button></div>` : ''}
+      <div style="margin-bottom:8px">${WZ.feriado ? '<div style="font-size:12px;margin-bottom:6px;padding:6px 8px;border-radius:8px;background:#EDE9FE;color:#5B21B6">🎌 Día feriado: todo lo trabajado cuenta como hora extra (no hay jornada normal).</div>' : ''}${cur.difPrev ? `<div style="font-size:12px;margin-bottom:6px;padding:6px 8px;border-radius:8px;background:#FEF3C7;color:#92400E">🕕 Último día trabajó con horario diferenciado (ingreso ${escA(cur.difPrev.ingreso)}${cur.difPrev.corrido ? ', de corrido' : ''}). ¿Lo mantiene?</div><div style="display:flex;gap:6px;margin-bottom:6px"><button type="button" style="${WZ_SMALL};margin:0;flex:1;${cur.dif && cur.ingreso === cur.difPrev.ingreso && cur.corrido === cur.difPrev.corrido ? 'background:#2563EB;color:#fff;border-color:#2563EB;font-weight:700' : ''}" onclick="wzMantenerDif()">Mantener diferenciado</button><button type="button" style="${WZ_SMALL};margin:0;flex:1;${!cur.dif && !cur.corrido ? 'background:#2563EB;color:#fff;border-color:#2563EB;font-weight:700' : ''}" onclick="wzJornada('normal')">Horario normal</button></div>` : ''}
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><span style="font-size:12px;color:#374151">Jornada:</span>
         <button type="button" style="${WZ_SMALL};margin:0;${!cur.dif && !cur.corrido ? 'background:#2563EB;color:#fff;border-color:#2563EB;font-weight:700' : ''}" onclick="wzJornada('normal')">Normal</button>
         <button type="button" style="${WZ_SMALL};margin:0;${!cur.dif && cur.corrido ? 'background:#2563EB;color:#fff;border-color:#2563EB;font-weight:700' : ''}" onclick="wzJornada('corrido')">De corrido</button>
@@ -6052,7 +6150,7 @@ function wzRenderFin() {
   const w = document.getElementById('asistencia-wizard');
   const sig = fechaMasDias(WZ.fecha, 1), hoy = getNow().fecha;
   w.innerHTML = `<div class="panel"><div class="panel-title">✅ ${fechaBonita(WZ.fecha)} completo</div>
-    <div style="font-size:14px;margin-bottom:12px">${WZ.guardados} guardados${WZ.saltados ? ', ' + WZ.saltados + ' saltados' : ''}${WZ.yaTienen ? ' · ' + WZ.yaTienen + ' ya estaban registrados' : ''}.</div>
+    <div style="font-size:14px;margin-bottom:12px">${WZ.guardados} guardados${WZ.saltados ? ', ' + WZ.saltados + ' saltados' : ''}${WZ.yaTienen ? ' · ' + WZ.yaTienen + ' ya estaban registrados' : ''}${WZ.libres > 0 ? ' · ' + WZ.libres + ' quedaron libres por feriado' : ''}.</div>
     ${sig <= hoy ? `<button type="button" class="btn btn-verde btn-full" onclick="iniciarCompletarAsistencia('${sig}')">➡️ Completar ${fechaBonita(sig)}</button>` : ''}
     <button type="button" class="btn btn-full" style="margin-top:8px" onclick="wzTerminar()">📋 Ver planilla</button></div>`;
 }
@@ -6136,7 +6234,7 @@ async function agregarDetalleLabor(labor, det) {
   try { await setDoc(doc(db, 'config', 'datos'), { detallesLabor: m }, { merge: true }); toast('✓ Detalle "' + det + '" agregado a ' + labor, true); }
   catch (e) { console.warn('detalle labor', e); }
 }
-const ESTADOS_ASIST = { presente: ['✅ Trabajó', '#16A34A'], permiso: ['📝 Permiso', '#2563EB'], falta: ['❌ Falta', '#DC2626'], vacaciones: ['🏖️ Vacaciones', '#D97706'] };
+const ESTADOS_ASIST = { presente: ['✅ Trabajó', '#16A34A'], permiso: ['📝 Permiso', '#2563EB'], falta: ['❌ Falta', '#DC2626'], vacaciones: ['🏖️ Vacaciones', '#D97706'], feriado: ['🎌 Feriado (libre)', '#7C3AED'] };
 const botonesEstadoAsist = (actual, fn, extra) => '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">' + Object.entries(ESTADOS_ASIST).map(([k, [t, col]]) => `<button type="button" ${extra || ''} data-k="${k}" style="flex:1 1 40%;padding:10px 4px;border-radius:8px;border:2px solid ${actual === k ? col : '#D1D5DB'};background:${actual === k ? col : '#fff'};color:${actual === k ? '#fff' : '#111'};font-size:13px;font-weight:600;cursor:pointer" onclick="${fn}('${k}')">${t}</button>`).join('') + '</div>';
 // Labores que se fueron agregando a mano desde Asistencia (quedan guardadas para todos)
 const laboresAsistExtra = () => (config.laboresAsistencia || []).filter(x => typeof x === 'string' && x.trim());
@@ -6534,6 +6632,12 @@ function horasExtraPorCombustible(trab, comb, fecha, jor) {
   // Horario diferenciado: la salida se corre lo mismo que se adelantó (o atrasó) el ingreso respecto del ingreso normal
   const ent = config.horaEntradaContrato || '08:00', corr = ingreso ? m(ent) - m(ingreso) : 0;
   const sm = Math.max(0, m(salNormal) - corr - alm * 60), sal = String(Math.floor(sm / 60)).padStart(2, '0') + ':' + String(sm % 60).padStart(2, '0');
+  // Feriado: no hay jornada normal, todo lo trabajado es hora extra (desde el ingreso; si no fue de corrido no cuenta el almuerzo)
+  const feriado = esFeriado(fecha);
+  if (feriado) {
+    const ini = ingreso || ent, bruto = (m(comb.ultimaHora) - m(ini)) / 60 - (corrido ? 0 : (config.horasAlmuerzoCorrido != null ? Number(config.horasAlmuerzoCorrido) : 2));
+    return { salida: ini, salidaNormal: salNormal, corrido: !!corrido, ingreso: ingreso || '', feriado: true, carga: comb.ultimaHora, margen: 0, horas: bruto > 0 ? Math.round(bruto * 2) / 2 : 0, difExacta: bruto };
+  }
   const dif = (m(comb.ultimaHora) - m(sal)) / 60, margen = Number(config.margenHextraMin) || 0;
   // Dentro del margen no cuenta como hora extra; pasado el margen cuenta la diferencia completa desde la salida
   return { salida: sal, salidaNormal: salNormal, corrido: !!corrido, ingreso: ingreso || '', carga: comb.ultimaHora, margen, horas: dif * 60 > margen && dif > 0 ? Math.round(dif * 2) / 2 : 0, difExacta: dif };
