@@ -154,6 +154,44 @@ Reglas:
 Responde solo usando la herramienta registrar_documento.`;
 
 // ── Ingrediente activo de productos que no están en el inventario (busca en internet si puede) ──
+const HERRAMIENTA_MEDIDOR = {
+  name: 'registrar_lectura_medidor',
+  description: 'Registra los valores leídos en fotos de la pantalla de un medidor eléctrico.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      legible: { type: 'boolean', description: 'false si ninguna foto permite leer valores con seguridad' },
+      numero_medidor: { type: 'string', description: 'Número de serie del medidor si se ve en la placa (ej. 50 495 577), sin espacios; vacío si no se ve' },
+      marca_modelo: { type: 'string', description: 'Marca/modelo o tipo de medidor que se ve (ej. Landis+Gyr E650, mecánico de rodillos). Vacío si no se distingue' },
+      valores: {
+        type: 'array', description: 'Todos los registros que se ven en las fotos',
+        items: { type: 'object', properties: {
+          foto: { type: 'integer', description: 'Número de la foto, desde 1' },
+          codigo: { type: 'string', description: 'Código tal como aparece en la pantalla (ej. 1.8.0, 3.8.0, 1.6.0, 1.8.0*01, 1.6.0&03)' },
+          valor: { type: 'number' },
+          unidad: { type: 'string', description: 'kWh, kvarh, kW, etc. Vacío si no se ve' },
+          fecha_hora: { type: 'string', description: 'Fecha/hora que acompaña al valor si se muestra (ej. de la demanda máxima). Vacío si no hay' },
+          es_cierre_anterior: { type: 'boolean', description: 'true si es un valor histórico de un cierre anterior (código con * o & seguido de número)' }
+        }, required: ['codigo', 'valor'] }
+      },
+      activa_kwh: { type: 'number', description: 'Energía activa importada total ACTUAL (1.8.0). Si no hay total pero sí tarifas (1.8.1, 1.8.2), su suma. Omítelo si no se ve' },
+      reactiva_kvarh: { type: 'number', description: 'Energía reactiva importada ACTUAL (3.8.0; si no existe, 5.8.0). Omítelo si no se ve' },
+      demanda_max_kw: { type: 'number', description: 'Demanda máxima activa del período ACTUAL (1.6.0; si solo hay por tarifa 1.6.1/1.6.2, la mayor). Omítelo si no se ve' },
+      demanda_max_cierre_kw: { type: 'number', description: 'Demanda máxima del cierre de mes más reciente (código 1.6.0 con * o & y un número), si aparece. Si hay varios y no es claro cuál es el más reciente (por fecha), explícalo en observaciones. Omítelo si no' },
+      observaciones: { type: 'string', description: 'Dudas de lectura, dígitos poco claros, reflejos, etc.' }
+    },
+    required: ['legible', 'valores']
+  }
+};
+const PROMPT_MEDIDOR = `Estas fotos son de la pantalla o el visor de uno o más registros de un medidor eléctrico de un campo en Chile. Los medidores son de distintos tipos y marcas:
+- Digital con códigos (Landis+Gyr, Elster, Itron, etc.): cada pantalla muestra un código (ej. 1.8.0) y un valor con unidad. Ignora menús (Std_dAtA, P.01, End) y la prueba de pantalla (8.8.8.8).
+- Digital simple: muestra el total de kWh (a veces rota entre pantallas con textos como "kWh", "T1", "Total", "Imp").
+- Mecánico de rodillos (números que giran): lee todos los rodillos de izquierda a derecha; el último rodillo de otro color (rojo) o tras una coma es decimal. Si un rodillo está entre dos números, toma el menor.
+- Mecánico de relojes (agujas): lee cada reloj de izquierda a derecha (giran en sentidos alternados); si una aguja está entre dos números, toma el menor.
+Lee los dígitos EXACTAMENTE como aparecen, con su punto o coma decimal. No redondees ni inventes: si un dígito no se ve con seguridad, dilo en observaciones. Si hay un multiplicador impreso (ej. "x10", "K=40"), menciónalo en observaciones pero NO multipliques.
+Códigos habituales en medidores digitales: 1.8.0 activa total importada (kWh), 1.8.1/1.8.2 activa por tarifa, 3.8.0 reactiva importada (kvarh), 5.8.0 a 8.8.0 reactiva por cuadrante, 1.6.0 demanda máxima activa (kW), 0.9.1 hora, 0.9.2 fecha. Un código con * o & seguido de número (ej. 1.6.0*01) es un valor de un cierre anterior.
+En medidores sin códigos, usa como código una descripción corta (ej. "total kWh", "rodillos").
+Usa la herramienta registrar_lectura_medidor con todos los valores vistos y con los campos resumen. Los números en JSON con punto decimal.`;
 const HERRAMIENTA_ING = {
   name: 'registrar_ingredientes',
   description: 'Registra el ingrediente activo de cada producto agroquímico o fertilizante consultado.',
@@ -266,6 +304,32 @@ export default async function handler(request) {
     const d3 = await r3.json(), u3 = (d3.content || []).find(b => b.type === 'tool_use' && b.name === 'registrar_factura_electrica');
     if (u3) return json({ ok: true, factura: u3.input });
     return json({ error: 'No se pudo leer la factura' }, 502);
+  }
+  if (body.modo === 'medidor') {
+    const docs = body.documentos;
+    if (!Array.isArray(docs) || !docs.length || docs.length > 8) return json({ error: 'Envía entre 1 y 8 fotos' }, 400);
+    let tot = 0; const cont = [];
+    for (const du of docs) {
+      const m = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(du || '');
+      if (!m) return json({ error: 'Formato de imagen no válido' }, 400);
+      tot += m[2].length * 0.75; if (tot > MAX_BYTES_TOTAL) return json({ error: 'Las fotos pesan demasiado' }, 413);
+      cont.push({ type: 'text', text: 'Foto ' + (cont.filter(c => c.type === 'image').length + 1) + ':' });
+      cont.push({ type: 'image', source: { type: 'base64', media_type: m[1], data: m[2] } });
+    }
+    const TIPOS = { obis: 'digital con códigos', digital: 'digital simple', rodillos: 'mecánico de rodillos', agujas: 'mecánico de relojes (agujas)' };
+    const campos = (Array.isArray(body.campos) ? body.campos : ['activa']).filter(c => ['activa', 'reactiva', 'demanda'].includes(c));
+    const ctx = [body.medidor ? 'N° de medidor esperado: ' + String(body.medidor).slice(0, 40) : '', body.modelo ? 'Marca/modelo registrado: ' + String(body.modelo).slice(0, 80) : '', TIPOS[body.tipo] ? 'Tipo de pantalla registrado: ' + TIPOS[body.tipo] : '',
+      'Valores que se necesitan: ' + campos.map(c => ({ activa: 'energía activa (kWh)', reactiva: 'energía reactiva (kvarh)', demanda: 'demanda máxima (kW)' })[c]).join(', ') + '. Si ves otros, regístralos igual en valores.'].filter(Boolean).join('\n');
+    cont.push({ type: 'text', text: PROMPT_MEDIDOR + '\n\n' + ctx });
+    let r4;
+    try {
+      r4 = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({ model: MODELO, max_tokens: 4000, thinking: { type: 'between_tools' }, tools: [HERRAMIENTA_MEDIDOR], tool_choice: { type: 'auto' }, messages: [{ role: 'user', content: cont }] }) });
+    } catch (e) { return json({ error: 'No se pudo contactar el servicio de IA' }, 502); }
+    if (!r4.ok) { let d = ''; try { const e = await r4.json(); d = (e && e.error && e.error.message) ? ': ' + e.error.message : ''; } catch (e) {} return json({ error: 'El servicio de IA respondió con error (' + r4.status + ')' + d }, 502); }
+    const d4 = await r4.json(), u4 = (d4.content || []).find(b => b.type === 'tool_use' && b.name === 'registrar_lectura_medidor');
+    if (u4) return json({ ok: true, lectura: u4.input });
+    return json({ error: 'No se pudo leer el medidor' }, 502);
   }
   if (body.modo === 'remuneraciones') {
     const docs = body.documentos;
