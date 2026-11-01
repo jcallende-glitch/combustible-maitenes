@@ -5765,12 +5765,12 @@ window.iniciarCompletarAsistencia = async function(fechaForzada) {
   const yaTienen = new Set(asistenciaRegistros.filter(r => r.fecha === fecha).map(r => r.trabajador));
   let cola = trabajadoresAsistenciaConfig.filter(t => !yaTienen.has(t));
   const feriado = esFeriado(fecha);
-  if (feriado) { // todos quedan libres; solo se pregunta por quienes cargaron combustible (trabajaron)
-    const libres = cola.filter(t => !comb[t]);
-    try { await Promise.all(libres.map(t => addDoc(collection(db, 'asistencia'), { trabajador: t, fecha, estado: 'feriado', centro_costo: null, labor: null, labor_detalle: null, maquinaria: null, aperos: null, centro_origen: null, centros_dist: null, horas_trabajador: null, horas_registro: 0, hextra_auto: false, obs: 'Feriado', registrado_por: currentUser, ts: Date.now() }))); } catch (e) { toast('Error: ' + e.message, false); }
-    cola = cola.filter(t => comb[t]);
+  if (feriado) { // todos quedan libres, salvo quienes cargaron combustible o los que marques como que trabajaron
+    WZ = { feriado, fase: 'sel', libres: 0, fecha, ult, comb, cola: [], total: 0, i: 0, guardados: 0, saltados: 0, yaTienen: yaTienen.size, conComb: cola.filter(t => comb[t]), pend: cola.filter(t => !comb[t]), extra: new Set() };
+    if (!WZ.pend.length) { wzFeriadoOk(); return; }
+    wzFeriadoSel(); return;
   }
-  WZ = { feriado, libres: feriado ? trabajadoresAsistenciaConfig.length - cola.length - yaTienen.size : 0, fecha, ult, comb, cola, total: cola.length, i: 0, guardados: 0, saltados: 0, yaTienen: yaTienen.size };
+  WZ = { feriado, libres: 0, fecha, ult, comb, cola, total: cola.length, i: 0, guardados: 0, saltados: 0, yaTienen: yaTienen.size };
   wzCargarTrabajador();
 }
 
@@ -5799,6 +5799,9 @@ function wzCargarTrabajador() {
   WZ.cur.corrido = false; WZ.cur.dif = false; WZ.cur.ingreso = '07:00'; WZ.cur.difPrev = null;
   { const pd = prev.find(r => (r.fecha || '') < WZ.fecha && (!r.estado || r.estado === 'presente')); // jornada del último día trabajado
     if (pd && pd.jornada === 'diferenciado' && pd.hora_ingreso) { WZ.cur.difPrev = { ingreso: pd.hora_ingreso, corrido: pd.jornada_corrido === true }; WZ.cur.dif = true; WZ.cur.ingreso = pd.hora_ingreso; WZ.cur.corrido = pd.jornada_corrido === true; } }
+  { const dw = new Date(WZ.fecha + 'T12:00:00').getDay(), ed = dw === 0 || dw === 6 ? '' : especialDe(trab); // horario especial predefinido (solo lun–vie)
+    WZ.cur.espDe = ed; WZ.cur.esp = '';
+    if (ed) { WZ.cur.esp = ed; WZ.cur.dif = false; WZ.cur.corrido = false; WZ.cur.difPrev = null; } }
   WZ.cur.hExtra = horasExtraPorCombustible(trab, c, WZ.fecha, wzJor(WZ.cur));
   { const h1 = document.getElementById('wiz-hreg'), h2 = document.getElementById('wiz-htrab'); if (h1) h1.value = WZ.cur.hExtra && WZ.cur.hExtra.horas > 0 ? String(WZ.cur.hExtra.horas) : ''; if (h2) h2.value = ''; } // las horas no pasan al siguiente trabajador; si cargó combustible, se sugiere la diferencia con su salida
   wzRender();
@@ -5812,8 +5815,8 @@ const WZ_SMALL = 'padding:8px 12px;border-radius:8px;border:1px solid #D1D5DB;ba
 const fCortaAsist = f => f ? f.slice(8, 10) + '-' + f.slice(5, 7) : '';
 const wzUnicos = arr => [...new Set(arr.filter(x => typeof x === 'string' && x.trim()))];
 
-const esFeriado = f => !!f && (config.feriados || []).includes(f);
-const wzJor = cur => ({ corrido: !!cur.corrido, ingreso: cur.dif ? cur.ingreso : '' });
+const esFeriado = f => !!f && ((config.feriados || []).includes(f) || new Date(f + 'T12:00:00').getDay() === 0); // los domingos cuentan como feriado
+const wzJor = cur => ({ corrido: !!cur.corrido, ingreso: cur.dif ? cur.ingreso : '', especial: cur.esp ? cur.esp : '' });
 // modo: 'normal' | 'corrido' | 'dif' | 'difcorrido' | 'difnormal' | 'ingreso' (cambió la hora)
 
 // ─── ⏱️ REVISIÓN DE HORAS EXTRA: lo que anoté yo (estimado) vs lo que sale del combustible, por trabajador y día ───
@@ -5854,7 +5857,7 @@ window.hxCalcular = async function() {
   const regs = asistenciaRegistros.filter(r => r.fecha >= desde && r.fecha <= hasta && (!r.estado || r.estado === 'presente'));
   const rows = regs.map(r => {
     const u = ult[r.trabajador + '|' + r.fecha] || '';
-    const jor = { corrido: r.jornada === 'corrido' || (r.jornada === 'diferenciado' && r.jornada_corrido === true), ingreso: r.jornada === 'diferenciado' ? (r.hora_ingreso || '') : '' };
+    const jor = jorDeRegistro(r);
     const hx = u ? horasExtraPorCombustible(r.trabajador, { ultimaHora: u }, r.fecha, jor) : null;
     return { id: r.id, trab: r.trabajador, fecha: r.fecha, est: Number(r.horas_registro) || 0, trabH: r.horas_trabajador, hx, ult: u, manual: !(r.hextra_auto === true) && (Number(r.horas_registro) || 0) > 0 };
   }).filter(x => x.est > 0 || x.hx).sort((a, b) => a.fecha.localeCompare(b.fecha));
@@ -5888,6 +5891,21 @@ window.hxExcel = function() {
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(HX.rows.map(x => ({ Trabajador: x.trab, Fecha: x.fecha, 'H. extra anotadas': x.est, 'Última carga': x.ult, 'Salida considerada': x.hx ? x.hx.salida : '', 'H. extra según combustible': x.hx ? x.hx.horas : '', Diferencia: x.hx ? Math.round((x.hx.horas - x.est) * 10) / 10 : '', Feriado: esFeriado(x.fecha) ? 'Sí' : '' }))), 'Horas extra');
   XLSX.writeFile(wb, 'horas-extra-' + HX.desde + '_' + HX.hasta + '.xlsx');
 }
+window.wzFeriadoSel = function() {
+  const w = document.getElementById('asistencia-wizard'), d = new Date(WZ.fecha + 'T12:00:00').getDay();
+  w.innerHTML = `<div class="panel"><div class="panel-title">🎌 ${fechaBonita(WZ.fecha)} · ${d === 0 ? 'domingo' : 'feriado'}</div>
+    <div style="font-size:13px;margin-bottom:8px">Todos quedan <b>libres</b>${WZ.conComb.length ? '. Se te preguntará por quienes cargaron combustible: <b>' + WZ.conComb.map(escA).join(', ') + '</b>' : ''}.</div>
+    <div style="font-size:13px;margin-bottom:4px"><b>¿Trabajó alguien más?</b> (sin cargar combustible) Márcalo para registrar sus horas extra:</div>
+    ${WZ.pend.map((t, i) => `<button type="button" style="${WZ_BTN};${WZ.extra.has(t) ? 'background:#7C3AED;color:#fff;border-color:#7C3AED;font-weight:700' : ''}" onclick="wzFeriadoTog(${i})">${WZ.extra.has(t) ? '✓ ' : ''}${escA(t)}</button>`).join('')}
+    <button type="button" class="btn btn-verde btn-full" style="margin-top:8px" onclick="wzFeriadoOk()">Continuar${WZ.extra.size ? ' (' + WZ.extra.size + ' trabajaron)' : ' (todos libres)'}</button></div>`;
+}
+window.wzFeriadoTog = function(i) { const t = WZ.pend[i]; if (WZ.extra.has(t)) WZ.extra.delete(t); else WZ.extra.add(t); wzFeriadoSel(); }
+window.wzFeriadoOk = async function() {
+  const fecha = WZ.fecha, libres = WZ.pend.filter(t => !WZ.extra.has(t));
+  try { await Promise.all(libres.map(t => addDoc(collection(db, 'asistencia'), { trabajador: t, fecha, estado: 'feriado', centro_costo: null, labor: null, labor_detalle: null, maquinaria: null, aperos: null, centro_origen: null, centros_dist: null, horas_trabajador: null, horas_registro: 0, hextra_auto: false, obs: 'Feriado', registrado_por: currentUser, ts: Date.now() }))); } catch (e) { toast('Error: ' + e.message, false); return; }
+  WZ.cola = [...WZ.conComb, ...WZ.pend.filter(t => WZ.extra.has(t))]; WZ.total = WZ.cola.length; WZ.libres = libres.length; WZ.fase = null; WZ.i = 0;
+  wzCargarTrabajador();
+}
 window.marcarFeriado = async function() {
   const hoy = getNow().fecha, ult = ultimaFechaAsistencia();
   const sug = ult && fechaMasDias(ult, 1) <= hoy ? fechaMasDias(ult, 1) : hoy;
@@ -5905,6 +5923,7 @@ window.marcarFeriado = async function() {
 window.wzJornada = function(modo, val) {
   const cur = WZ.cur; if (!cur) return;
   if (modo === true) modo = 'corrido'; if (modo === false) modo = 'normal';
+  if (modo === 'esp') { cur.esp = cur.espDe || ''; cur.dif = false; cur.corrido = false; } else cur.esp = '';
   const el = document.getElementById('wiz-hreg'), ant = cur.hExtra && cur.hExtra.horas > 0 ? String(cur.hExtra.horas) : '';
   const eraAuto = !el || el.value === '' || el.value === ant;
   if (modo === 'normal') { cur.dif = false; cur.corrido = false; }
@@ -5913,6 +5932,7 @@ window.wzJornada = function(modo, val) {
   else if (modo === 'difcorrido') { cur.dif = true; cur.corrido = true; }
   else if (modo === 'difnormal') { cur.dif = true; cur.corrido = false; }
   else if (modo === 'ingreso') { cur.ingreso = val || cur.ingreso; }
+  if (modo === 'ingreso' && cur.esp) cur.esp = '';
   cur.hExtra = horasExtraPorCombustible(cur.trab, WZ.comb[cur.trab], WZ.fecha, wzJor(cur));
   if (el && eraAuto) el.value = cur.hExtra && cur.hExtra.horas > 0 ? String(cur.hExtra.horas) : '';
   wzRender();
@@ -5925,7 +5945,7 @@ window.wzRender = function() {
   const hrEl = document.getElementById('wiz-hreg');
   const hr = hrEl ? hrEl.value : (cur.hExtra && cur.hExtra.horas > 0 ? String(cur.hExtra.horas) : ''), ht = document.getElementById('wiz-htrab')?.value ?? '';
   const hx = cur.hExtra;
-  const hxHtml = hx ? `<div style="font-size:12px;margin:0 0 6px;padding:6px 8px;border-radius:8px;background:${hx.horas > 0 ? '#EFF6FF' : '#F3F4F6'};color:${hx.horas > 0 ? '#1D4ED8' : '#6B7280'}">⛽ Última carga de combustible: <b>${escA(hx.carga)}</b> · ${hx.feriado ? '🎌 feriado, todo es hora extra desde el ingreso' : 'salida ' + (hx.ingreso ? 'diferenciada (ingreso ' + escA(hx.ingreso) + (hx.corrido ? ', de corrido' : '') + ')' : hx.corrido ? 'de corrido (' + escA(hx.salidaNormal) + ' − ' + (config.horasAlmuerzoCorrido != null ? Number(config.horasAlmuerzoCorrido) : 2) + ' h)' : 'según contrato')}: <b>${escA(hx.salida)}</b> → ${hx.horas > 0 ? `<b>${String(hx.horas).replace('.', ',')} h extra</b> aprox. <button type="button" style="${WZ_SMALL};margin:0 0 0 4px;padding:3px 8px" onclick="document.getElementById('wiz-hreg').value='${hx.horas}'">usar</button>` : (hx.margen && hx.difExacta > 0 ? `dentro del margen de ${hx.margen} min: sin horas extra` : 'sin horas extra')}</div>` : '';
+  const hxHtml = hx ? `<div style="font-size:12px;margin:0 0 6px;padding:6px 8px;border-radius:8px;background:${hx.horas > 0 ? '#EFF6FF' : '#F3F4F6'};color:${hx.horas > 0 ? '#1D4ED8' : '#6B7280'}">⛽ Última carga de combustible: <b>${escA(hx.carga)}</b> · ${hx.feriado ? '🎌 feriado, todo es hora extra desde el ingreso' : 'salida ' + (hx.especial ? '⭐ especial «' + escA(hx.especial) + '»' : hx.ingreso ? 'diferenciada (ingreso ' + escA(hx.ingreso) + (hx.corrido ? ', de corrido' : '') + ')' : hx.corrido ? 'de corrido (' + escA(hx.salidaNormal) + ' − colación)' : 'según contrato')}: <b>${escA(hx.salida)}</b> → ${hx.horas > 0 ? `<b>${String(hx.horas).replace('.', ',')} h extra</b> aprox. <button type="button" style="${WZ_SMALL};margin:0 0 0 4px;padding:3px 8px" onclick="document.getElementById('wiz-hreg').value='${hx.horas}'">usar</button>` : (hx.margen && hx.difExacta > 0 ? `dentro del margen de ${hx.margen} min: sin horas extra` : 'sin horas extra')}</div>` : '';
   // ── 1) CENTRO(S) DE COSTO (uno o más cultivos) ──
   const cList = cur.centros || [];
   const chipCentros = l => l.map(x => puntoCentro(x.centro) + escA(x.centro) + (l.length > 1 ? ' ' + x.pct + '%' : '')).join(' · ');
@@ -6021,9 +6041,9 @@ window.wzRender = function() {
     ${detHtml}
     ${maqHtml}
     <div style="padding:10px;background:#F0F9FF;border:1px solid #BAE6FD;border-radius:8px;margin-bottom:12px">
-      <div style="margin-bottom:8px">${WZ.feriado ? '<div style="font-size:12px;margin-bottom:6px;padding:6px 8px;border-radius:8px;background:#EDE9FE;color:#5B21B6">🎌 Día feriado: todo lo trabajado cuenta como hora extra (no hay jornada normal).</div>' : ''}${cur.difPrev ? `<div style="font-size:12px;margin-bottom:6px;padding:6px 8px;border-radius:8px;background:#FEF3C7;color:#92400E">🕕 Último día trabajó con horario diferenciado (ingreso ${escA(cur.difPrev.ingreso)}${cur.difPrev.corrido ? ', de corrido' : ''}). ¿Lo mantiene?</div><div style="display:flex;gap:6px;margin-bottom:6px"><button type="button" style="${WZ_SMALL};margin:0;flex:1;${cur.dif && cur.ingreso === cur.difPrev.ingreso && cur.corrido === cur.difPrev.corrido ? 'background:#2563EB;color:#fff;border-color:#2563EB;font-weight:700' : ''}" onclick="wzMantenerDif()">Mantener diferenciado</button><button type="button" style="${WZ_SMALL};margin:0;flex:1;${!cur.dif && !cur.corrido ? 'background:#2563EB;color:#fff;border-color:#2563EB;font-weight:700' : ''}" onclick="wzJornada('normal')">Horario normal</button></div>` : ''}
+      <div style="margin-bottom:8px">${cur.espDe ? (() => { const e = (config.horariosEspeciales || []).find(x => x.nombre === cur.espDe) || {}; return `<div style="font-size:12px;margin-bottom:6px;padding:6px 8px;border-radius:8px;background:#FEF9C3;color:#854D0E">⭐ Tiene horario especial «<b>${escA(cur.espDe)}</b>» (ingreso ${escA(e.entrada || '–')} · salida ${escA(e.salida || '–')}${e.colIni && e.colFin ? ' · colación ' + escA(e.colIni) + '–' + escA(e.colFin) : ''}). ¿Hoy lo usa?</div><div style="display:flex;gap:6px;margin-bottom:6px"><button type="button" style="${WZ_SMALL};margin:0;flex:1;${cur.esp ? 'background:#2563EB;color:#fff;border-color:#2563EB;font-weight:700' : ''}" onclick="wzJornada('esp')">⭐ Horario especial</button><button type="button" style="${WZ_SMALL};margin:0;flex:1;${!cur.esp ? 'background:#2563EB;color:#fff;border-color:#2563EB;font-weight:700' : ''}" onclick="wzJornada('normal')">Horario normal</button></div>`; })() : ''}${WZ.feriado ? '<div style="font-size:12px;margin-bottom:6px;padding:6px 8px;border-radius:8px;background:#EDE9FE;color:#5B21B6">🎌 Domingo o feriado: todo lo trabajado cuenta como hora extra (no hay jornada normal). Si no cargó combustible, escribe las horas.</div>' : ''}${cur.difPrev ? `<div style="font-size:12px;margin-bottom:6px;padding:6px 8px;border-radius:8px;background:#FEF3C7;color:#92400E">🕕 Último día trabajó con horario diferenciado (ingreso ${escA(cur.difPrev.ingreso)}${cur.difPrev.corrido ? ', de corrido' : ''}). ¿Lo mantiene?</div><div style="display:flex;gap:6px;margin-bottom:6px"><button type="button" style="${WZ_SMALL};margin:0;flex:1;${cur.dif && cur.ingreso === cur.difPrev.ingreso && cur.corrido === cur.difPrev.corrido ? 'background:#2563EB;color:#fff;border-color:#2563EB;font-weight:700' : ''}" onclick="wzMantenerDif()">Mantener diferenciado</button><button type="button" style="${WZ_SMALL};margin:0;flex:1;${!cur.dif && !cur.corrido && !cur.esp ? 'background:#2563EB;color:#fff;border-color:#2563EB;font-weight:700' : ''}" onclick="wzJornada('normal')">Horario normal</button></div>` : ''}
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><span style="font-size:12px;color:#374151">Jornada:</span>
-        <button type="button" style="${WZ_SMALL};margin:0;${!cur.dif && !cur.corrido ? 'background:#2563EB;color:#fff;border-color:#2563EB;font-weight:700' : ''}" onclick="wzJornada('normal')">Normal</button>
+        <button type="button" style="${WZ_SMALL};margin:0;${!cur.dif && !cur.corrido && !cur.esp ? 'background:#2563EB;color:#fff;border-color:#2563EB;font-weight:700' : ''}" onclick="wzJornada('normal')">Normal</button>
         <button type="button" style="${WZ_SMALL};margin:0;${!cur.dif && cur.corrido ? 'background:#2563EB;color:#fff;border-color:#2563EB;font-weight:700' : ''}" onclick="wzJornada('corrido')">De corrido</button>
         <button type="button" style="${WZ_SMALL};margin:0;${cur.dif ? 'background:#2563EB;color:#fff;border-color:#2563EB;font-weight:700' : ''}" onclick="wzJornada('dif')">Horario diferenciado</button></div>
       ${cur.dif ? `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px;padding:8px;background:#fff;border:1px solid #BAE6FD;border-radius:8px"><label style="font-size:12px">Hora de ingreso</label><input type="time" id="wiz-ingreso" value="${escA(cur.ingreso)}" style="width:110px" onchange="wzJornada('ingreso',this.value)">
@@ -6137,7 +6157,7 @@ window.wzGuardar = async function() {
       centros_dist: usaComb ? c.lista : (multi ? cList.map(x => ({ centro: x.centro, pct: x.pct })) : null),
       horas_trabajador: htrab !== '' ? parseFloat(htrab) : null,
       horas_registro: hreg !== '' ? parseFloat(hreg) : 0,
-      jornada: aus ? 'normal' : (cur.dif ? 'diferenciado' : (cur.corrido ? 'corrido' : 'normal')), hora_ingreso: !aus && cur.dif ? cur.ingreso : null, jornada_corrido: !aus && !!cur.corrido,
+      jornada: aus ? 'normal' : (cur.esp ? 'especial' : cur.dif ? 'diferenciado' : (cur.corrido ? 'corrido' : 'normal')), horario_especial: !aus && cur.esp ? cur.esp : null, hora_ingreso: !aus && cur.dif ? cur.ingreso : null, jornada_corrido: !aus && !!cur.corrido,
       hextra_auto: !aus && !!(cur.hExtra && cur.hExtra.horas > 0 && parseFloat(hreg) === cur.hExtra.horas),
       obs: motivo, registrado_por: currentUser, ts: Date.now()
     });
@@ -6547,9 +6567,11 @@ function renderListaTrabajadoresAsistencia() {
   const cont = document.getElementById('lista-trabajadores-asistencia');
   if (!cont) return;
   renderHorariosTemporada();
-  { const g = document.getElementById('hsalida-general'); if (g) g.value = config.horaSalidaContrato || '18:00'; const mg = document.getElementById('hextra-margen'); if (mg) mg.value = Number(config.margenHextraMin) || 0; const he = document.getElementById('hentrada-general'); if (he) he.value = config.horaEntradaContrato || '08:00'; const al = document.getElementById('hextra-almuerzo'); if (al) al.value = config.horasAlmuerzoCorrido != null ? Number(config.horasAlmuerzoCorrido) : 2; }
+  { const g = document.getElementById('hsalida-general'); if (g) g.value = config.horaSalidaContrato || '18:00'; const mg = document.getElementById('hextra-margen'); if (mg) mg.value = Number(config.margenHextraMin) || 0; { const c1 = document.getElementById('col-gen-ini'), c2 = document.getElementById('col-gen-fin'); if (c1) c1.value = (config.colacionGeneral || {}).ini || ''; if (c2) c2.value = (config.colacionGeneral || {}).fin || ''; }
+  renderHorariosEspeciales();
+  const hs = document.getElementById('hsalida-sabado'); if (hs) hs.value = config.horaSalidaSabado || '14:00'; const he = document.getElementById('hentrada-general'); if (he) he.value = config.horaEntradaContrato || '08:00'; const al = document.getElementById('hextra-almuerzo'); if (al) al.value = config.horasAlmuerzoCorrido != null ? Number(config.horasAlmuerzoCorrido) : 2; }
   cont.innerHTML = trabajadoresAsistenciaConfig.length ? trabajadoresAsistenciaConfig.map((v, i) =>
-    `<div class="config-item"><span>${v}</span><span style="display:flex;align-items:center;gap:6px;margin-left:auto"><input type="time" value="${escA((config.horaSalidaTrabajadores || {})[v] || '')}" title="Hora de salida según contrato, lun–vie (vacío = la de la temporada o la general)" style="width:auto;padding:4px" onchange="guardarHoraSalidaTrab(${i}, this.value)"><button class="btn btn-danger" onclick="eliminarTrabajadorAsistencia(${i})">✕</button></span></div>`
+    `<div class="config-item"><span>${v}</span><span style="display:flex;align-items:center;gap:6px;margin-left:auto"><input type="time" value="${escA((config.horaSalidaTrabajadores || {})[v] || '')}" title="Hora de salida según contrato, lun–vie (vacío = la de la temporada o la general)" style="width:auto;padding:4px" onchange="guardarHoraSalidaTrab(${i}, this.value)"><select title="Horario especial predefinido" style="width:auto;padding:4px;max-width:110px" onchange="guardarEspecialTrab(${i}, this.value)"><option value="">Normal</option>${(config.horariosEspeciales || []).map(e => `<option value="${escA(e.nombre)}" ${(config.horarioEspecialTrab || {})[v] === e.nombre ? 'selected' : ''}>⭐ ${escA(e.nombre)}</option>`).join('')}</select><button class="btn btn-danger" onclick="eliminarTrabajadorAsistencia(${i})">✕</button></span></div>`
   ).join('') : '<div style="color:#9CA3AF;font-size:13px;padding:8px">Sin trabajadores agregados.</div>';
 }
 
@@ -6564,7 +6586,7 @@ async function sincronizarHextraConCombustible(operador, fecha) {
     const a = reg.data();
     if (!(a.hextra_auto === true || !(Number(a.horas_registro) > 0))) return; // ya tenía horas puestas a mano
     let ult = ''; sr.docs.forEach(d => { const r = d.data(); if (r.operador === operador && r.hora && r.hora > ult) ult = r.hora; });
-    const hx = horasExtraPorCombustible(operador, { ultimaHora: ult }, fecha, { corrido: a.jornada === 'corrido' || (a.jornada === 'diferenciado' && a.jornada_corrido === true), ingreso: a.jornada === 'diferenciado' ? (a.hora_ingreso || '') : '' });
+    const hx = horasExtraPorCombustible(operador, { ultimaHora: ult }, fecha, jorDeRegistro(a));
     if (!hx || (Number(a.horas_registro) || 0) === hx.horas) return;
     await updateDoc(doc(db, 'asistencia', reg.id), { horas_registro: hx.horas, hextra_auto: hx.horas > 0, hextra_carga: ult });
   } catch (e) { console.warn('hextra/combustible', e); }
@@ -6578,11 +6600,47 @@ function renderHorariosTemporada() {
     <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px"><input type="text" value="${escA(t.nombre || '')}" placeholder="Nombre (ej: Verano)" style="flex:1" onchange="editarHorarioTemporada(${i},'nombre',this.value)"><button class="btn btn-danger" onclick="eliminarHorarioTemporada(${i})">✕</button></div>
     <div class="grid-2" style="gap:6px"><div class="field" style="margin:0"><label>Desde (mes)</label><select onchange="editarHorarioTemporada(${i},'desde',this.value ? this.value + '-01' : '')">${optsMesesTemporada((t.desde || '').slice(0, 2))}</select></div>
     <div class="field" style="margin:0"><label>Hasta (mes, completo)</label><select onchange="editarHorarioTemporada(${i},'hasta',this.value ? this.value + '-31' : '')">${optsMesesTemporada((t.hasta || '').slice(0, 2))}</select></div>
+    <div class="field" style="margin:0"><label>Ingreso lun–vie</label><input type="time" value="${escA(t.entrada || '')}" onchange="editarHorarioTemporada(${i},'entrada',this.value)"></div>
     <div class="field" style="margin:0"><label>Salida lun–vie</label><input type="time" value="${escA(t.salida || '')}" onchange="editarHorarioTemporada(${i},'salida',this.value)"></div>
+    <div class="field" style="margin:0"><label>Colación desde</label><input type="time" value="${escA(t.colIni || '')}" onchange="editarHorarioTemporada(${i},'colIni',this.value)"></div>
+    <div class="field" style="margin:0"><label>Colación hasta</label><input type="time" value="${escA(t.colFin || '')}" onchange="editarHorarioTemporada(${i},'colFin',this.value)"></div>
     <div class="field" style="margin:0"><label>Salida sábado</label><input type="time" value="${escA(t.salidaSab || '')}" onchange="editarHorarioTemporada(${i},'salidaSab',this.value)"></div></div></div>`).join('') : '<div style="color:#9CA3AF;font-size:13px">Sin temporadas: se usa la hora general todos los días.</div>';
 }
+
+// ─── ⭐ Horarios especiales (predefinidos por persona) ───
+function renderHorariosEspeciales() {
+  const c = document.getElementById('horarios-especiales'); if (!c) return;
+  const L = config.horariosEspeciales || [];
+  c.innerHTML = L.length ? L.map((e, i) => `<div style="border:1px solid #E5E7EB;border-radius:8px;padding:8px;margin-bottom:6px">
+    <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px"><input type="text" value="${escA(e.nombre || '')}" placeholder="Nombre (ej: Aplicadores)" style="flex:1" onchange="editarHorarioEspecial(${i},'nombre',this.value)"><button class="btn btn-danger" onclick="eliminarHorarioEspecial(${i})">✕</button></div>
+    <div class="grid-2" style="gap:6px"><div class="field" style="margin:0"><label>Ingreso</label><input type="time" value="${escA(e.entrada || '')}" onchange="editarHorarioEspecial(${i},'entrada',this.value)"></div>
+    <div class="field" style="margin:0"><label>Salida</label><input type="time" value="${escA(e.salida || '')}" onchange="editarHorarioEspecial(${i},'salida',this.value)"></div>
+    <div class="field" style="margin:0"><label>Colación desde</label><input type="time" value="${escA(e.colIni || '')}" onchange="editarHorarioEspecial(${i},'colIni',this.value)"></div>
+    <div class="field" style="margin:0"><label>Colación hasta</label><input type="time" value="${escA(e.colFin || '')}" onchange="editarHorarioEspecial(${i},'colFin',this.value)"></div></div></div>`).join('') : '<div style="color:#9CA3AF;font-size:13px">Sin horarios especiales.</div>';
+}
+async function guardarCfgHorarios(campos) { try { await setDoc(doc(db, 'config', 'datos'), campos, { merge: true }); toast('✓ Guardado', true); } catch (e) { toast('Error: ' + e.message, false); } }
+window.guardarColacionGeneral = async function(k, v) { config.colacionGeneral = { ...(config.colacionGeneral || {}), [k]: v }; await guardarCfgHorarios({ colacionGeneral: config.colacionGeneral }); }
+window.agregarHorarioEspecial = function() { config.horariosEspeciales = [...(config.horariosEspeciales || []), { nombre: 'Especial ' + ((config.horariosEspeciales || []).length + 1), entrada: '06:00', salida: '14:00', colIni: '', colFin: '' }]; renderHorariosEspeciales(); renderListaTrabajadoresAsistencia(); guardarCfgHorarios({ horariosEspeciales: config.horariosEspeciales }); }
+window.editarHorarioEspecial = async function(i, campo, val) {
+  const L = [...(config.horariosEspeciales || [])]; if (!L[i]) return; const ant = L[i].nombre;
+  if (campo === 'nombre') { val = (val || '').trim(); if (!val || L.some((x, k) => k !== i && x.nombre === val)) { toast('Nombre vacío o repetido', false); renderHorariosEspeciales(); return; } }
+  L[i] = { ...L[i], [campo]: val }; config.horariosEspeciales = L;
+  const campos = { horariosEspeciales: L };
+  if (campo === 'nombre' && ant !== val) { const m = { ...(config.horarioEspecialTrab || {}) }; Object.keys(m).forEach(k => { if (m[k] === ant) m[k] = val; }); config.horarioEspecialTrab = m; campos.horarioEspecialTrab = m; renderListaTrabajadoresAsistencia(); }
+  await guardarCfgHorarios(campos);
+}
+window.eliminarHorarioEspecial = async function(i) {
+  const e = (config.horariosEspeciales || [])[i]; if (!e || !confirm('¿Eliminar el horario especial «' + e.nombre + '»?')) return;
+  config.horariosEspeciales = config.horariosEspeciales.filter((_, k) => k !== i);
+  const m = { ...(config.horarioEspecialTrab || {}) }; Object.keys(m).forEach(k => { if (m[k] === e.nombre) delete m[k]; }); config.horarioEspecialTrab = m;
+  renderHorariosEspeciales(); renderListaTrabajadoresAsistencia(); await guardarCfgHorarios({ horariosEspeciales: config.horariosEspeciales, horarioEspecialTrab: m });
+}
+window.guardarEspecialTrab = async function(i, nombre) {
+  const n = trabajadoresAsistenciaConfig[i]; if (!n) return; const m = { ...(config.horarioEspecialTrab || {}) }; if (nombre) m[n] = nombre; else delete m[n];
+  config.horarioEspecialTrab = m; await guardarCfgHorarios({ horarioEspecialTrab: m });
+}
 window.agregarHorarioTemporada = async function() {
-  config.horariosTemporada = [...(config.horariosTemporada || []), { nombre: '', desde: '', hasta: '', salida: config.horaSalidaContrato || '18:00', salidaSab: '14:00' }];
+  config.horariosTemporada = [...(config.horariosTemporada || []), { nombre: '', desde: '', hasta: '', entrada: config.horaEntradaContrato || '08:00', colIni: (config.colacionGeneral || {}).ini || '13:00', colFin: (config.colacionGeneral || {}).fin || '15:00', salida: config.horaSalidaContrato || '18:00', salidaSab: '14:00' }];
   renderHorariosTemporada();
 }
 window.editarHorarioTemporada = async function(i, campo, val) {
@@ -6603,7 +6661,10 @@ function horaSalidaContrato(trab, fecha) {
   const propia = (config.horaSalidaTrabajadores || {})[trab];
   if (!finde && propia) return propia;
   if (t && !finde && t.salida) return t.salida;
-  return finde ? (config.horaSalidaSabado || config.horaSalidaContrato || '18:00') : (config.horaSalidaContrato || '18:00');
+  return finde ? (config.horaSalidaSabado || '14:00') : (config.horaSalidaContrato || '18:00');
+}
+window.guardarSalidaSabado = async function(v) {
+  try { config.horaSalidaSabado = v || '14:00'; await saveConfig(); toast('✓ Guardado', true); } catch (e) { toast('Error: ' + e.message, false); }
 }
 window.guardarEntradaContrato = async function(v) {
   try { config.horaEntradaContrato = v || '08:00'; await saveConfig(); toast('✓ Guardado', true); } catch (e) { toast('Error: ' + e.message, false); }
@@ -6622,25 +6683,38 @@ window.guardarHoraSalidaTrab = async function(i, val) {
   } catch (e) { toast('Error: ' + e.message, false); }
 }
 // Horas extra aprox. = hora de la última carga de combustible − hora de salida según contrato (redondeado a 0,5 h)
+const hm = h => { const [a, b] = String(h || '0:0').split(':').map(Number); return (a || 0) * 60 + (b || 0); };
+const hmTxt = min => { const x = Math.max(0, Math.round(min)); return String(Math.floor(x / 60)).padStart(2, '0') + ':' + String(x % 60).padStart(2, '0'); };
+// Horario completo de ese día: ingreso, colación y salida según la temporada (o general) o el horario especial elegido
+function horarioDelDia(trab, fecha, especial) {
+  const md = (fecha || '').slice(5), dow = fecha ? new Date(fecha + 'T12:00:00').getDay() : 1, finde = dow === 0 || dow === 6;
+  const t = (config.horariosTemporada || []).find(x => x.desde && x.hasta && (x.desde <= x.hasta ? md >= x.desde && md <= x.hasta : md >= x.desde || md <= x.hasta));
+  const cg = config.colacionGeneral || {};
+  let entrada = (t && t.entrada) || config.horaEntradaContrato || '08:00', salida = horaSalidaContrato(trab, fecha), ini = (t && t.colIni) || cg.ini || '', fin = (t && t.colFin) || cg.fin || '', esp = '';
+  if (especial && !finde) { const e = (config.horariosEspeciales || []).find(x => x.nombre === especial); if (e) { esp = e.nombre; entrada = e.entrada || entrada; salida = e.salida || salida; ini = e.colIni || ''; fin = e.colFin || ''; } }
+  const colMin = ini && fin && hm(fin) > hm(ini) ? hm(fin) - hm(ini) : (config.horasAlmuerzoCorrido != null ? Number(config.horasAlmuerzoCorrido) : 2) * 60;
+  return { entrada, salida, colMin, colIni: ini, colFin: fin, finde, especial: esp };
+}
+const especialDe = trab => { const n = (config.horarioEspecialTrab || {})[trab]; return n && (config.horariosEspeciales || []).some(x => x.nombre === n) ? n : ''; };
+const jorDeRegistro = a => ({ corrido: a.jornada === 'corrido' || (a.jornada === 'diferenciado' && a.jornada_corrido === true), ingreso: a.jornada === 'diferenciado' ? (a.hora_ingreso || '') : '', especial: a.jornada === 'especial' ? (a.horario_especial || '') : '' });
 function horasExtraPorCombustible(trab, comb, fecha, jor) {
-  const corrido = jor && typeof jor === 'object' ? !!jor.corrido : !!jor, ingreso = jor && typeof jor === 'object' ? jor.ingreso : '';
   if (!comb || !comb.ultimaHora) return null;
-  const salNormal = horaSalidaContrato(trab, fecha);
-  const m = h => { const [a, b] = String(h).split(':').map(Number); return a * 60 + (b || 0); };
-  // De corrido: trabajó el almuerzo (por defecto 2 h), así que su salida sin hora extra se adelanta esas horas
-  const alm = corrido ? (config.horasAlmuerzoCorrido != null ? Number(config.horasAlmuerzoCorrido) : 2) : 0;
+  const corrido = jor && typeof jor === 'object' ? !!jor.corrido : !!jor, ingreso = jor && typeof jor === 'object' ? jor.ingreso : '', especial = jor && typeof jor === 'object' ? jor.especial : '';
+  const H = horarioDelDia(trab, fecha, especial), salNormal = H.salida, ent = H.entrada, m = hm;
+  // De corrido: trabajó la colación, así que su salida sin hora extra se adelanta esa duración
+  const alm = corrido ? H.colMin / 60 : 0;
   // Horario diferenciado: la salida se corre lo mismo que se adelantó (o atrasó) el ingreso respecto del ingreso normal
-  const ent = config.horaEntradaContrato || '08:00', corr = ingreso ? m(ent) - m(ingreso) : 0;
-  const sm = Math.max(0, m(salNormal) - corr - alm * 60), sal = String(Math.floor(sm / 60)).padStart(2, '0') + ':' + String(sm % 60).padStart(2, '0');
-  // Feriado: no hay jornada normal, todo lo trabajado es hora extra (desde el ingreso; si no fue de corrido no cuenta el almuerzo)
+  const corr = ingreso ? m(ent) - m(ingreso) : 0;
+  const sal = hmTxt(m(salNormal) - corr - alm * 60);
+  // Feriado o domingo: no hay jornada normal, todo lo trabajado es hora extra (desde el ingreso; si no fue de corrido no cuenta la colación)
   const feriado = esFeriado(fecha);
   if (feriado) {
-    const ini = ingreso || ent, bruto = (m(comb.ultimaHora) - m(ini)) / 60 - (corrido ? 0 : (config.horasAlmuerzoCorrido != null ? Number(config.horasAlmuerzoCorrido) : 2));
-    return { salida: ini, salidaNormal: salNormal, corrido: !!corrido, ingreso: ingreso || '', feriado: true, carga: comb.ultimaHora, margen: 0, horas: bruto > 0 ? Math.round(bruto * 2) / 2 : 0, difExacta: bruto };
+    const ini = ingreso || ent, bruto = (m(comb.ultimaHora) - m(ini)) / 60 - (corrido ? 0 : H.colMin / 60);
+    return { salida: ini, salidaNormal: salNormal, corrido: !!corrido, ingreso: ingreso || '', especial: H.especial, feriado: true, carga: comb.ultimaHora, margen: 0, horas: bruto > 0 ? Math.round(bruto * 2) / 2 : 0, difExacta: bruto };
   }
   const dif = (m(comb.ultimaHora) - m(sal)) / 60, margen = Number(config.margenHextraMin) || 0;
   // Dentro del margen no cuenta como hora extra; pasado el margen cuenta la diferencia completa desde la salida
-  return { salida: sal, salidaNormal: salNormal, corrido: !!corrido, ingreso: ingreso || '', carga: comb.ultimaHora, margen, horas: dif * 60 > margen && dif > 0 ? Math.round(dif * 2) / 2 : 0, difExacta: dif };
+  return { salida: sal, salidaNormal: salNormal, corrido: !!corrido, ingreso: ingreso || '', especial: H.especial, carga: comb.ultimaHora, margen, horas: dif * 60 > margen && dif > 0 ? Math.round(dif * 2) / 2 : 0, difExacta: dif };
 }
 window.agregarTrabajadorAsistencia = async function() {
   const inp = document.getElementById('nuevo-trabajador-asistencia');
@@ -15426,10 +15500,19 @@ tbody td{padding:10px 12px;vertical-align:middle;}
           <div class="field" style="margin-top:8px"><label>Margen sin contar como hora extra (minutos)</label>
           <input type="number" id="hextra-margen" min="0" step="5" inputmode="numeric" style="width:120px" onchange="guardarMargenHextra(this.value)">
           <div class="hint">Si cargó combustible hasta ese tiempo después de su hora de salida, no se cuenta hora extra. Pasado el margen, se cuenta la diferencia completa desde la salida.</div></div>
+          <div class="field" style="margin-top:8px"><label>🕔 Hora de salida de sábado (general, fuera de temporadas)</label>
+          <input type="time" id="hsalida-sabado" onchange="guardarSalidaSabado(this.value)"></div>
           <div class="field" style="margin-top:8px"><label>🕗 Hora de ingreso según contrato (para el horario diferenciado)</label>
           <input type="time" id="hentrada-general" onchange="guardarEntradaContrato(this.value)">
           <div class="hint">En horario diferenciado la salida sin hora extra se corre lo mismo que se adelantó el ingreso (ej.: ingreso normal 08:00, entra 06:00 → sale 2 h antes).</div></div>
-          <div class="field" style="margin-top:8px"><label>Horas de almuerzo que se trabajan cuando es «de corrido»</label>
+          <div class="field" style="margin-top:8px"><label>🍽️ Colación general (fuera de temporadas)</label>
+          <div style="display:flex;gap:6px;align-items:center"><input type="time" id="col-gen-ini" onchange="guardarColacionGeneral('ini',this.value)"><span>a</span><input type="time" id="col-gen-fin" onchange="guardarColacionGeneral('fin',this.value)"></div>
+          <div class="hint">Si trabaja «de corrido», su salida sin hora extra se adelanta lo que dura la colación.</div></div>
+          <div class="field" style="margin-top:8px"><label>⭐ Horarios especiales</label>
+          <div id="horarios-especiales"></div>
+          <button class="btn" style="margin-top:6px" onclick="agregarHorarioEspecial()">+ Agregar horario especial</button>
+          <div class="hint">Defínelos aquí y asígnalos a cada trabajador en la lista de abajo. En la tarja, cada vez eliges si ese día usó el horario especial o el normal (aplica de lunes a viernes).</div></div>
+          <div class="field" style="margin-top:8px"><label>Si no hay colación definida: horas de almuerzo que se trabajan cuando es «de corrido»</label>
           <input type="number" id="hextra-almuerzo" min="0" step="0.5" inputmode="decimal" style="width:120px" onchange="guardarAlmuerzoCorrido(this.value)">
           <div class="hint">En la tarja se elige si el trabajador trabajó «de corrido»; entonces su salida sin hora extra se adelanta esas horas (ej.: salida 17:30 − 2 h = 15:30).</div></div>
           <div class="hint">Se usa para calcular las horas extra aprox. de quienes cargaron combustible ese día: hora de la última carga − hora de salida. Puedes poner una distinta a cada trabajador abajo (aplica de lunes a viernes).</div></div>
