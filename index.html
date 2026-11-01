@@ -4,12 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Control Los Maitenes</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script async src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/togeojson@0.16.0/togeojson.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/togeojson@0.16.0/togeojson.js"></script>
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import { getFirestore, collection, addDoc, deleteDoc, doc, onSnapshot, query, orderBy, where, setDoc, getDoc, updateDoc, increment, limit, getDocs, serverTimestamp, writeBatch } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
@@ -2454,22 +2454,26 @@ function renderRazonSocialSelector() {
 }
 
 
+// Arranque: la pantalla del PIN se muestra de inmediato; la configuración se carga en paralelo
+// (antes eran 4 consultas en fila y la pantalla quedaba en blanco hasta terminar).
+let arranqueListo = false, arranquePromesa = null;
 window.addEventListener('DOMContentLoaded', async () => {
-  await loadConfig();
-  await cargarModoESP32();
-  await cargarTotalizadorGlobal();
+  showScreen('login');
+  const est = document.getElementById('login-estado');
+  if (est) est.textContent = '⏳ Conectando…';
+  arranquePromesa = Promise.all([loadConfig(), cargarModoESP32(), cargarTotalizadorGlobal(), cargarConfigJD()].map(p => p.catch(e => console.warn('arranque', e))));
+  await arranquePromesa;
+  arranqueListo = true;
+  if (est) est.textContent = '';
   suscribirSaldo();
   suscribirHorarioConfig();
   iniciarEstadoESP32();
   iniciarMonitorBombaShelly();
   setInterval(renderEstadoShelly, 5000);
-  // Cargar la conexión de John Deere desde Firestore (compartida entre todos los dispositivos)
-  await cargarConfigJD();
   // Manejar callback OAuth de John Deere
   if (window.location.search.includes('code=')) {
     await manejarCallbackJD();
   }
-  showScreen('login');
   await loginRecordado();
 });
 
@@ -2864,6 +2868,7 @@ window.intentarLogin = async function() {
   if (!pin) { toast('Ingresa tu PIN', false); return; }
   const btn = document.getElementById('btn-login');
   btn.disabled = true; btn.textContent = 'Verificando...';
+  if (!arranqueListo) { btn.textContent = 'Conectando...'; if (arranquePromesa) await arranquePromesa; btn.textContent = 'Verificando...'; }
   const result = await verificarPin(pin);
   btn.disabled = false; btn.textContent = 'Ingresar';
   if (!result.ok) { toast('PIN incorrecto', false); document.getElementById('pin-input').value=''; return; }
@@ -14716,7 +14721,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
 </head>
 <body>
 
-<div id="screen-login" class="screen">
+<div id="screen-login" class="screen" style="display:flex">
   <div class="login-card">
     <div class="login-logo">
       <div class="icon">🌳</div>
@@ -14724,10 +14729,11 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       <p>Combustible · Asistencia · Cuaderno de Campo</p>
     </div>
     <div class="pin-input-wrap">
-      <input type="password" id="pin-input" placeholder="••••" maxlength="6" inputmode="numeric" onkeydown="if(event.key==='Enter')intentarLogin()">
+      <input type="password" id="pin-input" placeholder="••••" maxlength="6" inputmode="numeric" onkeydown="if(event.key==='Enter'&&window.intentarLogin)intentarLogin()">
     </div>
     <div class="pin-hint">Ingresa tu PIN personal</div>
-    <button class="btn btn-primary" id="btn-login" onclick="intentarLogin()">Ingresar</button>
+    <button class="btn btn-primary" id="btn-login" onclick="if(window.intentarLogin)intentarLogin()">Ingresar</button>
+    <div id="login-estado" class="pin-hint" style="margin-top:8px">⏳ Cargando…</div>
     <label style="display:flex;align-items:center;justify-content:center;gap:8px;margin-top:14px;font-size:13px;color:var(--acero);cursor:pointer"><input type="checkbox" id="recordar-cel" style="width:18px;height:18px"> Recordar este celular (solo administradores)</label>
   </div>
 </div>
