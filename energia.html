@@ -394,11 +394,34 @@ window.crearSuministroDeFactura = async function () {
 
 // ── lectura con IA ───────────────────────────────────────────────────────
 let pinIA = '';
-function aDataUrl(file) {
+function ayudaMedidor(s) {
+  const t = s.tipoMedidor || (/landis|zmd|e650|elster|itron/i.test(s.modeloMedidor || '') ? 'obis' : '');
+  if (t === 'obis') return `En pantalla busca los códigos: <b>1.8.0</b> = activa${registraQ(s) ? ', <b>3.8.0</b> (o 5.8.0) = reactiva' : ''}${registraD(s) ? ', <b>1.6.0</b> = demanda máxima' : ''}${/landis|zmd|e650/i.test(s.modeloMedidor || '') ? ' (en Landis+Gyr, menú <b>Std_dAtA</b>)' : ''}.`;
+  if (t === 'rodillos') return 'Anota todos los números; el último rodillo de otro color (rojo) son decimales.';
+  if (t === 'agujas') return 'Lee cada reloj de izquierda a derecha; si una aguja está entre dos números, anota el menor.';
+  if (t === 'digital') return 'Anota el total de kWh que muestra la pantalla.';
+  return '';
+}
+// Envía fotos de un medidor a la IA y devuelve los valores leídos
+async function iaMedidor(files, s, campos) {
+  if (files.length > 8) throw new Error('Máximo 8 fotos');
+  if (!(await pedirPin())) throw new Error('Falta el PIN');
+  const documentos = []; for (const f of files) documentos.push(await aDataUrl(f, 1400));
+  const resp = await fetch('/api/leer-documento', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ usuario: USER.nombre, pin: pinIA, modo: 'medidor', medidor: s.medidor || '', modelo: s.modeloMedidor || '', tipo: s.tipoMedidor || '', campos, documentos }) });
+  if (resp.status === 401) { pinIA = ''; throw new Error('PIN no válido para la lectura con IA'); }
+  const j = await resp.json().catch(() => ({}));
+  if (!resp.ok || !j.lectura) throw new Error(j.error || 'No se pudo leer el medidor');
+  const L = j.lectura;
+  if (L.legible === false || !(L.valores || []).length) throw new Error('No se ven valores con claridad. Prueba con fotos más nítidas, de frente y sin reflejo.');
+  const dig = x => String(x || '').replace(/\D/g, '');
+  L.otroMedidor = !!(L.numero_medidor && s.medidor && dig(L.numero_medidor) && dig(s.medidor) && dig(L.numero_medidor) !== dig(s.medidor));
+  return L;
+}
+function aDataUrl(file, lado = 1800) {
   return new Promise((ok, no) => {
     if (file.type === 'application/pdf') { if (file.size > 4.5 * 1024 * 1024) { no(new Error(file.name + ' pesa demasiado (máx. 4,5 MB)')); return; } const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = () => no(new Error('No se pudo leer ' + file.name)); r.readAsDataURL(file); return; }
     const img = new Image(), url = URL.createObjectURL(file);
-    img.onload = () => { const k = Math.min(1, 1800 / Math.max(img.width, img.height)), c = document.createElement('canvas'); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k); c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(url); ok(c.toDataURL('image/jpeg', 0.85)); };
+    img.onload = () => { const k = Math.min(1, lado / Math.max(img.width, img.height)), c = document.createElement('canvas'); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k); c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(url); ok(c.toDataURL('image/jpeg', 0.85)); };
     img.onerror = () => { URL.revokeObjectURL(url); no(new Error('No se pudo abrir la imagen ' + file.name)); }; img.src = url;
   });
 }
@@ -576,15 +599,26 @@ function rLecturas() {
   const sel = `<select id="l-sum" onchange="S_filtro(this.value)">${S.sum.map(x => `<option value="${x.id}" ${x.id === sid ? 'selected' : ''}>${escA(x.nombre)}</option>`).join('')}</select>`;
   const form = `<div class="panel"><h2>Anotar lectura del medidor</h2><div class="field"><label>Suministro</label>${sel}</div>
     <div class="hint">${ul ? `Última lectura: <b>${num(ul.lectura, 1)}</b> kWh el ${fCorta(ul.fecha)}.` : 'Aún no hay lecturas de este medidor.'} Medidor ${escA(s.medidor || '–')}${s.constante && s.constante !== 1 ? ' · constante ' + s.constante : ''}.</div>
-    <div class="grid"><div class="field"><label>Fecha</label><input type="date" id="l-fecha" value="${hoyStr()}"></div><div class="field"><label>Lectura (kWh)</label><input type="number" id="l-val" step="any" inputmode="decimal" placeholder="Lo que marca el medidor"></div></div>
+    <label class="btn btn-full" style="display:block;text-align:center;margin:8px 0;cursor:pointer;background:#F5A623;color:#1F2937;font-weight:700">📷 Leer desde fotos de la pantalla<input type="file" accept="image/*" multiple style="display:none" onchange="leerMedidorFotos(this)"></label>
+    <div class="hint" style="margin-bottom:6px">Saca una foto de cada valor (1.8.0, 3.8.0, 1.6.0…) y súbelas juntas (hasta 8). La IA llena los campos; revisa antes de guardar.</div>
+    <div id="l-ia"></div>
+    <div class="grid"><div class="field"><label>Fecha</label><input type="date" id="l-fecha" value="${hoyStr()}"></div><div class="field"><label>Activa (kWh)</label><input type="number" id="l-val" step="any" inputmode="decimal" placeholder="Lo que marca el medidor"></div></div>
+    ${registraQ(s) || registraD(s) ? `<div class="grid">${registraQ(s) ? `<div class="field"><label>Reactiva (kvarh)</label><input type="number" id="l-kvarh" step="any" inputmode="decimal" placeholder="${ul && ul.kvarh != null ? 'Última: ' + num(ul.kvarh, 1) : 'Registro de reactiva'}"></div>` : ''}${registraD(s) ? `<div class="field"><label>Demanda máxima (kW)</label><input type="number" id="l-dmax" step="any" inputmode="decimal" placeholder="Potencia máxima del mes"></div>` : ''}</div>` : ''}
+    <div class="hint" style="margin-bottom:6px">📅 Lo ideal es anotarla el <b>día 1 de cada mes</b>. ${ayudaMedidor(s)} Anota lo que marca la pantalla; la constante${s.constante && s.constante !== 1 ? ' (' + s.constante + ')' : ''} se aplica sola. <span style="white-space:nowrap">(Se ajusta en ⚙️ Suministros.)</span></div>
     <div class="field"><label>Observación (opcional)</label><input id="l-obs" placeholder="Ej: lectura de fin de mes"></div>
     <label style="font-size:13px;display:flex;gap:6px;align-items:center;margin:6px 0"><input type="checkbox" id="l-reinicio" style="width:auto"> El medidor se reinició o fue reemplazado</label>
     <button class="btn btn-verde btn-full" onclick="guardarLectura()">💾 Guardar lectura</button></div>`;
   const hs = hijos(sid);
-  const masivo = hs.length ? `<div class="panel"><h2>Cargar las lecturas de los ${hs.length} medidores de ${escA(s.nombre)}</h2><div class="field"><label>Fecha de la lectura</label><input type="date" id="m-fecha" value="${hoyStr()}"></div>${hs.map(h => { const u = lecDe(h.id).slice(-1)[0]; return `<div class="field"><label>${escA(h.nombre)}${h.medidor ? ' · ' + escA(h.medidor) : ''}</label><input type="number" step="any" inputmode="decimal" data-hid="${h.id}" class="m-val" placeholder="${u ? 'Última: ' + num(u.lectura, 1) + ' (' + fCorta(u.fecha) + ')' : 'Lectura'}"></div>`; }).join('')}<button class="btn btn-verde btn-full" onclick="guardarMasivas()">💾 Guardar las lecturas anotadas</button><div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap"><button class="btn btn-secondary" onclick="addSub('${sid}')">＋ Agregar medidor</button><button class="btn btn-secondary" onclick="quitarSubMenu('${sid}')">🗑️ Quitar medidor</button></div><div class="hint" style="margin-top:6px">Puedes dejar en blanco los que no leíste; se guardan solo los que llenes.</div></div>` : '';
+  const masivo = hs.length ? `<div class="panel"><h2>Cargar las lecturas de los ${hs.length} medidores de ${escA(s.nombre)}</h2><div class="field"><label>Fecha de la lectura</label><input type="date" id="m-fecha" value="${hoyStr()}"></div>${hs.map(h => { const u = lecDe(h.id).slice(-1)[0]; return `<div class="field"><label>${escA(h.nombre)}${h.medidor ? ' · ' + escA(h.medidor) : ''}</label><div style="display:flex;gap:6px"><input type="number" step="any" inputmode="decimal" data-hid="${h.id}" class="m-val" style="flex:1" placeholder="${u ? 'Última: ' + num(u.lectura, 1) + ' (' + fCorta(u.fecha) + ')' : 'Lectura'}"><label class="btn btn-secondary" style="cursor:pointer;margin:0" title="Leer desde foto">📷<input type="file" accept="image/*" multiple style="display:none" onchange="leerFotoSub('${h.id}', this)"></label></div><div class="hint" id="mv-ia-${h.id}"></div></div>`; }).join('')}<button class="btn btn-verde btn-full" onclick="guardarMasivas()">💾 Guardar las lecturas anotadas</button><div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap"><button class="btn btn-secondary" onclick="addSub('${sid}')">＋ Agregar medidor</button><button class="btn btn-secondary" onclick="quitarSubMenu('${sid}')">🗑️ Quitar medidor</button></div><div class="hint" style="margin-top:6px">Puedes dejar en blanco los que no leíste; se guardan solo los que llenes.</div></div>` : '';
   const K = s.constante || 1;
-  const filas = lecs.map((l, i) => { const a = lecs[i - 1], d = a ? dias(a.fecha, l.fecha) : null, k = a && !l.reinicio ? (l.lectura - a.lectura) * K : null; return { l, d, k }; }).reverse();
-  const tabla = `<div class="panel"><h2>Lecturas de ${escA(s.nombre)}</h2>${filas.length ? `<div class="tw"><table><thead><tr><th>Fecha</th><th class="n">Lectura</th><th class="n">Días</th><th class="n">Consumo</th><th class="n">kWh/día</th><th></th></tr></thead><tbody>${filas.map(({ l, d, k }) => `<tr><td>${fCorta(l.fecha)}${l.reinicio ? ' <span class="chip info">reinicio</span>' : ''}${l.obs ? `<div class="hint">${escA(l.obs)}</div>` : ''}</td><td class="n">${num(l.lectura, 1)}</td><td class="n">${d != null ? num(d) : '–'}</td><td class="n">${k != null ? num(k) + ' kWh' : '–'}</td><td class="n">${k != null && d > 0 ? num(k / d, 1) : '–'}</td><td><button class="btn btn-rojo" style="padding:2px 8px" onclick="borrarLectura('${l.id}')">✕</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="hint">Sin lecturas.</div>'}</div>`;
+  const conQ = lecs.some(l => l.kvarh != null), conD = lecs.some(l => l.demanda_max != null);
+  const filas = lecs.map((l, i) => {
+    const a = lecs[i - 1], d = a ? dias(a.fecha, l.fecha) : null, k = a && !l.reinicio ? (l.lectura - a.lectura) * K : null;
+    const aq = lecs.slice(0, i).filter(x => x.kvarh != null).slice(-1)[0], q = l.kvarh != null && aq && !l.reinicio && !lecs.slice(lecs.indexOf(aq) + 1, i + 1).some(x => x.reinicio) ? (l.kvarh - aq.kvarh) * K : null;
+    const fp = k != null && q != null && aq === a && (k > 0 || q > 0) ? k / Math.sqrt(k * k + q * q) : null; // factor de potencia del período
+    return { l, d, k, q, fp };
+  }).reverse();
+  const tabla = `<div class="panel"><h2>Lecturas de ${escA(s.nombre)}</h2>${filas.length ? `<div class="tw"><table><thead><tr><th>Fecha</th><th class="n">Lectura</th><th class="n">Días</th><th class="n">Consumo</th><th class="n">kWh/día</th>${conQ ? '<th class="n">Reactiva</th><th class="n">Factor pot.</th>' : ''}${conD ? '<th class="n">Dem. máx.</th>' : ''}<th></th></tr></thead><tbody>${filas.map(({ l, d, k, q, fp }) => `<tr><td>${fCorta(l.fecha)}${l.reinicio ? ' <span class="chip info">reinicio</span>' : ''}${l.obs ? `<div class="hint">${escA(l.obs)}</div>` : ''}</td><td class="n">${num(l.lectura, 1)}${l.kvarh != null ? `<div class="hint">${num(l.kvarh, 1)} kvarh</div>` : ''}</td><td class="n">${d != null ? num(d) : '–'}</td><td class="n">${k != null ? num(k) + ' kWh' : '–'}</td><td class="n">${k != null && d > 0 ? num(k / d, 1) : '–'}</td>${conQ ? `<td class="n">${q != null ? num(q) + ' kvarh' : '–'}</td><td class="n ${fp != null && fp < 0.93 ? 'up' : ''}">${fp != null ? num(fp, 2) + (fp < 0.93 ? ' ⚠️' : '') : '–'}</td>` : ''}${conD ? `<td class="n">${l.demanda_max != null ? num(l.demanda_max * K, 1) + ' kW' : '–'}</td>` : ''}<td><button class="btn btn-rojo" style="padding:2px 8px" onclick="borrarLectura('${l.id}')">✕</button></td></tr>`).join('')}</tbody></table></div>${conQ ? '<div class="hint">Factor de potencia = activa ÷ √(activa² + reactiva²) del período. Bajo 0,93 la distribuidora suele cobrar recargo por mal factor de potencia (⚠️).</div>' : ''}${conD ? '<div class="hint">Demanda máxima = lo anotado × constante del medidor.</div>' : ''}` : '<div class="hint">Sin lecturas.</div>'}</div>`;
   const fs = facDe(sid).slice().reverse();
   const cmp = `<div class="panel"><h2>Nuestro medidor vs Copelec</h2>${fs.length ? `<div class="tw"><table><thead><tr><th>Período facturado</th><th class="n">Copelec</th><th class="n">Nuestro</th><th class="n">Diferencia</th></tr></thead><tbody>${fs.map(f => { const p = consumoPropio(sid, f.periodoDesde, f.periodoHasta); if (!p || f.consumoKwh == null) return `<tr><td>${fCorta(f.periodoDesde)} → ${fCorta(f.periodoHasta)}</td><td class="n">${num(f.consumoKwh)}</td><td class="n hint" colspan="2">sin lecturas que cubran el período</td></tr>`; const dif = p.kwh - f.consumoKwh, v = f.consumoKwh ? dif / f.consumoKwh * 100 : null; return `<tr><td>${fCorta(f.periodoDesde)} → ${fCorta(f.periodoHasta)}</td><td class="n">${num(f.consumoKwh)}</td><td class="n">${num(p.kwh)}${p.aprox ? ' ≈' : ''}</td><td class="n ${Math.abs(v) > 5 ? 'up' : 'down'}">${num(dif)} kWh (${pct(v)})</td></tr>`; }).join('')}</tbody></table></div><div class="hint" style="margin-top:6px">Las lecturas propias se llevan a las fechas del período de Copelec (entre dos lecturas se reparte por días). Mientras más cerca estén tus lecturas del inicio y fin de cada período, más exacta es la comparación. ≈ = aproximado.</div>` : '<div class="hint">Sube facturas para comparar.</div>'}</div>`;
   return masivo + form + tabla + cmp;
@@ -623,7 +657,53 @@ window.guardarLectura = async function () {
   const lecs = lecDe(sid), ant = lecs.filter(l => l.fecha <= fecha).slice(-1)[0];
   if (ant && !reinicio && val < ant.lectura && !confirm(`La lectura (${num(val, 1)}) es menor que la anterior (${num(ant.lectura, 1)} el ${fCorta(ant.fecha)}). ¿Guardar igual?`)) return;
   if (ant && !reinicio && ant.fecha < fecha) { const d = dias(ant.fecha, fecha), s = sumDe(sid), prom = lecs.length > 2 ? (lecs[lecs.length - 1].lectura - lecs[0].lectura) / Math.max(1, dias(lecs[0].fecha, lecs[lecs.length - 1].fecha)) : null; if (prom && d > 0 && (val - ant.lectura) / d > prom * 3 && !confirm('El consumo por día de esta lectura es más de 3 veces el habitual. ¿Está bien la lectura?')) return; }
-  try { await addDoc(collection(db, 'energia_lecturas'), { suministro: sid, fecha, lectura: val, obs: $('l-obs').value.trim(), reinicio, registrado_por: USER.nombre, ts: Date.now() }); await cargarTodo(); render(); toast('✓ Lectura guardada'); } catch (e) { toast('Error: ' + e.message, false); }
+  const kvarh = parseNum(($('l-kvarh') || {}).value), dmax = parseNum(($('l-dmax') || {}).value);
+  const antQ = lecs.filter(l => l.fecha <= fecha && l.kvarh != null).slice(-1)[0];
+  if (kvarh != null && antQ && !reinicio && kvarh < antQ.kvarh && !confirm(`La reactiva (${num(kvarh, 1)}) es menor que la anterior (${num(antQ.kvarh, 1)}). ¿Guardar igual?`)) return;
+  try { await addDoc(collection(db, 'energia_lecturas'), { suministro: sid, fecha, lectura: val, kvarh: kvarh, demanda_max: dmax, origen: S.lecIA ? 'foto_ia' : 'manual', obs: $('l-obs').value.trim(), reinicio, registrado_por: USER.nombre, ts: Date.now() }); S.lecIA = false; await cargarTodo(); render(); toast('✓ Lectura guardada'); } catch (e) { toast('Error: ' + e.message, false); }
+};
+
+// 📷 Lectura del medidor desde fotos de la pantalla (IA)
+window.leerMedidorFotos = async function (inp) {
+  const files = [...(inp.files || [])]; inp.value = '';
+  if (!files.length) return;
+  const box = $('l-ia'), s = sumDe($('l-sum').value) || {};
+  const campos = ['activa', registraQ(s) ? 'reactiva' : '', registraD(s) ? 'demanda' : ''].filter(Boolean);
+  box.innerHTML = `<div class="hint">⏳ Leyendo ${files.length} foto${files.length > 1 ? 's' : ''}…</div>`;
+  try {
+    const L = await iaMedidor(files, s, campos);
+    const fecha = $('l-fecha').value || hoyStr(), dia = +fecha.slice(8, 10);
+    const usaCierre = L.demanda_max_cierre_kw != null && dia <= 3; // a inicio de mes, la demanda del mes que terminó suele quedar en el cierre
+    const dmax = usaCierre ? L.demanda_max_cierre_kw : L.demanda_max_kw;
+    if (L.activa_kwh != null) $('l-val').value = L.activa_kwh;
+    if (L.reactiva_kvarh != null && $('l-kvarh')) $('l-kvarh').value = L.reactiva_kvarh;
+    if (dmax != null && $('l-dmax')) $('l-dmax').value = dmax;
+    if (!$('l-obs').value) $('l-obs').value = 'Leído de fotos (IA)';
+    S.lecIA = true;
+    const falt = [L.activa_kwh == null ? 'activa' : '', campos.includes('reactiva') && L.reactiva_kvarh == null ? 'reactiva' : '', campos.includes('demanda') && dmax == null ? 'demanda máxima' : ''].filter(Boolean);
+    const sobra = [!campos.includes('reactiva') && L.reactiva_kvarh != null ? 'reactiva' : '', !campos.includes('demanda') && (L.demanda_max_kw != null || L.demanda_max_cierre_kw != null) ? 'demanda máxima' : ''].filter(Boolean);
+    box.innerHTML = `<div style="border:1px solid #FCD34D;background:#FFFBEB;border-radius:8px;padding:8px;margin-bottom:8px;font-size:13px">
+      <b>✓ Leído de ${files.length} foto${files.length > 1 ? 's' : ''}${L.marca_modelo ? ' · ' + escA(L.marca_modelo) : ''}.</b> Revisa los valores antes de guardar.
+      ${L.otroMedidor ? `<div style="color:#B91C1C;font-weight:700">⚠️ La foto muestra el medidor ${escA(L.numero_medidor)}, pero este suministro es el ${escA(s.medidor)}.</div>` : ''}
+      ${falt.length ? `<div style="color:#B45309">Falta: ${falt.join(', ')}. Escríbelo a mano o agrega una foto de ese valor.</div>` : ''}
+      ${sobra.length ? `<div class="hint">Este medidor también muestra ${sobra.join(' y ')}. Si quieres anotarla, actívala en ⚙️ Suministros.</div>` : ''}
+      ${usaCierre && campos.includes('demanda') ? `<div>Demanda máxima tomada del <b>cierre de mes</b> (${num(L.demanda_max_cierre_kw, 2)} kW)${L.demanda_max_kw != null ? `; la del período actual marca ${num(L.demanda_max_kw, 2)} kW` : ''}.</div>` : ''}
+      <div class="tw" style="margin-top:6px"><table><thead><tr><th>Foto</th><th>Código</th><th class="n">Valor</th><th>Unidad</th><th></th></tr></thead><tbody>${(L.valores || []).map(v => `<tr><td>${v.foto || ''}</td><td>${escA(v.codigo || '')}</td><td class="n">${escA(String(v.valor))}</td><td>${escA(v.unidad || '')}</td><td class="hint">${v.es_cierre_anterior ? 'cierre' : ''}${v.fecha_hora ? ' ' + escA(v.fecha_hora) : ''}</td></tr>`).join('')}</tbody></table></div>
+      ${L.observaciones ? `<div class="hint">${escA(L.observaciones)}</div>` : ''}</div>`;
+  } catch (e) { box.innerHTML = `<div style="color:#B91C1C;font-size:13px;margin-bottom:8px">${escA(e.message)}</div>`; }
+};
+// 📷 en la carga de submedidores: una foto por medidor, solo la activa
+window.leerFotoSub = async function (hid, inp) {
+  const files = [...(inp.files || [])]; inp.value = '';
+  if (!files.length) return;
+  const s = sumDe(hid) || {}, out = $('mv-ia-' + hid), campo = document.querySelector(`.m-val[data-hid="${hid}"]`);
+  out.innerHTML = '⏳ Leyendo…';
+  try {
+    const L = await iaMedidor(files, s, ['activa']);
+    if (L.activa_kwh == null) throw new Error('No se encontró el total de kWh en la foto');
+    campo.value = L.activa_kwh;
+    out.innerHTML = `✓ ${num(L.activa_kwh, 1)} kWh leído${L.otroMedidor ? ` · <b style="color:#B91C1C">⚠️ la foto es del medidor ${escA(L.numero_medidor)}, no del ${escA(s.medidor)}</b>` : ''}${L.observaciones ? ' · ' + escA(L.observaciones) : ''}`;
+  } catch (e) { out.innerHTML = `<span style="color:#B91C1C">${escA(e.message)}</span>`; }
 };
 window.borrarLectura = async function (id) { if (!confirm('¿Borrar esta lectura?')) return; try { await deleteDoc(doc(db, 'energia_lecturas', id)); await cargarTodo(); render(); } catch (e) { toast('Error: ' + e.message, false); } };
 
@@ -652,11 +732,18 @@ function rComparar() {
 
 // ── ⚙️ Suministros ───────────────────────────────────────────────────────
 let editSum = null;
+const TIPOS_MEDIDOR = [['', 'No sé / otro'], ['obis', 'Digital con códigos (1.8.0…)'], ['digital', 'Digital simple (solo kWh)'], ['rodillos', 'Mecánico de rodillos (números que giran)'], ['agujas', 'Mecánico de relojes (agujas)']];
+// Por defecto: trifásico anota reactiva y demanda; monofásico solo activa (se puede cambiar en cada suministro)
+const registraQ = s => s.registraReactiva != null ? !!s.registraReactiva : s.fase === 'tri' || lecDe(s.id || '').some(l => l.kvarh != null);
+const registraD = s => s.registraDemanda != null ? !!s.registraDemanda : s.fase === 'tri' || lecDe(s.id || '').some(l => l.demanda_max != null);
 function rSuministros() {
   const f = editSum;
   const form = f ? `<div class="panel"><h2>${f.id ? 'Editar' : 'Nuevo'} suministro</h2>
     <div class="grid"><div class="field"><label>Nombre</label><input id="s-nombre" value="${escA(f.nombre || '')}" placeholder="Ej: Bomba pozo 1"></div><div class="field"><label>N° de cliente (Copelec)</label><input id="s-cli" value="${escA(f.nCliente || '')}"></div><div class="field"><label>N° de medidor</label><input id="s-med" value="${escA(f.medidor || '')}"></div><div class="field"><label>Tarifa</label><input id="s-tar" value="${escA(f.tarifa || '')}" placeholder="BT1, AT3…"></div><div class="field"><label>Constante del medidor</label><input id="s-const" type="number" step="any" value="${f.constante || 1}"></div><div class="field"><label>Es submedidor de</label><select id="s-ppal"><option value="">— cuenta propia de Copelec —</option>${S.sum.filter(x => x.id !== f.id && !x.principal).map(x => `<option value="${x.id}" ${f.principal === x.id ? 'selected' : ''}>${escA(x.nombre)}</option>`).join('')}</select></div><div class="field"><label>Conexión</label><select id="s-fase"><option value="">Sin definir</option><option value="mono" ${f.fase === 'mono' ? 'selected' : ''}>Monofásico</option><option value="tri" ${f.fase === 'tri' ? 'selected' : ''}>Trifásico</option></select></div><div class="field"><label>Uso / centro de costo</label><input id="s-centro" value="${escA(f.centro || '')}" placeholder="Riego, casa, bodega…"></div></div>
     <div class="field"><label>Potreros que riega (para el costo por ha)</label>${S.potreros.length ? `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:4px;max-height:220px;overflow:auto;border:1px solid var(--borde);border-radius:8px;padding:8px">${S.potreros.map((q, i) => `<label style="font-size:13px;display:flex;gap:6px;align-items:center;text-transform:none;letter-spacing:0;font-weight:400;margin:0"><input type="checkbox" class="s-pot" data-i="${i}" style="width:auto" ${(f.potreros || []).includes(q.nombre) ? 'checked' : ''}> ${escA(q.nombre)}${q.ha ? ' <span class="hint">' + num(q.ha, 1) + ' ha</span>' : ' <span class="hint" style="color:#B45309">sin ha</span>'}</label>`).join('')}</div>` : '<div class="hint">No se pudieron leer los potreros de la app.</div>'}</div>
+    <div class="grid"><div class="field"><label>Marca / modelo del medidor</label><input id="s-modelo" value="${escA(f.modeloMedidor || '')}" placeholder="Ej: Landis+Gyr E650, Elster, monofásico…"></div>
+    <div class="field"><label>Tipo de pantalla</label><select id="s-tipo">${TIPOS_MEDIDOR.map(([k, t]) => `<option value="${k}" ${(f.tipoMedidor || '') === k ? 'selected' : ''}>${t}</option>`).join('')}</select></div></div>
+    <div class="field"><label>Qué se anota en cada lectura</label><div style="display:flex;gap:14px;flex-wrap:wrap;font-size:13px"><label style="display:flex;gap:6px;align-items:center;text-transform:none;letter-spacing:0;font-weight:400;margin:0"><input type="checkbox" checked disabled style="width:auto"> Activa (kWh)</label><label style="display:flex;gap:6px;align-items:center;text-transform:none;letter-spacing:0;font-weight:400;margin:0"><input type="checkbox" id="s-regq" style="width:auto" ${registraQ(f) ? 'checked' : ''}> Reactiva (kvarh)</label><label style="display:flex;gap:6px;align-items:center;text-transform:none;letter-spacing:0;font-weight:400;margin:0"><input type="checkbox" id="s-regd" style="width:auto" ${registraD(f) ? 'checked' : ''}> Demanda máxima (kW)</label></div></div>
     <div class="field"><label>Dirección / notas</label><input id="s-dir" value="${escA(f.direccion || '')}"></div>
     <label style="font-size:13px;display:flex;gap:6px;align-items:center;margin:6px 0"><input type="checkbox" id="s-act" style="width:auto" ${f.activo !== false ? 'checked' : ''}> Suministro activo</label>
     <div style="display:flex;gap:8px"><button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="editSumCancel()">Cancelar</button><button class="btn btn-verde" style="flex:1;justify-content:center" onclick="guardarSuministro()">💾 Guardar</button></div></div>` : `<button class="btn btn-verde" style="margin-bottom:10px" onclick="editSumNuevo()">＋ Nuevo suministro</button>`;
@@ -686,7 +773,7 @@ window.editSumEditar = id => { editSum = { ...sumDe(id) }; render(); };
 window.editSumCancel = () => { editSum = null; render(); };
 window.guardarSuministro = async function () {
   const v = id => $(id).value.trim(), nombre = v('s-nombre'); if (!nombre) { toast('Falta el nombre', false); return; }
-  const d = { nombre, nCliente: v('s-cli'), medidor: v('s-med'), tarifa: v('s-tar'), fase: v('s-fase'), principal: v('s-ppal'), potreros: [...document.querySelectorAll('.s-pot:checked')].map(i => S.potreros[+i.dataset.i].nombre), constante: parseNum($('s-const').value) || 1, centro: v('s-centro'), direccion: v('s-dir'), activo: $('s-act').checked };
+  const d = { nombre, nCliente: v('s-cli'), medidor: v('s-med'), tarifa: v('s-tar'), fase: v('s-fase'), principal: v('s-ppal'), potreros: [...document.querySelectorAll('.s-pot:checked')].map(i => S.potreros[+i.dataset.i].nombre), constante: parseNum($('s-const').value) || 1, centro: v('s-centro'), direccion: v('s-dir'), activo: $('s-act').checked, modeloMedidor: v('s-modelo'), tipoMedidor: v('s-tipo'), registraReactiva: $('s-regq').checked, registraDemanda: $('s-regd').checked };
   try { if (editSum.id) await updateDoc(doc(db, 'energia_suministros', editSum.id), d); else await addDoc(collection(db, 'energia_suministros'), { ...d, ts: Date.now() }); editSum = null; await cargarTodo(); render(); toast('✓ Suministro guardado'); } catch (e) { toast('Error: ' + e.message, false); }
 };
 window.borrarSuministro = async function (id) {
