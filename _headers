@@ -1,14 +1,1 @@
-/index.html
-  Cache-Control: no-cache, no-store, must-revalidate
 
-/
-  Cache-Control: no-cache, no-store, must-revalidate
-
-/tractor.html
-  Cache-Control: no-cache
-
-/sw-tractor.js
-  Cache-Control: no-cache
-
-/reparto.html
-  Cache-Control: no-cache, no-store, must-revalidate
