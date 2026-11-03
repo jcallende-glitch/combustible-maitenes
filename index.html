@@ -1729,7 +1729,7 @@ window.togTractorAplicacion = async function(e) {
   envivoRenderRuta();
   try { await setDoc(doc(db, 'config', 'datos'), { tractoresAplicacion: config.tractoresAplicacion }, { merge: true }); toast('✓ Guardado', true); } catch (er) { toast('Error: ' + er.message, false); }
 };
-function envivoCalcular(puntos, aplic) {
+function envivoCalcular(puntos, aplic, anchoFijo) {
   const pots = (potrerosConfig || []).filter(p => poligonoValido(p.poligono)).map(p => ({ nombre: p.nombre, poly: jdpNormPoligono(p.poligono) }));
   const dePot = (lat, lng) => { const q = pots.find(p => jdpPuntoEnPoligono(lat, lng, p.poly)); return q ? q.nombre : null; };
   const zona = z => ({ nombre: z.nombre, centro: z.centro, radio: z.radio, poly: z.poligono ? jdpNormPoligono(z.poligono) : null });
@@ -1756,6 +1756,11 @@ function envivoCalcular(puntos, aplic) {
   }
   const enJornada = (a, b) => !aplic || (tr.ini != null && a.t >= tr.ini && b.t <= tr.fin);
   let cargaAct = null; // visita en curso a una zona de carga (se cuenta como carga si dura al menos 2 min)
+  // Ciclos de carga (tractores de aplicación): cada carga empieza un ciclo que dura hasta la carga siguiente
+  const nuevoCiclo = (ini, conCarga, zona) => ({ inicio: ini, fin: ini, conCarga, zona: zona || '', carga: 0, trabajo: 0, traslado: 0, detenido: 0, bodega: 0, ha: 0 });
+  tr.ciclos = []; let ciclo = aplic && tr.ini != null ? nuevoCiclo(tr.ini, false) : null, pend = 0;
+  const flushPend = () => { if (ciclo && pend) { ciclo.carga += pend; } pend = 0; };
+  const sumaCiclo = (k, dt, b, ha) => { if (!ciclo) return; ciclo[k] += dt; if (ha) ciclo.ha += ha; ciclo.fin = b.t; };
   for (let i = 1; i < puntos.length; i++) {
     const a = puntos[i - 1], b = puntos[i], dt = b.t - a.t;
     if (dt <= 0 || dt > ENVIVO_HUECO_MS) continue;
@@ -1771,24 +1776,33 @@ function envivoCalcular(puntos, aplic) {
       if (cuenta) {
         tr.total += dt; tr.carga += dt; if (!quieto) tr.km += m / 1000;
         tr.porCarga[zcar] = (tr.porCarga[zcar] || 0) + dt;
-        if (!cargaAct || cargaAct.z !== zcar || a.t - cargaAct.fin > 10 * 60000) cargaAct = { z: zcar, ini: a.t, fin: b.t, contada: false }; else cargaAct.fin = b.t;
-        if (!cargaAct.contada && cargaAct.fin - cargaAct.ini >= 2 * 60000) { cargaAct.contada = true; tr.nCargas++; }
+        if (!cargaAct || cargaAct.z !== zcar || a.t - cargaAct.fin > 10 * 60000) { flushPend(); cargaAct = { z: zcar, ini: a.t, fin: b.t, contada: false }; } else cargaAct.fin = b.t;
+        if (cargaAct.contada) sumaCiclo('carga', dt, b); else pend += dt;
+        if (!cargaAct.contada && cargaAct.fin - cargaAct.ini >= 2 * 60000) {
+          cargaAct.contada = true; tr.nCargas++;
+          if (ciclo) { ciclo.fin = cargaAct.ini; tr.ciclos.push(ciclo); ciclo = nuevoCiclo(cargaAct.ini, true, zcar); ciclo.carga = pend; ciclo.fin = b.t; pend = 0; }
+        }
       }
       tr.tramos.push({ a, b, clase, pot: zcar }); continue;
     }
-    if (bod) { clase = quieto ? 'parado' : 'traslado'; if (cuenta) { tr.total += dt; tr.bodega += dt; } tr.tramos.push({ a, b, clase, pot: null, bodega: bod }); continue; }
-    if (quieto) { clase = 'parado'; if (cuenta) { tr.total += dt; tr.detenido += dt; } }
+    if (cuenta) flushPend();
+    if (bod) { clase = quieto ? 'parado' : 'traslado'; if (cuenta) { tr.total += dt; tr.bodega += dt; sumaCiclo('bodega', dt, b); } tr.tramos.push({ a, b, clase, pot: null, bodega: bod }); continue; }
+    if (quieto) { clase = 'parado'; if (cuenta) { tr.total += dt; tr.detenido += dt; sumaCiclo('detenido', dt, b); } }
     else if (pot) {
       clase = 'trabajo';
       tr.mov += dt; tr.km += m / 1000; tr.total += dt;
       tr.trabajo += dt; tr.kmTrabajo += m / 1000;
-      const w = envivoAnchoPotrero(pot), ha = m * w / 10000;
+      const w = anchoFijo || envivoAnchoPotrero(pot), ha = m * w / 10000;
       tr.ha += ha;
       const pp = tr.porPot[pot] || (tr.porPot[pot] = { ms: 0, ha: 0, w });
       pp.ms += dt; pp.ha += ha;
-    } else { clase = 'traslado'; if (cuenta) { tr.total += dt; tr.mov += dt; tr.km += m / 1000; tr.traslado += dt; } }
+      sumaCiclo('trabajo', dt, b, ha);
+      tr.tramos.push({ a, b, clase, pot, w }); continue;
+    } else { clase = 'traslado'; if (cuenta) { tr.total += dt; tr.mov += dt; tr.km += m / 1000; tr.traslado += dt; sumaCiclo('traslado', dt, b); } }
     tr.tramos.push({ a, b, clase, pot });
   }
+  if (ciclo) { flushPend(); if (ciclo.trabajo + ciclo.traslado + ciclo.carga + ciclo.detenido > 0) tr.ciclos.push(ciclo); }
+  tr.ciclos.forEach((c, k) => { c.completo = c.conCarga && k < tr.ciclos.length - 1; }); // el último puede no haberse vaciado entero
   // lo que falta para completar la jornada son huecos sin datos (equipo apagado o sin señal)
   tr.sinDatos = Math.max(0, tr.jornada - (tr.trabajo + tr.traslado + tr.carga + tr.detenido + tr.bodega));
   return tr;
@@ -1853,13 +1867,13 @@ function envivoDibujarRuta(tr, puntos, capa, colorEq) {
   tramos.forEach(t => {
     if (t.clase !== 'trabajo') { run = null; return; }
     if (run && run.pot === t.pot && run.pts[run.pts.length - 1] === t.a) run.pts.push(t.b);
-    else { run = { pot: t.pot, pts: [t.a, t.b] }; corridas.push(run); }
+    else { run = { pot: t.pot, w: t.w, pts: [t.a, t.b] }; corridas.push(run); }
   });
   if (envivoVer.trabajo && envivoForma === 'linea') { // cada tramo GPS que se suma a las hectáreas, como línea
     tramos.filter(t => t.clase === 'trabajo').forEach(t => L.polyline([[t.a.lat, t.a.lng], [t.b.lat, t.b.lng]], { color: contado ? '#16A34A' : '#EAB308', weight: 3, opacity: 0.95, interactive: false }).addTo(envivoRutaCapa));
   }
   (envivoVer.trabajo && envivoForma === 'franja' ? corridas : []).forEach(c => {
-    const w = envivoAnchoPotrero(c.pot);
+    const w = c.w || envivoAnchoPotrero(c.pot);
     const XY = c.pts.map(P0.xy);
     const idx = envivoDP(XY, 2.5);
     // tramos rectos entre vértices; los muy cortos son giros de cabecera (línea fina, no banda)
@@ -1902,6 +1916,124 @@ function envivoDibujarRuta(tr, puntos, capa, colorEq) {
   return trab.length > 3 ? trab : puntos;
 }
 const envivoH = ms => { const m = Math.round(ms / 60000); return m >= 60 ? `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')} min` : `${m} min`; };
+// ── Estanque del fumigador / nebulizador y ciclos de carga ──
+// Carreta Gaspardo (pulverizador de barra): 3000 L y 24 m de barra. El Gaspardo 2000 es otro: nebulizador de 2000 L que trabaja la entrecalle del huerto.
+const ES_CARRETA_GASPARDO = /carreta.*gaspardo|gaspardo.*carreta|gaspardo.*barra|barra.*gaspardo/i;
+const CAPACIDAD_APEROS_DEFAULT = [[ES_CARRETA_GASPARDO, 3000]];
+const ANCHO_APEROS_DEFAULT = [[ES_CARRETA_GASPARDO, 24]];
+const anchoDeApero = n => { const c = (config.anchoAperos || {})[n]; if (Number(c) > 0) return Number(c); const dflt = ANCHO_APEROS_DEFAULT.find(([re]) => re.test(String(n || ''))); return dflt ? dflt[1] : 0; };
+// Ancho de trabajo de ese día según el apero anotado al cargar petróleo (0 = el ancho del huerto o cultivo de cada potrero)
+const envivoAnchoDia = (eq, dia, d) => { const ap = ((d.aperosDia || {})[dia] || []).find(a => anchoDeApero(a) > 0); return ap ? anchoDeApero(ap) : 0; };
+const litrosDeApero = n => { const c = (config.capacidadAperos || {})[n]; if (Number(c) > 0) return Number(c); const dflt = CAPACIDAD_APEROS_DEFAULT.find(([re]) => re.test(String(n || ''))); if (dflt) return dflt[1]; const m = String(n || '').match(/(\d{3,5})\s*(?:l\b|lts?\b|litros)?/i); const v = m ? +m[1] : 0; return v >= 100 && v <= 20000 ? v : 0; };
+let envivoRegDia = {}, envivoHist = {}, envivoCiclosGuardados = {};
+async function envivoAperosDelEquipo(eq, dias) {
+  const out = {};
+  for (const dia of dias) {
+    try {
+      if (!envivoRegDia[dia] || (dia === envivoDiaStr(Date.now()) && Date.now() - envivoRegDia[dia].ts > 10 * 60000)) {
+        const sn = await getDocs(query(collection(db, 'registros'), where('fecha', '==', dia)));
+        envivoRegDia[dia] = { ts: Date.now(), regs: sn.docs.map(x => x.data()) };
+      }
+      out[dia] = [...new Set(envivoRegDia[dia].regs.filter(r => r.equipo === eq).flatMap(r => Array.isArray(r.aperos) && r.aperos.length ? r.aperos : (r.apero ? [r.apero] : [])).filter(a => a && !/^otro|^libre/i.test(a)))];
+    } catch (e) { out[dia] = []; }
+  }
+  return out;
+}
+// Litros del estanque ese día: el apero anotado al cargar petróleo → el valor fijado para el tractor → el único apero con litros asignado al tractor
+function envivoEstanque(eq, dia, d) {
+  const ap = ((d.aperosDia || {})[dia] || []).find(a => litrosDeApero(a) > 0);
+  if (ap) return { litros: litrosDeApero(ap), fuente: ap + ' (según la carga de petróleo)' };
+  const fijo = Number((config.estanqueAplicacion || {})[eq]) || 0;
+  if (fijo > 0) return { litros: fijo, fuente: 'fijado para ' + eq };
+  const asig = (aperosConfig || []).filter(a => Array.isArray(a.equipos) && a.equipos.includes(eq) && litrosDeApero(a.nombre) > 0);
+  if (asig.length === 1) return { litros: litrosDeApero(asig[0].nombre), fuente: asig[0].nombre + ' (apero asignado al tractor)' };
+  return { litros: 0, fuente: '' };
+}
+window.envivoFijarAnchoApero = async function(nombre, v) {
+  const n = parseFloat(String(v).replace(',', '.'));
+  config.anchoAperos = { ...(config.anchoAperos || {}) }; if (n > 0) config.anchoAperos[nombre] = n; else delete config.anchoAperos[nombre];
+  envivoRenderRuta();
+  try { await setDoc(doc(db, 'config', 'datos'), { anchoAperos: config.anchoAperos }, { merge: true }); toast('✓ Ancho de ' + nombre + ' guardado', true); } catch (e) { toast('Error: ' + e.message, false); }
+};
+window.envivoFijarApero = async function(nombre, v) {
+  const n = parseFloat(String(v).replace(',', '.'));
+  config.capacidadAperos = { ...(config.capacidadAperos || {}) }; if (n > 0) config.capacidadAperos[nombre] = n; else delete config.capacidadAperos[nombre];
+  envivoRenderRuta();
+  try { await setDoc(doc(db, 'config', 'datos'), { capacidadAperos: config.capacidadAperos }, { merge: true }); toast('✓ Litros de ' + nombre + ' guardados', true); } catch (e) { toast('Error: ' + e.message, false); }
+};
+window.envivoFijarEstanque = async function(eq, v) {
+  const n = parseFloat(String(v).replace(',', '.'));
+  config.estanqueAplicacion = { ...(config.estanqueAplicacion || {}) }; if (n > 0) config.estanqueAplicacion[eq] = n; else delete config.estanqueAplicacion[eq];
+  envivoRenderRuta();
+  try { await setDoc(doc(db, 'config', 'datos'), { estanqueAplicacion: config.estanqueAplicacion }, { merge: true }); toast('✓ Estanque guardado', true); } catch (e) { toast('Error: ' + e.message, false); }
+};
+async function envivoCargarHist(eq) {
+  try {
+    const sn = await getDocs(query(collection(db, 'ciclos_aplicacion'), where('equipo', '==', eq)));
+    envivoHist[eq] = sn.docs.map(x => x.data()).sort((a, b) => (b.dia || '').localeCompare(a.dia || ''));
+    if (envivoSel.includes(eq) && envivoInfoAbierta) envivoRenderRuta();
+  } catch (e) { console.warn('historial cargas', e); envivoHist[eq] = []; }
+}
+const minTxt = ms => Math.round(ms / 60000) + ' min';
+// Guarda el resumen de cargas de cada día (para el historial). Solo escribe si cambió.
+function envivoGuardarCiclos(eq, dia, est, ciclos) {
+  const hh = t => new Date(t).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' });
+  const filas = ciclos.filter(c => c.conCarga).map(c => ({ hora: hh(c.inicio), cargaMin: Math.round(c.carga / 60000), trasladoMin: Math.round(c.traslado / 60000), botarMin: Math.round(c.trabajo / 60000), detenidoMin: Math.round(c.detenido / 60000), ha: +c.ha.toFixed(2), lha: est.litros && c.ha > 0.05 ? Math.round(est.litros / c.ha) : null, completo: !!c.completo }));
+  if (!filas.length) return;
+  const comp = filas.filter(f => f.completo), haC = comp.reduce((a, f) => a + f.ha, 0);
+  const prom = comp.length ? { lha: est.litros && haC > 0.05 ? Math.round(est.litros * comp.length / haC) : null, cargaMin: Math.round(comp.reduce((a, f) => a + f.cargaMin, 0) / comp.length), trasladoMin: Math.round(comp.reduce((a, f) => a + f.trasladoMin, 0) / comp.length), botarMin: Math.round(comp.reduce((a, f) => a + f.botarMin, 0) / comp.length) } : null;
+  const datos = { equipo: eq, dia, litros: est.litros || null, fuenteLitros: est.fuente || '', ciclos: filas, nCargas: filas.length, nCompletos: comp.length, haCompletos: +haC.toFixed(2), prom };
+  const id = eq.replace(/\s+/g, '_') + '_' + dia, h = JSON.stringify(datos);
+  if (envivoCiclosGuardados[id] === h) return;
+  envivoCiclosGuardados[id] = h;
+  setDoc(doc(db, 'ciclos_aplicacion', id), { ...datos, ts: Date.now(), por: currentUser || '' }).then(() => {
+    const L = envivoHist[eq] || (envivoHist[eq] = []); const k = L.findIndex(x => x.dia === dia); if (k >= 0) L[k] = datos; else { L.push(datos); L.sort((a, b) => (b.dia || '').localeCompare(a.dia || '')); }
+  }).catch(e => console.warn('guardar ciclos', e));
+}
+// Litros de cada estanque (aperos del tractor y los anotados al cargar petróleo), editables
+function envivoEditorAperosHtml(eq, d) {
+  const noms = [...new Set([...(aperosConfig || []).filter(a => Array.isArray(a.equipos) && a.equipos.includes(eq)).map(a => a.nombre), ...Object.values(d.aperosDia || {}).flat()])].filter(n => n && !/^otro|^libre/i.test(n));
+  if (!noms.length) return '';
+  return `<details style="margin-top:6px"><summary style="cursor:pointer;color:var(--acero)">⚙️ Estanque y ancho de cada apero (${noms.map(n => escA(n) + ': ' + (litrosDeApero(n) ? litrosDeApero(n).toLocaleString('es-CL') + ' L' : '? L') + ' · ' + (anchoDeApero(n) ? String(anchoDeApero(n)).replace('.', ',') + ' m' : 'entrecalle')).join(' | ')})</summary>
+    <div style="display:flex;flex-direction:column;gap:6px;margin-top:4px">${noms.map(n => `<div style="display:flex;gap:6px;align-items:center;justify-content:space-between;flex-wrap:wrap"><span style="flex:1;min-width:110px">${escA(n)}</span><span style="white-space:nowrap"><input type="number" min="0" step="50" inputmode="numeric" value="${litrosDeApero(n) || ''}" placeholder="litros" style="width:76px;padding:3px 5px" onchange="envivoFijarApero('${envivoJs(n)}', this.value)"> L</span><span style="white-space:nowrap"><input type="number" min="0" step="0.5" inputmode="decimal" value="${anchoDeApero(n) || ''}" placeholder="entrecalle" style="width:80px;padding:3px 5px" onchange="envivoFijarAnchoApero('${envivoJs(n)}', this.value)"> m</span></div>`).join('')}</div>
+    <div style="color:var(--acero);margin-top:3px">Litros: los que caben en el estanque. Ancho: la barra (ej. carreta Gaspardo 24 m); déjalo vacío en los nebulizadores, que usan la entrecalle de cada huerto.</div></details>`;
+}
+function envivoCargasHtml(eq, d, dd) {
+  const dias = dd.filter(x => (x.tr.ciclos || []).some(c => c.conCarga));
+  const est0 = envivoEstanque(eq, dd.length ? dd[dd.length - 1].k : envivoDiaStr(Date.now()), d), eqJs = envivoJs(eq);
+  const inputEst = `<span style="white-space:nowrap">Estanque: <input type="number" min="0" step="50" inputmode="numeric" value="${(config.estanqueAplicacion || {})[eq] || ''}" placeholder="${est0.litros || 'litros'}" style="width:80px;padding:3px 5px" onchange="envivoFijarEstanque('${eqJs}', this.value)"> L</span>`;
+  if (!dias.length) return `<div style="font-size:12px;color:var(--acero);margin:6px 0">💧 Sin cargas registradas en el período (pasar 2 min o más dentro de una zona de carga). ${inputEst}${envivoEditorAperosHtml(eq, d)}</div>`;
+  const th = 'text-align:right;padding:3px 4px', hh = t => new Date(t).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' }), fDia = k => k.slice(8, 10) + '-' + k.slice(5, 7);
+  let filas = '', comp = [], litrosTot = 0;
+  dias.forEach(({ k, tr }) => {
+    const est = envivoEstanque(eq, k, d);
+    envivoGuardarCiclos(eq, k, est, tr.ciclos);
+    let n = 0;
+    tr.ciclos.filter(c => c.conCarga).forEach(c => {
+      n++; litrosTot += est.litros || 0;
+      const lha = est.litros && c.ha > 0.05 ? Math.round(est.litros / c.ha) : null;
+      if (c.completo) comp.push({ ...c, litros: est.litros, lha });
+      filas += `<tr style="${c.completo ? '' : 'color:var(--acero)'}"><td style="padding:3px 4px;white-space:nowrap">${dias.length > 1 ? fDia(k) + ' · ' : ''}${n}ª · ${hh(c.inicio)}${c.completo ? '' : ' <span title="Última carga del día: puede no haberse vaciado entera">*</span>'}</td><td style="${th}">${minTxt(c.carga)}</td><td style="${th}">${minTxt(c.traslado)}</td><td style="${th}">${minTxt(c.trabajo)}</td><td style="${th}">${minTxt(c.detenido)}</td><td style="${th}">${c.ha.toFixed(2).replace('.', ',')}</td><td style="${th}"><b>${lha != null ? lha.toLocaleString('es-CL') : '—'}</b></td></tr>`;
+    });
+  });
+  const prom = k => comp.length ? comp.reduce((a, c) => a + c[k], 0) / comp.length : 0;
+  const haC = comp.reduce((a, c) => a + c.ha, 0), litC = comp.reduce((a, c) => a + (c.litros || 0), 0), lhaProm = litC && haC > 0.05 ? Math.round(litC / haC) : null;
+  const hist = (envivoHist[eq] || []).filter(x => x.dia >= envivoDiaStr(Date.now() - 30 * 86400000));
+  const hC = hist.reduce((a, x) => a + (x.nCompletos || 0), 0), hHa = hist.reduce((a, x) => a + (x.haCompletos || 0), 0), hLit = hist.reduce((a, x) => a + (x.litros || 0) * (x.nCompletos || 0), 0);
+  const hProm = k => { const v = hist.filter(x => x.prom && x.prom[k] != null); const n = v.reduce((a, x) => a + x.nCompletos, 0); return n ? Math.round(v.reduce((a, x) => a + x.prom[k] * x.nCompletos, 0) / n) : null; };
+  return `<div style="background:#F0FDFA;border:1px solid #99F6E4;border-radius:8px;padding:8px;margin:6px 0;font-size:12px">
+    <div style="display:flex;justify-content:space-between;gap:6px;flex-wrap:wrap;align-items:center"><b style="font-size:13px">💧 Cargas y L/ha</b>${inputEst}</div>
+    <div style="color:var(--acero);margin:2px 0 6px">${est0.litros ? `Se calcula con ${est0.litros.toLocaleString('es-CL')} L por carga · ${escA(est0.fuente)} · ancho ${(() => { const w = envivoAnchoDia(eq, dd.length ? dd[dd.length - 1].k : '', d); return w ? String(w).replace('.', ',') + ' m (barra del apero)' : 'entrecalle de cada huerto'; })()}` : '<span style="color:#B45309">No sé cuántos litros tiene el estanque: anota el apero al cargar petróleo (ej. «Gama 4000») o escribe los litros aquí.</span>'}</div>
+    ${comp.length ? `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(78px,1fr));gap:6px;margin-bottom:6px">
+      ${[['L/ha', lhaProm != null ? lhaProm.toLocaleString('es-CL') : '—', '#0F766E'], ['Carga', minTxt(prom('carga')), '#0F766E'], ['Traslado', minTxt(prom('traslado')), '#2563EB'], ['Botar carga', minTxt(prom('trabajo')), '#16A34A']].map(([t, v, c]) => `<div style="background:#fff;border:1px solid var(--borde);border-radius:8px;padding:5px"><div style="font-size:10px;color:var(--acero)">${t} prom.</div><div style="font-weight:800;color:${c};font-size:16px">${v}</div></div>`).join('')}</div>` : ''}
+    <div style="overflow-x:auto"><table style="width:100%;min-width:0;border-collapse:collapse"><thead><tr style="color:var(--acero)"><th style="text-align:left;padding:3px 4px">Carga</th><th style="${th}">Cargando</th><th style="${th}">Traslado</th><th style="${th}">Botar</th><th style="${th}">Det.</th><th style="${th}">ha</th><th style="${th}">L/ha</th></tr></thead><tbody>${filas}</tbody></table></div>
+    <div style="color:var(--acero);margin-top:4px">Cada carga dura desde que entra a cargar hasta la carga siguiente (cargar + ida + aplicar + vuelta). Botar = tiempo aplicando dentro del potrero. L/ha = litros del estanque ÷ ha aplicadas con esa carga (las ha salen del GPS × ancho, son aproximadas). * Última carga del día: no entra en los promedios porque puede no haberse vaciado.${litrosTot ? ` · ≈ ${litrosTot.toLocaleString('es-CL')} L cargados en el período.` : ''}</div>
+    ${hist.length ? `<details style="margin-top:6px"><summary style="cursor:pointer;font-weight:700">📈 Historial 30 días: ${hHa > 0.05 && hLit ? Math.round(hLit / hHa).toLocaleString('es-CL') + ' L/ha' : '— L/ha'} promedio · ${hC} cargas · carga ${hProm('cargaMin') ?? '—'} min · traslado ${hProm('trasladoMin') ?? '—'} min · botar ${hProm('botarMin') ?? '—'} min</summary>
+      <table style="width:100%;min-width:0;border-collapse:collapse;margin-top:4px"><thead><tr style="color:var(--acero)"><th style="text-align:left;padding:3px 4px">Día</th><th style="${th}">Cargas</th><th style="${th}">L/ha</th><th style="${th}">Carga</th><th style="${th}">Trasl.</th><th style="${th}">Botar</th></tr></thead><tbody>${hist.map(x => `<tr><td style="padding:3px 4px">${fDia(x.dia)}</td><td style="${th}">${x.nCargas}</td><td style="${th}"><b>${x.prom && x.prom.lha != null ? x.prom.lha.toLocaleString('es-CL') : '—'}</b></td><td style="${th}">${x.prom ? x.prom.cargaMin + ' min' : '—'}</td><td style="${th}">${x.prom ? x.prom.trasladoMin + ' min' : '—'}</td><td style="${th}">${x.prom ? x.prom.botarMin + ' min' : '—'}</td></tr>`).join('')}</tbody></table>
+      <div style="color:var(--acero);margin-top:3px">El historial se guarda cada vez que se abre el recorrido del equipo (con «＋ Sumar día anterior» se agregan días pasados, hasta 7).</div></details>` : ''}
+    ${envivoEditorAperosHtml(eq, d)}
+  </div>`;
+}
 function envivoPanelRuta(d) {
   const { eq, puntos, fuente, dias, pref } = d;
   const capa = envivoRutaCapas[eq] || (envivoRutaCapas[eq] = L.layerGroup().addTo(envivoMapa));
@@ -1925,7 +2057,7 @@ function envivoPanelRuta(d) {
   const porDia = {};
   puntos.forEach(p => { const k = envivoDiaStr(p.t); (porDia[k] = porDia[k] || []).push(p); });
   const esAplic = tractoresAplicacion().includes(eq);
-  const dd = Object.keys(porDia).sort().map(k => ({ k, tr: envivoCalcular(porDia[k], esAplic), t: porDia[k][0].t }));
+  const dd = Object.keys(porDia).sort().map(k => ({ k, tr: envivoCalcular(porDia[k], esAplic, esAplic ? envivoAnchoDia(eq, k, d) : 0), t: porDia[k][0].t }));
   const tot = { ha: 0, trabajo: 0, detenido: 0, mov: 0, traslado: 0, carga: 0, bodega: 0, sinDatos: 0, jornada: 0, nCargas: 0, km: 0, kmTrabajo: 0, porPot: {}, porCarga: {} };
   dd.forEach(({ tr }) => {
     ['ha', 'trabajo', 'detenido', 'mov', 'traslado', 'carga', 'bodega', 'sinDatos', 'jornada', 'nCargas', 'km', 'kmTrabajo'].forEach(c => tot[c] += tr[c]);
@@ -1960,6 +2092,7 @@ function envivoPanelRuta(d) {
       ${tarj.map(([t, ms, c, sub]) => `<div style="background:#fff;border:1px solid var(--borde);border-radius:8px;padding:6px"><div style="font-size:11px;color:var(--acero)">${t}</div><div style="font-weight:800;color:${c};font-size:18px">${pc(ms) || envivoH(ms)}</div><div style="font-size:11px;color:var(--acero)">${envivoH(ms)}${sub ? ' · ' + sub : ''}</div></div>`).join('')}
       </div>${tot.jornada ? '<div style="font-size:11px;color:var(--acero);margin-bottom:4px">% del tiempo de la jornada, desde que sale de la bodega hasta que vuelve.' + ((jdpZonas || []).some(z => z.tipo !== 'carga' && z.tipo !== 'camino') ? '' : ' <span style="color:#B45309">No hay bodega dibujada: la jornada va del primer al último movimiento.</span>') + '</div>' : ''}`;
     })()}
+    ${esAplic ? envivoCargasHtml(eq, d, dd) : ''}
     ${!esAplic ? '' : Object.keys(tot.porCarga).length ? `<div style="font-size:11px;color:var(--acero);margin-bottom:4px">💧 ${Object.entries(tot.porCarga).map(([n, ms]) => escA(n) + ': ' + envivoH(ms)).join(' · ')}</div>` : (jdpZonas || []).some(z => z.tipo === 'carga') ? '' : '<div style="font-size:11px;color:#B45309;margin-bottom:4px">No hay zonas de carga dibujadas: se marcan en Configuración GPS → zonas (tipo «carga de fumigadores»).</div>'}
     <div style="font-size:12px;color:var(--acero)">≈ <strong style="color:var(--negro)">${f1(tot.ha)} ha</strong> en ${f1(tot.kmTrabajo)} km de trabajo · ${f1(tot.km)} km recorridos</div>
     ${respaldo}
@@ -2093,7 +2226,9 @@ async function envivoCargarRuta(eq) {
     if (!envivoZonasListas) { await jdpCargarZonas(); envivoZonasListas = true; envivoDibujarZonas(); }
     const { puntos, fuente, pref } = await envivoPuntosDelDia(eq, dias);
     if (!envivoSel.includes(eq) || envivoRutaDias !== dias) return; // cambió mientras cargaba
-    envivoRutas[eq] = { eq, puntos, fuente, dias, pref, fuenteN: envivoFuenteN };
+    const aperosDia = tractoresAplicacion().includes(eq) ? await envivoAperosDelEquipo(eq, [...new Set(puntos.map(p => envivoDiaStr(p.t)))]) : {};
+    if (tractoresAplicacion().includes(eq) && !envivoHist[eq]) envivoCargarHist(eq);
+    envivoRutas[eq] = { eq, puntos, fuente, dias, pref, fuenteN: envivoFuenteN, aperosDia };
   } catch (e) { envivoRutas[eq] = null; toast('No se pudo cargar el recorrido de ' + eq + ': ' + e.message, false); }
   finally { delete envivoCargando[eq]; envivoPintarCargando(); }
   envivoRenderRuta();
