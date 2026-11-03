@@ -1451,7 +1451,12 @@ async function envivoDibujarZonas() {
     } catch (err) { console.warn('zona', z, err); }
   });
 }
-let envivoRutaCapa = null, envivoRutaEq = null, envivoRutaDatos = null, envivoAncho = null, envivoRutaDias = 0;
+let envivoRutaCapa = null, envivoAncho = null, envivoRutaDias = 0;
+// Equipos elegidos para ver su recorrido (uno o varios), sus datos y capas en el mapa
+let envivoSel = [], envivoRutas = {}, envivoRutaCapas = {}, envivoModo = 'lista', envivoInfoAbierta = false, envivoMulti = false, envivoMultiSel = new Set(), envivoCargando = {}, envivoEncuadrarPend = false;
+const ENVIVO_COLORES = ['#F97316', '#A855F7', '#06B6D4', '#EF4444', '#84CC16', '#EC4899'];
+const envivoColorDe = eq => ENVIVO_COLORES[Math.max(0, envivoSel.indexOf(eq)) % ENVIVO_COLORES.length];
+const envivoJs = eq => String(eq).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 // Fuente de la ubicación: 'auto' (el dato más reciente), 'jdlink' o 'celular'. Se puede fijar en general y por equipo.
 // Si el equipo no tiene la fuente elegida, se usa la otra. Se recuerda en este teléfono/computador.
 let envivoFuentePref = 'auto', envivoFuenteEq = {};
@@ -1470,16 +1475,16 @@ function renderEnvivoFuenteBar() {
 }
 window.envivoSetFuente = function(f) {
   envivoFuentePref = f; envivoGuardarFuente(); renderEnvivoFuenteBar(); renderEnVivo();
-  if (envivoRutaEq) envivoCargarRuta(envivoRutaEq);
+  envivoRecargarTodo();
 }
 window.envivoFuenteEquipo = function(eq, f) {
   if (f) envivoFuenteEq[eq] = f; else delete envivoFuenteEq[eq];
   envivoGuardarFuente(); renderEnvivoFuenteBar(); renderEnVivo();
-  if (envivoRutaEq === eq) envivoCargarRuta(eq);
+  if (envivoSel.includes(eq)) envivoCargarRuta(eq);
 }
 window.envivoQuitarFuentesEq = function() {
   envivoFuenteEq = {}; envivoGuardarFuente(); renderEnvivoFuenteBar(); renderEnVivo();
-  if (envivoRutaEq) envivoCargarRuta(envivoRutaEq);
+  envivoRecargarTodo();
 }
 async function traerUbicacionesJD() {
   try {
@@ -1546,6 +1551,7 @@ window.abrirEnVivo = function() {
     envivoRutaCapa = L.layerGroup().addTo(envivoMapa);
   }
   envivoDibujarZonas();
+  envivoSetModo(envivoSel.length ? 'mapa' : 'lista');
   setTimeout(() => envivoMapa.invalidateSize(), 150);
   envivoEncuadrado = false;
   renderEnvivoFuenteBar();
@@ -1600,14 +1606,32 @@ function renderEnVivo() {
     if (rec.length === 1) envivoMapa.setView(rec[0], 16); else envivoMapa.fitBounds(rec, { padding: [40, 40], maxZoom: 17 });
   }
   document.getElementById('envivo-hora').textContent = 'Actualizado ' + new Date().toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' });
-  document.getElementById('envivo-lista').innerHTML = lista.length ? `<table style="width:100%;min-width:0;font-size:13px;border-collapse:collapse">
-    <thead><tr><th style="text-align:left;padding:6px">Equipo</th><th style="text-align:left;padding:6px">Estado</th><th style="text-align:left;padding:6px">Dónde</th><th style="text-align:left;padding:6px">Último dato</th></tr></thead><tbody>
-    ${lista.map(x => { const viejo = ahora - (x.ts || 0) > 10 * 60000; return `<tr style="cursor:pointer;border-top:1px solid var(--borde)" onclick="envivoIr(${x.lat},${x.lng});envivoVerRuta('${String(x.equipo).replace(/'/g, "\\'")}')">
-      <td style="padding:6px"><strong>${x.equipo}</strong>${isAdmin && (x.fuente === 'celular' || x._ambas) ? ` <button type="button" title="Quitar este equipo de la lista (entró por error o prueba)" style="border:0;background:none;font-size:15px;cursor:pointer;padding:0 4px" onclick="event.stopPropagation();envivoEliminar('${String(x.equipo).replace(/'/g, "\\'")}')">🗑</button>` : ''}<div style="font-size:11px;color:var(--acero)">${x.fuente === 'jdlink' ? '📡 JDLink' : '📱 ' + (x.operador || '')}${otraFuente(x)}${envivoFuenteEq[x.equipo] ? ' · 📌' : ''}</div></td>
-      <td style="padding:6px">${viejo ? '⚫ sin señal' : x.aplicando ? '🟢 aplicando' : (x.kmh || 0) >= 1 ? `🔵 ${x.kmh} km/h` : '⚪ detenido'}</td>
-      <td style="padding:6px">${x.aqui || '—'}${x.potrero && x.potrero !== x.aqui ? `<div style="font-size:11px;color:var(--acero)">aplicación: ${x.potrero}</div>` : ''}</td>
-      <td style="padding:6px;color:${viejo ? '#B91C1C' : 'inherit'}">${haceTexto(ahora - (x.ts || 0))}</td></tr>`; }).join('')}
-    </tbody></table>` : '<div style="color:var(--acero);font-size:13px">Todavía ningún equipo ha mandado su posición. Aparecen apenas un tractor abre el modo tractor con señal, o cuando JDLink informa.</div>';
+  // Lista como tarjetas: primero los que tienen señal, después los sin señal. Tocar = ver su recorrido (otro toque lo cierra)
+  envivoPos = {}; lista.forEach(x => { envivoPos[x.equipo] = [x.lat, x.lng]; });
+  const tarjeta = x => {
+    const viejo = ahora - (x.ts || 0) > 10 * 60000, sel = envivoMulti ? envivoMultiSel.has(x.equipo) : envivoSel.includes(x.equipo);
+    const col = viejo ? '#9CA3AF' : x.aplicando ? '#22C55E' : (x.kmh || 0) >= 1 ? '#3B82F6' : '#E5E7EB';
+    const estado = viejo ? 'sin señal' : x.aplicando ? '🟢 aplicando' : (x.kmh || 0) >= 1 ? `en movimiento · ${Math.round(x.kmh)} km/h` : 'detenido';
+    const fuente = (x.fuente === 'jdlink' ? '📡 JDLink' : '📱 ' + escA(x.operador || 'celular')) + (x._ambas ? (x.fuente === 'jdlink' ? ' + 📱' : ' + 📡') : '') + (envivoFuenteEq[x.equipo] ? ' · 📌' : '');
+    const eqJs = String(x.equipo).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    return `<div onclick="envivoElegir('${eqJs}')" style="display:flex;gap:10px;align-items:center;padding:10px 12px;border:${sel ? '2px solid #F5A623' : '1px solid var(--borde)'};border-radius:10px;margin-bottom:6px;background:${sel ? '#FFFBEB' : '#fff'};cursor:pointer;${viejo && !sel ? 'opacity:.75' : ''}">
+      <div style="width:14px;height:14px;border-radius:50%;background:${col};border:2px solid #111;flex:none"></div>
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline"><strong style="font-size:15px">${escA(x.equipo)}</strong><span style="font-size:12px;white-space:nowrap;color:${viejo ? '#B91C1C' : 'var(--acero)'}">${haceTexto(ahora - (x.ts || 0))}</span></div>
+        <div style="font-size:13px;color:#374151">${estado}${x.aqui ? ' · ' + escA(x.aqui) : ''}</div>
+        <div style="font-size:11px;color:var(--acero);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${fuente}${x.potrero && x.potrero !== x.aqui ? ' · aplicación: ' + escA(x.potrero) : ''}</div>
+      </div>
+      <div style="font-size:20px;color:${sel ? '#F5A623' : 'var(--acero)'};flex:none">${envivoMulti ? (sel ? '☑' : '☐') : '›'}</div></div>`;
+  };
+  const conSenal = lista.filter(x => ahora - (x.ts || 0) <= 10 * 60000), sinSenal = lista.filter(x => ahora - (x.ts || 0) > 10 * 60000);
+  document.getElementById('envivo-lista').innerHTML = lista.length
+    ? `<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:4px 0 8px;position:sticky;top:-8px;background:var(--blanco);padding:6px 0;z-index:2">
+        ${envivoMulti ? `<button type="button" class="btn btn-verde" style="padding:8px 12px" ${envivoMultiSel.size ? '' : 'disabled'} onclick="envivoVerMarcados()">🗺 Ver ${envivoMultiSel.size || ''} en el mapa</button><button type="button" class="btn" style="padding:8px 12px" onclick="envivoMultiTog(false)">Cancelar</button><span style="font-size:12px;color:var(--acero)">Marca uno o más equipos</span>`
+          : `<span style="font-size:12px;color:var(--acero);flex:1">Toca un equipo para verlo en el mapa.</span><button type="button" class="btn" style="padding:6px 10px;font-size:12px" onclick="envivoMultiTog(true)">☑ Ver varios</button>${envivoSel.length ? `<button type="button" class="btn btn-verde" style="padding:6px 10px;font-size:12px" onclick="envivoSetModo('mapa')">🗺 Volver al mapa</button>` : ''}`}
+      </div>
+      ${conSenal.length ? `<div style="font-size:12px;font-weight:700;color:#16A34A;margin:6px 0 4px">🟢 CON SEÑAL (${conSenal.length})</div>` + conSenal.map(tarjeta).join('') : ''}
+      ${sinSenal.length ? `<div style="font-size:12px;font-weight:700;color:var(--acero);margin:10px 0 4px">⚫ SIN SEÑAL AHORA (${sinSenal.length})</div>` + sinSenal.map(tarjeta).join('') : ''}`
+    : '<div style="color:var(--acero);font-size:13px">Todavía ningún equipo ha mandado su posición. Aparecen apenas un tractor abre el modo tractor con señal, o cuando JDLink informa.</div>';
   document.getElementById('envivo-lista').insertAdjacentHTML('beforeend', `<div style="font-size:11px;color:var(--acero);margin-top:6px">${envivoJDEstado || 'JDLink: consultando…'}</div>`);
 }
 // Quita de la lista un equipo que mandó su posición desde el celular por error o de prueba (y, si se quiere, sus recorridos guardados)
@@ -1628,6 +1652,13 @@ window.envivoEliminar = async function(eq) {
   } catch (e) { toast('Error: ' + e.message, false); }
 }
 window.envivoIr = (lat, lng) => { envivoMapa.setView([lat, lng], 17); };
+let envivoPos = {};
+window.envivoElegir = function(eq) {
+  if (envivoMulti) { if (envivoMultiSel.has(eq)) envivoMultiSel.delete(eq); else envivoMultiSel.add(eq); renderEnVivo(); return; }
+  envivoVerEquipos([eq]);
+};
+window.envivoVerMarcados = () => envivoVerEquipos([...envivoMultiSel]);
+window.envivoMultiTog = on => { envivoMulti = !!on; envivoMultiSel = new Set(on ? envivoSel : []); renderEnVivo(); };
 
 // ── Recorrido del día de un equipo + hectáreas por hora de avance (sin contar paradas) ──
 const ENVIVO_VMIN_KMH = 1.0;     // por debajo de esto el equipo se considera detenido
@@ -1797,9 +1828,11 @@ let envivoForma = 'franja';
 window.envivoSoloContado = () => { const solo = envivoVer.trabajo && !envivoVer.traslado && !envivoVer.parado && !envivoVer.carga; envivoVer = solo ? { trabajo: true, traslado: true, parado: true, carga: true } : { trabajo: true, traslado: false, parado: false, carga: false }; if (!solo) envivoVista = 'contado'; envivoRenderRuta(); };
 window.envivoSetForma = f => { envivoForma = f; envivoRenderRuta(); };
 window.envivoToggleVer = k => { envivoVer[k] = !envivoVer[k]; envivoRenderRuta(); };
-function envivoDibujarRuta(tr, puntos) {
+function envivoDibujarRuta(tr, puntos, capa, colorEq) {
+  const envivoRutaCapa = capa; // cada equipo se dibuja en su propia capa
   envivoRutaCapa.clearLayers();
-  if (!puntos.length) return;
+  if (!puntos.length) return [];
+  if (colorEq) L.polyline(puntos.map(q => [q.lat, q.lng]), { color: colorEq, weight: 7, opacity: 0.35, interactive: false }).addTo(envivoRutaCapa); // varios equipos: color de cada uno
   const P0 = envivoProy(puntos[0].lat, puntos[0].lng);
   const contado = envivoVista === 'contado', col = contado ? { traslado: '#DC2626', parado: '#6B7280' } : { traslado: '#38BDF8', parado: '#F97316' };
   const tramos = tr.tramos;
@@ -1866,14 +1899,13 @@ function envivoDibujarRuta(tr, puntos) {
   });
   // encuadra el trabajo en potreros (si hay); si no, todo el recorrido
   const trab = tramos.filter(t => t.clase === 'trabajo').flatMap(t => [t.a, t.b]);
-  const enc = trab.length > 3 ? trab : puntos;
-  if (enc.length > 1) envivoMapa.fitBounds(enc.map(p => [p.lat, p.lng]), { padding: [40, 40], maxZoom: 19 });
+  return trab.length > 3 ? trab : puntos;
 }
 const envivoH = ms => { const m = Math.round(ms / 60000); return m >= 60 ? `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')} min` : `${m} min`; };
-function envivoRenderRuta() {
-  const box = document.getElementById('envivo-ruta');
-  if (!box || !envivoRutaDatos) return;
-  const { eq, puntos, fuente, dias, pref } = envivoRutaDatos;
+function envivoPanelRuta(d) {
+  const { eq, puntos, fuente, dias, pref } = d;
+  const capa = envivoRutaCapas[eq] || (envivoRutaCapas[eq] = L.layerGroup().addTo(envivoMapa));
+  const colEq = envivoSel.length > 1 ? envivoColorDe(eq) : null, punto = `<span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:${envivoColorDe(eq)};border:2px solid #111;vertical-align:-1px;margin-right:4px"></span>`;
   const f1 = n => n.toFixed(1).replace('.', ',');
   const eqJs = String(eq).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
   const tieneJD = envivoJD.some(j => j.equipo === eq && j._m), propia = envivoFuenteEq[eq] || '';
@@ -1886,8 +1918,8 @@ function envivoRenderRuta() {
       ${dias > 0 ? `<button class="btn-pin" style="font-size:12px;padding:4px 10px" onclick="envivoMasDias(-1)">− Quitar el más antiguo</button>` : ''}
       <span style="font-size:11px;color:var(--acero)">${dias === 0 ? 'Solo hoy' : 'Hoy + ' + dias + (dias === 1 ? ' día atrás' : ' días atrás')} (máx. 7)</span></div>`;
   if (!puntos.length) {
-    box.innerHTML = `<div style="background:var(--fondo);border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:13px"><strong>${eq}</strong>: sin recorrido en ${dias === 0 ? 'hoy' : 'este período'}. <button class="btn-pin" style="font-size:11px;padding:3px 8px" onclick="envivoCerrarRuta()">Cerrar</button>${botones}${fuenteEq}</div>`;
-    return;
+    capa.clearLayers();
+    return { html: `<div style="background:var(--fondo);border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:13px">${punto}<strong>${escA(eq)}</strong>: sin recorrido en ${dias === 0 ? 'hoy' : 'este período'}. <button class="btn-pin" style="font-size:11px;padding:3px 8px" onclick="envivoQuitarEquipo('${eqJs}')">✕ Quitar del mapa</button>${fuenteEq}</div>`, res: null, enc: [] };
   }
   // un cálculo por día calendario; el total suma todos
   const porDia = {};
@@ -1900,20 +1932,21 @@ function envivoRenderRuta() {
     Object.entries(tr.porCarga || {}).forEach(([n, ms]) => tot.porCarga[n] = (tot.porCarga[n] || 0) + ms);
     Object.entries(tr.porPot).forEach(([n, v]) => { const q = tot.porPot[n] || (tot.porPot[n] = { ms: 0, ha: 0, w: v.w }); q.ms += v.ms; q.ha += v.ha; });
   });
-  envivoDibujarRuta({ tramos: dd.flatMap(x => x.tr.tramos) }, puntos);
+  const enc = envivoDibujarRuta({ tramos: dd.flatMap(x => x.tr.tramos) }, puntos, capa, colEq);
   // Diagnóstico de datos: cuántos puntos llegaron y cuánto tiempo quedó sin cubrir por huecos
   let nHuecos = 0, msHuecos = 0, msCub = 0;
   for (let i = 1; i < puntos.length; i++) { const dt = puntos[i].t - puntos[i - 1].t; if (envivoDiaStr(puntos[i].t) !== envivoDiaStr(puntos[i - 1].t)) continue; if (dt > ENVIVO_HUECO_MS) { nHuecos++; msHuecos += dt; } else if (dt > 0) msCub += dt; }
   const hhmm = ms => new Date(ms).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' });
-  const diagTxt = `${puntos.length} puntos · primero ${hhmm(puntos[0].t)}, último ${hhmm(puntos[puntos.length - 1].t)} · un punto cada ${Math.round(msCub / Math.max(1, puntos.length - 1 - nHuecos) / 1000)} s` + (nHuecos ? ` · <strong>${nHuecos} huecos sin datos (${envivoH(msHuecos)})</strong>` : '') + (fuente === 'jdlink' && envivoFuenteN ? ` · JDLink: ${envivoFuenteN.bc} del recorrido + ${envivoFuenteN.loc} de ubicaciones (${envivoFuenteN.llam} consultas)` : '') + (Date.now() - puntos[puntos.length - 1].t > 30 * 60000 ? ` · <strong>el último dato tiene ${envivoH(Date.now() - puntos[puntos.length - 1].t)}</strong>` : '');
+  const diagTxt = `${puntos.length} puntos · primero ${hhmm(puntos[0].t)}, último ${hhmm(puntos[puntos.length - 1].t)} · un punto cada ${Math.round(msCub / Math.max(1, puntos.length - 1 - nHuecos) / 1000)} s` + (nHuecos ? ` · <strong>${nHuecos} huecos sin datos (${envivoH(msHuecos)})</strong>` : '') + (fuente === 'jdlink' && d.fuenteN ? ` · JDLink: ${d.fuenteN.bc} del recorrido + ${d.fuenteN.loc} de ubicaciones (${d.fuenteN.llam} consultas)` : '') + (Date.now() - puntos[puntos.length - 1].t > 30 * 60000 ? ` · <strong>el último dato tiene ${envivoH(Date.now() - puntos[puntos.length - 1].t)}</strong>` : '');
   const hTrab = tot.trabajo / 3600000;
   const haH = hTrab > 0.05 ? tot.ha / hTrab : null;
   const th = 'text-align:right;padding:3px 4px';
   const filasPot = Object.entries(tot.porPot).sort((a, b) => b[1].ms - a[1].ms).map(([n, v]) => `<tr><td style="padding:3px 4px">${n}<span style="color:var(--acero);font-size:11px"> · ${String(v.w).replace('.', ',')} m</span></td><td style="${th}">${envivoH(v.ms)}</td><td style="${th}">${f1(v.ha)}</td><td style="${th}"><strong>${v.ms > 180000 ? f1(v.ha / (v.ms / 3600000)) : '—'}</strong></td></tr>`).join('');
   const filasDia = dd.length > 1 ? dd.slice().reverse().map(({ tr, t }) => { const h = tr.trabajo / 3600000; return `<tr><td style="padding:3px 4px">${fDia(t)}</td><td style="${th}">${tr.jornada ? envivoH(tr.jornada) : '—'}</td><td style="${th}">${tr.jornada ? Math.round(tr.trabajo / tr.jornada * 100) + '%' : envivoH(tr.trabajo)}</td><td style="${th}">${tr.jornada ? Math.round(tr.traslado / tr.jornada * 100) + '%' : envivoH(tr.traslado)}</td><td style="${th}">${tr.jornada ? Math.round(tr.carga / tr.jornada * 100) + '%' : envivoH(tr.carga)}${tr.nCargas ? ' (' + tr.nCargas + ')' : ''}</td><td style="${th}">${tr.jornada ? Math.round(tr.detenido / tr.jornada * 100) + '%' : envivoH(tr.detenido)}</td><td style="${th}">${f1(tr.ha)}</td><td style="${th}"><strong>${h > 0.05 ? f1(tr.ha / h) : '—'}</strong></td></tr>`; }).join('') : '';
-  box.innerHTML = `<div style="background:var(--fondo);border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:13px">
-    <div style="display:flex;align-items:center;gap:8px"><strong style="flex:1">${fuente === 'celular' ? '📱' : '📡'} ${eq} · ${dias === 0 ? 'recorrido de hoy' : 'últimos ' + (dias + 1) + ' días'}</strong>
-      <button class="btn-pin" style="font-size:11px;padding:3px 8px" onclick="envivoCerrarRuta()">Cerrar</button></div>
+  const html = `<div style="background:var(--fondo);border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:13px">
+    <div style="display:flex;align-items:center;gap:8px"><strong style="flex:1">${punto}${fuente === 'celular' ? '📱' : '📡'} ${escA(eq)} · ${dias === 0 ? 'recorrido de hoy' : 'últimos ' + (dias + 1) + ' días'}</strong>
+      ${isAdmin && envivoDatos.some(c => c.equipo === eq) ? `<button class="btn-pin" title="Quitar este equipo de la lista (entró por error o prueba)" style="font-size:11px;padding:3px 8px" onclick="envivoEliminar('${eqJs}')">🗑 Quitar</button>` : ''}
+      <button class="btn-pin" style="font-size:11px;padding:3px 8px" onclick="envivoQuitarEquipo('${eqJs}')">✕ Quitar del mapa</button></div>
     <div style="font-size:22px;font-weight:800;margin:4px 0">${haH != null ? f1(haH) + ' ha/h' : '— ha/h'}<span style="font-size:12px;font-weight:400;color:var(--acero)"> de avance, sin contar paradas</span></div>
     ${!esAplic ? `<div style="font-size:12px;color:var(--acero)">⏱ Trabajando ${envivoH(tot.trabajo)} · ⚪ detenido ${envivoH(tot.detenido)} · 🚜 traslados ${envivoH(tot.traslado)}</div>` : (() => {
       const J = tot.jornada || (tot.trabajo + tot.traslado + tot.carga + tot.detenido + tot.bodega), pc = ms => J ? Math.round(ms / J * 100) + ' %' : '';
@@ -1930,6 +1963,22 @@ function envivoRenderRuta() {
     ${!esAplic ? '' : Object.keys(tot.porCarga).length ? `<div style="font-size:11px;color:var(--acero);margin-bottom:4px">💧 ${Object.entries(tot.porCarga).map(([n, ms]) => escA(n) + ': ' + envivoH(ms)).join(' · ')}</div>` : (jdpZonas || []).some(z => z.tipo === 'carga') ? '' : '<div style="font-size:11px;color:#B45309;margin-bottom:4px">No hay zonas de carga dibujadas: se marcan en Configuración GPS → zonas (tipo «carga de fumigadores»).</div>'}
     <div style="font-size:12px;color:var(--acero)">≈ <strong style="color:var(--negro)">${f1(tot.ha)} ha</strong> en ${f1(tot.kmTrabajo)} km de trabajo · ${f1(tot.km)} km recorridos</div>
     ${respaldo}
+    ${fuenteEq}
+    <div style="font-size:11px;color:var(--acero);margin-top:4px">🔎 Datos recibidos (${envivoNomFuente(fuente)}): ${diagTxt}</div>
+    ${filasDia ? `<table style="width:100%;min-width:0;font-size:12px;margin-top:6px;border-collapse:collapse"><thead><tr><th style="text-align:left;padding:3px 4px">Día</th><th style="${th}">Jornada</th><th style="${th}">Trab.</th><th style="${th}">Trasl.</th><th style="${th}">Carga</th><th style="${th}">Det.</th><th style="${th}">ha</th><th style="${th}">ha/h</th></tr></thead><tbody>${filasDia}</tbody></table>` : ''}
+    ${filasPot ? `<table style="width:100%;min-width:0;font-size:12px;margin-top:6px;border-collapse:collapse"><thead><tr><th style="text-align:left;padding:3px 4px">Potrero · ancho${dd.length > 1 ? ' (todos los días)' : ''}</th><th style="${th}">Tiempo</th><th style="${th}">ha</th><th style="${th}">ha/h</th></tr></thead><tbody>${filasPot}</tbody></table>` : ''}
+  </div>`;
+  const J = tot.jornada;
+  return { html, enc, res: { eq, tot, esAplic, haH, J } };
+}
+// Controles comunes a todos los equipos del mapa (vista, días, ancho)
+function envivoControlesHtml() {
+  const dias = envivoRutaDias;
+  const botones = `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px">
+      <button class="btn-pin" style="font-size:12px;padding:4px 10px" onclick="envivoMasDias(1)" ${dias >= 7 ? 'disabled' : ''}>＋ Sumar día anterior</button>
+      ${dias > 0 ? `<button class="btn-pin" style="font-size:12px;padding:4px 10px" onclick="envivoMasDias(-1)">− Quitar el más antiguo</button>` : ''}
+      <span style="font-size:11px;color:var(--acero)">${dias === 0 ? 'Solo hoy' : 'Hoy + ' + dias + (dias === 1 ? ' día atrás' : ' días atrás')} (máx. 7)</span></div>`;
+  return `<div style="background:var(--fondo);border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:13px"><div style="font-weight:700;font-size:12px;margin-bottom:2px">🗺 Cómo se ve el mapa</div>
     <div style="margin-top:8px;font-size:12px"><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
       <button class="btn-pin" style="font-size:12px;padding:5px 10px${envivoVer.trabajo && !envivoVer.traslado && !envivoVer.parado && !envivoVer.carga ? ';background:var(--amarillo);color:#111;font-weight:700' : ''}" onclick="envivoSoloContado()">👁 Solo lo que suma al área</button>
       <button class="btn-pin" style="font-size:11px;padding:3px 8px${envivoForma === 'franja' ? ';background:var(--amarillo);color:#111;font-weight:700' : ''}" onclick="envivoSetForma('franja')">▮ Franjas</button>
@@ -1944,11 +1993,7 @@ function envivoRenderRuta() {
         <label style="display:flex;gap:4px;align-items:center"><input type="checkbox" ${envivoVer.parado ? 'checked' : ''} onchange="envivoToggleVer('parado')"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${envivoVista === 'contado' ? '#6B7280' : '#F97316'}"></span> Detenido (no cuenta)</label></div>
       <div style="color:var(--acero);margin-top:4px">Cuenta = en movimiento (más de 1 km/h) dentro de un potrero. Toca una franja para ver su detalle.</div></div>
     ${botones}
-    ${fuenteEq}
     ${isAdmin ? `<details style="margin-top:6px;font-size:11px"><summary style="cursor:pointer;color:var(--acero)">⚙️ Tractores de aplicación (tiempos de carga y % de la jornada): ${escA(tractoresAplicacion().join(', ') || 'ninguno')}</summary><div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px">${[...(config.equipos || [])].filter(e => !/otro/i.test(e)).sort((a, b) => a.localeCompare(b, 'es')).map(e => `<button class="btn-pin" style="font-size:11px;padding:3px 8px${tractoresAplicacion().includes(e) ? ';background:var(--amarillo);color:#111;font-weight:700' : ''}" onclick="togTractorAplicacion('${escA(e).replace(/'/g, "\\'")}')">${escA(e)}</button>`).join('')}</div></details>` : ''}
-    <div style="font-size:11px;color:var(--acero);margin-top:4px">🔎 Datos recibidos (${envivoNomFuente(fuente)}): ${diagTxt}</div>
-    ${filasDia ? `<table style="width:100%;min-width:0;font-size:12px;margin-top:6px;border-collapse:collapse"><thead><tr><th style="text-align:left;padding:3px 4px">Día</th><th style="${th}">Jornada</th><th style="${th}">Trab.</th><th style="${th}">Trasl.</th><th style="${th}">Carga</th><th style="${th}">Det.</th><th style="${th}">ha</th><th style="${th}">ha/h</th></tr></thead><tbody>${filasDia}</tbody></table>` : ''}
-    ${filasPot ? `<table style="width:100%;min-width:0;font-size:12px;margin-top:6px;border-collapse:collapse"><thead><tr><th style="text-align:left;padding:3px 4px">Potrero · ancho${dd.length > 1 ? ' (todos los días)' : ''}</th><th style="${th}">Tiempo</th><th style="${th}">ha</th><th style="${th}">ha/h</th></tr></thead><tbody>${filasPot}</tbody></table>` : ''}
     <div style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--acero);margin-top:6px;flex-wrap:wrap">
       <span>Ancho de trabajo en potreros sin ancho propio:</span>
       <input type="number" min="1" max="60" step="0.5" value="${envivoAncho || 5}" style="width:60px;padding:3px 5px" onchange="envivoCambiarAncho(this.value)"> m
@@ -1956,19 +2001,90 @@ function envivoRenderRuta() {
   </div>`;
 }
 window.envivoCambiarAncho = function(v) { const n = parseFloat(v); envivoAncho = n > 0 ? n : null; envivoRenderRuta(); };
+// Pinta el recorrido de cada equipo elegido y arma la hoja de información (tiempos, ha, etc.)
+function envivoRenderRuta() {
+  const info = document.getElementById('envivo-info'); if (!info || !envivoMapa) return;
+  const panes = [], res = []; let enc = [];
+  envivoSel.forEach(eq => {
+    const d = envivoRutas[eq];
+    if (!d) { panes.push(`<div style="background:var(--fondo);border-radius:8px;padding:10px;margin-bottom:8px;font-size:13px"><span class="env-spin" style="border-color:rgba(0,0,0,.15);border-top-color:#F5A623"></span>Cargando recorrido de <b>${escA(eq)}</b>…</div>`); return; }
+    try { const r = envivoPanelRuta(d); panes.push(r.html); if (r.res) res.push(r.res); enc = enc.concat(r.enc || []); } catch (e) { console.warn('ruta', eq, e); panes.push(`<div style="color:#B91C1C;font-size:13px">Error con ${escA(eq)}: ${escA(e.message)}</div>`); }
+  });
+  if (envivoEncuadrarPend && envivoSel.every(eq => envivoRutas[eq]) && enc.length > 1) { envivoEncuadrarPend = false; envivoMapa.fitBounds(enc.map(p => [p.lat, p.lng]), { padding: [40, 40], maxZoom: 19 }); }
+  // comparación rápida cuando hay 2 o más equipos
+  const pc = (ms, J) => J ? Math.round(ms / J * 100) + '%' : envivoH(ms);
+  const comp = res.length > 1 ? `<div style="background:var(--fondo);border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:12px;overflow-x:auto"><div style="font-weight:700;margin-bottom:4px">Comparación</div><table style="width:100%;min-width:0;border-collapse:collapse"><thead><tr style="color:var(--acero)"><th style="text-align:left;padding:3px">Equipo</th><th style="text-align:right;padding:3px">Jornada</th><th style="text-align:right;padding:3px">Trab.</th><th style="text-align:right;padding:3px">Trasl.</th><th style="text-align:right;padding:3px">Carga</th><th style="text-align:right;padding:3px">Det.</th><th style="text-align:right;padding:3px">ha</th><th style="text-align:right;padding:3px">ha/h</th></tr></thead><tbody>${res.map(r => `<tr><td style="padding:3px;white-space:nowrap"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${envivoColorDe(r.eq)};margin-right:4px"></span>${escA(r.eq)}</td><td style="text-align:right;padding:3px">${r.J ? envivoH(r.J) : '—'}</td><td style="text-align:right;padding:3px">${pc(r.tot.trabajo, r.J)}</td><td style="text-align:right;padding:3px">${pc(r.tot.traslado, r.J)}</td><td style="text-align:right;padding:3px">${r.esAplic ? pc(r.tot.carga, r.J) + (r.tot.nCargas ? ' (' + r.tot.nCargas + ')' : '') : '—'}</td><td style="text-align:right;padding:3px">${pc(r.tot.detenido, r.J)}</td><td style="text-align:right;padding:3px">${r.tot.ha.toFixed(1).replace('.', ',')}</td><td style="text-align:right;padding:3px"><b>${r.haH != null ? r.haH.toFixed(1).replace('.', ',') : '—'}</b></td></tr>`).join('')}</tbody></table><div style="color:var(--acero);margin-top:3px">% de la jornada en los tractores de aplicación; horas en los demás.</div></div>` : '';
+  info.innerHTML = `<div style="display:flex;gap:6px;flex-wrap:wrap;position:sticky;top:-8px;background:var(--blanco);padding:6px 0 8px;z-index:2">
+      <button type="button" class="env-btn" style="background:#111827;color:#fff" onclick="envivoToggleInfo(false)">▾ Ver mapa</button>
+      <button type="button" class="env-btn" style="background:#F5A623;color:#111" onclick="envivoCambiarEquipo()">🚜 Cambiar equipo</button>
+      <button type="button" class="env-btn" style="background:#E5E7EB;color:#111" onclick="envivoAgregarEquipo()">➕ Agregar</button></div>
+    ${comp}${panes.join('')}${envivoSel.length ? envivoControlesHtml() : ''}`;
+  envivoPintarBarra();
+}
+function envivoPintarBarra() {
+  const b = document.getElementById('envivo-barra'); if (!b) return;
+  const chips = envivoSel.map(eq => `<span style="display:inline-flex;align-items:center;gap:5px;background:rgba(17,24,39,.85);color:#fff;border-radius:14px;padding:4px 10px;font-size:12px;font-weight:700"><span style="width:10px;height:10px;border-radius:50%;background:${envivoColorDe(eq)}"></span>${escA(eq)}${envivoCargando[eq] ? ' <span class="env-spin" style="width:10px;height:10px"></span>' : ''}</span>`).join('');
+  b.innerHTML = `<div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:center;margin-bottom:6px">${chips}</div>
+    <div style="display:flex;gap:6px">
+      <button type="button" class="env-btn" style="flex:2;background:#111827;color:#fff" onclick="envivoToggleInfo(true)">ℹ️ Ver tiempos e info</button>
+      <button type="button" class="env-btn" style="flex:1;background:#F5A623;color:#111" onclick="envivoCambiarEquipo()">🚜 Cambiar</button>
+      <button type="button" class="env-btn" style="flex:1;background:#fff;color:#111" onclick="envivoAgregarEquipo()">➕ Agregar</button></div>`;
+}
+function envivoPintarCargando() {
+  const el = document.getElementById('envivo-cargando'); if (!el) return;
+  const eqs = Object.keys(envivoCargando).filter(k => envivoCargando[k]);
+  el.style.display = eqs.length ? 'block' : 'none';
+  el.innerHTML = eqs.length ? `<span class="env-spin"></span>Cargando recorrido de ${escA(eqs.join(', '))}…` : '';
+  envivoPintarBarra();
+}
+window.envivoSetModo = function(m) {
+  envivoModo = m;
+  const panel = document.getElementById('envivo-panel'), barra = document.getElementById('envivo-barra'), info = document.getElementById('envivo-info');
+  if (panel) panel.style.display = m === 'lista' ? 'block' : 'none';
+  if (barra) barra.style.display = m === 'mapa' && !envivoInfoAbierta ? 'block' : 'none';
+  if (info) info.style.display = m === 'mapa' && envivoInfoAbierta ? 'block' : 'none';
+  if (m === 'mapa') envivoPintarBarra();
+  renderEnVivo();
+  setTimeout(() => { if (envivoMapa) envivoMapa.invalidateSize(); }, 120);
+};
+window.envivoToggleInfo = function(abrir) { envivoInfoAbierta = !!abrir; if (abrir) envivoRenderRuta(); envivoSetModo('mapa'); };
+window.envivoCambiarEquipo = function() { envivoInfoAbierta = false; envivoMulti = false; envivoSetModo('lista'); };
+window.envivoAgregarEquipo = function() { envivoInfoAbierta = false; envivoMulti = true; envivoMultiSel = new Set(envivoSel); envivoSetModo('lista'); };
+// Elegir uno o varios equipos: el mapa se agranda y se cargan sus recorridos
+window.envivoVerEquipos = async function(lista) {
+  lista = [...new Set(lista)].filter(Boolean); if (!lista.length) return;
+  Object.keys(envivoRutaCapas).forEach(eq => { if (!lista.includes(eq)) { envivoRutaCapas[eq].remove(); delete envivoRutaCapas[eq]; delete envivoRutas[eq]; } });
+  envivoSel = lista; envivoMulti = false; envivoMultiSel = new Set(); envivoInfoAbierta = false;
+  envivoSetModo('mapa');
+  if (lista.length === 1 && envivoPos[lista[0]]) envivoIr(envivoPos[lista[0]][0], envivoPos[lista[0]][1]);
+  envivoEncuadrarPend = true;
+  envivoRenderRuta();
+  for (const eq of lista) if (!envivoRutas[eq] || envivoRutas[eq].dias !== envivoRutaDias) await envivoCargarRuta(eq);
+  envivoRenderRuta();
+};
+window.envivoVerRuta = eq => envivoVerEquipos([eq]);
+window.envivoQuitarEquipo = function(eq) {
+  if (envivoRutaCapas[eq]) { envivoRutaCapas[eq].remove(); delete envivoRutaCapas[eq]; }
+  delete envivoRutas[eq]; envivoSel = envivoSel.filter(x => x !== eq);
+  if (!envivoSel.length) { envivoCerrarRuta(); return; }
+  envivoRenderRuta();
+};
+async function envivoRecargarTodo() { envivoEncuadrarPend = false; for (const eq of [...envivoSel]) await envivoCargarRuta(eq); }
 window.envivoMasDias = async function(delta) {
-  if (!envivoRutaEq) return;
+  if (!envivoSel.length) return;
   envivoRutaDias = Math.max(0, Math.min(7, envivoRutaDias + delta));
-  await envivoCargarRuta(envivoRutaEq);
+  envivoEncuadrarPend = true;
+  await envivoRecargarTodo();
 };
 window.envivoCerrarRuta = function() {
-  envivoRutaDatos = null; envivoRutaEq = null; envivoRutaDias = 0;
-  if (envivoRutaCapa) envivoRutaCapa.clearLayers();
-  const box = document.getElementById('envivo-ruta'); if (box) box.innerHTML = '';
+  Object.values(envivoRutaCapas).forEach(c => c.remove());
+  envivoRutaCapas = {}; envivoRutas = {}; envivoSel = []; envivoRutaDias = 0; envivoCargando = {}; envivoInfoAbierta = false;
+  envivoPintarCargando();
+  const info = document.getElementById('envivo-info'); if (info) info.innerHTML = '';
+  envivoSetModo('lista');
 };
 async function envivoCargarRuta(eq) {
-  const box = document.getElementById('envivo-ruta'); if (!box) return;
-  box.innerHTML = `<div style="padding:8px;font-size:13px;color:var(--acero)">Cargando recorrido de ${eq}…</div>`;
+  envivoCargando[eq] = true; envivoPintarCargando();
   try {
     if (!envivoAnchosCultivo) {
       try { const sz = await getDoc(doc(db, 'config', 'zonas_sin_cultivo')); if (sz.exists() && sz.data().anchosCultivo) envivoAnchosCultivo = sz.data().anchosCultivo; } catch (e) {}
@@ -1976,17 +2092,12 @@ async function envivoCargarRuta(eq) {
     const dias = envivoRutaDias;
     if (!envivoZonasListas) { await jdpCargarZonas(); envivoZonasListas = true; envivoDibujarZonas(); }
     const { puntos, fuente, pref } = await envivoPuntosDelDia(eq, dias);
-    if (envivoRutaEq !== eq || envivoRutaDias !== dias) return; // cambió mientras cargaba
-    envivoRutaDatos = { eq, puntos, fuente, dias, pref };
-    envivoRenderRuta();
-  } catch (e) { box.innerHTML = `<div style="color:#C0392B;font-size:13px;padding:8px">Error: ${e.message}</div>`; }
+    if (!envivoSel.includes(eq) || envivoRutaDias !== dias) return; // cambió mientras cargaba
+    envivoRutas[eq] = { eq, puntos, fuente, dias, pref, fuenteN: envivoFuenteN };
+  } catch (e) { envivoRutas[eq] = null; toast('No se pudo cargar el recorrido de ' + eq + ': ' + e.message, false); }
+  finally { delete envivoCargando[eq]; envivoPintarCargando(); }
+  envivoRenderRuta();
 }
-window.envivoVerRuta = async function(eq) {
-  const box = document.getElementById('envivo-ruta'); if (!box) return;
-  if (envivoRutaEq === eq) { envivoCerrarRuta(); return; } // segundo toque en el mismo equipo: oculta
-  envivoRutaEq = eq; envivoRutaDias = 0;
-  await envivoCargarRuta(eq);
-};
 
 window.cerrarJdPotreros = function() {
   document.getElementById('modal-jd-potreros').style.display = 'none';
@@ -16417,10 +16528,17 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     <div style="font-weight:700;font-size:16px;flex:1">📡 Ubicación equipos</div>
     <div id="envivo-hora" style="font-size:11px;color:#9CA3AF"></div>
   </div>
-  <div id="envivo-mapa" style="flex:1;min-height:0"></div>
-  <div style="max-height:38vh;overflow:auto;background:var(--blanco);border-top:1px solid var(--borde);padding:8px 12px">
+  <style>@keyframes envGiro{to{transform:rotate(360deg)}}.env-spin{display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;animation:envGiro .8s linear infinite;vertical-align:-2px;margin-right:6px}
+    .env-btn{border:0;border-radius:10px;padding:10px 12px;font-size:14px;font-weight:700;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,.3)}</style>
+  <div style="flex:1;min-height:0;position:relative">
+    <div id="envivo-mapa" style="position:absolute;inset:0"></div>
+    <div id="envivo-cargando" style="display:none;position:absolute;top:12px;left:50%;transform:translateX(-50%);z-index:1100;background:rgba(17,24,39,.92);color:#fff;padding:9px 16px;border-radius:22px;font-size:14px;font-weight:700;white-space:nowrap;box-shadow:0 2px 10px rgba(0,0,0,.4)"></div>
+    <div id="envivo-barra" style="display:none;position:absolute;left:8px;right:8px;bottom:10px;z-index:1050"></div>
+    <div id="envivo-info" style="display:none;position:absolute;left:0;right:0;bottom:0;max-height:65%;overflow:auto;z-index:1060;background:var(--blanco);border-radius:16px 16px 0 0;box-shadow:0 -4px 18px rgba(0,0,0,.35);padding:8px 12px 14px"></div>
+  </div>
+  <div id="envivo-panel" style="max-height:45vh;overflow:auto;background:var(--blanco);border-top:1px solid var(--borde);padding:8px 12px">
     <div id="envivo-fuente-bar" style="margin-bottom:6px"></div>
-    <div style="font-size:11px;color:var(--acero);margin-bottom:4px">🟢 aplicando · 🔵 en movimiento · ⚪ detenido · gris: sin datos hace más de 10 min. Toca un equipo para ir a él y ver su recorrido de hoy con las ha/h de avance.</div>
+    <div style="font-size:11px;color:var(--acero);margin-bottom:4px">🟢 aplicando · 🔵 en movimiento · ⚪ detenido · gris: sin datos hace más de 10 min.</div>
     <div id="envivo-ruta"></div>
     <div id="envivo-lista"></div>
   </div>
