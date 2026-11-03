@@ -9789,8 +9789,12 @@ function distanciaMetros(lat1, lng1, lat2, lng2) {
 }
 
 window.toggleCaminataPerimetro = function() {
-  if (caminataActiva) finalizarCaminataPerimetro();
-  else iniciarCaminataPerimetro();
+  if (caminataActiva) { finalizarCaminataPerimetro(); return; }
+  // Ahora se hace en el editor de pantalla completa: graba en vivo, permite corregir solo un tramo y revisar antes de guardar
+  const nombre = document.getElementById('dibujo-potrero-sel')?.value || '';
+  if (!nombre) { toast('Elige primero a qué potrero corresponde', false); return; }
+  abrirDibujoPotreroFull();
+  setTimeout(() => dibujoFullGpsToggle(), 400);
 }
 
 function iniciarCaminataPerimetro() {
@@ -10721,6 +10725,35 @@ window.numeroHilera = (g, k) => gNumero(g, k);
 // botones grandes, en vez de la barra chica de Leaflet.Draw.
 let dibujoFullPuntos = [];
 let dibujoFullCapa = null;
+let dibujoFullEditando = false; // true = se ajusta el contorno guardado (arrastrar puntos), sin redibujar de cero
+let dibujoFullHist = [], dibujoFullSel = -1;
+const aPuntoLL = pt => Array.isArray(pt) ? { lat: +pt[0], lng: +pt[1] } : { lat: +pt.lat, lng: +pt.lng };
+const dibujoFullGuardarHist = () => { dibujoFullHist.push(dibujoFullPuntos.map(p => ({ ...p }))); if (dibujoFullHist.length > 60) dibujoFullHist.shift(); };
+// Toque en el mapa: dibujando de cero agrega al final; ajustando, inserta el punto en el borde más cercano
+function dibujoFullClick(e) {
+  const nuevo = { lat: e.latlng.lat, lng: e.latlng.lng }, pts = dibujoFullPuntos;
+  dibujoFullGuardarHist(); dibujoFullSel = -1;
+  const esCamino = dibujoFullModo === 'zona' && dibujoFullZonaTipo === 'camino';
+  if (dibujoFullEditando && pts.length >= (esCamino ? 2 : 3)) {
+    const ky = 110540, kx = 111320 * Math.cos(nuevo.lat * Math.PI / 180), xy = q => [(q.lng - nuevo.lng) * kx, (q.lat - nuevo.lat) * ky];
+    let mejor = 0, dmin = Infinity; const n = esCamino ? pts.length - 1 : pts.length;
+    for (let i = 0; i < n; i++) {
+      const [ax, ay] = xy(pts[i]), [bx, by] = xy(pts[(i + 1) % pts.length]), dx = bx - ax, dy = by - ay, L2 = dx * dx + dy * dy || 1e-9;
+      const t = Math.max(0, Math.min(1, -(ax * dx + ay * dy) / L2)), d = Math.hypot(ax + t * dx, ay + t * dy);
+      if (d < dmin) { dmin = d; mejor = i; }
+    }
+    pts.splice(mejor + 1, 0, nuevo);
+  } else pts.push(nuevo);
+  redibujarDibujoFull();
+}
+window.dibujoFullDeCero = function() {
+  if (dibujoFullPuntos.length && !confirm('¿Borrar los puntos y dibujar el contorno de cero? (puedes deshacer)')) return;
+  dibujoFullGuardarHist(); dibujoFullPuntos = []; dibujoFullEditando = false; dibujoFullSel = -1; dibujoFullDeCeroUsado = true; redibujarDibujoFull();
+};
+window.dibujoFullQuitarSel = function() {
+  if (dibujoFullSel < 0 || !dibujoFullPuntos[dibujoFullSel]) return;
+  dibujoFullGuardarHist(); dibujoFullPuntos.splice(dibujoFullSel, 1); dibujoFullSel = -1; redibujarDibujoFull();
+};
 let dibujoFullPotrero = '';
 let dibujoFullModo = 'potrero';   // 'potrero' | 'zona' (zona que no es potrero: bodegas, patio...)
 let dibujoFullZonaIdx = -1;       // zona que se está redibujando (-1 = nueva)
@@ -10740,12 +10773,10 @@ window.abrirDibujoPotreroFull = function() {
   if (!map) return;
   // Si el potrero ya tenía forma, se centra en él para redibujarlo encima.
   const p = potrerosConfig.find(x => x.nombre === nombre);
-  if (p && poligonoValido(p.poligono)) map.fitBounds(p.poligono);
+  dibujoFullHist = []; dibujoFullSel = -1; dibujoFullEditando = false; dibujoFullGpsUso = { metros: 0, vuelta: false }; dibujoFullDeCeroUsado = false;
+  if (p && poligonoValido(p.poligono)) { map.fitBounds(p.poligono); dibujoFullPuntos = p.poligono.map(aPuntoLL); dibujoFullEditando = true; }
   dibujoFullCapa = L.layerGroup().addTo(map);
-  map.on('click', e => {
-    dibujoFullPuntos.push({ lat: e.latlng.lat, lng: e.latlng.lng });
-    redibujarDibujoFull();
-  });
+  map.on('click', dibujoFullClick);
   redibujarDibujoFull();
 }
 
@@ -10754,32 +10785,143 @@ function redibujarDibujoFull() {
   dibujoFullCapa.clearLayers();
   const pts = dibujoFullPuntos;
   const esCamino = dibujoFullModo === 'zona' && dibujoFullZonaTipo === 'camino';
-  if (esCamino && pts.length >= 2) {
-    L.polyline(pts, { color: '#F5A623', weight: 5, dashArray: '8 6', interactive: false }).addTo(dibujoFullCapa);
-  } else if (pts.length >= 3) {
-    L.polygon(pts, { color: '#F5A623', weight: 3, fillOpacity: 0.25, dashArray: '6 4', interactive: false }).addTo(dibujoFullCapa);
-  } else if (pts.length === 2) {
-    L.polyline(pts, { color: '#F5A623', weight: 3, dashArray: '6 4', interactive: false }).addTo(dibujoFullCapa);
+  let forma = null;
+  if (esCamino && pts.length >= 2) forma = L.polyline(pts, { color: '#F5A623', weight: 5, dashArray: '8 6', interactive: false });
+  else if (pts.length >= 3) forma = L.polygon(pts, { color: '#F5A623', weight: 3, fillOpacity: 0.25, dashArray: '6 4', interactive: false });
+  else if (pts.length === 2) forma = L.polyline(pts, { color: '#F5A623', weight: 3, dashArray: '6 4', interactive: false });
+  if (forma) forma.addTo(dibujoFullCapa);
+  const icono = (col, r, txt) => L.divIcon({ className: '', iconSize: [r * 2, r * 2], iconAnchor: [r, r], html: `<div style="width:${r * 2}px;height:${r * 2}px;border-radius:50%;background:${col};border:2px solid #fff;box-shadow:0 0 0 1px #111;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:${r}px;line-height:1">${txt || ''}</div>` });
+  // puntos "+" a mitad de cada borde: arrastrar o tocar para agregar un punto ahí
+  if (pts.length >= 2) {
+    const n = esCamino || pts.length < 3 ? pts.length - 1 : pts.length;
+    for (let k = 0; k < n; k++) {
+      const a = pts[k], b = pts[(k + 1) % pts.length], mid = { lat: (a.lat + b.lat) / 2, lng: (a.lng + b.lng) / 2 };
+      const m = L.marker(mid, { icon: icono('rgba(37,99,235,.75)', 9, '+'), draggable: true, zIndexOffset: 100 }).addTo(dibujoFullCapa);
+      m.on('click', ev => { L.DomEvent.stopPropagation(ev); dibujoFullGuardarHist(); pts.splice(k + 1, 0, mid); dibujoFullSel = -1; redibujarDibujoFull(); });
+      m.on('dragstart', () => { dibujoFullGuardarHist(); pts.splice(k + 1, 0, { ...mid }); });
+      m.on('drag', ev => { pts[k + 1] = { lat: ev.latlng.lat, lng: ev.latlng.lng }; if (forma) forma.setLatLngs(pts); });
+      m.on('dragend', () => redibujarDibujoFull());
+    }
   }
   pts.forEach((pt, i) => {
-    L.circleMarker(pt, { radius: i === 0 ? 8 : 6, color: '#fff', weight: 2, fillColor: i === 0 ? '#2D7D46' : '#F5A623', fillOpacity: 1, interactive: false }).addTo(dibujoFullCapa);
+    const sel = i === dibujoFullSel;
+    const m = L.marker(pt, { icon: icono(sel ? '#DC2626' : i === 0 ? '#2D7D46' : '#F5A623', sel ? 13 : 11), draggable: true, zIndexOffset: 200 }).addTo(dibujoFullCapa);
+    m.on('click', ev => { L.DomEvent.stopPropagation(ev); dibujoFullSel = sel ? -1 : i; redibujarDibujoFull(); });
+    m.on('dragstart', () => dibujoFullGuardarHist());
+    m.on('drag', ev => { pts[i] = { lat: ev.latlng.lat, lng: ev.latlng.lng }; if (forma) forma.setLatLngs(pts); });
+    m.on('dragend', () => redibujarDibujoFull());
   });
+  const bq = document.getElementById('dibujo-full-btn-quitar'); if (bq) bq.style.display = dibujoFullSel >= 0 ? '' : 'none';
+  const bc = document.getElementById('dibujo-full-btn-cero'); if (bc) bc.style.display = pts.length ? '' : 'none';
   const estado = document.getElementById('dibujo-full-estado');
   if (estado) {
     const minPts = esCamino ? 2 : 3;
-    estado.textContent = pts.length === 0 ? (esCamino ? 'Toca puntos a lo largo del camino, en orden, sobre el mapa.' : `Toca cada esquina ${dibujoFullModo === 'zona' ? 'de la zona' : 'del potrero'} sobre el mapa.`)
+    estado.textContent = dibujoFullEditando && pts.length >= minPts
+      ? `Ajustando el contorno guardado (${pts.length} puntos): arrastra los puntos al deslinde real · arrastra o toca un ＋ para agregar un punto · toca un punto para quitarlo. Toca "Guardar" al terminar.`
+      : pts.length === 0 ? (esCamino ? 'Toca puntos a lo largo del camino, en orden, sobre el mapa.' : `Toca cada esquina ${dibujoFullModo === 'zona' ? 'de la zona' : 'del potrero'} sobre el mapa.`)
       : pts.length < minPts ? `${pts.length} punto(s) — faltan al menos ${minPts - pts.length} más.`
-      : `${pts.length} puntos — toca "Guardar" cuando termines.`;
+      : `${pts.length} puntos — puedes arrastrarlos para ajustar. Toca "Guardar" cuando termines.`;
   }
 }
 
+
+// ─── Recorrer el borde con GPS (a pie o en vehículo) dentro del editor ───
+// Se graba el recorrido en vivo; al terminar, ese tramo reemplaza la parte del contorno que recorrió
+// (o el contorno completo si se dio la vuelta entera). Después se puede ajustar a mano y Guardar.
+let dibujoFullGps = null; // { watchId, pts: [{lat,lng}], acc, capa, wake }
+let dibujoFullGpsUso = { metros: 0, vuelta: false }, dibujoFullDeCeroUsado = false; // para marcar el potrero como confirmado en terreno
+function dibujoFullGpsPintar() {
+  const map = mapasLeafletInstancias['dibujo-potrero-mapa-full'], G = dibujoFullGps; if (!map || !G) return;
+  if (!G.capa) G.capa = L.layerGroup().addTo(map);
+  G.capa.clearLayers();
+  if (G.pts.length >= 2) L.polyline(G.pts, { color: '#2563EB', weight: 5, opacity: 0.9, interactive: false }).addTo(G.capa);
+  if (G.yo) { L.circle(G.yo, { radius: G.acc || 5, color: '#2563EB', weight: 1, fillOpacity: 0.12, interactive: false }).addTo(G.capa); L.circleMarker(G.yo, { radius: 7, color: '#fff', weight: 2, fillColor: '#2563EB', fillOpacity: 1, interactive: false }).addTo(G.capa); }
+  const est = document.getElementById('dibujo-full-gps-estado');
+  if (est) est.innerHTML = `${G.acc != null ? `GPS ±${Math.round(G.acc)} m${G.acc > 12 ? ' <b style="color:#B91C1C">(muy impreciso, espera)</b>' : ''}` : 'buscando GPS…'} · ${G.pts.length} puntos`;
+}
+window.dibujoFullGpsToggle = async function() {
+  const btn = document.getElementById('dibujo-full-btn-gps');
+  if (dibujoFullGps) { dibujoFullGpsTerminar(); return; }
+  if (!navigator.geolocation) { toast('Este celular no tiene GPS disponible en el navegador', false); return; }
+  if (dibujoFullModo === 'zona' && dibujoFullZonaTipo === 'camino') { toast('Para caminos, marca los puntos tocando el mapa', false); return; }
+  dibujoFullGps = { pts: [], acc: null, yo: null, capa: null, wake: null };
+  try { if (navigator.wakeLock) dibujoFullGps.wake = await navigator.wakeLock.request('screen'); } catch (e) {}
+  if (btn) { btn.textContent = '⏹ Terminar tramo'; btn.style.background = 'var(--rojo)'; btn.style.color = '#fff'; }
+  dibujoFullGps.watchId = navigator.geolocation.watchPosition(pos => {
+    const G = dibujoFullGps; if (!G) return;
+    const p = { lat: pos.coords.latitude, lng: pos.coords.longitude }; G.acc = pos.coords.accuracy; G.yo = p;
+    const ult = G.pts[G.pts.length - 1];
+    if (G.acc <= 12 && (!ult || distanciaMetros(ult.lat, ult.lng, p.lat, p.lng) >= 2.5)) G.pts.push(p);
+    const map = mapasLeafletInstancias['dibujo-potrero-mapa-full']; if (map) map.panTo([p.lat, p.lng], { animate: false });
+    dibujoFullGpsPintar();
+  }, err => toast('GPS: ' + err.message, false), { enableHighAccuracy: true, maximumAge: 0, timeout: 30000 });
+  dibujoFullGpsPintar();
+  toast('📍 Camina o avanza por el borde real. Al terminar el tramo (o la vuelta completa), toca «Terminar tramo».', true);
+};
+function dibujoFullGpsParar() {
+  const G = dibujoFullGps; if (!G) return null;
+  if (G.watchId != null) navigator.geolocation.clearWatch(G.watchId);
+  try { if (G.wake) G.wake.release(); } catch (e) {}
+  if (G.capa) G.capa.remove();
+  dibujoFullGps = null;
+  const btn = document.getElementById('dibujo-full-btn-gps'); if (btn) { btn.textContent = '📍 Recorrer el borde con GPS'; btn.style.background = 'var(--negro)'; btn.style.color = 'var(--amarillo)'; }
+  const est = document.getElementById('dibujo-full-gps-estado'); if (est) est.textContent = '';
+  return G;
+}
+function dibujoFullGpsTerminar() {
+  const G = dibujoFullGpsParar(); if (!G) return;
+  if (G.pts.length < 2) { toast('El tramo quedó muy corto: no se cambió el contorno', false); return; }
+  const antes = dibujoFullPuntos.map(p => ({ ...p })), haLL = a => areaHaPoligono(a.map(q => [q.lat, q.lng])), areaAntes = antes.length >= 3 ? haLL(antes) : 0;
+  const nuevo = empalmarTramoContorno(antes, G.pts);
+  if (!nuevo || nuevo.length < 3) { toast('Faltan puntos: sigue recorriendo el borde (al menos 3 puntos)', false); return; }
+  dibujoFullGuardarHist(); dibujoFullPuntos = nuevo; dibujoFullEditando = true; dibujoFullSel = -1;
+  { const m = G.pts.reduce((a, q, i) => i ? a + distanciaMetros(G.pts[i - 1].lat, G.pts[i - 1].lng, q.lat, q.lng) : 0, 0);
+    const per = antes.length >= 3 ? antes.reduce((a, q, i) => a + distanciaMetros(q.lat, q.lng, antes[(i + 1) % antes.length].lat, antes[(i + 1) % antes.length].lng), 0) : 0;
+    const f = G.pts[0], l = G.pts[G.pts.length - 1];
+    dibujoFullGpsUso.metros += m;
+    const inicio = G.pts.slice(0, Math.max(1, Math.ceil(G.pts.length * 0.2))), cierra = inicio.some(q => distanciaMetros(q.lat, q.lng, l.lat, l.lng) < 25);
+    if (!per || (cierra && m > per * 0.6)) dibujoFullGpsUso.vuelta = true; }
+  redibujarDibujoFull();
+  const areaDesp = haLL(nuevo);
+  toast(`✓ Tramo incorporado (${G.pts.length} puntos GPS). ${areaAntes ? 'Superficie del dibujo: ' + areaAntes.toFixed(2).replace('.', ',') + ' → ' + areaDesp.toFixed(2).replace('.', ',') + ' ha. ' : ''}Revisa y toca «Guardar» (o «Deshacer»).`, true);
+}
+// Reemplaza la parte del contorno que siguió el recorrido GPS por los puntos recorridos
+function empalmarTramoContorno(poly, tramo) {
+  const lat0 = tramo[0].lat, ky = 110540, kx = 111320 * Math.cos(lat0 * Math.PI / 180);
+  const xy = q => [(q.lng - tramo[0].lng) * kx, (q.lat - lat0) * ky];
+  // simplifica el recorrido (Douglas-Peucker, 1,5 m)
+  const T = tramo.map(xy), keep = envivoDP(T, 1.5).map(i => tramo[i]);
+  const largo = a => a.reduce((s, q, i) => i ? s + Math.hypot(xy(q)[0] - xy(a[i - 1])[0], xy(q)[1] - xy(a[i - 1])[1]) : 0, 0);
+  const lenT = largo(keep);
+  if (poly.length < 3) return keep.length >= 3 ? keep : null;
+  const n = poly.length, P = poly.map(xy), segL = P.map((a, i) => { const b = P[(i + 1) % n]; return Math.hypot(b[0] - a[0], b[1] - a[1]); });
+  const cum = [0]; for (let i = 0; i < n; i++) cum.push(cum[i] + segL[i]); const per = cum[n];
+  const cerrado = Math.hypot(T[0][0] - T[T.length - 1][0], T[0][1] - T[T.length - 1][1]) < 25 && lenT > per * 0.6;
+  if (cerrado) return keep.length >= 3 ? keep : null; // dio la vuelta completa
+  const proy = q => { let best = { d: Infinity, e: 0, t: 0 }; for (let i = 0; i < n; i++) { const a = P[i], b = P[(i + 1) % n], dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy || 1e-9; const t = Math.max(0, Math.min(1, ((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / L2)); const d = Math.hypot(a[0] + t * dx - q[0], a[1] + t * dy - q[1]); if (d < best.d) best = { d, e: i, t }; } return { ...best, s: cum[best.e] + best.t * segL[best.e] }; };
+  const S = proy(xy(keep[0])), E = proy(xy(keep[keep.length - 1]));
+  const arcoLen = (s0, s1) => ((s1 - s0) % per + per) % per;
+  const verticesEntre = (s0, s1) => { const out = [], L = arcoLen(s0, s1); for (let k = 1; k <= n; k++) { const i = k % n; const d = arcoLen(s0, cum[i] === per ? 0 : cum[i]); if (d > 1e-6 && d < L - 1e-6) out.push({ i, d }); } return out.sort((a, b) => a.d - b.d).map(x => x.i); };
+  const l1 = arcoLen(S.s, E.s), l2 = per - l1;
+  // arco que se reemplaza: el de largo más parecido al tramo recorrido
+  if (Math.abs(l1 - lenT) <= Math.abs(l2 - lenT)) {
+    const resto = verticesEntre(E.s, S.s).map(i => poly[i]);   // de E hacia S (lo que se conserva)
+    return [...keep, ...resto];
+  } else {
+    const resto = verticesEntre(S.s, E.s).map(i => poly[i]);   // de S hacia E (lo que se conserva); luego el tramo de vuelta de E a S
+    return [...resto, ...keep.slice().reverse()];
+  }
+}
 window.deshacerPuntoDibujoFull = function() {
+  dibujoFullSel = -1;
+  if (dibujoFullHist.length) { dibujoFullPuntos = dibujoFullHist.pop(); redibujarDibujoFull(); return; }
   if (!dibujoFullPuntos.length) return;
   dibujoFullPuntos.pop();
   redibujarDibujoFull();
 }
 
 window.cerrarDibujoPotreroFull = function() {
+  dibujoFullGpsParar();
   document.getElementById('modal-dibujo-potrero-full').style.display = 'none';
   if (mapasLeafletInstancias['dibujo-potrero-mapa-full']) {
     mapasLeafletInstancias['dibujo-potrero-mapa-full'].remove();
@@ -10793,6 +10935,7 @@ window.cerrarDibujoPotreroFull = function() {
 }
 
 window.guardarDibujoPotreroFull = async function(seguir) {
+  if (dibujoFullGps) dibujoFullGpsTerminar();
   const esCaminoG = dibujoFullModo === 'zona' && dibujoFullZonaTipo === 'camino';
   if (esCaminoG && dibujoFullPuntos.length < 2) { toast('Marca al menos 2 puntos a lo largo del camino', false); return; }
   if (!esCaminoG && dibujoFullPuntos.length < 3) { toast(`Marca al menos 3 esquinas para cerrar ${dibujoFullModo === 'zona' ? 'la zona' : 'el potrero'}`, false); return; }
@@ -10833,9 +10976,20 @@ window.guardarDibujoPotreroFull = async function(seguir) {
     return;
   }
   try {
+    try { const ls = lotesDe(nombre, new Date().getFullYear()); if (ls && ls.length && !confirm(`«${nombre}» está dividido en ${ls.length} lotes este año. Al cambiar el contorno, revisa después la división de lotes. ¿Guardar el contorno nuevo?`)) return; } catch (e) {}
+    const uso = { ...dibujoFullGpsUso }, deCero = dibujoFullDeCeroUsado;
+    const perM = puntos.reduce((a, q, i) => a + distanciaMetros(q.lat, q.lng, puntos[(i + 1) % puntos.length].lat, puntos[(i + 1) % puntos.length].lng), 0);
     await guardarPotrerosConfig(remotos => {
       const p = remotos.find(x => x.nombre === nombre);
-      if (p) p.poligono = puntos;
+      if (p) {
+        p.poligono = puntos;
+        const prev = deCero ? null : (p.perimetroGps || null), hoy = hoyCampoStr();
+        if (uso.metros > 0) {
+          const metros = Math.round((prev ? prev.metros || 0 : 0) + uso.metros), vuelta = uso.vuelta || !!(prev && prev.vuelta) || metros >= perM * 0.9;
+          p.perimetroGps = { fecha: hoy, por: currentUser || '', metros, perimetroM: Math.round(perM), fraccion: vuelta ? 1 : Math.min(1, +(metros / (perM || 1)).toFixed(2)), vuelta, primera: prev && prev.primera ? prev.primera : hoy };
+        } else if (deCero) p.perimetroGps = null;   // se redibujó de cero a mano: deja de estar confirmado en terreno
+        p.contornoEditado = { fecha: hoy, por: currentUser || '', gps: uso.metros > 0 };
+      }
       return remotos;
     });
     toast(`✓ Mapa de "${nombre}" guardado (${puntos.length} puntos)`, true);
@@ -10918,11 +11072,11 @@ window.abrirDibujoZonaFull = function(idx) {
   const z = idx >= 0 ? jdpZonas[idx] : null;
   if (z && z.tipo === 'camino' && Array.isArray(z.linea) && z.linea.length >= 2) map.fitBounds(z.linea);
   else if (z && z.tipo !== 'circulo' && poligonoValido(z.poligono)) map.fitBounds(z.poligono);
+  dibujoFullHist = []; dibujoFullSel = -1; dibujoFullEditando = false;
+  if (z && z.tipo === 'camino' && Array.isArray(z.linea) && z.linea.length >= 2) { dibujoFullPuntos = z.linea.map(aPuntoLL); dibujoFullEditando = true; }
+  else if (z && z.tipo !== 'circulo' && poligonoValido(z.poligono)) { dibujoFullPuntos = z.poligono.map(aPuntoLL); dibujoFullEditando = true; }
   dibujoFullCapa = L.layerGroup().addTo(map);
-  map.on('click', e => {
-    dibujoFullPuntos.push({ lat: e.latlng.lat, lng: e.latlng.lng });
-    redibujarDibujoFull();
-  });
+  map.on('click', dibujoFullClick);
   redibujarDibujoFull();
 }
 window.borrarZonaSinCultivo = async function(i) {
@@ -11367,7 +11521,8 @@ window.onNuevoPotreroTipoChange = function() {
 function renderListaPotreros() {
   const cont = document.getElementById('lista-potreros');
   if (!cont) return;
-  cont.innerHTML = potrerosConfig.length ? potrerosConfig.map((p, i) => `
+  const nConf = potrerosConfig.filter(p => p.perimetroGps && p.perimetroGps.vuelta).length, nPar = potrerosConfig.filter(p => p.perimetroGps && !p.perimetroGps.vuelta).length;
+  cont.innerHTML = (potrerosConfig.length ? `<div style="font-size:12px;margin-bottom:8px;padding:6px 8px;background:var(--fondo);border-radius:8px">📍 Perímetro confirmado en terreno: <b>${nConf} de ${potrerosConfig.length}</b> potreros${nPar ? ` · ${nPar} con recorrido parcial` : ''}</div>` : '') + (potrerosConfig.length ? potrerosConfig.map((p, i) => `
     <div class="config-item" style="flex-direction:column;align-items:stretch;gap:6px">
       <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px">
         <div style="display:flex;flex-direction:column;gap:2px">
@@ -11377,16 +11532,34 @@ function renderListaPotreros() {
         <span style="flex:1;min-width:140px">
           <strong>${p.nombre}</strong><br>
           <span style="font-size:12px;color:var(--acero)">${p.hectareas != null ? p.hectareas+' ha' : 'sin ha'} · ${p.tipo === 'frutal' ? '🌳 Frutal' : '🌾 Anual'}</span><br>
+          ${estadoContornoHtml(p)}<br>
           <span style="font-size:12px;color:var(--verde);font-weight:600">🌱 ${textoCultivoActual(p.nombre)}</span>${p.tipo === 'frutal' ? (() => { const g = jdpHilerasCfg && jdpHilerasCfg[p.nombre]; return g && (g.v === 2 || g.v === 3) && g.nHileras ? '<br><span style="font-size:12px;color:#065F46">🌳 ' + g.nHileras + ' entrecalles cada ' + g.sp + ' m</span>' : '<br><span style="font-size:12px;color:#92400E">🌳 hileras sin definir</span>'; })() : ''}${(() => { const ls = lotesDe(p.nombre, new Date().getFullYear()); return ls ? '<br><span style="font-size:12px;color:#92400E">✂️ ' + new Date().getFullYear() + ': ' + ls.map(l => escA(l.nombre) + ' ' + escA(l.cultivo || '?') + ' ' + (l.hectareas != null ? l.hectareas.toFixed(1) + ' ha' : '')).join(' · ') + '</span>' : ''; })()}
         </span>
         ${p.tipo !== 'frutal' ? `<button class="btn btn-secondary" style="font-size:11px;padding:6px 10px" onclick="abrirEdicionCultivoPotrero(${i})">✏️ Definir cultivo</button>` : ''}
         ${p.tipo !== 'frutal' ? `<button class="btn btn-secondary" style="font-size:11px;padding:6px 10px" onclick="abrirLotes(${i})">✂️ Dividir por año</button>` : ''}
         ${p.tipo === 'frutal' ? `<button class="btn btn-secondary" style="font-size:11px;padding:6px 10px" onclick="abrirHileras(${i})">🌳 Hileras${(() => { const g = jdpHilerasCfg && jdpHilerasCfg[p.nombre]; return g && g.nHileras ? ' (' + g.nHileras + ')' : ''; })()}</button>` : ''}
+        <button class="btn btn-secondary" style="font-size:11px;padding:6px 10px" onclick="editarContornoPotrero(${i}, false)">✏️ Contorno</button>
+        <button class="btn btn-secondary" style="font-size:11px;padding:6px 10px" onclick="editarContornoPotrero(${i}, true)">📍 Recorrer</button>
         <button class="btn btn-danger" onclick="eliminarPotrero(${i})">✕</button>
       </div>
       <div id="potrero-cultivo-editor-${i}"></div>
-    </div>`).join('') : '<div style="color:#9CA3AF;font-size:13px;padding:8px">Sin potreros agregados.</div>';
+    </div>`).join('') : '<div style="color:#9CA3AF;font-size:13px;padding:8px">Sin potreros agregados.</div>');
 }
+// Cómo se obtuvo el contorno del potrero
+function estadoContornoHtml(p) {
+  const g = p.perimetroGps, fC = f => f ? f.slice(8, 10) + '-' + f.slice(5, 7) + '-' + f.slice(0, 4) : '';
+  if (!poligonoValido(p.poligono)) return '<span style="font-size:12px;color:#B91C1C;font-weight:600">⚠️ Sin contorno en el mapa</span>';
+  if (g && g.vuelta) return `<span style="font-size:12px;color:#15803D;font-weight:700">✅ Perímetro recorrido en terreno</span> <span style="font-size:11px;color:var(--acero)">(${fC(g.fecha)}${g.por ? ', ' + escA(g.por) : ''}${p.contornoEditado && !p.contornoEditado.gps && p.contornoEditado.fecha > g.fecha ? ' · ajustado a mano el ' + fC(p.contornoEditado.fecha) : ''})</span>`;
+  if (g) return `<span style="font-size:12px;color:#B45309;font-weight:700">🟡 Recorrido en terreno en parte (~${Math.round((g.fraccion || 0) * 100)}% del borde)</span> <span style="font-size:11px;color:var(--acero)">(${fC(g.fecha)}${g.por ? ', ' + escA(g.por) : ''})</span>`;
+  return '<span style="font-size:12px;color:var(--acero)">✏️ Dibujado sobre el mapa (sin confirmar en terreno)</span>';
+}
+window.editarContornoPotrero = function(i, gps) {
+  const p = potrerosConfig[i]; if (!p) return;
+  const sel = document.getElementById('dibujo-potrero-sel');
+  if (sel) { if (![...sel.options].some(o => o.value === p.nombre)) sel.insertAdjacentHTML('beforeend', `<option>${escA(p.nombre)}</option>`); sel.value = p.nombre; }
+  abrirDibujoPotreroFull();
+  if (gps) setTimeout(() => dibujoFullGpsToggle(), 400);
+};
 
 let edicionPotreroCultivoIdx = null;
 let edicionPotreroCultivoSel = null;
@@ -16100,10 +16273,16 @@ tbody td{padding:10px 12px;vertical-align:middle;}
             <button class="btn btn-secondary" style="width:auto;padding:6px 12px" onclick="cerrarDibujoPotreroFull()">✕ Cancelar</button>
           </div>
           <div style="font-size:12px;color:var(--acero);margin-top:4px" id="dibujo-full-estado">Toca cada esquina del potrero sobre el mapa.</div>
+          <div style="display:flex;gap:8px;align-items:center;margin-top:6px" id="dibujo-full-gps-fila">
+            <button type="button" class="btn" id="dibujo-full-btn-gps" style="width:auto;padding:8px 12px;background:var(--negro);color:var(--amarillo)" onclick="dibujoFullGpsToggle()">📍 Recorrer el borde con GPS</button>
+            <span id="dibujo-full-gps-estado" style="font-size:12px;color:var(--acero)"></span>
+          </div>
         </div>
         <div id="dibujo-potrero-mapa-full" style="flex:1;min-height:0"></div>
         <div style="display:flex;gap:8px;padding:10px 14px;border-top:1px solid var(--borde)">
-          <button class="btn btn-secondary" style="flex:1;justify-content:center;padding:14px" onclick="deshacerPuntoDibujoFull()">↶ Deshacer punto</button>
+          <button class="btn btn-secondary" style="flex:1;justify-content:center;padding:14px" onclick="deshacerPuntoDibujoFull()">↶ Deshacer</button>
+          <button class="btn" id="dibujo-full-btn-quitar" style="flex:1;justify-content:center;padding:14px;display:none;background:#DC2626;color:#fff" onclick="dibujoFullQuitarSel()">🗑 Quitar punto</button>
+          <button class="btn btn-secondary" id="dibujo-full-btn-cero" style="flex:none;justify-content:center;padding:14px 10px;display:none" onclick="dibujoFullDeCero()" title="Borrar y dibujar de cero">🧹</button>
           <button class="btn btn-verde" style="flex:1;justify-content:center;padding:14px" onclick="guardarDibujoPotreroFull()">✓ Guardar</button>
           <button class="btn btn-verde" id="dibujo-full-btn-otro" style="flex:1;justify-content:center;padding:14px;display:none;background:var(--negro);color:var(--amarillo)" onclick="guardarDibujoPotreroFull(true)">✓ Guardar y dibujar otro</button>
         </div>
@@ -16253,7 +16432,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
 
         <div class="cultivos-label">📍 Caminar el perímetro (recomendado desde el celular, en terreno)</div>
         <div class="hint" style="margin-bottom:10px">
-          Elige el potrero arriba, toca "Caminar el perímetro" y lleva el celular contigo bordeando el potrero. La app va marcando el camino solo con el GPS. Al completar la vuelta, toca "Finalizar" para cerrar y guardar la forma.
+          Elige el potrero arriba, toca "Caminar el perímetro" y recorre el borde con el celular (a pie o en vehículo). La app lo va marcando en vivo con el GPS. Puedes recorrer <b>solo el tramo</b> que quieres corregir: al tocar "Terminar tramo", ese tramo reemplaza esa parte del contorno; si das la vuelta completa, reemplaza todo. Revisas y tocas "Guardar".
         </div>
         <button type="button" id="btn-caminata" class="btn btn-full" style="background:var(--negro);color:var(--amarillo);justify-content:center" onclick="toggleCaminataPerimetro()">📍 Caminar el perímetro</button>
         <div id="caminata-estado" style="font-size:12px;color:var(--acero);margin:6px 0 14px;text-align:center"></div>
