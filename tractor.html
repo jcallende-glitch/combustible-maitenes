@@ -50,6 +50,12 @@
   .lista-pot button { text-align: left; padding: 12px; background: #262626; color: var(--texto); font-size: 15px; }
   .lista-pot button .sub { display: block; font-size: 12px; color: var(--gris); margin-top: 2px; }
   .lista-pot button.aqui { border: 2px solid var(--verde); }
+  .lista-pot button.cont { border: 2px solid var(--azul); }
+  .lista-pot button.nueva { border: 1px dashed var(--amarillo); }
+  .lista-pot .fila-ap { display: flex; gap: 6px; align-items: stretch; }
+  .lista-pot .fila-ap > button:first-child { flex: 1; }
+  .lista-pot .fila-ap > button.term { flex: none; font-size: 13px; padding: 8px 10px; text-align: center; }
+  .lista-pot .tit { font-size: 12px; color: var(--gris); margin: 8px 0 0; text-transform: uppercase; letter-spacing: .5px; }
   .eq-chips { display: flex; flex-direction: column; gap: 8px; }
   .eq-chips button { padding: 16px; font-size: 18px; font-weight: 700; background: #262626; color: var(--texto); border: 2px solid #444; text-align: left; }
   .eq-chips button.sel { background: var(--verde); color: #052e12; border-color: #16a34a; }
@@ -177,19 +183,15 @@
 <div class="capa" id="capa-continuar">
   <div class="caja">
     <h2 id="cont-titulo">Aplicación sin terminar</h2>
-    <div id="cont-texto" style="font-size:15px;line-height:1.5"></div>
-    <div class="acciones">
-      <button class="btn-prim" id="cont-si">↪ Es continuación</button>
-      <button class="btn-amar" id="cont-nueva">✳ Nueva aplicación</button>
-    </div>
+    <div id="cont-texto" class="lista-pot" style="font-size:15px;line-height:1.4"></div>
     <div class="acciones"><button class="btn-gris" onclick="cerrarCapa('capa-continuar')">Cancelar</button></div>
-    <div class="nota">Continuación: se sigue pintando sobre lo ya aplicado, para no repetir hileras. Nueva: lo anterior se da por cerrado y se empieza de cero.</div>
+    <div class="nota"><b>Continuar</b>: ves en azul lo que aplicaron los otros tractores u operadores en esa misma aplicación (se actualiza solo) y se sigue pintando encima, para no repetir. <b>Empezar</b>: una aplicación distinta en el mismo potrero; las otras siguen abiertas para los demás tractores.</div>
   </div>
 </div>
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import { getFirestore, doc, getDoc, setDoc, collection, getDocs, query, where, arrayUnion } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import { getFirestore, doc, getDoc, setDoc, collection, getDocs, query, where, arrayUnion, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
 const app = initializeApp({
   apiKey: "AIzaSyAVsios3N97MQVPJLC94qEOXGJNmKzK9RI",
@@ -442,11 +444,11 @@ function agregarAplicado(p) {
   const ll = [p.lat, p.lng, p.t];
   const cont = ultimoAplicado && (p.t - ultimoAplicado.t) < 30000 && distM([ultimoAplicado.lat, ultimoAplicado.lng], ll) < 60;
   if (!tramoActual || !cont) { tramoActual = []; tramosAplicados.push(tramoActual); }
-  if (tramoActual.length && cont) kmAplicacion += distM(tramoActual[tramoActual.length - 1], ll) / 1000;
+  if (tramoActual.length && cont) { const dk = distM(tramoActual[tramoActual.length - 1], ll) / 1000; kmAplicacion += dk; const dd = diaLocal(p.t); kmPorDia[dd] = (kmPorDia[dd] || 0) + dk; }
   tramoActual.push(ll);
   ultimoAplicado = p;
 }
-let trazosOtros = [], kmOtros = 0, equiposOtros = [];
+let trazosOtros = [], kmOtros = 0, equiposOtros = [], kmPorDia = {};
 // Totalizador 2: hectáreas aplicadas desde el último reinicio (para calibrar). Independiente del potrero; queda en el celular.
 let parcial = ls.get('tractor_parcial', null) || { m2: 0, km: 0, ms: 0, desde: Date.now() };
 function sumarParcial(dKm, dMs) {
@@ -859,7 +861,7 @@ function calcularCobertura() {
   pintarAplicacion();
 }
 async function cargarAplicadoActivo() {
-  tramosAplicados = []; tramoActual = null; ultimoAplicado = null; kmAplicacion = 0;
+  tramosAplicados = []; tramoActual = null; ultimoAplicado = null; kmAplicacion = 0; kmPorDia = {};
   const a = activa();
   const guardado = a ? ls.get('tractor_otros_' + a.id, null) : null;
   trazosOtros = guardado ? guardado.trazos : []; kmOtros = guardado ? guardado.km : 0; equiposOtros = guardado ? guardado.equipos : [];
@@ -889,7 +891,7 @@ function pintarAplicacion() {
     const pct = pg && pg.ha ? Math.min(100, ha / pg.ha * 100) : null;
     const haOtros = kmOtros * 1000 * ancho / 10000, haTot = ha + haOtros;
     const pctT = pg && pg.ha ? Math.min(100, haTot / pg.ha * 100) : null;
-    info.innerHTML = `🌾 <strong>${a.potrero}</strong><div class="sub">Desde ${fechaCorta(a.inicio)} · este tractor ${kmAplicacion.toFixed(1).replace('.', ',')} km${kmOtros ? ` · otros (${equiposOtros.join(', ')}) ${kmOtros.toFixed(1).replace('.', ',')} km` : ''} · ≈ ${haTot.toFixed(1).replace('.', ',')} ha${pctT != null ? ` (~${pctT.toFixed(0)}% de ${pg.ha.toFixed(1).replace('.', ',')} ha)` : ''}</div>`;
+    info.innerHTML = `🌾 <strong>${a.potrero}</strong>${a.labor ? ` · ${a.labor}` : ''}<div class="sub">Desde ${fechaCorta(a.inicio)} · este tractor ${kmAplicacion.toFixed(1).replace('.', ',')} km${kmOtros ? ` · otros (${equiposOtros.join(', ')}) ${kmOtros.toFixed(1).replace('.', ',')} km` : ''} · ≈ ${haTot.toFixed(1).replace('.', ',')} ha${pctT != null ? ` (~${pctT.toFixed(0)}% de ${pg.ha.toFixed(1).replace('.', ',')} ha)` : ''}</div>`;
     resumenAp = { haTot, pct: pctT, haPot: pg && pg.ha ? pg.ha : null };
     info.innerHTML += textoParcial();
     btn.textContent = '🌾 Cambiar / terminar';
@@ -914,57 +916,241 @@ function cerrarCapa(id) { document.getElementById(id).style.display = 'none'; }
 window.cerrarCapa = cerrarCapa;
 let despuesDeElegir = null; // acción a ejecutar después (p. ej. empezar a aplicar)
 window.abrirPotreros = function (luego) {
+  if (esEquipoAplicacion(ajustes.equipo)) { abrirProgramadas(luego); return; } // este equipo solo trabaja con tareas programadas
   despuesDeElegir = typeof luego === 'function' ? luego : null;
   const aqui = ultimaPos ? potreroEn(ultimaPos.lat, ultimaPos.lng) : null;
   const orden = [...potrerosGeo].sort((x, y) => (y.nombre === aqui) - (x.nombre === aqui) || x.nombre.localeCompare(y.nombre));
-  const abiertaDe = n => aplicaciones.find(a => a.potrero === n && a.estado === 'abierta');
+  const abiertasDe = n => aplicaciones.filter(a => a.potrero === n && a.estado === 'abierta');
   document.getElementById('lista-pot').innerHTML = orden.length ? orden.map(p => {
-    const ab = abiertaDe(p.nombre);
+    const abs = abiertasDe(p.nombre);
     return `<button class="${p.nombre === aqui ? 'aqui' : ''}" onclick="elegirPotrero('${p.nombre.replace(/'/g, "\\'")}')">${p.nombre === aqui ? '📍 ' : ''}${p.nombre}
-      <span class="sub">${p.nombre === aqui ? 'Estás aquí · ' : ''}${ab ? `aplicación sin terminar desde ${fechaCorta(ab.inicio)} (${(ab.km || 0).toFixed(1).replace('.', ',')} km)` : 'sin aplicación abierta'}</span></button>`;
+      <span class="sub">${p.nombre === aqui ? 'Estás aquí · ' : ''}${abs.length ? abs.map(ab => `${ab.labor || 'aplicación'} sin terminar desde ${fechaCorta(ab.inicio)}${(ab.equiposAll || []).length ? ' (' + ab.equiposAll.join(', ') + ')' : ''}`).join(' · ') : 'sin aplicación abierta'}</span></button>`;
   }).join('') : '<div class="nota">No hay potreros guardados en este celular. Ve a ⚙️ → Actualizar potreros (con internet).</div>';
+  { const np = programadasDe(ajustes.equipo).length; if (np) document.getElementById('lista-pot').insertAdjacentHTML('afterbegin', `<button class="cont" onclick="irATareasDesdePotreros()">📅 Tareas programadas para ${ajustes.equipo} (${np})<span class="sub">las dejó el administrador en el cuaderno de campo</span></button>`); }
   const a = activa();
   document.getElementById('acc-pot-terminar').innerHTML = a ? `<button class="btn-amar" onclick="terminarPotrero()">✔ Terminar ${a.potrero}</button>` : '';
   document.getElementById('capa-potreros').style.display = 'flex';
 };
+
+// ═══ 📅 Tareas programadas (labores_programadas): las deja el administrador en el cuaderno de campo ═══
+// Los "equipos de aplicación" (config) solo pueden aplicar con una tarea asignada. Al empezarla se crea la labor
+// en curso en el cuaderno; el avance (km/ha por día y equipo) se guarda en la tarea; al terminar, se cierra sola.
+const esEquipoAplicacion = eq => {
+  if (!eq) return false;
+  const l = datosCampo && Array.isArray(datosCampo.equiposAplicacion) ? datosCampo.equiposAplicacion : ((datosCampo && datosCampo.equipos) || []).filter(e => /5090|5076/.test(e));
+  return l.includes(eq);
+};
+let programadasCache = ls.get('tractor_programadas', []);
+async function traerProgramadas() {
+  const eq = ajustes.equipo;
+  if (!navigator.onLine || !eq) return programadasCache;
+  try {
+    const s = await conTimeout(getDocs(query(collection(db, 'labores_programadas'), where('equipos', 'array-contains', eq))), 10000);
+    const nuevas = s.docs.map(d => ({ id: d.id, ...d.data() })).filter(t => t.estado === 'pendiente' || t.estado === 'en_curso')
+      .map(t => ({ id: t.id, potrero: t.potrero, texto: t.texto || 'Tarea', estado: t.estado, fechaProgramada: t.fechaProgramada || '', datosInicio: t.datosInicio || '', aplicacionId: t.aplicacionId || null, laborId: t.laborId || null, equipos: t.equipos || [], eq }));
+    programadasCache = [...programadasCache.filter(t => t.eq !== eq), ...nuevas];
+    ls.set('tractor_programadas', programadasCache);
+  } catch (e) { console.warn('tareas programadas', e); }
+  return programadasCache;
+}
+const programadasDe = eq => programadasCache.filter(t => t.eq === eq).sort((a, b) => (a.estado === 'en_curso' ? 0 : 1) - (b.estado === 'en_curso' ? 0 : 1) || (a.fechaProgramada || '').localeCompare(b.fechaProgramada || ''));
+const fCortaS = f => f ? f.slice(8, 10) + '-' + f.slice(5, 7) : '';
+function revisarProgramadasInicio(forzar) {
+  traerProgramadas().then(() => {
+    const eq = ajustes.equipo, a = activa();
+    if (!eq || hayCapaAbierta()) return;
+    if (esEquipoAplicacion(eq) ? (forzar || !a) : (forzar && !a && programadasDe(eq).length)) abrirProgramadas(null);
+  });
+}
+window.abrirProgramadas = async function (luego) {
+  despuesDeElegir = typeof luego === 'function' ? luego : null;
+  pintarProgramadas(true);
+  document.getElementById('capa-jornada').style.display = 'flex';
+  await Promise.all([traerProgramadas(), traerAbiertasCompartidas()]);
+  pintarProgramadas(false);
+};
+function pintarProgramadas(cargando) {
+  const eq = ajustes.equipo, gated = esEquipoAplicacion(eq), ts = programadasDe(eq), a = activa();
+  document.getElementById('jor-titulo').textContent = `📅 Tareas del ${eq || 'tractor'}`;
+  document.getElementById('jor-texto').innerHTML = ts.length ? (a && a.programadaId ? `Ahora: <strong>${escH(a.labor || '')}</strong> en <strong>${escH(a.potrero)}</strong>.` : '¿Qué tarea vas a realizar?')
+    : (cargando ? 'Buscando tareas…' : (gated ? `No hay tareas programadas para el <strong>${escH(eq)}</strong>. Pídele al administrador o a Nicolás que la programe en el cuaderno de campo (📅 Programar como tarea).` : 'No hay tareas programadas para este equipo.'));
+  const btn = (cls, txt, sub, fn) => `<button type="button" class="${cls}" style="flex:none;text-align:left" data-fn="${fn}">${txt}${sub ? `<div style="font-size:12px;font-weight:400;opacity:.85">${sub}</div>` : ''}</button>`;
+  let h = '';
+  if (a && a.programadaId) h += btn('btn-gris', `✔ Terminar ${escH(a.labor || 'la tarea')} en ${escH(a.potrero)}`, 'queda terminada en el cuaderno de campo', 'term');
+  let primeraPend = true;
+  ts.forEach(t => {
+    const activaEsta = a && a.programadaId === t.id;
+    if (t.estado === 'en_curso') h += btn(activaEsta ? 'btn-gris' : 'btn-prim', `↪ ${activaEsta ? 'Seguir (activa)' : 'Continuar'}: ${escH(t.texto)} · ${escH(t.potrero)}`, `en curso${t.datosInicio ? ' desde el ' + fCortaS(t.datosInicio) : ''}${t.equipos.length > 1 ? ' · ' + escH(t.equipos.join(', ')) : ''}`, 'p:' + t.id);
+    else { h += btn(primeraPend ? 'btn-amar' : 'btn-gris', `▶ ${primeraPend ? 'Siguiente' : 'Empezar'}: ${escH(t.texto)} · ${escH(t.potrero)}`, `programada para el ${fCortaS(t.fechaProgramada)}${t.equipos.length > 1 ? ' · con ' + escH(t.equipos.filter(x => x !== eq).join(', ')) : ''}`, 'p:' + t.id); primeraPend = false; }
+  });
+  if (!gated) h += btn('btn-gris', '🌾 Trabajar sin tarea programada', 'elegir potrero libremente', 'libre');
+  h += btn('btn-gris', '🔄 Revisar de nuevo', '', 'rev');
+  h += btn('btn-gris', '🚜 Cambiar de tractor', '', 'eq');
+  h += btn('btn-gris', 'Cerrar', '', 'cerrar');
+  const cont = document.getElementById('jor-botones');
+  cont.innerHTML = h;
+  cont.querySelectorAll('button[data-fn]').forEach(b => b.onclick = () => {
+    const f = b.dataset.fn;
+    if (f.startsWith('p:')) { elegirProgramada(f.slice(2)); return; }
+    cerrarCapa('capa-jornada');
+    if (f === 'term') terminarPotrero();
+    else if (f === 'libre') { const l = despuesDeElegir; despuesDeElegir = null; abrirPotrerosLibre(l); }
+    else if (f === 'rev') abrirProgramadas(despuesDeElegir);
+    else if (f === 'eq') tocarEquipo();
+  });
+  document.getElementById('jor-nota').textContent = gated ? `El modo tractor del ${eq} funciona solo con una tarea programada. Continuar: se suma a la misma aplicación (ves en azul lo que hicieron otros equipos u operadores).` : 'Continuar: te sumas a la misma aplicación y ves en azul lo que hicieron otros equipos u operadores.';
+}
+window.irATareasDesdePotreros = () => { const l = despuesDeElegir; cerrarCapa('capa-potreros'); abrirProgramadas(l); };
+function abrirPotrerosLibre(luego) { const g = esEquipoAplicacion; if (g(ajustes.equipo)) return; window.abrirPotreros(luego); }
+window.elegirProgramada = async function (pid) {
+  const P = programadasCache.find(x => x.id === pid); if (!P) return;
+  cerrarCapa('capa-jornada');
+  let fresca = { ...P };
+  if (navigator.onLine) { try { const d = await conTimeout(getDoc(doc(db, 'labores_programadas', pid)), 8000); if (d.exists()) fresca = { ...P, ...d.data(), id: pid }; } catch (e) {} }
+  if (fresca.estado === 'terminada' || fresca.estado === 'cancelada') { mostrarAviso('Esa tarea ya fue terminada o cancelada.'); traerProgramadas(); return; }
+  const local = aplicaciones.find(a => a.programadaId === pid && a.estado === 'abierta');
+  if (local) { if (local.id !== activaId) await activarAplicacion(local.id); else ejecutarDespues(); return; }
+  if (fresca.aplicacionId) {   // ya la empezó otro tractor (u otro celular): se suma a esa misma aplicación
+    await traerAbiertasCompartidas();
+    const ab = aplicaciones.find(a => a.id === fresca.aplicacionId && a.estado === 'abierta');
+    if (ab) { ab.programadaId = pid; ab.laborId = ab.laborId || fresca.laborId || null; ab.labor = ab.labor || fresca.texto; guardarAplicaciones(); await activarAplicacion(ab.id); return; }
+  }
+  const ahora = Date.now();
+  const a = { id: `${dispositivo}_${ahora}`, potrero: P.potrero, inicio: ahora, fin: null, estado: 'abierta', km: 0, equipo: ajustes.equipo, operador: sesion ? sesion.nombre : null, ancho: anchoDePotrero(P.potrero), labor: fresca.texto || P.texto, laborId: fresca.laborId || null, programadaId: pid };
+  aplicaciones.push(a);
+  aplicaciones = aplicaciones.filter(x => x.estado === 'abierta' || ahora - (x.fin || x.inicio) < 60 * 86400000);
+  await activarAplicacion(a.id);
+};
+// Se llama al subir (con señal): crea la labor en curso del cuaderno, guarda el avance del día y cierra la tarea al terminar
+async function sincronizarProgramada(a) {
+  const ref = doc(db, 'labores_programadas', a.programadaId), hoy = diaLocal(Date.now()), eq = ajustes.equipo, op = sesion ? sesion.nombre : null;
+  if (!a.laborId) {
+    const d = await conTimeout(getDoc(ref), 15000); const P = d.exists() ? d.data() : null;
+    if (!P) { a.programadaId = null; return; }
+    if (P.laborId) a.laborId = P.laborId;
+    else {
+      const dia = diaLocal(a.inicio), lab = doc(collection(db, 'labores_campo'));
+      await conTimeout(setDoc(lab, { ...(P.datos || {}), fecha: dia, anio: dia.slice(0, 4), enCurso: true, diasTrabajo: [dia], equipo: eq, operadorLabor: op, programadaId: a.programadaId, origen: 'modo_tractor', ts: Date.now() }), 15000);
+      a.laborId = lab.id;
+      await conTimeout(setDoc(ref, { estado: 'en_curso', laborId: lab.id, aplicacionId: P.aplicacionId || a.id, iniciada: a.inicio, iniciadaPor: op, datosInicio: dia }, { merge: true }), 15000);
+    }
+    guardarAplicaciones();
+  }
+  const cambios = {};
+  const kd = a.id === activaId ? kmPorDia : (a.estado === 'terminada' && !a.programadaCerrada ? a.kmPorDia : null);
+  if (kd) { // avance de este equipo, por día
+    const ancho = a.id === activaId ? anchoActual() : (a.anchoFin || a.ancho || Number(ajustes.ancho) || 5), av = {};
+    Object.entries(kd).forEach(([dia, km]) => { if (km > 0.005) av[dia + '|' + claveEquipo(eq)] = { fecha: dia, equipo: eq, operador: op, km: +km.toFixed(2), ha: +(km * ancho / 10).toFixed(2), fuente: 'tractor', ts: Date.now() }; });
+    if (Object.keys(av).length) { cambios.avance = av; if (a.laborId) await conTimeout(setDoc(doc(db, 'labores_campo', a.laborId), { diasTrabajo: arrayUnion(...Object.keys(kd).filter(k => kd[k] > 0.005)) }, { merge: true }), 15000); }
+  }
+  if (a.estado === 'terminada' && !a.programadaCerrada) {
+    const fin = diaLocal(a.fin || Date.now());
+    if (a.laborId) await conTimeout(setDoc(doc(db, 'labores_campo', a.laborId), { enCurso: false, fechaFin: fin === diaLocal(a.inicio) ? null : fin, diasTrabajo: arrayUnion(fin), hectareas_gps: a.haGps != null ? a.haGps : null, terminadoPor: a.cerradaPorNombre || op || '', terminadoTs: a.fin || Date.now() }, { merge: true }), 15000);
+    Object.assign(cambios, { estado: 'terminada', fin: a.fin || Date.now(), terminadaPor: a.cerradaPorNombre || op || '', hectareas_gps: a.haGps != null ? a.haGps : null });
+    a.programadaCerrada = true;
+  }
+  if (Object.keys(cambios).length) await conTimeout(setDoc(ref, cambios, { merge: true }), 15000);
+  if (cambios.estado) traerProgramadas();
+}
 window.elegirPotrero = async function (nombre) {
   cerrarCapa('capa-potreros');
-  await traerAbiertasCompartidas();
-  const ab = aplicaciones.filter(a => a.potrero === nombre && a.estado === 'abierta').sort((x, y) => y.inicio - x.inicio)[0];
-  if (ab && ab.id === activaId) { ejecutarDespues(); return; }      // ya es la activa
-  if (ab) preguntarContinuacion(ab); else nuevaAplicacion(nombre);
+  await Promise.all([traerAbiertasCompartidas(), traerLaboresEnCurso()]);
+  const abiertas = aplicaciones.filter(a => a.potrero === nombre && a.estado === 'abierta').sort((x, y) => y.inicio - x.inicio);
+  const labs = laboresCursoCache.filter(l => l.potrero === nombre && !abiertas.some(a => a.laborId === l.id));
+  if (abiertas.length === 1 && abiertas[0].id === activaId && !labs.length) { ejecutarDespues(); return; } // ya es la activa
+  if (!abiertas.length && !labs.length) { nuevaAplicacion(nombre, null); return; }
+  mostrarOpcionesPotrero(nombre);
 };
-function preguntarContinuacion(ab) {
-  document.getElementById('cont-titulo').textContent = `🌾 ${ab.potrero}`;
-  document.getElementById('cont-texto').innerHTML = `Este potrero tiene una aplicación <strong>sin terminar</strong> desde el <strong>${fechaCorta(ab.inicio)}</strong> (${(ab.km || 0).toFixed(1).replace('.', ',')} km aplicados).<br>¿Es continuación de esa aplicación o una aplicación nueva?`;
-  document.getElementById('cont-si').onclick = () => { cerrarCapa('capa-continuar'); activarAplicacion(ab.id); };
-  document.getElementById('cont-nueva').onclick = () => { cerrarCapa('capa-continuar'); nuevaAplicacion(ab.potrero); };
+const haceTxt = t => { if (!t) return ''; const m = Math.round((Date.now() - t) / 60000); return m < 2 ? 'recién' : m < 60 ? `hace ${m} min` : m < 1440 ? `hace ${Math.round(m / 60)} h` : `hace ${Math.round(m / 1440)} días`; };
+const escH = x => String(x == null ? '' : x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+let contPotrero = null;
+// Diálogo: aplicaciones en curso en el potrero (de cualquier tractor) + labores en curso del cuaderno de campo
+function mostrarOpcionesPotrero(nombre) {
+  contPotrero = nombre;
+  const abiertas = aplicaciones.filter(a => a.potrero === nombre && a.estado === 'abierta').sort((x, y) => y.inicio - x.inicio);
+  const labs = laboresCursoCache.filter(l => l.potrero === nombre && !abiertas.some(a => a.laborId === l.id));
+  document.getElementById('cont-titulo').textContent = `🌾 ${nombre}`;
+  let h = '';
+  if (abiertas.length) {
+    h += `<div class="tit">En curso en este potrero</div>` + abiertas.map(a => {
+      const eqs = (a.equiposAll && a.equiposAll.length ? a.equiposAll : [a.equipo]).filter(Boolean);
+      const km = Math.max(a.kmTot || 0, a.km || 0);
+      return `<div class="fila-ap"><button class="cont" onclick="contContinuar('${a.id}')">↪ Continuar${a.id === activaId ? ' (activa)' : ''}: <strong>${escH(a.labor || 'aplicación')}</strong>
+        <span class="sub">desde ${fechaCorta(a.inicio)}${eqs.length ? ' · ' + escH(eqs.join(', ')) : ''}${km ? ` · ${km.toFixed(1).replace('.', ',')} km` : ''}${a.actividad ? ' · último movimiento ' + haceTxt(a.actividad) : ''}</span></button>
+        <button class="btn-gris term" onclick="contTerminar('${a.id}')">✔ Terminar</button></div>`;
+    }).join('');
+  }
+  h += `<div class="tit">Empezar una aplicación nueva</div>`;
+  h += labs.map(l => `<button class="nueva" onclick="contNueva('${l.id}')">✳ <strong>${escH(l.texto)}</strong><span class="sub">del cuaderno de campo, en curso desde ${escH(l.fecha ? l.fecha.slice(8, 10) + '-' + l.fecha.slice(5, 7) : '')}${l.equipo ? ' · ' + escH(l.equipo) : ''}</span></button>`).join('');
+  h += `<button class="nueva" onclick="contNueva('')">✳ Otra aplicación<span class="sub">sin labor del cuaderno</span></button>`;
+  document.getElementById('cont-texto').innerHTML = h;
   document.getElementById('capa-continuar').style.display = 'flex';
+}
+window.contContinuar = id => { cerrarCapa('capa-continuar'); if (id === activaId) { ejecutarDespues(); return; } activarAplicacion(id); };
+window.contNueva = laborId => {
+  const nombre = contPotrero, l = laborId ? laboresCursoCache.find(x => x.id === laborId) : null;
+  cerrarCapa('capa-continuar');
+  nuevaAplicacion(nombre, l ? { id: l.id, texto: l.texto } : null);
+};
+window.contTerminar = async id => {
+  const a = aplicaciones.find(x => x.id === id); if (!a) return;
+  if (!confirm(`¿Terminar «${a.labor || 'aplicación'}» en ${a.potrero}? Se deja de mostrar para todos los tractores.`)) return;
+  a.estado = 'terminada'; a.fin = Date.now(); a.cerradaPor = 'manual'; a.cerradaPorNombre = sesion ? sesion.nombre : '';
+  if (a.id === activaId) { if (resumenAp) a.haGps = +resumenAp.haTot.toFixed(2); a.kmPorDia = { ...kmPorDia }; a.anchoFin = anchoActual(); }
+  if (a.id === activaId) { a.km = +kmAplicacion.toFixed(2); activaId = null; aplicando = false; ls.set('tractor_aplicando', false); pintarBotonAplicar(); dibujarCampo(); await cargarAplicadoActivo(); escucharTrazos(); }
+  guardarAplicaciones(); sincronizarAplicacion(a);
+  const quedan = aplicaciones.some(x => x.potrero === contPotrero && x.estado === 'abierta');
+  mostrarOpcionesPotrero(contPotrero);
+  if (!quedan && !laboresCursoCache.some(l => l.potrero === contPotrero)) { /* queda solo "Otra aplicación" */ }
+};
+// Labores en curso del cuaderno de campo (para nombrar la aplicación y que otros tractores la reconozcan)
+const TIPO_LABOR_TXT = { siembra: 'Siembra', fertilizacion: 'Fertilización', fumigacion: 'Fumigación', aplicacion: 'Aplicación', trabajo_suelo: 'Trabajo de suelo', cosecha: 'Cosecha', otro: 'Otro' };
+function textoLabor(l) {
+  const t = TIPO_LABOR_TXT[l.tipo] || (String(l.tipo || '').startsWith('custom:') ? String(l.tipo).slice(7) : (l.tipo || 'Labor'));
+  const ps = (l.productos || []).map(p => p && p.producto).filter(Boolean);
+  return t + (ps.length ? ': ' + ps.join(' + ') : '');
+}
+let laboresCursoCache = ls.get('tractor_labores_curso', []);
+async function traerLaboresEnCurso() {
+  if (!navigator.onLine) return laboresCursoCache;
+  try {
+    const s = await conTimeout(getDocs(query(collection(db, 'labores_campo'), where('enCurso', '==', true))), 10000);
+    laboresCursoCache = s.docs.map(d => ({ id: d.id, ...d.data() })).filter(l => l.potrero && l.tipo !== 'riego')
+      .map(l => ({ id: l.id, potrero: l.potrero, fecha: l.fecha || '', texto: textoLabor(l), equipo: l.equipo || '' }));
+    ls.set('tractor_labores_curso', laboresCursoCache);
+  } catch (e) { console.warn('labores en curso', e); }
+  return laboresCursoCache;
 }
 async function activarAplicacion(id) {
   activaId = id; guardarAplicaciones();
   ocultarBanner(); dibujarCampo();
   await cargarAplicadoActivo();
-  traerTrazosOtros();
+  escucharTrazos();
   sincronizarAplicacion(activa());
   ejecutarDespues();
 }
-async function nuevaAplicacion(potrero) {
+async function nuevaAplicacion(potrero, labor) {
   const ahora = Date.now();
-  aplicaciones.forEach(a => { if (a.potrero === potrero && a.estado === 'abierta') { a.estado = 'terminada'; a.fin = ahora; a.cerradaPor = 'nueva'; sincronizarAplicacion(a); } });
-  const a = { id: `${dispositivo}_${ahora}`, potrero, inicio: ahora, fin: null, estado: 'abierta', km: 0, equipo: ajustes.equipo, operador: sesion ? sesion.nombre : null, ancho: anchoDePotrero(potrero) };
+  const otras = aplicaciones.filter(a => a.potrero === potrero && a.estado === 'abierta');
+  // Antes se cerraban solas; ahora puede haber otro tractor trabajando en ellas, así que se pregunta
+  if (otras.length && confirm(`En ${potrero} hay ${otras.length === 1 ? 'otra aplicación abierta' : otras.length + ' aplicaciones abiertas'}: ${otras.map(a => (a.labor || 'aplicación') + ' desde ' + fechaCorta(a.inicio)).join(', ')}.\n\n¿Ya terminó${otras.length > 1 ? 'ron' : ''}?\nAceptar = terminarla${otras.length > 1 ? 's' : ''} · Cancelar = dejarla${otras.length > 1 ? 's' : ''} abierta${otras.length > 1 ? 's' : ''} (otro tractor sigue)`)) {
+    otras.forEach(a => { a.estado = 'terminada'; a.fin = ahora; a.cerradaPor = 'nueva'; sincronizarAplicacion(a); });
+  }
+  const a = { id: `${dispositivo}_${ahora}`, potrero, inicio: ahora, fin: null, estado: 'abierta', km: 0, equipo: ajustes.equipo, operador: sesion ? sesion.nombre : null, ancho: anchoDePotrero(potrero), labor: labor ? labor.texto : null, laborId: labor ? labor.id : null };
   aplicaciones.push(a);
   aplicaciones = aplicaciones.filter(x => x.estado === 'abierta' || ahora - (x.fin || x.inicio) < 60 * 86400000); // historial de 60 días
   await activarAplicacion(a.id);
 }
 window.terminarPotrero = async function () {
   const a = activa(); if (!a) return;
-  if (!confirm(`¿Terminar la aplicación de ${a.potrero}? Lo aplicado se deja de mostrar.`)) return;
-  a.estado = 'terminada'; a.fin = Date.now(); a.km = +kmAplicacion.toFixed(2);
+  if (!confirm(`¿Terminar la aplicación de ${a.potrero}${a.labor ? ' (' + a.labor + ')' : ''}? Lo aplicado se deja de mostrar${a.programadaId ? ' y la tarea queda terminada en el cuaderno de campo' : ''}.`)) return;
+  a.estado = 'terminada'; a.fin = Date.now(); a.km = +kmAplicacion.toFixed(2); a.haGps = resumenAp ? +resumenAp.haTot.toFixed(2) : null; a.cerradaPorNombre = sesion ? sesion.nombre : ''; a.kmPorDia = { ...kmPorDia }; a.anchoFin = anchoActual();
   activaId = null; aplicando = false; ls.set('tractor_aplicando', false); guardarAplicaciones();
   cerrarCapa('capa-potreros'); pintarBotonAplicar(); dibujarCampo();
   sincronizarAplicacion(a);
   await cargarAplicadoActivo();
+  escucharTrazos();
+  if (a.programadaId || esEquipoAplicacion(ajustes.equipo)) setTimeout(() => abrirProgramadas(null), 600); // ¿sigue con la siguiente tarea?
 };
 function ejecutarDespues() { const f = despuesDeElegir; despuesDeElegir = null; if (f) f(); }
 
@@ -981,20 +1167,28 @@ function revisarEntradaPotrero(p) {
   if (bannerDescartado[aqui] && Date.now() - bannerDescartado[aqui] < 15 * 60000) return;
   const b = document.getElementById('banner');
   if (b.style.display === 'block') return;
-  const ab = aplicaciones.find(x => x.potrero === aqui && x.estado === 'abierta');
+  if (esEquipoAplicacion(ajustes.equipo)) {
+    const t = programadasDe(ajustes.equipo).find(x => x.potrero === aqui && !(a && a.programadaId === x.id));
+    if (!t) return;
+    b.innerHTML = `Estás en <strong>${aqui}</strong>: tarea <strong>${escH(t.texto)}</strong> ${t.estado === 'en_curso' ? 'en curso' : 'programada'}.<div class="acc">
+        <button class="b-si" onclick="ocultarBanner();elegirProgramada('${t.id}')">${t.estado === 'en_curso' ? '↪ Continuar' : '▶ Empezar'}</button>
+        <button class="b-no" onclick="descartarBanner('${aqui.replace(/'/g, "\\'")}')">Ahora no</button></div>`;
+    b.style.display = 'block'; return;
+  }
+  const abs = aplicaciones.filter(x => x.potrero === aqui && x.estado === 'abierta'), ab = abs[0];
   const n = aqui.replace(/'/g, "\\'");
-  b.innerHTML = ab
-    ? `Estás en <strong>${aqui}</strong>, con una aplicación sin terminar desde el ${fechaCorta(ab.inicio)}.<div class="acc">
+  b.innerHTML = abs.length === 1
+    ? `Estás en <strong>${aqui}</strong>, con <strong>${escH(ab.labor || 'una aplicación')}</strong> sin terminar desde el ${fechaCorta(ab.inicio)}${(ab.equiposAll || []).length ? ' (' + escH(ab.equiposAll.join(', ')) + ')' : ''}.<div class="acc">
         <button class="b-si" onclick="activarDesdeBanner('${ab.id}')">↪ Continuar</button>
-        <button class="b-nueva" onclick="nuevaDesdeBanner('${n}')">✳ Nueva</button>
+        <button class="b-nueva" onclick="nuevaDesdeBanner('${n}')">Otras opciones</button>
         <button class="b-no" onclick="descartarBanner('${n}')">Ahora no</button></div>`
-    : `Estás en <strong>${aqui}</strong>.${a ? ` (Aplicación activa: ${a.potrero})` : ''}<div class="acc">
-        <button class="b-si" onclick="nuevaDesdeBanner('${n}')">🌾 Iniciar aquí</button>
+    : `Estás en <strong>${aqui}</strong>${abs.length ? `, con ${abs.length} aplicaciones sin terminar` : ''}.${a ? ` (Aplicación activa: ${a.potrero})` : ''}<div class="acc">
+        <button class="b-si" onclick="nuevaDesdeBanner('${n}')">🌾 ${abs.length ? 'Elegir' : 'Iniciar aquí'}</button>
         <button class="b-no" onclick="descartarBanner('${n}')">Ahora no</button></div>`;
   b.style.display = 'block';
 }
 window.activarDesdeBanner = id => { ocultarBanner(); activarAplicacion(id); };
-window.nuevaDesdeBanner = n => { ocultarBanner(); nuevaAplicacion(n); };
+window.nuevaDesdeBanner = n => { ocultarBanner(); elegirPotrero(n); };
 window.descartarBanner = n => { bannerDescartado[n] = Date.now(); ocultarBanner(); };
 
 // ── GPS ──────────────────────────────────────────────────────────
@@ -1113,37 +1307,48 @@ async function traerAbiertasCompartidas() {
     const s = await conTimeout(getDocs(query(collection(db, 'aplicaciones_campo'), where('estado', '==', 'abierta'))), 10000);
     s.docs.forEach(d => {
       const x = d.data();
-      if (!aplicaciones.some(a => a.id === d.id)) aplicaciones.push({ id: d.id, potrero: x.potrero, inicio: x.inicio, fin: null, estado: 'abierta', km: 0, ancho: x.ancho || null, compartida: true, equipo: (x.equipos || [])[0] || '' });
+      let a = aplicaciones.find(a => a.id === d.id);
+      if (!a) { a = { id: d.id, potrero: x.potrero, inicio: x.inicio, fin: null, estado: 'abierta', km: 0, ancho: x.ancho || null, compartida: true, equipo: (x.equipos || [])[0] || '' }; aplicaciones.push(a); }
+      a.equiposAll = x.equipos || []; a.actividad = x.ts || null;
+      a.kmTot = Object.values(x.kmPor || {}).reduce((t, v) => t + (Number(v) || 0), 0);
+      if (x.labor && !a.labor) { a.labor = x.labor; a.laborId = x.laborId || null; }
     });
     // las que otro tractor cerró
     const abiertas = new Set(s.docs.map(d => d.id));
-    aplicaciones.forEach(a => { if (a.estado === 'abierta' && (a.compartidaSubida || a.compartida) && !abiertas.has(a.id) && !aplicacionesPorSubir.has(a.id)) { a.estado = 'terminada'; a.fin = a.fin || Date.now(); if (a.id === activaId) { mostrarAviso(`La aplicación de ${a.potrero} fue terminada (o reemplazada por una nueva) en otro tractor.`); activaId = null; aplicando = false; ls.set('tractor_aplicando', false); pintarBotonAplicar(); dibujarCampo(); cargarAplicadoActivo(); } } });
+    aplicaciones.forEach(a => { if (a.estado === 'abierta' && (a.compartidaSubida || a.compartida) && !abiertas.has(a.id) && !aplicacionesPorSubir.has(a.id)) { a.estado = 'terminada'; a.fin = a.fin || Date.now(); a.programadaCerrada = true; if (a.id === activaId) { mostrarAviso(`La aplicación de ${a.potrero} fue terminada (o reemplazada por una nueva) en otro tractor.`); activaId = null; aplicando = false; ls.set('tractor_aplicando', false); pintarBotonAplicar(); dibujarCampo(); cargarAplicadoActivo(); } } });
     guardarAplicaciones();
   } catch (e) { console.warn('aplicaciones compartidas', e); }
 }
-async function traerTrazosOtros() {
-  const a = activa();
-  if (!a || !navigator.onLine) return;
-  try {
-    const s = await conTimeout(getDocs(collection(db, 'aplicaciones_campo', a.id, 'trazos')), 15000);
-    const tr = [], eqs = new Set(); let km = 0;
-    s.docs.map(d => d.data()).filter(x => x.dispositivo !== dispositivo).forEach(x => {
-      eqs.add(x.equipo || 'otro');
-      let actual = null, ult = null;
-      (x.puntos || []).sort((p, q) => p.t - q.t).forEach(p => {
-        const ll = [p.lat, p.lng];
-        const cont = ult && p.t - ult.t < 30000 && distM([ult.lat, ult.lng], ll) < 60;
-        if (!actual || !cont) { actual = []; tr.push(actual); }
-        if (actual.length && cont) km += distM(actual[actual.length - 1], ll) / 1000;
-        actual.push(ll); ult = p;
-      });
+function procesarTrazos(apId, docs) {
+  const tr = [], eqs = new Set(); let km = 0;
+  docs.map(d => d.data()).filter(x => x.dispositivo !== dispositivo).forEach(x => {
+    eqs.add(x.equipo || 'otro');
+    let actual = null, ult = null;
+    (x.puntos || []).sort((p, q) => p.t - q.t).forEach(p => {
+      const ll = [p.lat, p.lng];
+      const cont = ult && p.t - ult.t < 30000 && distM([ult.lat, ult.lng], ll) < 60;
+      if (!actual || !cont) { actual = []; tr.push(actual); }
+      if (actual.length && cont) km += distM(actual[actual.length - 1], ll) / 1000;
+      actual.push(ll); ult = p;
     });
-    if (activaId !== a.id) return;
-    trazosOtros = tr; kmOtros = km; equiposOtros = [...eqs];
-    ls.set('tractor_otros_' + a.id, { trazos: tr, km, equipos: equiposOtros });
-    redibujarAplicado(); pintarAplicacion();
-  } catch (e) { console.warn('trazos de otros tractores', e); }
+  });
+  if (activaId !== apId) return;
+  trazosOtros = tr; kmOtros = km; equiposOtros = [...eqs];
+  ls.set('tractor_otros_' + apId, { trazos: tr, km, equipos: equiposOtros });
+  redibujarAplicado(); pintarAplicacion();
 }
+// Escucha en vivo lo que suben los otros tractores/celulares en la aplicación activa
+let unsubTrazos = null, trazosDe = null;
+function escucharTrazos() {
+  const a = activa(), id = a ? a.id : null;
+  if (id && trazosDe === id && unsubTrazos) return;
+  if (unsubTrazos) { try { unsubTrazos(); } catch (e) {} unsubTrazos = null; }
+  trazosDe = null;
+  if (!id || !navigator.onLine) return;
+  trazosDe = id;
+  unsubTrazos = onSnapshot(collection(db, 'aplicaciones_campo', id, 'trazos'), s => procesarTrazos(id, s.docs), e => { console.warn('trazos en vivo', e); unsubTrazos = null; trazosDe = null; });
+}
+async function traerTrazosOtros() { escucharTrazos(); }
 function sincronizarAplicacion(a) {
   if (!a) return;
   aplicacionesPorSubir.add(a.id); ls.set('tractor_ap_por_subir', [...aplicacionesPorSubir]);
@@ -1172,9 +1377,11 @@ async function subir() {
     for (const id of [...aplicacionesPorSubir]) {
       const a = aplicaciones.find(x => x.id === id);
       if (a) {
+        if (a.programadaId) await sincronizarProgramada(a);
         await conTimeout(setDoc(doc(db, 'recorridos_tractor', claveEquipo(ajustes.equipo), 'aplicaciones', a.id), { ...a, km: a.km || 0, ancho: a.ancho || Number(ajustes.ancho) || null, dispositivo, ts: Date.now() }), 20000);
-        const comp = { potrero: a.potrero, inicio: a.inicio, estado: a.estado, ancho: a.ancho || null, equipos: arrayUnion(ajustes.equipo), ts: Date.now() };
+        const comp = { potrero: a.potrero, inicio: a.inicio, estado: a.estado, ancho: a.ancho || null, equipos: arrayUnion(ajustes.equipo), ts: Date.now(), kmPor: { [claveEquipo(ajustes.equipo)]: a.id === activaId ? +kmAplicacion.toFixed(2) : (a.km || 0) } };
         if (a.fin) comp.fin = a.fin;
+        if (a.labor) { comp.labor = a.labor; comp.laborId = a.laborId || null; }
         await conTimeout(setDoc(doc(db, 'aplicaciones_campo', a.id), comp, { merge: true }), 20000);
         a.compartidaSubida = true;
       }
@@ -1189,10 +1396,10 @@ function pintarRed() {
   ch.textContent = navigator.onLine ? '🟢 en línea' : '⚪ sin señal';
   ch.className = 'chip ' + (navigator.onLine ? 'ok' : 'med');
 }
-window.addEventListener('online', () => { pintarRed(); subir(); actualizarDatosCampo(false); traerAbiertasCompartidas().then(traerTrazosOtros); });
+window.addEventListener('online', () => { pintarRed(); subir(); actualizarDatosCampo(false); traerAbiertasCompartidas().then(escucharTrazos); traerLaboresEnCurso(); });
 window.addEventListener('offline', pintarRed);
 setInterval(() => { if (activa()) aplicacionesPorSubir.add(activaId); subir(); }, 30000);
-setInterval(() => { traerAbiertasCompartidas(); traerTrazosOtros(); }, 60000);
+setInterval(() => { traerAbiertasCompartidas(); traerTrazosOtros(); traerProgramadas(); }, 60000);
 
 // ── Potreros, zonas y equipos desde la app (se guardan para usar sin señal) ──
 async function actualizarDatosCampo(manual) {
@@ -1209,6 +1416,7 @@ async function actualizarDatosCampo(manual) {
       potreros: (d.potreros || []).filter(p => Array.isArray(p.poligono) && p.poligono.length >= 3).map(p => ({ nombre: p.nombre, poligono: p.poligono, cultivo: p.tipo === 'frutal' ? (p.cultivoPermanente || null) : null })),
       zonas: sz.exists() ? (sz.data().zonas || []) : [],
       anchosCultivo: sz.exists() && sz.data().anchosCultivo ? sz.data().anchosCultivo : null,
+      equiposAplicacion: Array.isArray(d.equiposAplicacion) ? d.equiposAplicacion : null,
       ts: Date.now()
     };
     ls.set('tractor_datos_campo', datosCampo);
@@ -1266,7 +1474,7 @@ function entrarComo(nombre, admin) {
   const mios = equiposDe(nombre);
   eqElegido = '';
   if (admin || !mios.length) { eqElegido = mios[0] || ''; abrirAjustes(); return; }
-  if (jornadaVigente()) { pintarBarraEquipo(); redibujarAplicado(); pintarAplicacion(); pedirPantalla(); iniciarGPS(); subir(); return; }
+  if (jornadaVigente()) { pintarBarraEquipo(); redibujarAplicado(); pintarAplicacion(); pedirPantalla(); iniciarGPS(); subir(); revisarProgramadasInicio(true); return; }
   if (mios.length === 1) aplicarTractor(mios[0]);   // un solo tractor: parte con él y pregunta por el potrero
   else pintarElegirTractor(mios);                   // dos o más: elige con cuál trabaja hoy
 }
@@ -1307,7 +1515,8 @@ function aplicarTractor(eq) {
   preguntarPotreroAnterior(eq);
 }
 async function preguntarPotreroAnterior(eq) {
-  try { await traerAbiertasCompartidas(); } catch (e) {}
+  try { await Promise.all([traerAbiertasCompartidas(), traerProgramadas()]); } catch (e) {}
+  if (esEquipoAplicacion(eq) || programadasDe(eq).length) { abrirProgramadas(null); return; }
   const ab = aplicaciones.filter(a => a.estado === 'abierta' && a.equipo === eq).sort((x, y) => y.inicio - x.inicio)[0];
   if (!ab) return; // sin aplicación abierta: sigue el flujo normal al empezar a aplicar
   if (ab.id === activaId && aplicando) return;
@@ -1507,6 +1716,7 @@ document.getElementById('aviso').onclick = e => { e.target.style.display = 'none
       pedirPantalla(); iniciarGPS();
       const mios = sesion.admin ? [] : equiposDe(sesion.nombre);
       if (mios.length >= 2 && !jornadaVigente()) pintarElegirTractor(mios);
+      else revisarProgramadasInicio(false);
     }
     else abrirAjustes();
   }
