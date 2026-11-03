@@ -12,7 +12,7 @@
 <script defer src="https://cdn.jsdelivr.net/npm/togeojson@0.16.0/togeojson.js"></script>
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import { getFirestore, collection, addDoc, deleteDoc, doc, onSnapshot, query, orderBy, where, setDoc, getDoc, updateDoc, increment, limit, getDocs, serverTimestamp, writeBatch } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import { getFirestore, collection, addDoc, deleteDoc, doc, onSnapshot, query, orderBy, where, setDoc, getDoc, updateDoc, increment, limit, getDocs, serverTimestamp, writeBatch, arrayUnion } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyAVsios3N97MQVPJLC94qEOXGJNmKzK9RI",
@@ -1435,6 +1435,22 @@ window.jdpDescargarDatos = function() {
 let envivoMapa = null, envivoCapa = null, envivoUnsub = null, envivoDatos = [], envivoTimer = null, envivoEncuadrado = false;
 // Equipos con JDLink: última ubicación desde Operations Center (cada 2 min mientras la hoja está abierta)
 let envivoJD = [], envivoJDTimer = null, envivoJDEstado = '';
+let envivoZonasCapa = null, envivoZonasListas = false;
+// Zonas de carga de fumigadores (y bodegas/patios) en el mapa de Ubicación equipos
+async function envivoDibujarZonas() {
+  if (!envivoZonasCapa) return;
+  if (!envivoZonasListas) { await jdpCargarZonas(); envivoZonasListas = true; }
+  envivoZonasCapa.clearLayers();
+  (jdpZonas || []).filter(z => z.tipo !== 'camino').forEach(z => {
+    try {
+      const carga = z.tipo === 'carga', col = carga ? '#14B8A6' : '#60A5FA';
+      const est = { color: col, fillColor: col, fillOpacity: carga ? 0.3 : 0.12, weight: carga ? 2.5 : 1.5, dashArray: carga ? null : '6 4' };
+      const capa = z.tipo === 'circulo' ? L.circle([z.centro.lat, z.centro.lng], { ...est, radius: z.radio }) : L.polygon(z.poligono, est);
+      capa.addTo(envivoZonasCapa).bindTooltip(`${carga ? '💧 Zona de carga' : '🏠'}: ${escA(z.nombre)}`, { sticky: true, permanent: false });
+      if (carga) { const c = capa.getBounds().getCenter(); L.marker(c, { interactive: false, icon: L.divIcon({ className: '', html: '<div style="font-size:18px;line-height:18px;text-shadow:0 0 3px #000">💧</div>', iconSize: [18, 18], iconAnchor: [9, 9] }) }).addTo(envivoZonasCapa); }
+    } catch (err) { console.warn('zona', z, err); }
+  });
+}
 let envivoRutaCapa = null, envivoRutaEq = null, envivoRutaDatos = null, envivoAncho = null, envivoRutaDias = 0;
 // Fuente de la ubicación: 'auto' (el dato más reciente), 'jdlink' o 'celular'. Se puede fijar en general y por equipo.
 // Si el equipo no tiene la fuente elegida, se usa la otra. Se recuerda en este teléfono/computador.
@@ -1525,9 +1541,11 @@ window.abrirEnVivo = function() {
       poly.forEach(c => lim.push(c));
     });
     if (lim.length) envivoMapa.fitBounds(lim);
+    envivoZonasCapa = L.layerGroup().addTo(envivoMapa);
     envivoCapa = L.layerGroup().addTo(envivoMapa);
     envivoRutaCapa = L.layerGroup().addTo(envivoMapa);
   }
+  envivoDibujarZonas();
   setTimeout(() => envivoMapa.invalidateSize(), 150);
   envivoEncuadrado = false;
   renderEnvivoFuenteBar();
@@ -1673,32 +1691,75 @@ async function envivoPuntosDelDia(eq, dias) {
   }
   return { puntos: [], fuente: null, pref, t0, t1 };
 }
-function envivoCalcular(puntos) {
+// Tractores de aplicación: a ellos se les separan los tiempos de carga y se miden contra la jornada (salida → vuelta a la bodega)
+const tractoresAplicacion = () => Array.isArray(config.tractoresAplicacion) ? config.tractoresAplicacion : (config.equipos || []).filter(e => /6910|5090|5076|5082/.test(e));
+window.togTractorAplicacion = async function(e) {
+  const l = tractoresAplicacion(); config.tractoresAplicacion = l.includes(e) ? l.filter(x => x !== e) : [...l, e];
+  envivoRenderRuta();
+  try { await setDoc(doc(db, 'config', 'datos'), { tractoresAplicacion: config.tractoresAplicacion }, { merge: true }); toast('✓ Guardado', true); } catch (er) { toast('Error: ' + er.message, false); }
+};
+function envivoCalcular(puntos, aplic) {
   const pots = (potrerosConfig || []).filter(p => poligonoValido(p.poligono)).map(p => ({ nombre: p.nombre, poly: jdpNormPoligono(p.poligono) }));
   const dePot = (lat, lng) => { const q = pots.find(p => jdpPuntoEnPoligono(lat, lng, p.poly)); return q ? q.nombre : null; };
-  const tr = { total: 0, detenido: 0, mov: 0, trabajo: 0, km: 0, kmTrabajo: 0, ha: 0, porPot: {}, tramos: [] };
+  const zona = z => ({ nombre: z.nombre, centro: z.centro, radio: z.radio, poly: z.poligono ? jdpNormPoligono(z.poligono) : null });
+  const dentro = (lista, lat, lng) => { const z = lista.find(z => z.poly ? jdpPuntoEnPoligono(lat, lng, z.poly) : (z.centro && jdpDistKm({ lat, lng }, { lat: z.centro.lat, lng: z.centro.lng }) * 1000 <= z.radio)); return z ? z.nombre : null; };
+  const zc = aplic ? (jdpZonas || []).filter(z => z.tipo === 'carga').map(zona) : [];
+  const zb = aplic ? (jdpZonas || []).filter(z => z.tipo !== 'carga' && z.tipo !== 'camino').map(zona) : []; // bodegas, patio, taller
+  const tr = { total: 0, detenido: 0, mov: 0, trabajo: 0, traslado: 0, carga: 0, bodega: 0, nCargas: 0, km: 0, kmTrabajo: 0, ha: 0, porPot: {}, porCarga: {}, tramos: [], jornada: 0, sinDatos: 0, ini: null, fin: null, iniTipo: '', finTipo: '' };
+  // Jornada: desde que sale de la bodega hasta que vuelve a ella (si no pasa por la bodega: del primer al último movimiento)
+  if (aplic && puntos.length) {
+    let ini = null, fin = null;
+    if (zb.length) {
+      const fuera = puntos.map(p => !dentro(zb, p.lat, p.lng)), i1 = fuera.indexOf(true), i2 = fuera.lastIndexOf(true);
+      if (i1 >= 0) {
+        if (i1 > 0 && puntos[i1].t - puntos[i1 - 1].t <= ENVIVO_HUECO_MS) { ini = puntos[i1 - 1].t; tr.iniTipo = 'bodega'; } else { ini = puntos[i1].t; tr.iniTipo = i1 > 0 ? 'bodega' : 'dato'; }
+        if (i2 < puntos.length - 1 && puntos[i2 + 1].t - puntos[i2].t <= ENVIVO_HUECO_MS) { fin = puntos[i2 + 1].t; tr.finTipo = 'bodega'; } else { fin = puntos[i2].t; tr.finTipo = i2 < puntos.length - 1 ? 'bodega' : 'dato'; }
+      }
+    }
+    if (ini == null) {
+      let p1 = -1, p2 = -1;
+      for (let i = 1; i < puntos.length; i++) { const dt = puntos[i].t - puntos[i - 1].t; if (dt <= 0 || dt > ENVIVO_HUECO_MS) continue; const kmh = jdpDistKm(puntos[i - 1], puntos[i]) * 1000 / (dt / 1000) * 3.6; if (kmh >= ENVIVO_VMIN_KMH && kmh <= ENVIVO_VMAX_KMH) { if (p1 < 0) p1 = i - 1; p2 = i; } }
+      if (p1 >= 0) { ini = puntos[p1].t; fin = puntos[p2].t; tr.iniTipo = tr.finTipo = 'mov'; }
+    }
+    if (ini != null && fin > ini) { tr.ini = ini; tr.fin = fin; tr.jornada = fin - ini; }
+  }
+  const enJornada = (a, b) => !aplic || (tr.ini != null && a.t >= tr.ini && b.t <= tr.fin);
+  let cargaAct = null; // visita en curso a una zona de carga (se cuenta como carga si dura al menos 2 min)
   for (let i = 1; i < puntos.length; i++) {
     const a = puntos[i - 1], b = puntos[i], dt = b.t - a.t;
     if (dt <= 0 || dt > ENVIVO_HUECO_MS) continue;
     const m = jdpDistKm(a, b) * 1000, kmh = m / (dt / 1000) * 3.6;
     if (kmh > ENVIVO_VMAX_KMH) continue;
-    tr.total += dt;
     const quieto = kmh < ENVIVO_VMIN_KMH;
-    const pot = dePot((a.lat + b.lat) / 2, (a.lng + b.lng) / 2);
+    const mlat = (a.lat + b.lat) / 2, mlng = (a.lng + b.lng) / 2, zcar = zc.length ? dentro(zc, mlat, mlng) : null;
+    const pot = zcar ? null : dePot(mlat, mlng), bod = !zcar && !pot && zb.length ? dentro(zb, mlat, mlng) : null;
+    const cuenta = enJornada(a, b);   // solo lo que pasa entre la salida y la vuelta a la bodega suma a los tiempos
     let clase;
-    if (quieto) { tr.detenido += dt; clase = 'parado'; }
-    else {
-      tr.mov += dt; tr.km += m / 1000;
-      if (pot) {
-        tr.trabajo += dt; tr.kmTrabajo += m / 1000; clase = 'trabajo';
-        const w = envivoAnchoPotrero(pot), ha = m * w / 10000;
-        tr.ha += ha;
-        const pp = tr.porPot[pot] || (tr.porPot[pot] = { ms: 0, ha: 0, w });
-        pp.ms += dt; pp.ha += ha;
-      } else clase = 'traslado';
+    if (zcar) {
+      clase = 'carga';
+      if (cuenta) {
+        tr.total += dt; tr.carga += dt; if (!quieto) tr.km += m / 1000;
+        tr.porCarga[zcar] = (tr.porCarga[zcar] || 0) + dt;
+        if (!cargaAct || cargaAct.z !== zcar || a.t - cargaAct.fin > 10 * 60000) cargaAct = { z: zcar, ini: a.t, fin: b.t, contada: false }; else cargaAct.fin = b.t;
+        if (!cargaAct.contada && cargaAct.fin - cargaAct.ini >= 2 * 60000) { cargaAct.contada = true; tr.nCargas++; }
+      }
+      tr.tramos.push({ a, b, clase, pot: zcar }); continue;
     }
+    if (bod) { clase = quieto ? 'parado' : 'traslado'; if (cuenta) { tr.total += dt; tr.bodega += dt; } tr.tramos.push({ a, b, clase, pot: null, bodega: bod }); continue; }
+    if (quieto) { clase = 'parado'; if (cuenta) { tr.total += dt; tr.detenido += dt; } }
+    else if (pot) {
+      clase = 'trabajo';
+      tr.mov += dt; tr.km += m / 1000; tr.total += dt;
+      tr.trabajo += dt; tr.kmTrabajo += m / 1000;
+      const w = envivoAnchoPotrero(pot), ha = m * w / 10000;
+      tr.ha += ha;
+      const pp = tr.porPot[pot] || (tr.porPot[pot] = { ms: 0, ha: 0, w });
+      pp.ms += dt; pp.ha += ha;
+    } else { clase = 'traslado'; if (cuenta) { tr.total += dt; tr.mov += dt; tr.km += m / 1000; tr.traslado += dt; } }
     tr.tramos.push({ a, b, clase, pot });
   }
+  // lo que falta para completar la jornada son huecos sin datos (equipo apagado o sin señal)
+  tr.sinDatos = Math.max(0, tr.jornada - (tr.trabajo + tr.traslado + tr.carga + tr.detenido + tr.bodega));
   return tr;
 }
 // Proyección plana local (metros) para ajustar rectas y dibujar bandas al ancho real
@@ -1730,10 +1791,10 @@ function envivoRecta(P) {
   return dirOk ? [A, B] : [B, A];
 }
 // Vista del recorrido: 'vel' = colores por velocidad; 'contado' = verde lo que SÍ cuenta como trabajado, rojo/gris lo que no
-let envivoVista = 'vel', envivoVer = { trabajo: true, traslado: true, parado: true };
+let envivoVista = 'vel', envivoVer = { trabajo: true, traslado: true, parado: true, carga: true };
 window.envivoSetVista = v => { envivoVista = v; envivoRenderRuta(); };
 let envivoForma = 'franja';
-window.envivoSoloContado = () => { const solo = envivoVer.trabajo && !envivoVer.traslado && !envivoVer.parado; envivoVer = solo ? { trabajo: true, traslado: true, parado: true } : { trabajo: true, traslado: false, parado: false }; if (!solo) envivoVista = 'contado'; envivoRenderRuta(); };
+window.envivoSoloContado = () => { const solo = envivoVer.trabajo && !envivoVer.traslado && !envivoVer.parado && !envivoVer.carga; envivoVer = solo ? { trabajo: true, traslado: true, parado: true, carga: true } : { trabajo: true, traslado: false, parado: false, carga: false }; if (!solo) envivoVista = 'contado'; envivoRenderRuta(); };
 window.envivoSetForma = f => { envivoForma = f; envivoRenderRuta(); };
 window.envivoToggleVer = k => { envivoVer[k] = !envivoVer[k]; envivoRenderRuta(); };
 function envivoDibujarRuta(tr, puntos) {
@@ -1745,6 +1806,7 @@ function envivoDibujarRuta(tr, puntos) {
   // 1) detenido y traslados (línea fina)
   tramos.forEach(t => {
     if (t.clase === 'parado' && envivoVer.parado) L.circleMarker([t.b.lat, t.b.lng], { radius: 3, color: col.parado, weight: 1, fillOpacity: 0.8, interactive: false }).addTo(envivoRutaCapa);
+    if (t.clase === 'carga' && envivoVer.carga !== false) L.circleMarker([t.b.lat, t.b.lng], { radius: 3.5, color: '#0F766E', fillColor: '#14B8A6', weight: 1, fillOpacity: 0.9, interactive: false }).addTo(envivoRutaCapa);
   });
   const trasl = []; let cur = [];
   tramos.forEach((t, i) => {
@@ -1830,10 +1892,12 @@ function envivoRenderRuta() {
   // un cálculo por día calendario; el total suma todos
   const porDia = {};
   puntos.forEach(p => { const k = envivoDiaStr(p.t); (porDia[k] = porDia[k] || []).push(p); });
-  const dd = Object.keys(porDia).sort().map(k => ({ k, tr: envivoCalcular(porDia[k]), t: porDia[k][0].t }));
-  const tot = { ha: 0, trabajo: 0, detenido: 0, mov: 0, km: 0, kmTrabajo: 0, porPot: {} };
+  const esAplic = tractoresAplicacion().includes(eq);
+  const dd = Object.keys(porDia).sort().map(k => ({ k, tr: envivoCalcular(porDia[k], esAplic), t: porDia[k][0].t }));
+  const tot = { ha: 0, trabajo: 0, detenido: 0, mov: 0, traslado: 0, carga: 0, bodega: 0, sinDatos: 0, jornada: 0, nCargas: 0, km: 0, kmTrabajo: 0, porPot: {}, porCarga: {} };
   dd.forEach(({ tr }) => {
-    ['ha', 'trabajo', 'detenido', 'mov', 'km', 'kmTrabajo'].forEach(c => tot[c] += tr[c]);
+    ['ha', 'trabajo', 'detenido', 'mov', 'traslado', 'carga', 'bodega', 'sinDatos', 'jornada', 'nCargas', 'km', 'kmTrabajo'].forEach(c => tot[c] += tr[c]);
+    Object.entries(tr.porCarga || {}).forEach(([n, ms]) => tot.porCarga[n] = (tot.porCarga[n] || 0) + ms);
     Object.entries(tr.porPot).forEach(([n, v]) => { const q = tot.porPot[n] || (tot.porPot[n] = { ms: 0, ha: 0, w: v.w }); q.ms += v.ms; q.ha += v.ha; });
   });
   envivoDibujarRuta({ tramos: dd.flatMap(x => x.tr.tramos) }, puntos);
@@ -1846,15 +1910,28 @@ function envivoRenderRuta() {
   const haH = hTrab > 0.05 ? tot.ha / hTrab : null;
   const th = 'text-align:right;padding:3px 4px';
   const filasPot = Object.entries(tot.porPot).sort((a, b) => b[1].ms - a[1].ms).map(([n, v]) => `<tr><td style="padding:3px 4px">${n}<span style="color:var(--acero);font-size:11px"> · ${String(v.w).replace('.', ',')} m</span></td><td style="${th}">${envivoH(v.ms)}</td><td style="${th}">${f1(v.ha)}</td><td style="${th}"><strong>${v.ms > 180000 ? f1(v.ha / (v.ms / 3600000)) : '—'}</strong></td></tr>`).join('');
-  const filasDia = dd.length > 1 ? dd.slice().reverse().map(({ tr, t }) => { const h = tr.trabajo / 3600000; return `<tr><td style="padding:3px 4px">${fDia(t)}</td><td style="${th}">${envivoH(tr.trabajo)}</td><td style="${th}">${envivoH(tr.detenido)}</td><td style="${th}">${f1(tr.ha)}</td><td style="${th}"><strong>${h > 0.05 ? f1(tr.ha / h) : '—'}</strong></td></tr>`; }).join('') : '';
+  const filasDia = dd.length > 1 ? dd.slice().reverse().map(({ tr, t }) => { const h = tr.trabajo / 3600000; return `<tr><td style="padding:3px 4px">${fDia(t)}</td><td style="${th}">${tr.jornada ? envivoH(tr.jornada) : '—'}</td><td style="${th}">${tr.jornada ? Math.round(tr.trabajo / tr.jornada * 100) + '%' : envivoH(tr.trabajo)}</td><td style="${th}">${tr.jornada ? Math.round(tr.traslado / tr.jornada * 100) + '%' : envivoH(tr.traslado)}</td><td style="${th}">${tr.jornada ? Math.round(tr.carga / tr.jornada * 100) + '%' : envivoH(tr.carga)}${tr.nCargas ? ' (' + tr.nCargas + ')' : ''}</td><td style="${th}">${tr.jornada ? Math.round(tr.detenido / tr.jornada * 100) + '%' : envivoH(tr.detenido)}</td><td style="${th}">${f1(tr.ha)}</td><td style="${th}"><strong>${h > 0.05 ? f1(tr.ha / h) : '—'}</strong></td></tr>`; }).join('') : '';
   box.innerHTML = `<div style="background:var(--fondo);border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:13px">
     <div style="display:flex;align-items:center;gap:8px"><strong style="flex:1">${fuente === 'celular' ? '📱' : '📡'} ${eq} · ${dias === 0 ? 'recorrido de hoy' : 'últimos ' + (dias + 1) + ' días'}</strong>
       <button class="btn-pin" style="font-size:11px;padding:3px 8px" onclick="envivoCerrarRuta()">Cerrar</button></div>
     <div style="font-size:22px;font-weight:800;margin:4px 0">${haH != null ? f1(haH) + ' ha/h' : '— ha/h'}<span style="font-size:12px;font-weight:400;color:var(--acero)"> de avance, sin contar paradas</span></div>
-    <div style="font-size:12px;color:var(--acero)">⏱ Trabajando ${envivoH(tot.trabajo)} · ⚪ detenido ${envivoH(tot.detenido)} · 🚜 traslados ${envivoH(tot.mov - tot.trabajo)}<br>≈ <strong style="color:var(--negro)">${f1(tot.ha)} ha</strong> en ${f1(tot.kmTrabajo)} km de trabajo · ${f1(tot.km)} km recorridos</div>
+    ${!esAplic ? `<div style="font-size:12px;color:var(--acero)">⏱ Trabajando ${envivoH(tot.trabajo)} · ⚪ detenido ${envivoH(tot.detenido)} · 🚜 traslados ${envivoH(tot.traslado)}</div>` : (() => {
+      const J = tot.jornada || (tot.trabajo + tot.traslado + tot.carga + tot.detenido + tot.bodega), pc = ms => J ? Math.round(ms / J * 100) + ' %' : '';
+      const d0 = dd.length === 1 ? dd[0].tr : null, hh = ms => new Date(ms).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' });
+      const jtxt = !tot.jornada ? 'Sin movimiento en el período.' : d0 ? `🕗 Jornada: ${d0.iniTipo === 'bodega' ? 'salió de la bodega a las' : d0.iniTipo === 'mov' ? 'empezó a moverse a las' : 'primer dato a las'} <b>${hh(d0.ini)}</b> → ${d0.finTipo === 'bodega' ? 'volvió a la bodega a las' : d0.finTipo === 'mov' ? 'último movimiento a las' : 'último dato (aún fuera) a las'} <b>${hh(d0.fin)}</b> · <b>${envivoH(d0.jornada)}</b>` : `🕗 Jornadas (salida → vuelta a la bodega): <b>${envivoH(tot.jornada)}</b> en ${dd.filter(x => x.tr.jornada).length} días`;
+      const tarj = [['🟩 Trabajando', tot.trabajo, '#16A34A'], ['🚜 Traslado', tot.traslado, '#2563EB'], ['💧 En carga', tot.carga, '#0F766E', tot.nCargas ? tot.nCargas + (tot.nCargas === 1 ? ' carga' : ' cargas') : ''], ['⚪ Detenido', tot.detenido, '#6B7280']];
+      if (tot.bodega > 60000) tarj.push(['🏠 En bodega', tot.bodega, '#60A5FA', 'durante la jornada']);
+      if (tot.sinDatos > 60000) tarj.push(['❔ Sin datos', tot.sinDatos, '#B45309', 'apagado o sin señal']);
+      return `<div style="font-size:12px;margin-top:4px">${jtxt}</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:6px;margin:6px 0">
+      ${tarj.map(([t, ms, c, sub]) => `<div style="background:#fff;border:1px solid var(--borde);border-radius:8px;padding:6px"><div style="font-size:11px;color:var(--acero)">${t}</div><div style="font-weight:800;color:${c};font-size:18px">${pc(ms) || envivoH(ms)}</div><div style="font-size:11px;color:var(--acero)">${envivoH(ms)}${sub ? ' · ' + sub : ''}</div></div>`).join('')}
+      </div>${tot.jornada ? '<div style="font-size:11px;color:var(--acero);margin-bottom:4px">% del tiempo de la jornada, desde que sale de la bodega hasta que vuelve.' + ((jdpZonas || []).some(z => z.tipo !== 'carga' && z.tipo !== 'camino') ? '' : ' <span style="color:#B45309">No hay bodega dibujada: la jornada va del primer al último movimiento.</span>') + '</div>' : ''}`;
+    })()}
+    ${!esAplic ? '' : Object.keys(tot.porCarga).length ? `<div style="font-size:11px;color:var(--acero);margin-bottom:4px">💧 ${Object.entries(tot.porCarga).map(([n, ms]) => escA(n) + ': ' + envivoH(ms)).join(' · ')}</div>` : (jdpZonas || []).some(z => z.tipo === 'carga') ? '' : '<div style="font-size:11px;color:#B45309;margin-bottom:4px">No hay zonas de carga dibujadas: se marcan en Configuración GPS → zonas (tipo «carga de fumigadores»).</div>'}
+    <div style="font-size:12px;color:var(--acero)">≈ <strong style="color:var(--negro)">${f1(tot.ha)} ha</strong> en ${f1(tot.kmTrabajo)} km de trabajo · ${f1(tot.km)} km recorridos</div>
     ${respaldo}
     <div style="margin-top:8px;font-size:12px"><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
-      <button class="btn-pin" style="font-size:12px;padding:5px 10px${envivoVer.trabajo && !envivoVer.traslado && !envivoVer.parado ? ';background:var(--amarillo);color:#111;font-weight:700' : ''}" onclick="envivoSoloContado()">👁 Solo lo que suma al área</button>
+      <button class="btn-pin" style="font-size:12px;padding:5px 10px${envivoVer.trabajo && !envivoVer.traslado && !envivoVer.parado && !envivoVer.carga ? ';background:var(--amarillo);color:#111;font-weight:700' : ''}" onclick="envivoSoloContado()">👁 Solo lo que suma al área</button>
       <button class="btn-pin" style="font-size:11px;padding:3px 8px${envivoForma === 'franja' ? ';background:var(--amarillo);color:#111;font-weight:700' : ''}" onclick="envivoSetForma('franja')">▮ Franjas</button>
       <button class="btn-pin" style="font-size:11px;padding:3px 8px${envivoForma === 'linea' ? ';background:var(--amarillo);color:#111;font-weight:700' : ''}" onclick="envivoSetForma('linea')">〰 Líneas</button></div>
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><span style="color:var(--acero)">Ver el mapa por:</span>
@@ -1863,12 +1940,14 @@ function envivoRenderRuta() {
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:6px">
         <label style="display:flex;gap:4px;align-items:center"><input type="checkbox" ${envivoVer.trabajo ? 'checked' : ''} onchange="envivoToggleVer('trabajo')"><span style="display:inline-block;width:14px;height:10px;background:${envivoVista === 'contado' ? '#16A34A' : '#EAB308'};border-radius:2px"></span> Trabajado (cuenta)</label>
         <label style="display:flex;gap:4px;align-items:center"><input type="checkbox" ${envivoVer.traslado ? 'checked' : ''} onchange="envivoToggleVer('traslado')"><span style="display:inline-block;width:14px;height:3px;background:${envivoVista === 'contado' ? '#DC2626' : '#38BDF8'}"></span> Traslado (no cuenta)</label>
+        <label style="display:flex;gap:4px;align-items:center"><input type="checkbox" ${envivoVer.carga !== false ? 'checked' : ''} onchange="envivoToggleVer('carga')"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#14B8A6"></span> En carga (no cuenta)</label>
         <label style="display:flex;gap:4px;align-items:center"><input type="checkbox" ${envivoVer.parado ? 'checked' : ''} onchange="envivoToggleVer('parado')"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${envivoVista === 'contado' ? '#6B7280' : '#F97316'}"></span> Detenido (no cuenta)</label></div>
       <div style="color:var(--acero);margin-top:4px">Cuenta = en movimiento (más de 1 km/h) dentro de un potrero. Toca una franja para ver su detalle.</div></div>
     ${botones}
     ${fuenteEq}
+    ${isAdmin ? `<details style="margin-top:6px;font-size:11px"><summary style="cursor:pointer;color:var(--acero)">⚙️ Tractores de aplicación (tiempos de carga y % de la jornada): ${escA(tractoresAplicacion().join(', ') || 'ninguno')}</summary><div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px">${[...(config.equipos || [])].filter(e => !/otro/i.test(e)).sort((a, b) => a.localeCompare(b, 'es')).map(e => `<button class="btn-pin" style="font-size:11px;padding:3px 8px${tractoresAplicacion().includes(e) ? ';background:var(--amarillo);color:#111;font-weight:700' : ''}" onclick="togTractorAplicacion('${escA(e).replace(/'/g, "\\'")}')">${escA(e)}</button>`).join('')}</div></details>` : ''}
     <div style="font-size:11px;color:var(--acero);margin-top:4px">🔎 Datos recibidos (${envivoNomFuente(fuente)}): ${diagTxt}</div>
-    ${filasDia ? `<table style="width:100%;min-width:0;font-size:12px;margin-top:6px;border-collapse:collapse"><thead><tr><th style="text-align:left;padding:3px 4px">Día</th><th style="${th}">Trabajando</th><th style="${th}">Detenido</th><th style="${th}">ha</th><th style="${th}">ha/h</th></tr></thead><tbody>${filasDia}</tbody></table>` : ''}
+    ${filasDia ? `<table style="width:100%;min-width:0;font-size:12px;margin-top:6px;border-collapse:collapse"><thead><tr><th style="text-align:left;padding:3px 4px">Día</th><th style="${th}">Jornada</th><th style="${th}">Trab.</th><th style="${th}">Trasl.</th><th style="${th}">Carga</th><th style="${th}">Det.</th><th style="${th}">ha</th><th style="${th}">ha/h</th></tr></thead><tbody>${filasDia}</tbody></table>` : ''}
     ${filasPot ? `<table style="width:100%;min-width:0;font-size:12px;margin-top:6px;border-collapse:collapse"><thead><tr><th style="text-align:left;padding:3px 4px">Potrero · ancho${dd.length > 1 ? ' (todos los días)' : ''}</th><th style="${th}">Tiempo</th><th style="${th}">ha</th><th style="${th}">ha/h</th></tr></thead><tbody>${filasPot}</tbody></table>` : ''}
     <div style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--acero);margin-top:6px;flex-wrap:wrap">
       <span>Ancho de trabajo en potreros sin ancho propio:</span>
@@ -1895,6 +1974,7 @@ async function envivoCargarRuta(eq) {
       try { const sz = await getDoc(doc(db, 'config', 'zonas_sin_cultivo')); if (sz.exists() && sz.data().anchosCultivo) envivoAnchosCultivo = sz.data().anchosCultivo; } catch (e) {}
     }
     const dias = envivoRutaDias;
+    if (!envivoZonasListas) { await jdpCargarZonas(); envivoZonasListas = true; envivoDibujarZonas(); }
     const { puntos, fuente, pref } = await envivoPuntosDelDia(eq, dias);
     if (envivoRutaEq !== eq || envivoRutaDias !== dias) return; // cambió mientras cargaba
     envivoRutaDatos = { eq, puntos, fuente, dias, pref };
@@ -2909,6 +2989,7 @@ function entrarConResultado(result) {
     if (result.pinInicial) setTimeout(() => mostrarCambioPin(true), 500);
     return;
   }
+  setTimeout(() => preguntarTareaAlEntrar(result.nombre), 800); // equipos con JDLink: ¿lo de hoy corresponde a una tarea programada?
   // Operador con acceso a Modo tractor o Reparto: elige primero, igual que el admin
   if (permisosPruebasDe(currentUser).length) {
     document.getElementById('btn-secciones-header').style.display = 'inline-flex';
@@ -6893,6 +6974,7 @@ async function initCampo() {
 // por los potreros elegidos en el cliente, en vez de suscribirse de nuevo
 // cada vez que cambia la selección.
 function suscribirLaboresCampo() {
+  suscribirTareas();
   if (laboresCampoSubscrito) return;
   laboresCampoSubscrito = true;
   unsubLaboresCampo = onSnapshot(query(collection(db, 'labores_campo'), orderBy('ts','desc')), snap => {
@@ -7245,6 +7327,7 @@ window.terminarLaborEnCurso = async function(k, finOpt) {
   if (!confirm(`¿Terminar la labor? Quedará registrada del ${fCorta(ini)} al ${fCorta(fin)}.`)) return;
   try {
     const batch = writeBatch(db);
+    g.forEach(l => { if (l.programadaId) { batch.set(doc(db, 'labores_programadas', l.programadaId), { estado: 'terminada', fin: Date.now(), terminadaPor: currentUser || '' }, { merge: true }); const t = (tareasProg || []).find(x => x.id === l.programadaId); if (t && t.aplicacionId) batch.set(doc(db, 'aplicaciones_campo', t.aplicacionId), { estado: 'terminada', fin: Date.now() }, { merge: true }); } });
     g.forEach(l => batch.update(doc(db, 'labores_campo', l.id), { fechaFin: fin === l.fecha ? null : fin, enCurso: false, diasTrabajo: [...new Set([...(l.diasTrabajo || [l.fecha]), fin])].filter(x => x <= fin).sort(), terminadoPor: currentUser || '', terminadoTs: Date.now() }));
     await batch.commit();
     toast('🏁 Labor terminada: del ' + fCorta(ini) + ' al ' + fCorta(fin), true);
@@ -7466,6 +7549,166 @@ window.toggleCampoApero = function(a) {
   renderCampoAperos();
 }
 
+
+// ═══ 📅 TAREAS PROGRAMADAS (las deja el administrador o Nicolás; los equipos asignados las ejecutan) ═══
+// labores_programadas/{id}: { datos (la labor tal como quedará en el cuaderno), potrero, lote, texto, fechaProgramada, equipos[],
+//   estado: 'pendiente' | 'en_curso' | 'terminada' | 'cancelada', laborId, aplicacionId, iniciada, iniciadaPor, avance{ 'fecha|equipo': {...} } }
+let campoProgramar = false, campoProgEquipos = [], tareasProg = [], tareasSubscrito = false, tareasVerTerminadas = false;
+const puedeProgramarTareas = () => isAdmin || isCampo || (Array.isArray(config.programanTareas) ? config.programanTareas : ['Nicolás Feris']).includes(currentUser);
+const TIPOS_NO_PROGRAMABLES = ['siembra', 'riego', 'cosecha'];
+const equiposAplicacion = () => Array.isArray(config.equiposAplicacion) ? config.equiposAplicacion : (config.equipos || []).filter(e => /5090|5076/.test(e));
+function textoTarea(d) {
+  const t = d.tipo === 'personalizado' ? (d.nombreTipo || 'Labor') : labelTipoLabor(d.tipo).replace(/^[^\wÁÉÍÓÚÑáéíóúñ]+\s*/, '');
+  const ps = (d.productos || []).map(p => p && p.producto).filter(Boolean);
+  const extra = ps.length ? ps.join(' + ') : (d.labor || d.detalle || '');
+  return t + (extra ? ': ' + extra : '');
+}
+window.renderProgramarCampo = function() {
+  const w = document.getElementById('campo-programar-wrap'), btn = document.getElementById('btn-registrar-labor-campo');
+  if (!w) return;
+  const tipo = campoTipoLaborSeleccionado;
+  if (!puedeProgramarTareas() || !tipo || TIPOS_NO_PROGRAMABLES.includes(tipo)) { w.innerHTML = ''; campoProgramar = false; if (btn) btn.textContent = '✓ Guardar labor'; return; }
+  const eqs = [...(config.equipos || [])].filter(e => !/otro/i.test(e)).sort((a, b) => equiposAplicacion().includes(b) - equiposAplicacion().includes(a) || a.localeCompare(b, 'es'));
+  w.innerHTML = `<div style="border:1px solid ${campoProgramar ? '#7C3AED' : 'var(--borde)'};background:${campoProgramar ? '#F5F3FF' : 'transparent'};border-radius:10px;padding:10px;margin-bottom:10px">
+    <label style="display:flex;gap:8px;align-items:center;font-size:14px;font-weight:600;cursor:pointer;margin:0"><input type="checkbox" style="width:auto" ${campoProgramar ? 'checked' : ''} onchange="campoProgramarTog(this.checked)"> 📅 Programar como tarea (aún no se hace)</label>
+    ${campoProgramar ? `<div class="hint" style="margin:6px 0">Queda pendiente para el equipo asignado. La labor entra al cuaderno <b>cuando el tractor la empieza</b> (en el modo tractor, o al entrar a la app si el equipo tiene JDLink) y se cierra sola al terminar. La fecha de arriba es la fecha programada.</div>
+      <div class="cultivos-label">Equipo(s) que la harán</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">${eqs.map((e, i) => `<button type="button" class="cultivo-chip ${campoProgEquipos.includes(e) ? 'sel' : ''}" onclick="campoProgEqTog(${i})">${campoProgEquipos.includes(e) ? '✓ ' : ''}🚜 ${escA(e)}${fuenteHorometroDe(e) === 'jdlink' ? ' · JDLink' : ''}</button>`).join('')}</div>` : ''}
+  </div>`;
+  window._progEqs = eqs;
+  if (btn) btn.textContent = campoProgramar ? '📅 Programar tarea' : '✓ Guardar labor';
+};
+window.campoProgramarTog = v => { campoProgramar = !!v; if (campoProgramar && !campoProgEquipos.length) { const e = (document.getElementById('campo-labor-equipo') || {}).value; if (e) campoProgEquipos = [e]; } renderProgramarCampo(); };
+window.campoProgEqTog = i => { const e = (window._progEqs || [])[i]; if (!e) return; campoProgEquipos = campoProgEquipos.includes(e) ? campoProgEquipos.filter(x => x !== e) : [...campoProgEquipos, e]; renderProgramarCampo(); };
+async function guardarTareaProgramada(payloadBase) {
+  if (!campoProgEquipos.length) { toast('Elige el equipo (o los equipos) que harán la tarea', false); return; }
+  const btn = document.getElementById('btn-registrar-labor-campo');
+  btn.disabled = true; btn.textContent = 'Guardando...';
+  const datos = { ...payloadBase }; ['multiId', 'fechaFin', 'enCurso', 'diasTrabajo', 'comboId', 'equipo', 'operadorLabor'].forEach(k => delete datos[k]);
+  try {
+    const batch = writeBatch(db);
+    camposLaborPotrerosSel.forEach(u => {
+      const det = campoLaborPotrerosDetalle[u] || { modo: 'completo', hectareas: null, obs: '' }, inf = infoUnidad(u);
+      const d = { ...datos, potrero: inf.potrero, lote: inf.lote || null, aplicacion_completa: det.modo === 'completo', hectareas_aplicadas: det.modo === 'parcial' ? det.hectareas : null, obs_parcial: det.modo === 'parcial' ? (det.obs || null) : null };
+      batch.set(doc(collection(db, 'labores_programadas')), { datos: d, potrero: inf.potrero, lote: inf.lote || null, texto: textoTarea(d), tipo: d.tipo, fechaProgramada: d.fecha, equipos: [...campoProgEquipos], estado: 'pendiente', creadaPor: currentUser || '', ts: Date.now(), avance: {} });
+    });
+    await batch.commit();
+    const n = camposLaborPotrerosSel.length;
+    toast(`📅 Tarea programada${n > 1 ? ' en ' + n + ' potreros' : ''} para ${campoProgEquipos.join(', ')}`, true);
+    campoProgramar = false; campoProgEquipos = [];
+    document.getElementById('campo-labor-obs').value = '';
+    campoColaLabores = []; campoComboId = null; campoMultiId = null; campoTipoLaborSeleccionado = null;
+    renderTipoLaborSelector(); document.getElementById('campo-labor-campos').innerHTML = ''; renderProgramarCampo();
+  } catch (e) { toast('Error: ' + e.message, false); }
+  btn.disabled = false; btn.textContent = campoProgramar ? '📅 Programar tarea' : '✓ Guardar labor';
+}
+function suscribirTareas() {
+  if (tareasSubscrito) return; tareasSubscrito = true;
+  onSnapshot(query(collection(db, 'labores_programadas'), orderBy('ts', 'desc'), limit(120)), snap => {
+    tareasProg = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    try { renderTareas(); } catch (e) { console.warn('tareas', e); }
+  }, e => console.warn('tareas', e));
+}
+const fCortaT = f => f ? f.slice(8, 10) + '-' + f.slice(5, 7) : '';
+function avanceHtml(t) {
+  const filas = Object.values(t.avance || {}).sort((a, b) => (a.fecha || '').localeCompare(b.fecha || '') || (a.equipo || '').localeCompare(b.equipo || ''));
+  if (!filas.length) return '<div class="hint">Sin avance registrado todavía.</div>';
+  const ha = filas.reduce((a, x) => a + (Number(x.ha) || 0), 0);
+  return `<table style="width:100%;font-size:12px;border-collapse:collapse;margin-top:4px"><thead><tr style="color:#6B7280"><th style="text-align:left">Día</th><th style="text-align:left">Equipo</th><th style="text-align:left">Operador</th><th style="text-align:right">Aplicado</th></tr></thead><tbody>${filas.map(x => `<tr><td>${fCortaT(x.fecha)}</td><td>${escA(x.equipo || '')}</td><td>${escA(x.operador || '')}</td><td style="text-align:right">${x.ha != null ? (Math.round(x.ha * 10) / 10).toLocaleString('es-CL') + ' ha' : (x.fuente === 'jdlink' ? '📡 JDLink' : '—')}${x.km ? ` <span style="color:#6B7280">(${(Math.round(x.km * 10) / 10).toLocaleString('es-CL')} km)</span>` : ''}</td></tr>`).join('')}</tbody></table>${ha ? `<div style="font-size:12px;margin-top:4px">Total según GPS: <b>${(Math.round(ha * 10) / 10).toLocaleString('es-CL')} ha</b> (aproximado: km recorridos aplicando × ancho)</div>` : ''}`;
+}
+window.renderTareas = function() {
+  const w = document.getElementById('campo-tareas'); if (!w) return;
+  const act = tareasProg.filter(t => t.estado === 'pendiente' || t.estado === 'en_curso').sort((a, b) => (a.estado === 'en_curso' ? 0 : 1) - (b.estado === 'en_curso' ? 0 : 1) || (a.fechaProgramada || '').localeCompare(b.fechaProgramada || ''));
+  const term = tareasProg.filter(t => t.estado === 'terminada').slice(0, 15);
+  const prog = puedeProgramarTareas();
+  if (!act.length && !term.length && !prog) { w.innerHTML = ''; return; }
+  const tarjeta = t => {
+    const enc = t.estado === 'en_curso', ter = t.estado === 'terminada';
+    return `<div style="border:1px solid ${enc ? '#93C5FD' : ter ? '#E5E7EB' : '#C4B5FD'};background:${enc ? '#EFF6FF' : ter ? '#F9FAFB' : '#F5F3FF'};border-radius:10px;padding:10px;margin-bottom:8px">
+      <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><div><b>${escA(t.texto || '')}</b> · ${escA(t.potrero || '')}${t.lote ? ' (' + escA(t.lote) + ')' : ''}</div>
+      <div style="font-size:12px;font-weight:700;color:${enc ? '#1D4ED8' : ter ? '#16A34A' : '#7C3AED'}">${enc ? '🔄 en curso desde ' + fCortaT(t.datosInicio || (t.iniciada ? new Date(t.iniciada).toISOString().slice(0, 10) : '')) : ter ? '🏁 terminada' + (t.fin ? ' el ' + new Date(t.fin).toLocaleDateString('es-CL', { day: '2-digit', month: '2-digit' }) : '') : '📅 programada para el ' + fCortaT(t.fechaProgramada)}</div></div>
+      <div style="font-size:12px;color:#4B5563;margin-top:2px">🚜 ${escA((t.equipos || []).join(', '))}${t.creadaPor ? ' · la programó ' + escA(t.creadaPor) : ''}${t.iniciadaPor ? ' · la empezó ' + escA(t.iniciadaPor) : ''}</div>
+      ${(t.datos && t.datos.productos || []).length ? `<div style="font-size:12px;margin-top:2px">${t.datos.productos.map(p => escA(p.producto) + (p.dosis ? ' ' + escA(p.dosis) : '')).join(' · ')}${t.datos.mojamiento ? ' · mojamiento ' + t.datos.mojamiento + ' L/ha' : ''}</div>` : ''}
+      ${enc || ter ? `<details ${enc ? 'open' : ''} style="margin-top:6px"><summary style="cursor:pointer;font-size:13px;font-weight:600">Avance día a día</summary>${avanceHtml(t)}</details>` : ''}
+      ${prog && !ter ? `<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">${enc ? `<button type="button" class="btn btn-secondary" style="padding:6px 10px;font-size:12px" onclick="terminarTarea('${t.id}')">🏁 Terminar</button>` : `<button type="button" class="btn btn-secondary" style="padding:6px 10px;font-size:12px" onclick="cancelarTarea('${t.id}')">✕ Cancelar tarea</button>`}</div>` : ''}
+    </div>`;
+  };
+  const eqsAp = equiposAplicacion();
+  w.innerHTML = `<div class="panel"><div class="panel-title">📅 Tareas programadas</div>
+    ${act.length ? act.map(tarjeta).join('') : '<div class="hint" style="margin-bottom:8px">No hay tareas pendientes ni en curso.' + (prog ? ' Para crear una: elige potrero y tipo de labor abajo y marca «📅 Programar como tarea».' : '') + '</div>'}
+    ${term.length ? `<button type="button" class="btn btn-secondary btn-full" style="margin-top:4px" onclick="togTareasTerminadas()">${tareasVerTerminadas ? '▲ Ocultar' : '▼ Ver'} terminadas (${term.length})</button>${tareasVerTerminadas ? '<div style="margin-top:8px">' + term.map(tarjeta).join('') + '</div>' : ''}` : ''}
+    ${isAdmin ? `<details style="margin-top:10px"><summary style="cursor:pointer;font-size:13px">⚙️ Equipos que solo usan el modo tractor con una tarea (${escA(eqsAp.join(', ') || 'ninguno')})</summary>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">${[...(config.equipos || [])].filter(e => !/otro/i.test(e)).sort((a, b) => a.localeCompare(b, 'es')).map(e => `<button type="button" class="cultivo-chip ${eqsAp.includes(e) ? 'sel' : ''}" onclick="togEquipoAplicacion('${escA(e).replace(/'/g, "\\'")}')">${eqsAp.includes(e) ? '✓ ' : ''}${escA(e)}</button>`).join('')}</div>
+      <div class="hint">Estos equipos no pueden aplicar en el modo tractor sin una tarea programada asignada a ellos.</div></details>` : ''}
+  </div>`;
+};
+window.togTareasTerminadas = () => { tareasVerTerminadas = !tareasVerTerminadas; renderTareas(); };
+window.togEquipoAplicacion = async function(e) {
+  const l = equiposAplicacion(); config.equiposAplicacion = l.includes(e) ? l.filter(x => x !== e) : [...l, e];
+  renderTareas();
+  try { await setDoc(doc(db, 'config', 'datos'), { equiposAplicacion: config.equiposAplicacion }, { merge: true }); toast('✓ Guardado', true); } catch (er) { toast('Error: ' + er.message, false); }
+};
+window.cancelarTarea = async function(id) {
+  const t = tareasProg.find(x => x.id === id); if (!t || !confirm(`¿Cancelar la tarea «${t.texto}» en ${t.potrero}?`)) return;
+  try { await setDoc(doc(db, 'labores_programadas', id), { estado: 'cancelada', canceladaPor: currentUser || '', fin: Date.now() }, { merge: true }); toast('Tarea cancelada', true); } catch (e) { toast('Error: ' + e.message, false); }
+};
+// Terminar una tarea (cierra la labor del cuaderno y la aplicación del modo tractor)
+async function cerrarTarea(t, fin, quien) {
+  const batch = writeBatch(db), ahora = Date.now();
+  batch.set(doc(db, 'labores_programadas', t.id), { estado: 'terminada', fin: ahora, terminadaPor: quien || currentUser || '' }, { merge: true });
+  if (t.laborId) { const l = (laboresCampoTodos || []).find(x => x.id === t.laborId); batch.set(doc(db, 'labores_campo', t.laborId), { enCurso: false, fechaFin: l && l.fecha === fin ? null : fin, diasTrabajo: arrayUnion(fin), terminadoPor: quien || currentUser || '', terminadoTs: ahora }, { merge: true }); }
+  if (t.aplicacionId) batch.set(doc(db, 'aplicaciones_campo', t.aplicacionId), { estado: 'terminada', fin: ahora }, { merge: true });
+  await batch.commit();
+}
+window.terminarTarea = async function(id) {
+  const t = tareasProg.find(x => x.id === id); if (!t) return;
+  if (!confirm(`¿Terminar la tarea «${t.texto}» en ${t.potrero}? La labor del cuaderno queda terminada hoy y los tractores dejan de verla.`)) return;
+  try { await cerrarTarea(t, hoyCampoStr()); toast('🏁 Tarea terminada', true); } catch (e) { toast('Error: ' + e.message, false); }
+};
+// Empezar o continuar una tarea sin modo tractor (equipos con JDLink: al entrar a la app)
+async function iniciarTareaDesdeApp(t, equipo, operador) {
+  const hoy = hoyCampoStr(), ahora = Date.now();
+  const fresca = await getDoc(doc(db, 'labores_programadas', t.id)); const T = fresca.exists() ? { id: t.id, ...fresca.data() } : t;
+  if (T.estado === 'terminada' || T.estado === 'cancelada') { toast('Esa tarea ya no está pendiente', false); return; }
+  let laborId = T.laborId;
+  if (!laborId) {
+    const ref = doc(collection(db, 'labores_campo'));
+    await setDoc(ref, { ...(T.datos || {}), fecha: hoy, anio: hoy.slice(0, 4), enCurso: true, diasTrabajo: [hoy], equipo, operadorLabor: operador, programadaId: T.id, origen: 'app', ts: ahora });
+    laborId = ref.id;
+  } else await setDoc(doc(db, 'labores_campo', laborId), { diasTrabajo: arrayUnion(hoy) }, { merge: true });
+  await setDoc(doc(db, 'labores_programadas', T.id), { estado: 'en_curso', laborId, iniciada: T.iniciada || ahora, iniciadaPor: T.iniciadaPor || operador, datosInicio: T.datosInicio || hoy,
+    avance: { [hoy + '|' + equipo.replace(/\s+/g, '_')]: { fecha: hoy, equipo, operador, fuente: fuenteHorometroDe(equipo) === 'jdlink' ? 'jdlink' : 'app', ts: ahora } } }, { merge: true });
+}
+// Al entrar a la app: si un equipo del operador con JDLink tiene una tarea asignada, pregunta si lo de hoy corresponde a esa tarea (una vez al día)
+async function preguntarTareaAlEntrar(nombre) {
+  try {
+    const eqs = [].concat((config.equipoOperador || {})[nombre] || []).filter(e => fuenteHorometroDe(e) === 'jdlink');
+    if (!eqs.length) return;
+    const hoy = hoyCampoStr();
+    for (const eq of eqs) {
+      const k = 'tarea_preg_' + eq + '_' + hoy; try { if (localStorage.getItem(k)) continue; } catch (e) {}
+      const s = await getDocs(query(collection(db, 'labores_programadas'), where('equipos', 'array-contains', eq)));
+      const ts = s.docs.map(d => ({ id: d.id, ...d.data() })).filter(t => t.estado === 'pendiente' || t.estado === 'en_curso')
+        .sort((a, b) => (a.estado === 'en_curso' ? 0 : 1) - (b.estado === 'en_curso' ? 0 : 1) || (a.fechaProgramada || '').localeCompare(b.fechaProgramada || ''));
+      if (!ts.length) continue;
+      const r = await new Promise(res => {
+        const ov = document.createElement('div');
+        ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+        ov.innerHTML = `<div style="background:#fff;border-radius:14px;padding:18px;max-width:400px;width:100%;font-size:15px;line-height:1.4;max-height:90vh;overflow:auto">
+          <div style="font-weight:700;font-size:17px;margin-bottom:6px">🧴 Tarea${ts.length > 1 ? 's' : ''} del ${escA(eq)}</div>
+          <div style="margin-bottom:10px">¿Lo que harás hoy con el <b>${escA(eq)}</b> corresponde a una de estas tareas?</div>
+          ${ts.map((t, i) => `<button type="button" class="btn ${i === 0 ? 'btn-verde' : ''} btn-full" data-i="${i}" style="margin-bottom:6px;text-align:left;display:block">${t.estado === 'en_curso' ? '↪ Continuar' : (i === 0 ? '▶ Siguiente' : '▶ Empezar')}: <b>${escA(t.texto)}</b> · ${escA(t.potrero)}<div style="font-size:12px;font-weight:400;opacity:.85">${t.estado === 'en_curso' ? 'en curso' + (t.datosInicio ? ' desde el ' + fCortaT(t.datosInicio) : '') : 'programada para el ' + fCortaT(t.fechaProgramada)}</div></button>`).join('')}
+          ${ts.filter(t => t.estado === 'en_curso').map(t => `<button type="button" class="btn btn-full" data-fin="${t.id}" style="margin-bottom:6px">🏁 Ya terminé: ${escA(t.texto)} · ${escA(t.potrero)}</button>`).join('')}
+          <button type="button" class="btn btn-full" data-no="1" style="background:#fff;color:#6B7280">No, hoy hago otra cosa</button></div>`;
+        ov.querySelectorAll('button').forEach(b => b.onclick = () => { ov.remove(); res(b.dataset.i != null ? { t: ts[+b.dataset.i] } : b.dataset.fin ? { fin: ts.find(t => t.id === b.dataset.fin) } : null); });
+        document.body.appendChild(ov);
+      });
+      try { localStorage.setItem(k, '1'); } catch (e) {}
+      if (r && r.t) { await iniciarTareaDesdeApp(r.t, eq, nombre); toast('✓ Tarea ' + (r.t.estado === 'en_curso' ? 'continuada' : 'iniciada') + ': quedó en el cuaderno de campo', true); }
+      else if (r && r.fin && confirm(`¿Terminar «${r.fin.texto}» en ${r.fin.potrero}?`)) { await cerrarTarea(r.fin, hoy, nombre); toast('🏁 Tarea terminada', true); }
+    }
+  } catch (e) { console.warn('tarea al entrar', e); }
+}
 function renderCamposLaborTipo() {
   const cont = document.getElementById('campo-labor-campos');
   if (!cont) return;
@@ -7566,6 +7809,7 @@ function renderCamposLaborTipo() {
   const ops = opcionesLabor(tipo);
   if (ops.length) { cont.insertAdjacentHTML('beforeend', '<div class="field" id="campo-opcion-wrap"></div>'); renderOpcionLabor(); }
   try { aplicarCopiaCampo(tipo); } catch (e) { console.warn('copia', e); }
+  try { renderProgramarCampo(); } catch (e) { console.warn('programar', e); }
 }
 // ── Copiar una labor anterior: precarga tipo(s), productos, dosis, equipo, operador y aperos. La fecha y los potreros no se tocan ──
 let campoCopiaPorTipo = {};
@@ -8386,7 +8630,7 @@ window.registrarLaborCampo = async function() {
   }
   const multiDia = campoMultiDia && fechaFin !== fecha;
   // ¿Ya hay una labor igual en curso en estos potreros? Ofrece marcarla como continuación en vez de duplicarla
-  if (!campoMultiId) {
+  if (!campoMultiId && !campoProgramar) {
     const eqSel = (document.getElementById('campo-labor-equipo') || {}).value || '', opSel = (document.getElementById('campo-labor-operador') || {}).value || '';
     const equiposDe = l => new Set([l.equipo, ...Object.values(l.diasDetalle || {}).flat().map(x => x && x.equipo)].filter(Boolean));
     // Varios equipos pueden trabajar a la vez en un mismo potrero: si el equipo elegido no es de la labor en curso, se registra otra labor en paralelo sin preguntar
@@ -8528,6 +8772,7 @@ window.registrarLaborCampo = async function() {
     }
   }
 
+  if (campoProgramar) { await guardarTareaProgramada(payloadBase); return; }
   const btn = document.getElementById('btn-registrar-labor-campo');
   btn.disabled = true; btn.textContent = 'Guardando...';
   try {
@@ -15531,6 +15776,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     <!-- CUADERNO DE CAMPO -->
     <div id="tc-campo" class="tab-content">
       <button type="button" class="btn btn-secondary btn-full" style="margin-bottom:10px" onclick="abrirPrueba('cuaderno2')">🎤 Probar el cuaderno v2 por dictado (prueba, no toca este cuaderno)</button>
+      <div id="campo-tareas"></div>
       <div id="campo-en-curso"></div>
       <div id="campo-revision-wrap"></div>
       <div class="panel">
@@ -15573,6 +15819,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
           <label class="btn btn-secondary btn-full" style="display:block;text-align:center;cursor:pointer">Agregar foto<input type="file" accept="image/*" multiple style="display:none" onchange="campoFotoElegir(this)"></label>
           <div id="campo-fotos-prev" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px"></div></div>
         <div class="field"><label>Comentarios (opcional)</label><textarea id="campo-labor-obs" rows="2" placeholder="Comentarios o detalle adicional..." style="width:100%;font:inherit;padding:10px;border:1px solid var(--borde);border-radius:8px;resize:vertical"></textarea></div>
+        <div id="campo-programar-wrap"></div>
         <button id="btn-registrar-labor-campo" class="btn btn-verde btn-full" onclick="registrarLaborCampo()">✓ Guardar labor</button>
       </div>
 
