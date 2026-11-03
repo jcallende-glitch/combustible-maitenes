@@ -2671,6 +2671,12 @@ const SUPERVISOR_NOMBRE = 'Camila Faundez';
 // que son quienes cargan combustible) y lista de subadministradores con
 // acceso solo a la pestaña "Asistencia" — nunca ven combustible.
 let trabajadoresAsistenciaConfig = [];
+// No van en la asistencia (no son trabajadores de la tarja)
+const EXCLUIDOS_ASISTENCIA = ['juan riquelme miniexcavadora'];
+const excluidoAsistencia = n => EXCLUIDOS_ASISTENCIA.includes(String(n || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim());
+// Siempre van como Administración en la tarja
+const ADMIN_FIJO_ASISTENCIA = ['camila faundez', 'jc allende', 'jcallende', 'juan carlos allende', 'nicolas feris'];
+const esAdminFijoAsistencia = n => { const k = String(n || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim(); return ADMIN_FIJO_ASISTENCIA.includes(k) || ADMIN_FIJO_ASISTENCIA.includes(k.replace(/ /g, '')); };
 
 async function getPinesAsistencia() {
   const snap = await getDoc(doc(db, 'config', 'pines_asistencia'));
@@ -3010,7 +3016,8 @@ async function loadConfig() {
     parametrosSistema = config.parametros || { capacidad: CAPACIDAD_DEFAULT, alertaLitros: ALERTA_LITROS_DEFAULT, margenTotalizador: MARGEN_TOTALIZADOR_DEFAULT };
     fuenteHorometroConfig = config.fuenteHorometro || {};
     presetsOperadorConfig = config.presetsOperador || {};
-    trabajadoresAsistenciaConfig = config.trabajadoresAsistencia || [];
+    trabajadoresAsistenciaConfig = (config.trabajadoresAsistencia || []).filter(n => !excluidoAsistencia(n));
+    if (trabajadoresAsistenciaConfig.length !== (config.trabajadoresAsistencia || []).length) { config.trabajadoresAsistencia = trabajadoresAsistenciaConfig; setDoc(doc(db, 'config', 'datos'), { trabajadoresAsistencia: trabajadoresAsistenciaConfig }, { merge: true }).catch(e => console.warn('excluir asistencia', e)); }
     potrerosConfig = config.potreros || [];
     cultivosCampoConfig = config.cultivosCampo || [];
     cargarLotesTemporada();
@@ -6128,6 +6135,10 @@ function wzCargarTrabajador() {
     recientes: rec, verRec: false, estado: 'presente', motivo: '',
     detalle: '', detalleCambiar: false, verTodasLab: false
   };
+  if (esAdminFijoAsistencia(trab)) { // siempre Administración: cultivo fijo, labor la última suya de administración (o «Administración»)
+    const pa = prev.find(r => r.labor && esAdministracion(String(r.centro_costo || '').replace(/\s+\d+%$/, '')));
+    Object.assign(WZ.cur, { adminFijo: true, centroModo: 'fijo', centros: [{ centro: 'Administración', pct: 100 }], centroCambiar: false, labor: pa ? pa.labor : 'Administración', laborDe: pa ? fechaBonita(pa.fecha) : '', laborCambiar: false, maq: '', aperos: [] });
+  }
   WZ.cur.corrido = false; WZ.cur.dif = false; WZ.cur.ingreso = '07:00'; WZ.cur.difPrev = null;
   { const pd = prev.find(r => (r.fecha || '') < WZ.fecha && (!r.estado || r.estado === 'presente')); // jornada del último día trabajado
     if (pd && pd.jornada === 'diferenciado' && pd.hora_ingreso) { WZ.cur.difPrev = { ingreso: pd.hora_ingreso, corrido: pd.jornada_corrido === true }; WZ.cur.dif = true; WZ.cur.ingreso = pd.hora_ingreso; WZ.cur.corrido = pd.jornada_corrido === true; } }
@@ -6365,14 +6376,10 @@ window.wzRender = function() {
       <span style="margin-left:auto;font-size:13px;color:#6B7280">${WZ.i + 1} de ${WZ.total}</span>
     </div>
     <div style="height:6px;background:#E5E7EB;border-radius:4px;margin-bottom:14px"><div style="height:6px;width:${Math.round(WZ.i / WZ.total * 100)}%;background:#16A34A;border-radius:4px"></div></div>
-    <div style="font-size:22px;font-weight:700;margin-bottom:10px">${escA(cur.trab)}</div>
+    <div style="font-size:22px;font-weight:700;margin-bottom:6px">${escA(cur.trab)}${cur.adminFijo ? ' <span style="font-size:12px;font-weight:600;color:#6B7280;background:#F3F4F6;border-radius:10px;padding:2px 8px;vertical-align:middle">🏢 Administración</span>' : ''}</div>
+    ${(() => { const falta = wzFaltantes(); return `<button type="button" class="btn btn-verde btn-full" style="margin-bottom:${falta.length ? 4 : 12}px;${falta.length ? 'opacity:.45;cursor:not-allowed' : ''}" ${falta.length ? 'disabled' : ''} onclick="wzGuardar()">✓ Guardar y siguiente</button>${falta.length ? `<div style="font-size:12px;color:#B45309;margin-bottom:12px;text-align:center">Falta: ${falta.join(', ')}</div>` : ''}`; })()}
     ${botonesEstadoAsist(cur.estado, 'wzEstado')}
-    ${cur.estado !== 'presente' ? `<div class="field"><label>${cur.estado === 'permiso' ? 'Motivo del permiso (opcional)' : 'Observación (opcional)'}</label><input type="text" id="wiz-motivo" value="${escA(cur.motivo || '')}" placeholder="${cur.estado === 'permiso' ? 'Ej: trámite, salud, con goce / sin goce' : 'Ej: avisó, sin aviso'}"></div>` : `${opcionesHtml}
-    <div class="field"><label>Cultivo(s) / frutal / administración (centro de costo)</label>${centroHtml}</div>
-    <div class="field"><label>Labor del día</label>${laborHtml}</div>
-    ${detHtml}
-    ${maqHtml}
-    <div style="padding:10px;background:#F0F9FF;border:1px solid #BAE6FD;border-radius:8px;margin-bottom:12px">
+    ${cur.estado !== 'presente' ? `<div class="field"><label>${cur.estado === 'permiso' ? 'Motivo del permiso (opcional)' : 'Observación (opcional)'}</label><input type="text" id="wiz-motivo" value="${escA(cur.motivo || '')}" placeholder="${cur.estado === 'permiso' ? 'Ej: trámite, salud, con goce / sin goce' : 'Ej: avisó, sin aviso'}"></div>` : `    <div style="padding:10px;background:#F0F9FF;border:1px solid #BAE6FD;border-radius:8px;margin-bottom:12px">
       <div style="margin-bottom:8px">${cur.espDe ? (() => { const e = (config.horariosEspeciales || []).find(x => x.nombre === cur.espDe) || {}; return `<div style="font-size:12px;margin-bottom:6px;padding:6px 8px;border-radius:8px;background:#FEF9C3;color:#854D0E">⭐ Tiene horario especial «<b>${escA(cur.espDe)}</b>» (ingreso ${escA(e.entrada || '–')} · salida ${escA(e.salida || '–')}${e.colIni && e.colFin ? ' · colación ' + escA(e.colIni) + '–' + escA(e.colFin) : ''}). ¿Hoy lo usa?</div><div style="display:flex;gap:6px;margin-bottom:6px"><button type="button" style="${WZ_SMALL};margin:0;flex:1;${cur.esp ? 'background:#2563EB;color:#fff;border-color:#2563EB;font-weight:700' : ''}" onclick="wzJornada('esp')">⭐ Horario especial</button><button type="button" style="${WZ_SMALL};margin:0;flex:1;${!cur.esp ? 'background:#2563EB;color:#fff;border-color:#2563EB;font-weight:700' : ''}" onclick="wzJornada('normal')">Horario normal</button></div>`; })() : ''}${WZ.feriado ? '<div style="font-size:12px;margin-bottom:6px;padding:6px 8px;border-radius:8px;background:#EDE9FE;color:#5B21B6">🎌 Domingo o feriado: todo lo trabajado cuenta como hora extra (no hay jornada normal). Si no cargó combustible, escribe las horas.</div>' : ''}${cur.difPrev ? `<div style="font-size:12px;margin-bottom:6px;padding:6px 8px;border-radius:8px;background:#FEF3C7;color:#92400E">🕕 Último día trabajó con horario diferenciado (ingreso ${escA(cur.difPrev.ingreso)}${cur.difPrev.corrido ? ', de corrido' : ''}). ¿Lo mantiene?</div><div style="display:flex;gap:6px;margin-bottom:6px"><button type="button" style="${WZ_SMALL};margin:0;flex:1;${cur.dif && cur.ingreso === cur.difPrev.ingreso && cur.corrido === cur.difPrev.corrido ? 'background:#2563EB;color:#fff;border-color:#2563EB;font-weight:700' : ''}" onclick="wzMantenerDif()">Mantener diferenciado</button><button type="button" style="${WZ_SMALL};margin:0;flex:1;${!cur.dif && !cur.corrido && !cur.esp ? 'background:#2563EB;color:#fff;border-color:#2563EB;font-weight:700' : ''}" onclick="wzJornada('normal')">Horario normal</button></div>` : ''}
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><span style="font-size:12px;color:#374151">Jornada:</span>
         <button type="button" style="${WZ_SMALL};margin:0;${!cur.dif && !cur.corrido && !cur.esp ? 'background:#2563EB;color:#fff;border-color:#2563EB;font-weight:700' : ''}" onclick="wzJornada('normal')">Normal</button>
@@ -6387,8 +6394,14 @@ window.wzRender = function() {
         <div class="field" style="margin:0"><label>Según el trabajador (opcional)</label><input type="number" id="wiz-htrab" min="0" step="0.5" inputmode="decimal" placeholder="Pendiente" value="${escA(ht)}"></div>
       </div>
       <div>${[0, 0.5, 1, 1.5, 2, 3, 4].map(h => `<button type="button" style="${WZ_SMALL}" onclick="document.getElementById('wiz-hreg').value='${h}'">${String(h).replace('.', ',')} h</button>`).join('')}</div>
-    </div>`}
-    <button type="button" class="btn btn-verde btn-full" onclick="wzGuardar()">✓ Guardar y siguiente</button>
+    </div>
+    ${cur.adminFijo ? `<div style="padding:10px;background:#F3F4F6;border:1px solid #E5E7EB;border-radius:8px;margin-bottom:12px">🏢 <b>Administración</b> <span style="font-size:12px;color:#6B7280">(fijo para esta persona)</span></div><div class="field"><label>Labor del día</label>${laborHtml}</div>${detHtml}` : `${opcionesHtml}
+
+    <div class="field"><label>Cultivo(s) / frutal / administración (centro de costo)</label>${centroHtml}</div>
+    <div class="field"><label>Labor del día</label>${laborHtml}</div>
+    ${detHtml}
+    ${maqHtml}`}`}
+
     <div style="display:flex;gap:8px;margin-top:8px">
       <button type="button" class="btn" style="flex:1" onclick="wzSaltar()">Saltar →</button>
       <button type="button" class="btn" style="flex:1" onclick="wzTerminar()">Terminar</button>
@@ -6469,7 +6482,19 @@ window.wzMaq = function(i) {
   if (nuevo !== antes) { const u = asistenciaRegistros.filter(r => r.trabajador === cur.trab && Array.isArray(r.aperos) && r.aperos.length && nuevo && String(r.maquinaria || '').split(' + ')[0] === nuevo.split(' + ')[0]).sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''))[0]; cur.aperos = u ? [...u.aperos] : []; }
   wzRender();
 }
+// Qué falta para poder guardar (cultivo y labor si trabajó; % que sumen 100 si son varios cultivos)
+function wzFaltantes() {
+  if (!WZ || !WZ.cur) return ['datos'];
+  const cur = WZ.cur, c = WZ.comb[cur.trab];
+  if (cur.estado && cur.estado !== 'presente') return [];
+  const f = [], l = cur.centros || [], usaComb = cur.centroModo === 'comb' && c && !l.length;
+  if (!usaComb && !l.length) f.push('cultivo / centro de costo');
+  if (!usaComb && l.length > 1 && l.reduce((a, x) => a + (x.pct || 0), 0) !== 100) f.push('que los % sumen 100');
+  if (!cur.labor) f.push('labor');
+  return f;
+}
 window.wzGuardar = async function() {
+  { const falta = wzFaltantes(); if (falta.length) { toast('Falta: ' + falta.join(', '), false); return; } }
   const cur = WZ.cur, c = WZ.comb[cur.trab];
   const aus = cur.estado && cur.estado !== 'presente';
   const hreg = aus ? '' : (document.getElementById('wiz-hreg')?.value ?? ''), htrab = aus ? '' : (document.getElementById('wiz-htrab')?.value ?? '');
@@ -7064,7 +7089,7 @@ window.agregarTrabajadorAsistencia = async function() {
 }
 
 window.copiarTrabajadoresDesdeCombustible = async function() {
-  const origen = (config.operadores || []).filter(n => n && !/^otros/i.test(n.trim()));
+  const origen = (config.operadores || []).filter(n => n && !/^otros/i.test(n.trim()) && !excluidoAsistencia(n));
   const nuevos = origen.filter(n => !trabajadoresAsistenciaConfig.includes(n));
   if (!nuevos.length) { toast('Ya están todos copiados (' + origen.length + ')', true); return; }
   if (!confirm('Se agregarán ' + nuevos.length + ' trabajadores con el mismo nombre que en combustible:\n\n' + nuevos.join(', ') + '\n\nLos que ya existen no se duplican. ¿Continuar?')) return;
