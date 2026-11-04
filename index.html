@@ -1598,7 +1598,7 @@ function renderEnVivo() {
       : `<div style="width:18px;height:18px;border-radius:50%;background:${col};border:3px solid #111"></div>`;
     const icon = L.divIcon({ className: '', html: `<div style="display:flex;flex-direction:column;align-items:center">${flecha}<div style="background:rgba(0,0,0,.75);color:#fff;font-size:11px;font-weight:700;padding:1px 6px;border-radius:6px;white-space:nowrap;margin-top:2px">${x.equipo}${!viejo && x.kmh != null ? ` · ${Math.round(x.kmh)} km/h` : ''}</div></div>`, iconSize: [120, 50], iconAnchor: [60, 15] });
     L.marker([x.lat, x.lng], { icon }).addTo(envivoCapa).bindPopup(
-      `<strong>${x.equipo}</strong> · ${x.operador || ''}<br>${haceTexto(ahora - (x.ts || 0))}${x.kmh != null ? ` · ${x.kmh} km/h` : ''}<br>${x.fuente === 'jdlink' ? '📡 JDLink' : '📱 Celular · ' + (x.aplicando ? '🟢 Aplicando' : 'Sin aplicar')}${otraFuente(x)}${x.potrero ? ` en ${x.potrero}` : ''}${x.aqui && x.aqui !== x.potrero ? `<br>Está en: ${x.aqui}` : ''}${x.bateria != null ? `<br>🔋 ${x.bateria}%${x.llave ? ' (cargando)' : ''}` : ''}`);
+      `<strong>${x.equipo}</strong> · ${x.operador || ''}<br>${haceTexto(ahora - (x.ts || 0))}${x.kmh != null ? ` · ${x.kmh} km/h` : ''}<br>${x.fuente === 'jdlink' ? '📡 JDLink' : '📱 Celular · ' + (x.modo === 'trabajo' ? (x.aplicando ? '🟢 Trabajando' : 'En pausa') : (x.aplicando ? '🟢 Aplicando' : 'Sin aplicar')) + (x.labor ? ' · ' + escA(x.labor) : '')}${otraFuente(x)}${x.potrero ? ` en ${x.potrero}` : ''}${x.aqui && x.aqui !== x.potrero ? `<br>Está en: ${x.aqui}` : ''}${x.bateria != null ? `<br>🔋 ${x.bateria}%${x.llave ? ' (cargando)' : ''}` : ''}`);
   });
   if (!envivoEncuadrado && lista.some(x => ahora - (x.ts || 0) < 12 * 3600000)) {
     envivoEncuadrado = true;
@@ -1611,7 +1611,7 @@ function renderEnVivo() {
   const tarjeta = x => {
     const viejo = ahora - (x.ts || 0) > 10 * 60000, sel = envivoMulti ? envivoMultiSel.has(x.equipo) : envivoSel.includes(x.equipo);
     const col = viejo ? '#9CA3AF' : x.aplicando ? '#22C55E' : (x.kmh || 0) >= 1 ? '#3B82F6' : '#E5E7EB';
-    const estado = viejo ? 'sin señal' : x.aplicando ? '🟢 aplicando' : (x.kmh || 0) >= 1 ? `en movimiento · ${Math.round(x.kmh)} km/h` : 'detenido';
+    const estado = viejo ? 'sin señal' : x.aplicando ? (x.modo === 'trabajo' ? '🟢 trabajando' : '🟢 aplicando') : (x.kmh || 0) >= 1 ? `en movimiento · ${Math.round(x.kmh)} km/h` : 'detenido';
     const fuente = (x.fuente === 'jdlink' ? '📡 JDLink' : '📱 ' + escA(x.operador || 'celular')) + (x._ambas ? (x.fuente === 'jdlink' ? ' + 📱' : ' + 📡') : '') + (envivoFuenteEq[x.equipo] ? ' · 📌' : '');
     const eqJs = String(x.equipo).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     return `<div onclick="envivoElegir('${eqJs}')" style="display:flex;gap:10px;align-items:center;padding:10px 12px;border:${sel ? '2px solid #F5A623' : '1px solid var(--borde)'};border-radius:10px;margin-bottom:6px;background:${sel ? '#FFFBEB' : '#fff'};cursor:pointer;${viejo && !sel ? 'opacity:.75' : ''}">
@@ -7881,11 +7881,13 @@ function suscribirTareas() {
   }, e => console.warn('tareas', e));
 }
 const fCortaT = f => f ? f.slice(8, 10) + '-' + f.slice(5, 7) : '';
+const TIPOS_APLIC_TAREA = ['fumigacion', 'aplicacion', 'fertilizacion'];
+const tareaEsAplicacion = t => { const d = t.datos || t; return TIPOS_APLIC_TAREA.includes(d.tipo) || (d.tipo === 'personalizado' && /fumig|aplic|herbic|fungic|insectic|foliar|nebuli|pulveri|fertiliz|abono|urea/i.test(d.nombreTipo || '')); };
 function avanceHtml(t) {
   const filas = Object.values(t.avance || {}).sort((a, b) => (a.fecha || '').localeCompare(b.fecha || '') || (a.equipo || '').localeCompare(b.equipo || ''));
   if (!filas.length) return '<div class="hint">Sin avance registrado todavía.</div>';
   const ha = filas.reduce((a, x) => a + (Number(x.ha) || 0), 0);
-  return `<table style="width:100%;font-size:12px;border-collapse:collapse;margin-top:4px"><thead><tr style="color:#6B7280"><th style="text-align:left">Día</th><th style="text-align:left">Equipo</th><th style="text-align:left">Operador</th><th style="text-align:right">Aplicado</th></tr></thead><tbody>${filas.map(x => `<tr><td>${fCortaT(x.fecha)}</td><td>${escA(x.equipo || '')}</td><td>${escA(x.operador || '')}</td><td style="text-align:right">${x.ha != null ? (Math.round(x.ha * 10) / 10).toLocaleString('es-CL') + ' ha' : (x.fuente === 'jdlink' ? '📡 JDLink' : '—')}${x.km ? ` <span style="color:#6B7280">(${(Math.round(x.km * 10) / 10).toLocaleString('es-CL')} km)</span>` : ''}</td></tr>`).join('')}</tbody></table>${ha ? `<div style="font-size:12px;margin-top:4px">Total según GPS: <b>${(Math.round(ha * 10) / 10).toLocaleString('es-CL')} ha</b> (aproximado: km recorridos aplicando × ancho)</div>` : ''}`;
+  return `<table style="width:100%;font-size:12px;border-collapse:collapse;margin-top:4px"><thead><tr style="color:#6B7280"><th style="text-align:left">Día</th><th style="text-align:left">Equipo</th><th style="text-align:left">Operador</th><th style="text-align:right">${tareaEsAplicacion(t) ? 'Aplicado' : 'Trabajado'}</th></tr></thead><tbody>${filas.map(x => `<tr><td>${fCortaT(x.fecha)}</td><td>${escA(x.equipo || '')}</td><td>${escA(x.operador || '')}</td><td style="text-align:right">${x.ha != null ? (Math.round(x.ha * 10) / 10).toLocaleString('es-CL') + ' ha' : (x.fuente === 'jdlink' ? '📡 JDLink' : '—')}${x.km ? ` <span style="color:#6B7280">(${(Math.round(x.km * 10) / 10).toLocaleString('es-CL')} km)</span>` : ''}</td></tr>`).join('')}</tbody></table>${ha ? `<div style="font-size:12px;margin-top:4px">Total según GPS: <b>${(Math.round(ha * 10) / 10).toLocaleString('es-CL')} ha</b> (aproximado: km recorridos ${tareaEsAplicacion(t) ? 'aplicando' : 'trabajando'} × ancho)</div>` : ''}`;
 }
 window.renderTareas = function() {
   const w = document.getElementById('campo-tareas'); if (!w) return;
@@ -7910,7 +7912,7 @@ window.renderTareas = function() {
     ${term.length ? `<button type="button" class="btn btn-secondary btn-full" style="margin-top:4px" onclick="togTareasTerminadas()">${tareasVerTerminadas ? '▲ Ocultar' : '▼ Ver'} terminadas (${term.length})</button>${tareasVerTerminadas ? '<div style="margin-top:8px">' + term.map(tarjeta).join('') + '</div>' : ''}` : ''}
     ${isAdmin ? `<details style="margin-top:10px"><summary style="cursor:pointer;font-size:13px">⚙️ Equipos que solo usan el modo tractor con una tarea (${escA(eqsAp.join(', ') || 'ninguno')})</summary>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">${[...(config.equipos || [])].filter(e => !/otro/i.test(e)).sort((a, b) => a.localeCompare(b, 'es')).map(e => `<button type="button" class="cultivo-chip ${eqsAp.includes(e) ? 'sel' : ''}" onclick="togEquipoAplicacion('${escA(e).replace(/'/g, "\\'")}')">${eqsAp.includes(e) ? '✓ ' : ''}${escA(e)}</button>`).join('')}</div>
-      <div class="hint">Estos equipos no pueden aplicar en el modo tractor sin una tarea programada asignada a ellos.</div></details>` : ''}
+      <div class="hint">Estos equipos no pueden trabajar en el modo tractor (aplicación, trincha u otro) sin una tarea programada asignada a ellos.</div></details>` : ''}
   </div>`;
 };
 window.togTareasTerminadas = () => { tareasVerTerminadas = !tareasVerTerminadas; renderTareas(); };
@@ -12093,14 +12095,17 @@ window.renderRendAperoEficiencia = function() {
   cont.innerHTML = html;
   if (hadFocus) { const i = document.getElementById('ef-rend-buscar'); if (i) { i.focus(); try { i.setSelectionRange(q.length, q.length); } catch (e) {} } }
 }
+// Posición del apero respecto al tractor: la configurada, o la conocida (la trincha va cargada a la derecha)
+const desplazamientoApero = a => a && ['centro', 'derecha', 'izquierda'].includes(a.desplazamiento) ? a.desplazamiento : (/trincha/i.test((a && a.nombre) || '') ? 'derecha' : 'centro');
 function tractoresDeApero(a) {
   return config.equipos.filter(e => e !== OTRO && tipoEquipo(e) === 'hr' && (!a.equipos || !a.equipos.length || a.equipos.includes(e)));
 }
 function resumenRendimientoApero(a, i) {
-  if (!a.ancho && !a.velocidad) return '<div style="font-size:12px;color:#9CA3AF">Sin ancho ni velocidad de trabajo definidos.</div>';
+  const desp = desplazamientoApero(a) !== 'centro' ? ` · <strong>Posición:</strong> cargada a la ${desplazamientoApero(a)}` : '';
+  if (!a.ancho && !a.velocidad) return `<div style="font-size:12px;color:#9CA3AF">Sin ancho ni velocidad de trabajo definidos${desp.replace(/<\/?strong>/g, '')}.</div>`;
   const filas = tractoresDeApero(a).map(e => ({ e, r: rendimientoApero(a, e) })).filter(x => x.r);
   const fmt = (n, d) => n == null ? '—' : n.toLocaleString('es-CL', { minimumFractionDigits: d, maximumFractionDigits: d });
-  const cab = `<div style="font-size:12px;color:var(--acero)"><strong>Ancho:</strong> ${a.ancho ? a.ancho + ' m' : '—'} · <strong>Velocidad:</strong> ${a.velocidad ? a.velocidad + ' km/h' : '—'}</div>`;
+  const cab = `<div style="font-size:12px;color:var(--acero)"><strong>Ancho:</strong> ${a.ancho ? a.ancho + ' m' : '—'} · <strong>Velocidad:</strong> ${a.velocidad ? a.velocidad + ' km/h' : '—'}${desp}</div>`;
   if (!filas.length) return cab;
   return cab + `<div style="overflow-x:auto"><table style="width:100%;min-width:0;font-size:12px;margin-top:4px"><thead><tr><th style="padding:4px">Tractor</th><th>km/h</th><th>ha/h</th><th>L/h</th><th>L/ha</th><th>$/ha</th></tr></thead><tbody>` +
     filas.map(({ e, r }) => `<tr><td style="padding:4px">${e}</td><td>${fmt(r.vel, 1)}</td><td>${fmt(r.haH, 2)}</td><td title="${r.fuente}">${fmt(r.lh, 1)}${r.fuente === 'con este apero' ? ' ✓' : ''}</td><td>${fmt(r.lHa, 1)}</td><td>${r.pesosHa != null ? '$' + Math.round(r.pesosHa).toLocaleString('es-CL') : '—'}</td></tr>`).join('') +
@@ -12117,6 +12122,8 @@ window.abrirRendimientoApero = function(i) {
       <div class="field" style="flex:1;margin-bottom:8px"><label>Ancho de trabajo (m)</label><input type="number" id="ren-ancho-${i}" min="0" step="0.1" value="${a.ancho || ''}"></div>
       <div class="field" style="flex:1;margin-bottom:8px"><label>Velocidad base (km/h)</label><input type="number" id="ren-vel-${i}" min="0" step="0.1" value="${a.velocidad || ''}"></div>
     </div>
+    <div class="field" style="margin-bottom:8px"><label>Posición respecto al tractor (desplazamiento lateral)</label><div class="select-wrapper"><select id="ren-desp-${i}">${[['centro', 'Centrada (trabaja a los dos lados del tractor)'], ['derecha', 'Cargada a la derecha (ej: trincha)'], ['izquierda', 'Cargada a la izquierda']].map(([v, t]) => `<option value="${v}" ${desplazamientoApero(a) === v ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
+      <div class="hint">El modo tractor la usa en trabajos como la trincha: con la máquina cargada a un lado, el tractor va por el centro de la entrecalle y la ida trabaja una mitad y la vuelta la otra (2 pasadas por entrecalle si la máquina mide la mitad de la entrecalle).</div></div>
     ${trs.length ? `<div class="cultivos-label">Velocidad según tractor (vacío = velocidad base)</div>
       ${trs.map((e, j) => `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><span style="flex:1;font-size:13px">${e}</span><input type="number" min="0" step="0.1" style="width:90px" id="ren-eq-${i}-${j}" placeholder="km/h" value="${(a.velEquipo || {})[e] || ''}"></div>`).join('')}` : ''}
     <div style="display:flex;gap:8px;margin-top:8px">
@@ -12128,6 +12135,7 @@ window.guardarRendimientoApero = async function(i) {
   const a = aperosConfig[i]; if (!a) return;
   const num = id => { const v = parseFloat(document.getElementById(id).value); return isFinite(v) && v > 0 ? v : null; };
   a.ancho = num('ren-ancho-' + i); a.velocidad = num('ren-vel-' + i);
+  { const sd = document.getElementById('ren-desp-' + i); if (sd) a.desplazamiento = sd.value; }
   const ve = {};
   tractoresDeApero(a).forEach((e, j) => { const v = num(`ren-eq-${i}-${j}`); if (v) ve[e] = v; });
   a.velEquipo = ve;
@@ -16877,7 +16885,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
   </div>
   <div id="envivo-panel" style="max-height:45vh;overflow:auto;background:var(--blanco);border-top:1px solid var(--borde);padding:8px 12px">
     <div id="envivo-fuente-bar" style="margin-bottom:6px"></div>
-    <div style="font-size:11px;color:var(--acero);margin-bottom:4px">🟢 aplicando · 🔵 en movimiento · ⚪ detenido · gris: sin datos hace más de 10 min.</div>
+    <div style="font-size:11px;color:var(--acero);margin-bottom:4px">🟢 aplicando o trabajando · 🔵 en movimiento · ⚪ detenido · gris: sin datos hace más de 10 min.</div>
     <div id="envivo-ruta"></div>
     <div id="envivo-lista"></div>
   </div>
