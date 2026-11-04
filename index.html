@@ -9638,8 +9638,71 @@ window.editarLaborCampo = function(id) {
   EL = { id, l, d: JSON.parse(JSON.stringify(l)) };
   if (!Array.isArray(EL.d.productos)) EL.d.productos = l.productos ? [] : null;
   if (!Array.isArray(EL.d.aperos)) EL.d.aperos = EL.d.apero ? [EL.d.apero] : [];
+  if (l.tipo === 'siembra') { EL.fertLab = fertEnlazadaDe(l); EL.fert = filasFertSiembra(l, EL.fertLab); }
   pintarEdicionLabor();
 }
+// ── Fertilización de una siembra: fertilizante o mezcla del Inventario + kg/ha. Se guarda como la labor de
+// Fertilización enlazada (misma "combo"), así entra sola en 🧪 Fertilización total (unidades de N, P₂O₅, K₂O…).
+function fertEnlazadaDe(l) {
+  return l && l.comboId ? (laboresCampoTodos || []).find(x => x.id !== l.id && x.tipo === 'fertilizacion' && x.comboId === l.comboId && x.potrero === l.potrero && (x.lote || '') === (l.lote || '')) || null : null;
+}
+const numKg = v => { const n = parseFloat(String(v == null ? '' : v).replace(/\./g, (m, i, t) => /\.\d{3}(\D|$)/.test(t.slice(i)) ? '' : '.').replace(',', '.')); return isFinite(n) ? n : null; };
+function filasFertSiembra(l, fl) {
+  if (fl && Array.isArray(fl.productos) && fl.productos.length) {
+    const ha = haDeLabor(fl);
+    return fl.productos.map(p => { const k = kgHaDeProducto(p, ha, fl.mojamiento); return { producto: p.producto || '', kg: k != null ? Math.round(k * 100) / 100 : '', dosisTxt: k == null ? (p.dosis || '') : '', ley: p.ley || null }; });
+  }
+  if (Array.isArray(l.fertProductos) && l.fertProductos.length) return l.fertProductos.map(p => ({ producto: p.producto || '', kg: numKg(String(p.dosis || '').replace(/kg\/ha/i, '')) || '', dosisTxt: '', ley: p.ley || null }));
+  if (l.fertMezcla) {
+    const lista = fertilizantesLista(), m = lista.find(n => normNom(n) === normNom(l.fertMezcla));
+    return [{ producto: m || l.fertMezcla, kg: numKg(String(l.fertDosis || '').replace(/kg(\/ha)?/i, '')) || '', dosisTxt: '', ley: null }];
+  }
+  return [{ producto: '', kg: '', dosisTxt: '', ley: null }];
+}
+function leyFilaFert(r) { return leyDeProducto({ producto: r.producto, ley: r.ley }); }
+function unidadesFert(rows) {
+  const un = {}; let kg = 0;
+  rows.forEach(r => { const k = numKg(r.kg); if (!(k > 0) || !r.producto) return; kg += k; const ley = leyFilaFert(r); Object.keys(ley).forEach(e => { un[e] = (un[e] || 0) + k * ley[e] / 100; }); });
+  return { kg, un };
+}
+function elFertResumenHtml() {
+  const { kg, un } = unidadesFert(EL.fert || []);
+  const els = Object.keys(un).filter(e => un[e] > 0.0001).map(e => `${nomElem(e)} <b>${fmtN(un[e])}</b>`).join(' · ');
+  return kg ? `📦 <b>${fmtN(kg)} kg/ha</b>${els ? ' → unidades/ha: ' + els : ' · <span style="color:#92400E">sin ley: no suma nutrientes</span>'}` : '<span style="color:#6B7280">Elige el fertilizante y los kilos por hectárea.</span>';
+}
+function elFertHtml() {
+  const lista = fertilizantesLista(), inv = fertilizantesInv();
+  const filas = (EL.fert || []).map((r, i) => {
+    const enLista = !r.producto || lista.includes(r.producto), pi = inv.find(p => p.nombre === r.producto), ley = leyFilaFert(r), sinLey = r.producto && !Object.values(ley).some(v => v > 0);
+    const leyTxt = r.producto && !sinLey ? Object.keys(ley).filter(e => ley[e] > 0).map(e => `${nomElem(e)} ${String(ley[e]).replace('.', ',')}%`).join(' · ') : '';
+    return `<div style="border-top:${i ? '1px solid #D1FAE5' : '0'};padding-top:${i ? '8px' : '0'};margin-bottom:8px">
+      <div style="display:flex;gap:6px;align-items:flex-end">
+        <div class="field" style="flex:2;margin-bottom:0;min-width:0"><label>Fertilizante o mezcla</label><div class="select-wrapper"><select onchange="elFertSet(${i}, 'producto', this.value)"><option value="">— Elegir del Inventario —</option>${lista.map(n => { const p = inv.find(x => x.nombre === n); return `<option value="${escA(n)}" ${r.producto === n ? 'selected' : ''}>${escA(n)}${p ? (stockTotalInv(p) > 0 ? '' : ' (sin stock)') : ''}</option>`; }).join('')}${!enLista ? `<option value="${escA(r.producto)}" selected>${escA(r.producto)} (escrito antes)</option>` : ''}<option value="__otro__">Otro (escribir)…</option></select></div></div>
+        <div class="field" style="flex:1;margin-bottom:0;min-width:84px"><label>Kilos/ha</label><input type="text" inputmode="decimal" value="${escA(r.kg === '' || r.kg == null ? '' : String(r.kg).replace('.', ','))}" placeholder="${r.dosisTxt ? escA(r.dosisTxt) : 'Ej: 500'}" oninput="elFertKg(${i}, this.value)"></div>
+        ${(EL.fert || []).length > 1 ? `<button class="btn btn-danger" style="flex:none;padding:10px" onclick="elFertDel(${i})">✕</button>` : ''}
+      </div>
+      ${r.producto ? `<div style="font-size:11px;color:${sinLey ? '#92400E' : '#047857'};margin-top:4px">${sinLey ? `⚠️ ${pi ? 'Este producto no tiene ley en Inventario' : 'Sin ley'}: complétala aquí para que sume nutrientes${isAdmin && pi ? ' (o en Inventario)' : ''}.` : 'Ley: ' + leyTxt}${r.ley && pi && pi.ley && Object.keys(r.ley).some(e => Math.abs((parseFloat(r.ley[e]) || 0) - (parseFloat(pi.ley[e]) || 0)) > 0.001) ? ' · ley distinta a la de Inventario' : ''}</div>
+        ${sinLey || r.editLey ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px">${leyInputsHtml('elfley' + i + '_', ley, `elFertLey(${i})`)}</div>` : `<button class="btn-pin" style="font-size:10px;padding:1px 6px;margin-top:2px" onclick="elFertSet(${i}, 'editLey', true)">cambiar ley</button>`}` : ''}
+    </div>`;
+  }).join('');
+  return `<div style="border:1px solid #A7F3D0;background:#F0FDF4;border-radius:10px;padding:10px;margin-bottom:8px">
+    <div style="font-weight:700;font-size:13px;margin-bottom:6px">🧪 Fertilización a la siembra</div>
+    ${filas}
+    <button class="btn btn-secondary" style="margin:0 0 8px" onclick="elFertAdd()">+ Agregar otro fertilizante</button>
+    <div id="el-fert-res" style="font-size:13px">${elFertResumenHtml()}</div>
+    <div class="hint" style="margin-top:4px">${EL.fertLab ? 'Actualiza la fertilización enlazada a esta siembra' : 'Al guardar queda como una fertilización enlazada a esta siembra'}; sus unidades se suman en 🧪 Fertilización total del potrero${EL.d.fecha ? '' : ' (cuando la siembra tenga fecha)'}.</div>
+  </div>`;
+}
+window.elFertSet = function(i, k, v) {
+  const r = EL.fert[i]; if (!r) return;
+  if (k === 'producto' && v === '__otro__') { const n = (prompt('Nombre del fertilizante o mezcla:') || '').trim(); if (!n) { pintarEdicionLabor(); return; } v = n; }
+  r[k] = v; if (k === 'producto') { r.ley = null; r.editLey = false; }
+  pintarEdicionLabor();
+};
+window.elFertKg = function(i, v) { const r = EL.fert[i]; if (!r) return; r.kg = v; r.dosisTxt = ''; const el = document.getElementById('el-fert-res'); if (el) el.innerHTML = elFertResumenHtml(); };
+window.elFertLey = function(i) { const r = EL.fert[i]; if (!r) return; r.ley = leerLeyInputs('elfley' + i + '_'); r.editLey = true; const el = document.getElementById('el-fert-res'); if (el) el.innerHTML = elFertResumenHtml(); };
+window.elFertAdd = function() { EL.fert.push({ producto: '', kg: '', dosisTxt: '', ley: null }); pintarEdicionLabor(); };
+window.elFertDel = function(i) { EL.fert.splice(i, 1); if (!EL.fert.length) EL.fert.push({ producto: '', kg: '', dosisTxt: '', ley: null }); pintarEdicionLabor(); };
 function elInput(label, campo, tipo, extra) {
   const v = EL.d[campo]; 
   return `<div class="field" style="margin-bottom:8px"><label>${label}</label><input type="${tipo || 'text'}" ${extra || ''} value="${v == null ? '' : escA(v)}" oninput="elSet('${campo}', this.value, '${tipo || 'text'}')"></div>`;
@@ -9669,7 +9732,7 @@ function pintarEdicionLabor() {
     esp = `<div class="cultivos-label">Cultivo</div><div class="centros-selector">${cult.map(c => `<div class="cultivo-chip ${d.cultivo === c ? 'sel' : ''}" onclick='elAsig("cultivo",${JSON.stringify(c)})'>${escA(c)}</div>`).join('')}</div>`
       + elInput('Variedad', 'variedad') + elInput('Dosis', 'dosis') + elInput('Hectáreas sembradas', 'hectareas', 'number', 'min="0" step="0.1"')
       + `<div class="cultivos-label">Fertilización</div><div class="centros-selector">${[[true, 'Sí'], [false, 'No'], [null, 'Sin dato']].map(([v, n]) => `<div class="cultivo-chip ${d.fertilizacion === v || (v === null && d.fertilizacion == null) ? 'sel' : ''}" onclick='elAsig("fertilizacion",${v})'>${n}</div>`).join('')}</div>`
-      + (d.fertilizacion ? elInput('Mezcla', 'fertMezcla') + elInput('Dosis fertilización', 'fertDosis') : '');
+      + (d.fertilizacion ? elFertHtml() : '');
   } else if (t === 'riego') {
     esp = elInput('Método', 'metodo') + elInput('Duración (horas)', 'duracion', 'number', 'min="0" step="0.5"');
   } else if (t === 'cosecha') {
@@ -9723,6 +9786,18 @@ window.guardarEdicionLabor = async function() {
   if (!EL) return;
   const d = EL.d, t = d.tipo;
   if (t === 'siembra' && !d.cultivo) { toast('Elige el cultivo', false); return; }
+  let fertRows = null;
+  if (t === 'siembra' && d.fertilizacion === true && EL.fert) {
+    const conProd = EL.fert.filter(r => (r.producto || '').trim());
+    const sinKg = conProd.find(r => !(numKg(r.kg) > 0) && !r.dosisTxt);
+    if (sinKg) { toast(`Faltan los kilos/ha de "${sinKg.producto}"`, false); return; }
+    fertRows = conProd.map(r => {
+      const k = numKg(r.kg), ley = leyFilaFert(r);
+      const o = { producto: r.producto.trim(), dosis: k > 0 ? `${String(Math.round(k * 100) / 100).replace('.', ',')} kg/ha` : r.dosisTxt };
+      if (Object.values(ley).some(v => v > 0)) o.ley = ley;
+      return o;
+    });
+  }
   if (!d.fecha && t !== 'siembra') { toast('Selecciona una fecha', false); return; }
   if (d.fechaFin && d.fecha && d.fechaFin < d.fecha) { toast('La fecha de término no puede ser anterior a la de inicio', false); return; }
   const patch = { ...d };
@@ -9733,6 +9808,14 @@ window.guardarEdicionLabor = async function() {
   patch.fecha = d.fecha || null;
   patch.anio = d.fecha ? String(d.fecha).slice(0, 4) : (d.anio || String(new Date().getFullYear()));
   if (t === 'siembra') patch.pendiente = !d.fecha;
+  if (t === 'siembra') {
+    if (fertRows && fertRows.length) {
+      patch.fertMezcla = fertRows.map(p => p.producto).join(' + ');
+      patch.fertDosis = fertRows.map(p => p.dosis).join(' + ');
+      patch.fertProductos = d.fecha ? null : fertRows; // sin fecha todavía: se guarda en la siembra hasta que tenga fecha
+      if (d.fecha && !patch.comboId) patch.comboId = 'c' + Date.now().toString(36);
+    } else if (d.fertilizacion !== true) { patch.fertProductos = null; }
+  }
   patch.obs = (d.obs || '').trim();
   patch.aperos = (d.aperos || []).filter(Boolean);
   if (Array.isArray(patch.productos)) patch.productos = patch.productos.filter(p => (p.producto || '').trim()).map(p => ({ producto: p.producto.trim(), dosis: (p.dosis || '').trim() }));
@@ -9741,7 +9824,20 @@ window.guardarEdicionLabor = async function() {
   Object.keys(patch).forEach(k => { if (patch[k] === undefined) patch[k] = null; });
   try {
     await setDoc(doc(db, 'labores_campo', EL.id), patch);
-    if (t === 'siembra') await cargarCultivosActualesPotreros();
+    if (t === 'siembra') {
+      const fl = EL.fertLab;
+      if (fertRows && fertRows.length && patch.fecha) {
+        const base = { tipo: 'fertilizacion', potrero: patch.potrero, lote: patch.lote || null, fecha: patch.fecha, anio: patch.anio, comboId: patch.comboId, productos: fertRows,
+          aplicacion_completa: patch.aplicacion_completa !== false, hectareas_aplicadas: patch.hectareas_aplicadas || null, editadoPor: currentUser, editadoTs: Date.now() };
+        if (fl) await updateDoc(doc(db, 'labores_campo', fl.id), base);
+        else await setDoc(doc(collection(db, 'labores_campo')), { ...base, momento: 'A la siembra', obs: '', operador: currentUser, ts: Date.now(), equipo: patch.equipo || null, aperos: patch.aperos || [], obs_parcial: null });
+        // la ley escrita aquí queda en la lista para la próxima vez (admin)
+        if (isAdmin) { const mapa = Object.assign({}, config.fertilizantesLey); let cambio = false; fertRows.forEach(p => { if (p.ley && !fertilizantesInv().some(x => x.nombre === p.producto && x.ley)) { mapa[p.producto] = p.ley; cambio = true; } }); if (cambio) { config.fertilizantesLey = mapa; saveConfig().catch(() => {}); } }
+      } else if (fl && d.fertilizacion !== true && confirm(`Esta siembra quedó sin fertilización. ¿Eliminar también la fertilización enlazada (${(fl.productos || []).map(p => p.producto).join(' + ') || 'sin productos'})?`)) {
+        await deleteDoc(doc(db, 'labores_campo', fl.id));
+      }
+      await cargarCultivosActualesPotreros();
+    }
     cerrarEdicionLabor();
     renderEstadoPotreros(); renderHistorialLabores();
     toast('✓ Labor actualizada', true);
