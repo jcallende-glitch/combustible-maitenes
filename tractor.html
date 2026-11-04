@@ -76,6 +76,7 @@
   #hud .h-sel { display: flex; gap: 6px; margin-top: 8px; }
   #hud .h-sel button { flex: 1; padding: 8px 2px; font-size: 13px; font-weight: 700; background: #262626; color: var(--texto); border: 2px solid #444; border-radius: 10px; }
   #hud .h-sel button.sel { background: var(--azul); color: #0b1b33; border-color: #3b82f6; }
+  #hud .h-reset { margin-top: 6px; padding: 10px 18px; font-size: 16px; font-weight: 800; background: #FACC15; color: #3b2f00; border-radius: 10px; }
   body.foco #hud { display: block; }
   body.foco #barra, body.foco #pie { display: none; }
   body.foco #aviso { top: 190px; }
@@ -513,7 +514,7 @@ function sumarParcial(dKm, dMs) {
   ls.set('tractor_parcial', parcial);
 }
 window.reiniciarParcial = function () {
-  if (!confirm('¿Reiniciar el totalizador 2 (T2) a 0 ha? El total del potrero no cambia.')) return;
+  if (!confirm('¿Volver el T2 a 0 ha? El total del potrero no cambia.')) return;
   parcial = { m2: 0, km: 0, ms: 0, desde: Date.now() }; ls.set('tractor_parcial', parcial);
   pintarAplicacion(); if (typeof hudPintar === 'function') hudPintar();
 };
@@ -998,7 +999,7 @@ function pintarAplicacion() {
 function textoParcial() {
   const ha = parcial.m2 / 10000, min = Math.round(parcial.ms / 60000);
   const desde = new Date(parcial.desde), hoy = new Date().toDateString() === desde.toDateString();
-  return `<div class="sub" style="margin-top:3px">🔢 <strong style="color:#FACC15">T2: ${ha.toFixed(2).replace('.', ',')} ha</strong> · ${parcial.km.toFixed(2).replace('.', ',')} km · ${min} min ${pal().ger} · desde ${hoy ? '' : fechaCorta(parcial.desde) + ' '}${desde.toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' })} <button type="button" onclick="reiniciarParcial()" style="margin-left:4px;padding:2px 8px;font-size:12px;border-radius:6px;border:1px solid #9CA3AF;background:#fff">↺ 0</button></div>`;
+  return `<div class="sub" style="margin-top:3px">🔢 <strong style="color:#FACC15">T2: ${ha.toFixed(2).replace('.', ',')} ha</strong> · ${parcial.km.toFixed(2).replace('.', ',')} km · ${min} min ${pal().ger} · desde ${hoy ? '' : fechaCorta(parcial.desde) + ' '}${desde.toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' })} <button type="button" onclick="reiniciarParcial()" style="margin-left:4px;padding:2px 8px;font-size:12px;border-radius:6px;border:1px solid #9CA3AF;background:#fff">↺ Volver a 0</button></div>`;
 }
 
 // ── Elegir potrero, continuar o empezar nueva aplicación ─────────
@@ -1722,13 +1723,14 @@ function hudPintar() {
   else if (hudDato === 'pre') { val = pos ? '±' + pos.acc : '—'; sub = 'metros de precisión del GPS'; }
   else if (hudDato === 'pct') { val = resumenAp && resumenAp.pct != null ? Math.round(resumenAp.pct) + '%' : '—'; sub = resumenAp && resumenAp.haPot ? `de ${nf(resumenAp.haPot, 1)} ha de ${a ? a.potrero : ''}` : 'del potrero'; }
   else if (hudDato === 'ent') { const n = entrecalleActual(); val = n ? '≈ ' + n : '—'; sub = n ? 'entrecalle aproximada (numeración de la app)' : 'sin numeración para este potrero'; }
-  else if (hudDato === 'ha2') { val = nf(parcial.m2 / 10000, 2); sub = 'ha T2 desde ' + new Date(parcial.desde).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' }) + ' (reinícialo abajo con ↺ 0)'; }
+  else if (hudDato === 'ha2') { val = nf(parcial.m2 / 10000, 2); sub = 'ha T2 desde ' + new Date(parcial.desde).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' }) + ''; }
   const w = pal(a);
   if (!['vel', 'pre', 'pct', 'ent', 'ha2'].includes(hudDato)) { val = resumenAp ? nf(resumenAp.haTot, 1) : '—'; sub = 'ha ' + w.partF + 's' + (a ? ' en ' + a.potrero : ''); }
   hud.className = aplicando ? 'ap' : '';
-  hud.innerHTML = `<div class="h-val">${val}</div><div class="h-sub">${sub} · ${aplicando ? '▶ ' + w.ger : '⏸ ' + w.pausa}</div>
+  hud.innerHTML = `<div class="h-val">${val}</div><div class="h-sub">${sub} · ${aplicando ? '▶ ' + w.ger : '⏸ ' + w.pausa}</div>${hudDato === 'ha2' ? '<button type="button" class="h-reset" id="hud-reset-t2">↺ Volver a 0</button>' : ''}
     <div class="h-sel">${HUD_DATOS.map(d => `<button type="button" data-d="${d.id}" class="${d.id === hudDato ? 'sel' : ''}">${d.t}</button>`).join('')}</div>`;
   hud.querySelectorAll('[data-d]').forEach(b => b.onclick = e => { e.stopPropagation(); ultimoToque = Date.now(); hudDato = b.dataset.d; ls.set('tractor_hud', hudDato); hudPintar(); });
+  { const br = document.getElementById('hud-reset-t2'); if (br) br.onclick = e => { e.stopPropagation(); ultimoToque = Date.now(); reiniciarParcial(); }; }
 }
 function hayCapaAbierta() {
   return [...document.querySelectorAll('.capa')].some(c => c.style.display === 'flex' || c.style.display === 'block') || document.getElementById('banner').style.display === 'block';
@@ -1743,7 +1745,7 @@ function salirFoco() {
   document.body.classList.remove('foco');
   setTimeout(() => { try { mapa.resize(); } catch (e) {} }, 60);
 }
-['pointerdown', 'touchstart', 'mousedown', 'keydown'].forEach(ev => document.addEventListener(ev, e => { ultimoToque = Date.now(); if (focoActivo && e.target && e.target.closest && e.target.closest('.h-sel')) return; salirFoco(); }, true));
+['pointerdown', 'touchstart', 'mousedown', 'keydown'].forEach(ev => document.addEventListener(ev, e => { ultimoToque = Date.now(); if (focoActivo && e.target && e.target.closest && e.target.closest('.h-sel, .h-reset')) return; salirFoco(); }, true));
 setInterval(() => {
   try {
     if (focoActivo) { if (hayCapaAbierta()) salirFoco(); else hudPintar(); return; }
