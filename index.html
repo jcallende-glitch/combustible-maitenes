@@ -4365,6 +4365,29 @@ window.setMedidor = function(tipo) {
   document.getElementById('medidor-label-hint').textContent = tipo==='km'?'Odómetro actual (km)':'Horómetro actual (hr)';
 }
 
+// Eficiencia que cuenta para promedios y alertas: el administrador puede dejar fuera una carga
+// (ej: cargó entremedio en otro lugar, rellenó otra cosa) sin borrar el registro ni sus litros.
+const efValida = r => !!(r && r.eficiencia > 0 && !r.eficiencia_excluida);
+window.toggleEficienciaExcluida = async function(id) {
+  if (!isAdmin) { toast('Solo el administrador puede hacer esto', false); return; }
+  const r = (registros || []).find(x => x.id === id); if (!r) return;
+  try {
+    if (r.eficiencia_excluida) {
+      if (!confirm(`¿Volver a contar en el promedio la eficiencia de ${r.equipo} del ${r.fecha} ${r.hora || ''}?`)) return;
+      await updateDoc(doc(db, 'registros', id), { eficiencia_excluida: false, eficiencia_excluida_motivo: null, eficiencia_excluida_por: currentUser || '', eficiencia_excluida_ts: Date.now() });
+      toast('✓ Vuelve a contar en el promedio', true);
+    } else {
+      const ef = r.eficiencia > 0 ? (r.medidor_tipo === 'km' ? r.eficiencia.toFixed(2) + ' km/L' : r.eficiencia.toFixed(2) + ' L/hr') : '';
+      const motivo = prompt(`Dejar fuera del promedio la eficiencia de ${r.equipo} del ${r.fecha} ${r.hora || ''}${ef ? ' (' + ef + ')' : ''}.\nEl registro y sus litros se mantienen.\n\nMotivo (opcional):`, 'Cargó entremedio en otro lugar');
+      if (motivo === null) return;
+      await updateDoc(doc(db, 'registros', id), { eficiencia_excluida: true, eficiencia_excluida_motivo: motivo.trim() || null, eficiencia_excluida_por: currentUser || '', eficiencia_excluida_ts: Date.now(), alerta_eficiencia: false });
+      toast('✓ Quedó fuera del promedio', true);
+    }
+  } catch (e) { toast('Error: ' + e.message, false); }
+};
+// Celda de eficiencia de una carga excluida (tachada) + botón del administrador
+const efExcluidaHtml = (r, unidad) => `<span style="color:#9CA3AF;text-decoration:line-through">${r.eficiencia > 0 ? r.eficiencia.toFixed(2) + ' ' + unidad : '—'}</span><div style="font-size:10px;color:#6B7280;text-decoration:none" title="${escA(r.eficiencia_excluida_motivo || '')}">🚫 fuera del promedio${r.eficiencia_excluida_motivo ? ': ' + escA(r.eficiencia_excluida_motivo) : ''}</div>`;
+const efBotonExcluir = r => isAdmin && r.eficiencia > 0 ? `<button type="button" title="${r.eficiencia_excluida ? 'Volver a contarla en el promedio' : 'Dejar esta eficiencia fuera del promedio (ej: cargó entremedio en otro lugar)'}" style="margin-top:3px;font-size:10px;padding:1px 6px;border-radius:6px;border:1px solid #D1D5DB;background:#fff;cursor:pointer;white-space:nowrap" onclick="toggleEficienciaExcluida('${r.id}')">${r.eficiencia_excluida ? '↩ incluir' : '🚫 fuera del promedio'}</button>` : '';
 window.calcularEficiencia = function() {
   const lt = parseFloat(document.getElementById('litros').value);
   const totalizadorInput = document.getElementById('totalizador');
@@ -4391,7 +4414,7 @@ window.calcularEficiencia = function() {
       const efStr = esKm ? `${ef.toFixed(2)} km/L` : `${ef.toFixed(2)} L/hr`;
       const diffStr = `${diff.toFixed(medidor === 'km' ? 0 : 1)} ${medidor}`;
 
-      const efHistorica = ultimoRegistroEquipo.eficiencia;
+      const efHistorica = ultimoRegistroEquipo.eficiencia_excluida ? null : ultimoRegistroEquipo.eficiencia;
       let tendenciaHtml = '';
       if (efHistorica && efHistorica > 0) {
         const desv = ((ef - efHistorica) / efHistorica) * 100;
@@ -4674,7 +4697,7 @@ async function registrarInterno() {
     try {
       const q2 = query(collection(db,'registros'), where('equipo','==',eq), orderBy('ts','desc'), limit(20));
       const snap2 = await getDocs(q2);
-      const historial = snap2.docs.map(d=>d.data()).filter(r=>r.eficiencia && r.eficiencia > 0);
+      const historial = snap2.docs.map(d=>d.data()).filter(efValida);
       if (historial.length >= 3) {
         promedioEfHist = historial.reduce((s,r)=>s+r.eficiencia,0) / historial.length;
         desviacionEf = Math.abs(eficiencia - promedioEfHist) / promedioEfHist * 100;
@@ -4983,7 +5006,7 @@ window.recalcularEficiencia = async function() {
           }
         }
 
-        if (eficiencia !== null && ventanaEficiencias.length >= 3) {
+        if (eficiencia !== null && ventanaEficiencias.length >= 3 && !actual.eficiencia_excluida) {
           const promedio = ventanaEficiencias.reduce((a,b)=>a+b,0) / ventanaEficiencias.length;
           const desviacion = Math.abs(eficiencia - promedio) / promedio * 100;
           if (desviacion > 20) alertaEficiencia = true;
@@ -5013,7 +5036,7 @@ window.recalcularEficiencia = async function() {
           fueraDePeriodo++;
         }
 
-        if (eficiencia !== null) {
+        if (eficiencia !== null && !actual.eficiencia_excluida) {
           ventanaEficiencias.push(eficiencia);
           if (ventanaEficiencias.length > 20) ventanaEficiencias.shift();
         }
@@ -5139,7 +5162,7 @@ window.renderTabla = function() {
   const porEq = {};
   const porEqApero = {};
   todosRegistros.forEach(r => {
-    if (r.eficiencia && r.eficiencia > 0) {
+    if (efValida(r)) {
       if (!porEq[r.equipo]) porEq[r.equipo] = [];
       porEq[r.equipo].push(r.eficiencia);
       if (r.apero && r.apero !== 'LIBRE') {
@@ -5163,7 +5186,8 @@ window.renderTabla = function() {
         const tipo=r.medidor_tipo;
 
         let efHtml = '<span style="color:#9CA3AF">—</span>';
-        if (r.eficiencia && r.eficiencia > 0) {
+        if (r.eficiencia_excluida) efHtml = efExcluidaHtml(r, tipo === 'km' ? 'km/L' : 'L/hr');
+        else if (r.eficiencia && r.eficiencia > 0) {
           const esKm = tipo === 'km';
           const efStr = esKm ? `${r.eficiencia.toFixed(2)} km/L` : `${r.eficiencia.toFixed(2)} L/hr`;
           const prom = promedioEfEquipo[r.equipo];
@@ -5220,7 +5244,7 @@ window.renderTabla = function() {
           <td style="font-size:12px">${trabajoStr}${aperoStr?'<br><span style="color:#9CA3AF">'+aperoStr+'</span>':''}</td>
           <td class="td-mono" style="color:var(--amarillo);font-weight:600">${(r.litros||0).toFixed(1)} L${iconoLitros}</td>
           <td class="td-mono" style="font-size:12px">${trabajadoHtml}${iconoMedidor}</td>
-          <td class="td-mono" style="font-size:12px">${efHtml}</td>
+          <td class="td-mono" style="font-size:12px">${efHtml}${efBotonExcluir(r)}</td>
           <td class="td-mono">${promHtml}</td>
           <td class="td-mono" style="font-size:12px">${r.alerta_totalizador?'⚠️':'✅'} ${(r.totalizador||0).toLocaleString('es-CL')}</td>
           <td style="color:#6B7280;font-size:12px">${r.obs||'—'}</td>
@@ -5324,7 +5348,7 @@ window.exportarExcel = function() {
   if(!data.length){toast('No hay registros en ese rango de fechas',false);return;}
   const fd=document.getElementById('filtro-desde')?.value||'', fh=document.getElementById('filtro-hasta')?.value||'';
   const rsLabel = { maitenes: 'Los Maitenes', jcar: 'JCAR', ambos: 'Ambos' };
-  const rows=data.map(r=>({'Fecha':r.fecha,'Hora':r.hora,'Equipo':r.equipo_detalle?`${r.equipo}: ${r.equipo_detalle}`:r.equipo,'Operador':r.operador,'Razón social':rsLabel[r.razon_social]||'Los Maitenes','Cultivos':(r.centros||[r.centro]).join(' / ')+(r.centro_detalle?` (${r.centro_detalle})`:''),'Trabajo':trabajoTxt(r),'Apero':aperosTxt(r),'Litros':r.litros,'Tipo Medidor':r.medidor_tipo==='km'?'Kilómetros':'Horas','Medidor Actual':r.medidor_valor,'Trabajado':r.diff_medidor||'','Eficiencia':r.eficiencia?(r.medidor_tipo==='km'?r.eficiencia.toFixed(2)+' km/L':r.eficiencia.toFixed(2)+' L/hr'):'','Totalizador':r.totalizador||'','Alerta':r.alerta_totalizador?'SÍ':'','Dif.Totalizador':r.dif_totalizador||'','Observación':r.obs||''}));
+  const rows=data.map(r=>({'Fecha':r.fecha,'Hora':r.hora,'Equipo':r.equipo_detalle?`${r.equipo}: ${r.equipo_detalle}`:r.equipo,'Operador':r.operador,'Razón social':rsLabel[r.razon_social]||'Los Maitenes','Cultivos':(r.centros||[r.centro]).join(' / ')+(r.centro_detalle?` (${r.centro_detalle})`:''),'Trabajo':trabajoTxt(r),'Apero':aperosTxt(r),'Litros':r.litros,'Tipo Medidor':r.medidor_tipo==='km'?'Kilómetros':'Horas','Medidor Actual':r.medidor_valor,'Trabajado':r.diff_medidor||'','Eficiencia':r.eficiencia?(r.medidor_tipo==='km'?r.eficiencia.toFixed(2)+' km/L':r.eficiencia.toFixed(2)+' L/hr'):'','Efic. fuera del promedio':r.eficiencia_excluida?('Sí'+(r.eficiencia_excluida_motivo?': '+r.eficiencia_excluida_motivo:'')):'','Totalizador':r.totalizador||'','Alerta':r.alerta_totalizador?'SÍ':'','Dif.Totalizador':r.dif_totalizador||'','Observación':r.obs||''}));
   const ws=XLSX.utils.json_to_sheet(rows);
   const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,'Combustible');
   const sufijo=(fd||fh)?`${fd||'inicio'}_a_${fh||'hoy'}`:new Date().toISOString().slice(0,10);
@@ -5359,7 +5383,7 @@ function renderAnalytics() {
     if(!equipoMap[r.equipo])equipoMap[r.equipo]={litros:0,trabajado:0,cargas:0,tipo:r.medidor_tipo,eficiencias:[],ultimaFecha:'',ultimoLt:0,alertas:0};
     const e=equipoMap[r.equipo];
     e.litros+=(r.litros||0)*peso; e.trabajado+=(r.diff_medidor||0)*peso; e.cargas++;
-    if(r.eficiencia)e.eficiencias.push(r.eficiencia);
+    if(efValida(r))e.eficiencias.push(r.eficiencia);
     if(r.alerta_totalizador)e.alertas++;
     if(!e.ultimaFecha||r.fecha>e.ultimaFecha){e.ultimaFecha=r.fecha;e.ultimoLt=(r.litros||0)*peso;e.ultimaHora=r.hora;}
   });
@@ -5389,7 +5413,7 @@ function renderAnalytics() {
       if (!aperoMap[r.apero]) aperoMap[r.apero] = { litros:0, trabajado:0, cargas:0, tipo:r.medidor_tipo, eficiencias:[] };
       const a = aperoMap[r.apero];
       a.litros += (r.litros||0)*peso; a.trabajado += (r.diff_medidor||0)*peso; a.cargas++;
-      if (r.eficiencia) a.eficiencias.push(r.eficiencia);
+      if (efValida(r)) a.eficiencias.push(r.eficiencia);
     });
     const aperoRows = Object.entries(aperoMap).sort((a,b)=>b[1].litros-a[1].litros).map(([ap,a])=>{
       const efProm = a.eficiencias.length ? (a.eficiencias.reduce((x,y)=>x+y,0)/a.eficiencias.length) : null;
@@ -5519,7 +5543,7 @@ function renderEficienciaAnalisis() {
     e.litros += r.litros||0;
     if (r.diff_medidor > 0) e.trabajado += r.diff_medidor;
     e.cargas++;
-    if (r.eficiencia) e.eficiencias.push(r.eficiencia);
+    if (efValida(r)) e.eficiencias.push(r.eficiencia); else if (r.eficiencia_excluida) e.excluidas = (e.excluidas || 0) + 1;
   });
 
   const filasComparacion = Object.entries(porEquipo).sort((a,b)=>b[1].litros-a[1].litros).map(([eqNombre,e]) => {
@@ -5534,7 +5558,7 @@ function renderEficienciaAnalisis() {
       <td class="td-mono" style="color:var(--amarillo);font-weight:600">${e.litros.toFixed(1)} L</td>
       <td>${e.cargas}</td>
       <td class="td-mono">${e.trabajado>0?e.trabajado.toFixed(tipo==='km'?0:1)+' '+unidad:'—'}</td>
-      <td class="td-mono"><span class="badge badge-${tipo}">${efProm!=null?efProm.toFixed(2)+' '+unidadEf:'—'}</span></td>
+      <td class="td-mono"><span class="badge badge-${tipo}">${efProm!=null?efProm.toFixed(2)+' '+unidadEf:'—'}</span>${e.excluidas ? `<div style="font-size:10px;color:#6B7280">${e.excluidas} carga${e.excluidas > 1 ? 's' : ''} fuera del promedio</div>` : ''}</td>
       <td class="td-mono" style="font-size:12px">${efMin!=null?efMin.toFixed(2):'—'}</td>
       <td class="td-mono" style="font-size:12px">${efMax!=null?efMax.toFixed(2):'—'}</td>
     </tr>`;
@@ -5555,7 +5579,7 @@ function renderEficienciaAnalisis() {
     if (!r.apero || r.apero === 'LIBRE') return;
     const key = r.equipo + '||' + r.apero;
     if (!porEquipoApero[key]) porEquipoApero[key] = [];
-    if (r.eficiencia) porEquipoApero[key].push(r.eficiencia);
+    if (efValida(r)) porEquipoApero[key].push(r.eficiencia);
   });
 
   const filasDetalle = data.slice().reverse().map(r => {
@@ -5563,9 +5587,9 @@ function renderEficienciaAnalisis() {
     const unidad = tipo === 'km' ? 'km' : 'hr';
     const unidadEf = tipo === 'km' ? 'km/L' : 'L/hr';
     const efPromEq = porEquipo[r.equipo]?.eficiencias.length ? porEquipo[r.equipo].eficiencias.reduce((a,b)=>a+b,0)/porEquipo[r.equipo].eficiencias.length : null;
-    const efStr = r.eficiencia ? `${r.eficiencia.toFixed(2)} ${unidadEf}` : '—';
+    const efStr = r.eficiencia_excluida ? efExcluidaHtml(r, unidadEf) : r.eficiencia ? `${r.eficiencia.toFixed(2)} ${unidadEf}` : '—';
     let colorEf = 'inherit';
-    if (r.eficiencia && efPromEq) {
+    if (efValida(r) && efPromEq) {
       const desv = (r.eficiencia - efPromEq) / efPromEq * 100;
       const bueno = tipo === 'km' ? desv > 15 : desv < -15;
       const malo = tipo === 'km' ? desv < -15 : desv > 15;
@@ -5582,7 +5606,7 @@ function renderEficienciaAnalisis() {
       <td><strong>${r.equipo}</strong>${badgeRazonSocial(r)}</td>
       <td class="td-mono" style="color:var(--amarillo);font-weight:600">${(r.litros||0).toFixed(1)} L</td>
       <td class="td-mono">${trabajadoStr}</td>
-      <td class="td-mono" style="color:${colorEf};font-weight:${colorEf!=='inherit'?'600':'400'}">${efStr}</td>
+      <td class="td-mono" style="color:${colorEf};font-weight:${colorEf!=='inherit'?'600':'400'}">${efStr}${efBotonExcluir(r)}</td>
       <td class="td-mono" style="font-size:12px;color:var(--acero)">${efPromEAStr}</td>
       <td style="font-size:12px">${aperosTxt(r) || '—'}</td>
       <td style="font-size:12px">${cultivos || '—'}</td>
@@ -5629,10 +5653,12 @@ function renderInformes() {
     const ltPorC = ((r.litros || 0) * peso) / n;
     const hrPorC = r.medidor_tipo === 'hr' && r.diff_medidor > 0 ? ((r.diff_medidor * peso) / n) : 0;
 
+    const efOk = !r.eficiencia_excluida; // las cargas dejadas fuera del promedio no entran al L/h (sí a los litros)
     centros.forEach(c => {
-      if (!cultivoMap[c]) cultivoMap[c] = { litros: 0, horas: 0, equipos: new Set() };
+      if (!cultivoMap[c]) cultivoMap[c] = { litros: 0, horas: 0, ltEf: 0, hrEf: 0, equipos: new Set() };
       cultivoMap[c].litros += ltPorC;
       cultivoMap[c].horas += hrPorC;
+      if (efOk) { cultivoMap[c].ltEf += ltPorC; cultivoMap[c].hrEf += hrPorC; }
       cultivoMap[c].equipos.add(r.equipo);
 
       if (!equipoCultivoMap[r.equipo]) equipoCultivoMap[r.equipo] = {};
@@ -5646,7 +5672,7 @@ function renderInformes() {
 
   const cultivoRows = Object.entries(cultivoMap).sort((a,b)=>b[1].litros-a[1].litros).map(([c, v]) => {
     const pct = totalLt > 0 ? (v.litros/totalLt*100).toFixed(1) : 0;
-    const lxh = v.horas > 0 ? (v.litros/v.horas).toFixed(2) : '—';
+    const lxh = v.hrEf > 0 ? (v.ltEf/v.hrEf).toFixed(2) : '—';
     return `<tr>
       <td><strong>${c}</strong></td>
       <td class="td-mono" style="color:var(--amarillo);font-weight:600">${v.litros.toFixed(1)} L</td>
@@ -6108,13 +6134,20 @@ window.iniciarCompletarAsistencia = async function(fechaForzada) {
   try { suscribirLaboresCampo(); for (let i = 0; i < 16 && !(laboresCampoTodos || []).length; i++) await new Promise(r => setTimeout(r, 250)); if (!Object.keys(cultivoActualPorPotrero).length) await cargarCultivosActualesPotreros(); } catch (e) { console.warn('wizard cuaderno', e); }
   const yaTienen = new Set(asistenciaRegistros.filter(r => r.fecha === fecha).map(r => r.trabajador));
   let cola = trabajadoresAsistenciaConfig.filter(t => !yaTienen.has(t));
+  // Equipos con JDLink o con la app en el celular: a qué hora empezaron a moverse (referencia para el ingreso)
+  let movIni = {};
+  try {
+    const eqs = new Set();
+    cola.forEach(t => { ((comb[t] || {}).equipos || []).forEach(e => e && eqs.add(e)); const cu = cuadernoDelDia(t, fecha); ((cu || {}).equipos || []).forEach(e => e && eqs.add(e)); });
+    if (eqs.size) { w.innerHTML = '<div class="panel">🚜 Buscando a qué hora empezaron a moverse los equipos (JDLink y celular)…</div>'; movIni = await inicioMovimientoEquipos([...eqs], fecha, 15000); }
+  } catch (e) { console.warn('inicio movimiento', e); }
   const feriado = esFeriado(fecha);
   if (feriado) { // todos quedan libres, salvo quienes cargaron combustible o los que marques como que trabajaron
-    WZ = { feriado, fase: 'sel', libres: 0, fecha, ult, comb, cola: [], total: 0, i: 0, guardados: 0, saltados: 0, yaTienen: yaTienen.size, conComb: cola.filter(t => comb[t]), pend: cola.filter(t => !comb[t]), extra: new Set() };
+    WZ = { feriado, movIni, fase: 'sel', libres: 0, fecha, ult, comb, cola: [], total: 0, i: 0, guardados: 0, saltados: 0, yaTienen: yaTienen.size, conComb: cola.filter(t => comb[t]), pend: cola.filter(t => !comb[t]), extra: new Set() };
     if (!WZ.pend.length) { wzFeriadoOk(); return; }
     wzFeriadoSel(); return;
   }
-  WZ = { feriado, libres: 0, fecha, ult, comb, cola, total: cola.length, i: 0, guardados: 0, saltados: 0, yaTienen: yaTienen.size };
+  WZ = { feriado, movIni, libres: 0, fecha, ult, comb, cola, total: cola.length, i: 0, guardados: 0, saltados: 0, yaTienen: yaTienen.size };
   wzCargarTrabajador();
 }
 
@@ -6150,6 +6183,21 @@ function wzCargarTrabajador() {
   { const dw = new Date(WZ.fecha + 'T12:00:00').getDay(), ed = dw === 0 || dw === 6 ? '' : especialDe(trab); // horario especial predefinido (solo lun–vie)
     WZ.cur.espDe = ed; WZ.cur.esp = '';
     if (ed) { WZ.cur.esp = ed; WZ.cur.dif = false; WZ.cur.corrido = false; WZ.cur.difPrev = null; } }
+  { // Hora en que empezó a moverse su equipo (JDLink / celular): propone el ingreso y pide confirmar almuerzo o de corrido
+    const eqsT = wzUnicos([...((c || {}).equipos || []), ...((cu || {}).equipos || [])]);
+    const movs = eqsT.map(e => WZ.movIni && WZ.movIni[e]).filter(Boolean).sort((a, b) => a.t - b.t);
+    WZ.cur.mov = null; WZ.cur.jorConf = true;
+    if (movs.length && !WZ.cur.adminFijo) {
+      const d = new Date(movs[0].t), min = d.getHours() * 60 + d.getMinutes(), H = horarioDelDia(trab, WZ.fecha, ''), sug = ingresoDeMovimiento(min);
+      const temprano = WZ.feriado ? sug !== H.entrada : min < hm(H.entrada) - 15;
+      WZ.cur.mov = { ...movs[0], min, sug, temprano, entrada: H.entrada, otros: movs.slice(1).map(m => ({ eq: m.eq, hora: hmTxt(new Date(m.t).getHours() * 60 + new Date(m.t).getMinutes()) })) };
+      if (!WZ.cur.esp) {
+        WZ.cur.jorConf = false;
+        if (temprano) { WZ.cur.dif = true; WZ.cur.ingreso = sug; WZ.cur.corrido = false; }
+        else { WZ.cur.dif = false; WZ.cur.corrido = false; }
+      }
+    }
+  }
   WZ.cur.hExtra = horasExtraPorCombustible(trab, c, WZ.fecha, wzJor(WZ.cur));
   { const h1 = document.getElementById('wiz-hreg'), h2 = document.getElementById('wiz-htrab'); if (h1) h1.value = WZ.cur.hExtra && WZ.cur.hExtra.horas > 0 ? String(WZ.cur.hExtra.horas) : ''; if (h2) h2.value = ''; } // las horas no pasan al siguiente trabajador; si cargó combustible, se sugiere la diferencia con su salida
   wzRender();
@@ -6164,6 +6212,43 @@ const fCortaAsist = f => f ? f.slice(8, 10) + '-' + f.slice(5, 7) : '';
 const wzUnicos = arr => [...new Set(arr.filter(x => typeof x === 'string' && x.trim()))];
 
 const esFeriado = f => !!f && ((config.feriados || []).includes(f) || new Date(f + 'T12:00:00').getDay() === 0); // los domingos cuentan como feriado
+// ── Inicio de la jornada según el movimiento del equipo (JDLink o app en el celular) ──
+// Primer desplazamiento real del día: se aleja 150 m en menos de 10 min (no es ruido del GPS); la hora es cuando dejó su lugar (> 25 m).
+function primerDesplazamiento(pts, t0) {
+  const p = (pts || []).filter(x => x && x.t >= t0 + 3 * 3600000 && isFinite(x.lat) && isFinite(x.lng)).sort((a, b) => a.t - b.t);
+  for (let i = 0; i < p.length; i++) {
+    const a = p[i];
+    for (let k = i + 1; k < p.length && p[k].t - a.t <= 10 * 60000; k++) {
+      if (jdpDistKm(a, p[k]) * 1000 >= 150) { let j = i + 1; while (j < k && jdpDistKm(a, p[j]) * 1000 < 25) j++; return p[j - 1].t; }
+    }
+  }
+  return null;
+}
+async function inicioMovimientoEquipo(eq, dia) {
+  const t0 = new Date(dia + 'T00:00:00').getTime(), t1 = t0 + 86400000 - 1;
+  const tieneJD = (envivoJD || []).some(j => j.equipo === eq && j._m);
+  const orden = envivoPrefDe(eq) === 'jdlink' ? ['jdlink', 'celular'] : ['celular', 'jdlink'];
+  for (const f of orden) {
+    if (f === 'jdlink' && !tieneJD) continue;
+    const pts = f === 'celular' ? await envivoPuntosCelular(eq, t0, t1) : await envivoPuntosJD(eq, t0, t1);
+    const t = primerDesplazamiento(pts, t0);
+    if (t) return { eq, t, fuente: f };
+  }
+  return null;
+}
+async function inicioMovimientoEquipos(eqs, dia, maxMs) {
+  const res = {}, espera = ms => new Promise(r => setTimeout(r, ms));
+  if (!(envivoJD || []).some(j => j._m)) { try { await Promise.race([traerUbicacionesJD(), espera(6000)]); } catch (e) {} }
+  await Promise.race([Promise.all(eqs.map(async eq => { try { const r = await inicioMovimientoEquipo(eq, dia); if (r) res[eq] = r; } catch (e) { console.warn('inicio mov', eq, e); } })), espera(maxMs || 15000)]);
+  return res;
+}
+// Ingreso sugerido: se redondea hacia abajo a la media hora (6:05 → 6:00 · 6:40 → 6:30 · 7:10 → 7:00)
+const ingresoDeMovimiento = min => hmTxt(Math.floor(min / 30) * 30);
+window.wzConfMov = function(corrido) {
+  const cur = WZ && WZ.cur; if (!cur || !cur.mov) return;
+  if (cur.mov.temprano) { cur.ingreso = cur.mov.sug; wzJornada(corrido ? 'difcorrido' : 'difnormal'); }
+  else wzJornada(corrido ? 'corrido' : 'normal');
+};
 const wzJor = cur => ({ corrido: !!cur.corrido, ingreso: cur.dif ? cur.ingreso : '', especial: cur.esp ? cur.esp : '' });
 // modo: 'normal' | 'corrido' | 'dif' | 'difcorrido' | 'difnormal' | 'ingreso' (cambió la hora)
 
@@ -6272,6 +6357,7 @@ window.wzJornada = function(modo, val) {
   const cur = WZ.cur; if (!cur) return;
   if (modo === true) modo = 'corrido'; if (modo === false) modo = 'normal';
   if (modo === 'esp') { cur.esp = cur.espDe || ''; cur.dif = false; cur.corrido = false; } else cur.esp = '';
+  if (['normal', 'corrido', 'difcorrido', 'difnormal', 'esp'].includes(modo)) cur.jorConf = true;
   const el = document.getElementById('wiz-hreg'), ant = cur.hExtra && cur.hExtra.horas > 0 ? String(cur.hExtra.horas) : '';
   const eraAuto = !el || el.value === '' || el.value === ant;
   if (modo === 'normal') { cur.dif = false; cur.corrido = false; }
@@ -6293,7 +6379,9 @@ window.wzRender = function() {
   const hrEl = document.getElementById('wiz-hreg');
   const hr = hrEl ? hrEl.value : (cur.hExtra && cur.hExtra.horas > 0 ? String(cur.hExtra.horas) : ''), ht = document.getElementById('wiz-htrab')?.value ?? '';
   const hx = cur.hExtra;
-  const hxHtml = hx ? `<div style="font-size:12px;margin:0 0 6px;padding:6px 8px;border-radius:8px;background:${hx.horas > 0 ? '#EFF6FF' : '#F3F4F6'};color:${hx.horas > 0 ? '#1D4ED8' : '#6B7280'}">⛽ Última carga de combustible: <b>${escA(hx.carga)}</b> · ${hx.feriado ? '🎌 feriado, todo es hora extra desde el ingreso' : 'salida ' + (hx.especial ? '⭐ especial «' + escA(hx.especial) + '»' : hx.ingreso ? 'diferenciada (ingreso ' + escA(hx.ingreso) + (hx.corrido ? ', de corrido' : '') + ')' : hx.corrido ? 'de corrido (' + escA(hx.salidaNormal) + ' − colación)' : 'según contrato')}: <b>${escA(hx.salida)}</b> → ${hx.horas > 0 ? `<b>${String(hx.horas).replace('.', ',')} h extra</b> aprox. <button type="button" style="${WZ_SMALL};margin:0 0 0 4px;padding:3px 8px" onclick="document.getElementById('wiz-hreg').value='${hx.horas}'">usar</button>` : (hx.margen && hx.difExacta > 0 ? `dentro del margen de ${hx.margen} min: sin horas extra` : 'sin horas extra')}</div>` : '';
+  const fh = x => String(Math.round(x * 100) / 100).replace('.', ',');
+  const hxDesglose = hx && !hx.feriado && hx.ingreso && hx.antes > 0 && hx.horas > 0 ? `<div style="margin-top:3px">🕕 Inicio <b>${escA(hx.ingreso)}</b> (${fh(hx.antes)} h antes del ingreso normal ${escA(horarioDelDia(cur.trab, WZ.fecha, '').entrada)})${hx.carga ? ` + ⛽ término <b>${escA(hx.carga)}</b> (${hx.despues > 0 ? fh(hx.despues) + ' h después de la salida ' + escA(hx.salidaNormal) + (hx.corrido ? ' − colación' : '') : 'antes de la salida normal'})` : ''}</div>` : '';
+  const hxHtml = hx ? `<div style="font-size:12px;margin:0 0 6px;padding:6px 8px;border-radius:8px;background:${hx.horas > 0 ? '#EFF6FF' : '#F3F4F6'};color:${hx.horas > 0 ? '#1D4ED8' : '#6B7280'}">${hx.carga ? `⛽ Última carga de combustible (término): <b>${escA(hx.carga)}</b>` : '⛽ Sin carga de combustible ese día: solo se cuenta el inicio temprano (si se quedó después de la salida, súmalo)'} · ${hx.feriado ? '🎌 feriado, todo es hora extra desde el ingreso' : 'salida ' + (hx.especial ? '⭐ especial «' + escA(hx.especial) + '»' : hx.ingreso ? 'diferenciada (ingreso ' + escA(hx.ingreso) + (hx.corrido ? ', de corrido' : '') + ')' : hx.corrido ? 'de corrido (' + escA(hx.salidaNormal) + ' − colación)' : 'según contrato')}: <b>${escA(hx.salida)}</b> → ${hx.horas > 0 ? `<b>${String(hx.horas).replace('.', ',')} h extra</b> aprox. <button type="button" style="${WZ_SMALL};margin:0 0 0 4px;padding:3px 8px" onclick="document.getElementById('wiz-hreg').value='${hx.horas}'">usar</button>` : (hx.margen && hx.difExacta > 0 ? `dentro del margen de ${hx.margen} min: sin horas extra` : 'sin horas extra')}${hxDesglose}</div>` : '';
   // ── 1) CENTRO(S) DE COSTO (uno o más cultivos) ──
   const cList = cur.centros || [];
   const chipCentros = l => l.map(x => puntoCentro(x.centro) + escA(x.centro) + (l.length > 1 ? ' ' + x.pct + '%' : '')).join(' · ');
@@ -6385,6 +6473,15 @@ window.wzRender = function() {
     ${(() => { const falta = wzFaltantes(); return `<button type="button" class="btn btn-verde btn-full" style="margin-bottom:${falta.length ? 4 : 12}px;${falta.length ? 'opacity:.45;cursor:not-allowed' : ''}" ${falta.length ? 'disabled' : ''} onclick="wzGuardar()">✓ Guardar y siguiente</button>${falta.length ? `<div style="font-size:12px;color:#B45309;margin-bottom:12px;text-align:center">Falta: ${falta.join(', ')}</div>` : ''}`; })()}
     ${botonesEstadoAsist(cur.estado, 'wzEstado')}
     ${cur.estado !== 'presente' ? `<div class="field"><label>${cur.estado === 'permiso' ? 'Motivo del permiso (opcional)' : 'Observación (opcional)'}</label><input type="text" id="wiz-motivo" value="${escA(cur.motivo || '')}" placeholder="${cur.estado === 'permiso' ? 'Ej: trámite, salud, con goce / sin goce' : 'Ej: avisó, sin aviso'}"></div>` : `    <div style="padding:10px;background:#F0F9FF;border:1px solid #BAE6FD;border-radius:8px;margin-bottom:12px">
+      ${cur.mov ? (() => { const m = cur.mov, sel = cor => cur.jorConf && !cur.esp && !!cur.corrido === cor && (m.temprano ? cur.dif && cur.ingreso === m.sug : !cur.dif);
+        const bSt = on => `${WZ_SMALL};margin:0;flex:1;${on ? 'background:#059669;color:#fff;border-color:#059669;font-weight:700' : ''}`;
+        return `<div style="font-size:13px;margin-bottom:8px;padding:8px;border-radius:8px;background:#ECFDF5;border:1px solid ${cur.jorConf ? '#6EE7B7' : '#F59E0B'};color:#065F46">
+        🚜 <b>${escA(m.eq)}</b> empezó a moverse a las <b>${hmTxt(m.min)}</b> <span style="color:#6B7280">(${m.fuente === 'jdlink' ? '📡 JDLink' : '📱 celular'})</span>${m.otros.length ? `<span style="font-size:11px;color:#6B7280"> · ${m.otros.map(o => escA(o.eq) + ' ' + o.hora).join(' · ')}</span>` : ''}
+        <div style="margin-top:2px">${m.temprano ? `→ ingreso sugerido <b>${m.sug}</b> <span style="font-size:12px;color:#6B7280">(redondeado a la media hora; el normal es ${escA(m.entrada)})</span>` : `→ dentro del horario normal <span style="font-size:12px;color:#6B7280">(ingreso ${escA(m.entrada)})</span>`}</div>
+        ${cur.esp ? '<div style="font-size:12px;margin-top:4px;color:#854D0E">Tiene ⭐ horario especial elegido; si hoy no corresponde, elige «Horario normal» abajo.</div>' : `<div style="margin-top:6px;font-weight:600">¿Respecto al almuerzo?</div>
+        <div style="display:flex;gap:6px;margin-top:4px"><button type="button" style="${bSt(sel(false))}" onclick="wzConfMov(false)">🍽️ ${m.temprano ? 'Ingreso ' + m.sug + ' · ' : ''}con almuerzo</button><button type="button" style="${bSt(sel(true))}" onclick="wzConfMov(true)">⚡ ${m.temprano ? 'Ingreso ' + m.sug + ' · ' : ''}de corrido</button></div>
+        ${cur.jorConf ? '' : '<div style="font-size:11px;color:#B45309;margin-top:4px">Confirma una de las dos (o elige otra jornada abajo) para poder guardar.</div>'}`}
+        <div style="font-size:11px;color:#6B7280;margin-top:4px">Si la app o el GPS se conectaron tarde, la hora real pudo ser antes: corrige la hora de ingreso abajo.</div></div>`; })() : ''}
       <div style="margin-bottom:8px">${cur.espDe ? (() => { const e = (config.horariosEspeciales || []).find(x => x.nombre === cur.espDe) || {}; return `<div style="font-size:12px;margin-bottom:6px;padding:6px 8px;border-radius:8px;background:#FEF9C3;color:#854D0E">⭐ Tiene horario especial «<b>${escA(cur.espDe)}</b>» (ingreso ${escA(e.entrada || '–')} · salida ${escA(e.salida || '–')}${e.colIni && e.colFin ? ' · colación ' + escA(e.colIni) + '–' + escA(e.colFin) : ''}). ¿Hoy lo usa?</div><div style="display:flex;gap:6px;margin-bottom:6px"><button type="button" style="${WZ_SMALL};margin:0;flex:1;${cur.esp ? 'background:#2563EB;color:#fff;border-color:#2563EB;font-weight:700' : ''}" onclick="wzJornada('esp')">⭐ Horario especial</button><button type="button" style="${WZ_SMALL};margin:0;flex:1;${!cur.esp ? 'background:#2563EB;color:#fff;border-color:#2563EB;font-weight:700' : ''}" onclick="wzJornada('normal')">Horario normal</button></div>`; })() : ''}${WZ.feriado ? '<div style="font-size:12px;margin-bottom:6px;padding:6px 8px;border-radius:8px;background:#EDE9FE;color:#5B21B6">🎌 Domingo o feriado: todo lo trabajado cuenta como hora extra (no hay jornada normal). Si no cargó combustible, escribe las horas.</div>' : ''}${cur.difPrev ? `<div style="font-size:12px;margin-bottom:6px;padding:6px 8px;border-radius:8px;background:#FEF3C7;color:#92400E">🕕 Último día trabajó con horario diferenciado (ingreso ${escA(cur.difPrev.ingreso)}${cur.difPrev.corrido ? ', de corrido' : ''}). ¿Lo mantiene?</div><div style="display:flex;gap:6px;margin-bottom:6px"><button type="button" style="${WZ_SMALL};margin:0;flex:1;${cur.dif && cur.ingreso === cur.difPrev.ingreso && cur.corrido === cur.difPrev.corrido ? 'background:#2563EB;color:#fff;border-color:#2563EB;font-weight:700' : ''}" onclick="wzMantenerDif()">Mantener diferenciado</button><button type="button" style="${WZ_SMALL};margin:0;flex:1;${!cur.dif && !cur.corrido && !cur.esp ? 'background:#2563EB;color:#fff;border-color:#2563EB;font-weight:700' : ''}" onclick="wzJornada('normal')">Horario normal</button></div>` : ''}
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><span style="font-size:12px;color:#374151">Jornada:</span>
         <button type="button" style="${WZ_SMALL};margin:0;${!cur.dif && !cur.corrido && !cur.esp ? 'background:#2563EB;color:#fff;border-color:#2563EB;font-weight:700' : ''}" onclick="wzJornada('normal')">Normal</button>
@@ -6496,6 +6593,7 @@ function wzFaltantes() {
   if (!usaComb && !l.length) f.push('cultivo / centro de costo');
   if (!usaComb && l.length > 1 && l.reduce((a, x) => a + (x.pct || 0), 0) !== 100) f.push('que los % sumen 100');
   if (!cur.labor) f.push('labor');
+  if (cur.mov && !cur.jorConf) f.push('confirmar la jornada (almuerzo o de corrido)');
   return f;
 }
 window.wzGuardar = async function() {
@@ -6520,6 +6618,7 @@ window.wzGuardar = async function() {
       horas_trabajador: htrab !== '' ? parseFloat(htrab) : null,
       horas_registro: hreg !== '' ? parseFloat(hreg) : 0,
       jornada: aus ? 'normal' : (cur.esp ? 'especial' : cur.dif ? 'diferenciado' : (cur.corrido ? 'corrido' : 'normal')), horario_especial: !aus && cur.esp ? cur.esp : null, hora_ingreso: !aus && cur.dif ? cur.ingreso : null, jornada_corrido: !aus && !!cur.corrido,
+      inicio_movimiento: !aus && cur.mov ? { hora: hmTxt(cur.mov.min), equipo: cur.mov.eq, fuente: cur.mov.fuente, sugerido: cur.mov.temprano ? cur.mov.sug : null } : null,
       hextra_auto: !aus && !!(cur.hExtra && cur.hExtra.horas > 0 && parseFloat(hreg) === cur.hExtra.horas),
       obs: motivo, registrado_por: currentUser, ts: Date.now()
     });
@@ -7059,10 +7158,15 @@ function horarioDelDia(trab, fecha, especial) {
 }
 const especialDe = trab => { const n = (config.horarioEspecialTrab || {})[trab]; return n && (config.horariosEspeciales || []).some(x => x.nombre === n) ? n : ''; };
 const jorDeRegistro = a => ({ corrido: a.jornada === 'corrido' || (a.jornada === 'diferenciado' && a.jornada_corrido === true), ingreso: a.jornada === 'diferenciado' ? (a.hora_ingreso || '') : '', especial: a.jornada === 'especial' ? (a.horario_especial || '') : '' });
+// Inicio: hora de ingreso (la normal, o la diferenciada que sale del movimiento del equipo) · Término: última carga de combustible de la tarde
 function horasExtraPorCombustible(trab, comb, fecha, jor) {
-  if (!comb || !comb.ultimaHora) return null;
   const corrido = jor && typeof jor === 'object' ? !!jor.corrido : !!jor, ingreso = jor && typeof jor === 'object' ? jor.ingreso : '', especial = jor && typeof jor === 'object' ? jor.especial : '';
   const H = horarioDelDia(trab, fecha, especial), salNormal = H.salida, ent = H.entrada, m = hm;
+  if (!comb || !comb.ultimaHora) {
+    // Sin carga de combustible: solo se puede contar lo que empezó antes del ingreso normal
+    const antes = ingreso && !esFeriado(fecha) ? (m(ent) - m(ingreso)) / 60 : 0;
+    return antes > 0 ? { salida: hmTxt(m(salNormal) - (m(ent) - m(ingreso)) - (corrido ? H.colMin : 0)), salidaNormal: salNormal, corrido: !!corrido, ingreso, especial: H.especial, carga: null, margen: 0, antes, despues: 0, horas: Math.round(antes * 2) / 2, difExacta: antes, sinCarga: true } : null;
+  }
   // De corrido: trabajó la colación, así que su salida sin hora extra se adelanta esa duración
   const alm = corrido ? H.colMin / 60 : 0;
   // Horario diferenciado: la salida se corre lo mismo que se adelantó (o atrasó) el ingreso respecto del ingreso normal
@@ -7075,8 +7179,9 @@ function horasExtraPorCombustible(trab, comb, fecha, jor) {
     return { salida: ini, salidaNormal: salNormal, corrido: !!corrido, ingreso: ingreso || '', especial: H.especial, feriado: true, carga: comb.ultimaHora, margen: 0, horas: bruto > 0 ? Math.round(bruto * 2) / 2 : 0, difExacta: bruto };
   }
   const dif = (m(comb.ultimaHora) - m(sal)) / 60, margen = Number(config.margenHextraMin) || 0;
+  const antes = corr > 0 ? corr / 60 : 0; // lo que entró antes del ingreso normal (el resto es después de la salida)
   // Dentro del margen no cuenta como hora extra; pasado el margen cuenta la diferencia completa desde la salida
-  return { salida: sal, salidaNormal: salNormal, corrido: !!corrido, ingreso: ingreso || '', especial: H.especial, carga: comb.ultimaHora, margen, horas: dif * 60 > margen && dif > 0 ? Math.round(dif * 2) / 2 : 0, difExacta: dif };
+  return { salida: sal, salidaNormal: salNormal, corrido: !!corrido, ingreso: ingreso || '', especial: H.especial, carga: comb.ultimaHora, margen, antes, despues: dif - antes, horas: dif * 60 > margen && dif > 0 ? Math.round(dif * 2) / 2 : 0, difExacta: dif };
 }
 window.agregarTrabajadorAsistencia = async function() {
   const inp = document.getElementById('nuevo-trabajador-asistencia');
@@ -12281,7 +12386,7 @@ function listaEquiposDisponibles() {
 // ha/h = ancho × velocidad / 10 × eficiencia de campo.  L/ha = L/h del tractor ÷ ha/h.  $/ha = L/ha × precio del petróleo.
 function costosParams() { const c = config.costos || {}; return { precio: Number(c.precioLitro) || 0, efic: Number(c.eficCampo) || 85 }; }
 function consumoLHr(equipo, apero) {
-  const hr = (registros || []).filter(r => r.equipo === equipo && r.medidor_tipo === 'hr' && r.eficiencia > 0);
+  const hr = (registros || []).filter(r => r.equipo === equipo && r.medidor_tipo === 'hr' && efValida(r));
   const prom = l => l.length ? l.reduce((x, r) => x + r.eficiencia, 0) / l.length : null;
   const conApero = prom(hr.filter(r => r.apero === apero));
   if (conApero != null) return { lh: conApero, fuente: 'con este apero' };
@@ -12311,7 +12416,7 @@ window.renderRendAperoEficiencia = function() {
     (registros || []).forEach(x => { if (x.apero === a.nombre || (Array.isArray(x.aperos) && x.aperos.includes(a.nombre))) usos[x.equipo] = (usos[x.equipo] || 0) + 1; });
     const filas = Object.keys(usos).filter(e => e !== OTRO && tipoEquipo(e) === 'hr').map(e => {
       const r = rendimientoApero(a, e); if (!r) return null;
-      const n = (registros || []).filter(x => x.equipo === e && x.apero === a.nombre && x.medidor_tipo === 'hr' && x.eficiencia > 0).length;
+      const n = (registros || []).filter(x => x.equipo === e && x.apero === a.nombre && x.medidor_tipo === 'hr' && efValida(x)).length;
       return { e, r, n, cargas: usos[e] };
     }).filter(Boolean).sort((x, y) => ((x.r.lHa == null) - (y.r.lHa == null)) || ((x.r.lHa || 0) - (y.r.lHa || 0)));
     grupos.push({ a, filas, usaron: Object.keys(usos).length });
