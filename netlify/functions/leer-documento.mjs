@@ -74,6 +74,42 @@ const HERRAMIENTA_SUELDOS = {
     required: ['legible', 'filas'],
   },
 };
+const HERRAMIENTA_HEXTRA = {
+  name: 'registrar_planilla_horas_extra',
+  description: 'Registra las horas extra anotadas a mano en una planilla semanal (una fila por trabajador, una columna por día).',
+  input_schema: {
+    type: 'object',
+    properties: {
+      legible: { type: 'boolean' },
+      dias: { type: 'array', items: { type: 'integer' }, description: 'Números de día del mes de las columnas, en orden de izquierda a derecha tal como aparecen en el encabezado (ej: [26,27,28,29,30,31,1])' },
+      filas: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            nombre: { type: 'string', description: 'Nombre del trabajador tal como está impreso' },
+            grupo: { type: 'string', description: 'Título del bloque o tabla donde está (ej: "La Reserva", "Juan Carlos Allende R")' },
+            planilla: { type: 'string', description: 'Título de la planilla si se ve (ej: "Cuadrilla", "Tractoristas")' },
+            valores: { type: 'array', items: { type: 'object', properties: { dia: { type: 'integer', description: 'Número de día del mes de la columna' }, horas: { type: 'number', description: 'Horas extra escritas en esa celda. 1½ = 1.5' }, dudoso: { type: 'boolean', description: 'true si el número no se lee con seguridad' } }, required: ['dia', 'horas'] } },
+          },
+          required: ['nombre', 'valores'],
+        },
+      },
+      observaciones: { type: 'string', description: 'Dudas de lectura (números poco claros, celdas tachadas, etc.)' },
+    },
+    required: ['legible', 'dias', 'filas'],
+  },
+};
+const PROMPT_HEXTRA = `Estas fotos son planillas semanales de HORAS EXTRA de un campo en Chile (pueden estar giradas 90°: léelas en la orientación correcta).
+Cada tabla tiene una fila por trabajador (nombre impreso, normalmente "Apellido Apellido Nombre Nombre") y una columna por día con el número de día del mes en el encabezado (L M M J V S D).
+Las horas están escritas a mano en las celdas. Reglas:
+- Registra TODOS los trabajadores impresos, aunque no tengan horas (valores vacío).
+- Solo celdas con un número escrito. Celda vacía = no la incluyas. Nunca inventes.
+- "1½", "1 1/2" o "1,5" = 1.5. "½" = 0.5. Una raya o cero = 0.
+- Asocia cada número a la columna correcta siguiendo la línea de la fila (cuidado con números que se salen de la celda).
+- Si un número no se lee con seguridad, márcalo dudoso y explícalo en observaciones.
+- Si hay varias planillas o bloques (ej: "Cuadrilla" y "Tractoristas", o grupos con distinto empleador), indica el bloque en grupo y el título en planilla.
+Responde solo usando la herramienta registrar_planilla_horas_extra.`;
 const PROMPT_SUELDOS = `Lee esta planilla o liquidaciones de sueldo de trabajadores agrícolas en Chile.
 Extrae UNA fila por trabajador con su nombre, RUT, costo total empresa, total haberes, líquido a pagar, y si aparecen, el monto y las horas de horas extra.
 Reglas: no inventes cifras; omite lo que no se vea y explícalo en "observaciones". Los montos van en pesos chilenos como número entero (sin puntos de miles). No sumes ni agregues una fila de totales.
@@ -330,6 +366,28 @@ export default async function handler(request) {
     const d4 = await r4.json(), u4 = (d4.content || []).find(b => b.type === 'tool_use' && b.name === 'registrar_lectura_medidor');
     if (u4) return json({ ok: true, lectura: u4.input });
     return json({ error: 'No se pudo leer el medidor' }, 502);
+  }
+  if (body.modo === 'horas_extra') {
+    const docs = body.documentos;
+    if (!Array.isArray(docs) || !docs.length || docs.length > 4) return json({ error: 'Envía entre 1 y 4 fotos o PDF' }, 400);
+    let tot = 0; const cont = [];
+    for (const du of docs) {
+      const m = /^data:(application\/pdf|image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(du || '');
+      if (!m) return json({ error: 'Formato no válido (PDF o imagen)' }, 400);
+      tot += m[2].length * 0.75; if (tot > MAX_BYTES_TOTAL) return json({ error: 'Los archivos pesan demasiado' }, 413);
+      cont.push(m[1] === 'application/pdf' ? { type: 'document', source: { type: 'base64', media_type: m[1], data: m[2] } } : { type: 'image', source: { type: 'base64', media_type: m[1], data: m[2] } });
+    }
+    const ctx = body.semana ? '\n\nSemana esperada: lunes ' + String(body.semana).slice(0, 10) + '.' : '';
+    cont.push({ type: 'text', text: PROMPT_HEXTRA + ctx });
+    let r5;
+    try {
+      r5 = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({ model: MODELO, max_tokens: 8000, thinking: { type: 'between_tools' }, tools: [HERRAMIENTA_HEXTRA], tool_choice: { type: 'auto' }, messages: [{ role: 'user', content: cont }] }) });
+    } catch (e) { return json({ error: 'No se pudo contactar el servicio de IA' }, 502); }
+    if (!r5.ok) { let d = ''; try { const e = await r5.json(); d = (e && e.error && e.error.message) ? ': ' + e.error.message : ''; } catch (e) {} return json({ error: 'El servicio de IA respondió con error (' + r5.status + ')' + d }, 502); }
+    const d5 = await r5.json(), u5 = (d5.content || []).find(b => b.type === 'tool_use' && b.name === 'registrar_planilla_horas_extra');
+    if (u5) return json({ ok: true, planilla: u5.input });
+    return json({ error: 'No se pudo leer la planilla de horas extra' }, 502);
   }
   if (body.modo === 'remuneraciones') {
     const docs = body.documentos;
