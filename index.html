@@ -6309,14 +6309,21 @@ window.abrirRevisionHextra = async function() {
   w.innerHTML = `<div class="panel"><div class="panel-title">⏱️ Revisión de horas extra</div>
     <div class="grid-2" style="margin-bottom:8px"><div class="field" style="margin:0"><label>Desde</label><input type="date" id="hx-desde" value="${d0}" onchange="hxCalcular()"></div>
     <div class="field" style="margin:0"><label>Hasta</label><input type="date" id="hx-hasta" value="${h0}" onchange="hxCalcular()"></div></div>
-    <div style="margin-bottom:8px">${[['Esta semana', 'sem'], ['Este mes', 'mes'], ['Mes anterior', 'ant'], ['Últimos 30 días', '30']].map(([t, k]) => `<button type="button" style="${WZ_SMALL}" onclick="hxPeriodo('${k}')">${t}</button>`).join('')}</div>
+    <div style="margin-bottom:8px">${[['Semana anterior', 'semant'], ['Esta semana', 'sem'], ['Este mes', 'mes'], ['Mes anterior', 'ant'], ['Últimos 30 días', '30']].map(([t, k]) => `<button type="button" style="${WZ_SMALL}" onclick="hxPeriodo('${k}')">${t}</button>`).join('')}</div>
+    <div style="border:1px dashed #93C5FD;background:#F8FBFF;border-radius:8px;padding:8px 10px;margin-bottom:10px">
+      <div style="font-weight:700;font-size:13px">📄 Planilla semanal (lo que anotaron los trabajadores)</div>
+      <div class="hint" style="margin:2px 0 6px">Sube la foto o el PDF de la planilla (cuadrilla y tractoristas juntas, hasta 4 archivos). Se lee con IA, revisas y queda como «Anotaron» en la tarja de esa semana.</div>
+      <label class="btn btn-secondary" style="display:inline-flex;cursor:pointer;margin:0">📷 Leer planilla<input type="file" multiple accept="image/*,application/pdf" style="display:none" onchange="hxLeerPlanilla(this.files); this.value=''"></label>
+      <div id="hx-pl-estado" style="font-size:12px;margin-top:6px"></div><div id="hx-pl-rev"></div>
+    </div>
     <div id="hx-res" style="font-size:13px">Cargando…</div></div>`;
   hxCalcular();
 }
 window.hxPeriodo = function(k) {
   const hoy = getNow().fecha, d = new Date(hoy + 'T12:00:00');
   let a = hoy, b = hoy;
-  if (k === 'sem') { const dow = (d.getDay() + 6) % 7; a = fechaMasDias(hoy, -dow); }
+  if (k === 'sem') { const dow = (d.getDay() + 6) % 7; a = fechaMasDias(hoy, -dow); b = fechaMasDias(a, 6); }
+  else if (k === 'semant') { const dow = (d.getDay() + 6) % 7; a = fechaMasDias(hoy, -dow - 7); b = fechaMasDias(a, 6); }
   else if (k === 'mes') a = hoy.slice(0, 8) + '01';
   else if (k === 'ant') { const p = new Date(d.getFullYear(), d.getMonth() - 1, 1, 12), u = new Date(d.getFullYear(), d.getMonth(), 0, 12); a = p.toISOString().slice(0, 10); b = u.toISOString().slice(0, 10); }
   else a = fechaMasDias(hoy, -30);
@@ -6335,14 +6342,30 @@ window.hxCalcular = async function() {
     const snap = await getDocs(query(collection(db, 'registros'), where('fecha', '>=', desde), where('fecha', '<=', hasta)));
     snap.docs.forEach(d => { const r = d.data(); if (!r.operador || !r.hora) return; const k = r.operador + '|' + r.fecha; if (!ult[k] || r.hora > ult[k]) ult[k] = r.hora; });
   } catch (e) { out.innerHTML = 'Error leyendo combustible: ' + escA(e.message); return; }
+  // Planillas semanales leídas (lo que anotaron los trabajadores), por lunes
+  const planH = {};
+  try {
+    const lunes = []; for (let f = lunesDe(desde); f <= hasta; f = fechaMasDias(f, 7)) lunes.push(f);
+    const docs = await Promise.all(lunes.slice(0, 10).map(l => getDoc(doc(db, 'config', 'hxp_' + l)).catch(() => null)));
+    docs.forEach(d => { const P = d && d.exists() ? d.data() : null; if (!P) return; (P.filas || []).forEach(f => { if (!f.trab) return; Object.entries(f.horas || {}).forEach(([fe, h]) => { if (fe >= desde && fe <= hasta && h != null) planH[f.trab + '|' + fe] = Number(h) || 0; }); }); });
+  } catch (e) { console.warn('planilla hx', e); }
   const regs = asistenciaRegistros.filter(r => r.fecha >= desde && r.fecha <= hasta && (!r.estado || r.estado === 'presente'));
+  const vistos = new Set();
   const rows = regs.map(r => {
     const u = ult[r.trabajador + '|' + r.fecha] || '';
     const jor = jorDeRegistro(r);
     const hx = u ? horasExtraPorCombustible(r.trabajador, { ultimaHora: u }, r.fecha, jor) : null;
-    return { id: r.id, trab: r.trabajador, fecha: r.fecha, est: Number(r.horas_registro) || 0, trabH: r.horas_trabajador, hx, ult: u, manual: !(r.hextra_auto === true) && (Number(r.horas_registro) || 0) > 0 };
-  }).filter(x => x.est > 0 || x.hx).sort((a, b) => a.fecha.localeCompare(b.fecha));
+    vistos.add(r.trabajador + '|' + r.fecha);
+    const pl = planH[r.trabajador + '|' + r.fecha];
+    const anot = r.horas_trabajador != null ? Number(r.horas_trabajador) : (pl != null ? pl : null);
+    return { id: r.id, trab: r.trabajador, fecha: r.fecha, est: Number(r.horas_registro) || 0, trabH: r.horas_trabajador, anot, hx, ult: u, manual: !(r.hextra_auto === true) && (Number(r.horas_registro) || 0) > 0 };
+  });
+  // Días anotados en la planilla sin tarja ese día
+  Object.entries(planH).forEach(([k, h]) => { if (vistos.has(k) || !(h > 0)) return; const [trab, fecha] = k.split('|'); const u = ult[k] || ''; rows.push({ id: null, trab, fecha, est: null, anot: h, hx: u ? horasExtraPorCombustible(trab, { ultimaHora: u }, fecha, null) : null, ult: u, sinTarja: true }); });
+  HX.todas = rows.slice();
+  rows.splice(0, rows.length, ...rows.filter(x => x.est > 0 || x.hx || x.anot > 0).sort((a, b) => a.fecha.localeCompare(b.fecha)));
   HX.rows = rows;
+  if (desde === lunesDe(desde) && hasta === fechaMasDias(desde, 6)) { hxRenderSemana(out); return; }
   const por = {};
   rows.forEach(x => { const t = por[x.trab] = por[x.trab] || { est: 0, auto: 0, estCon: 0, dias: 0, difDias: 0, rows: [] }; t.est += x.est; t.dias++; if (x.hx) { t.auto += x.hx.horas; t.estCon += x.est; } if (x.hx && Math.abs(x.hx.horas - x.est) >= 0.5) t.difDias++; t.rows.push(x); });
   const trabs = Object.keys(por).sort((a, b) => a.localeCompare(b, 'es'));
@@ -6354,11 +6377,164 @@ window.hxCalcular = async function() {
     <div style="display:flex;gap:6px;margin-bottom:8px"><button type="button" class="btn" onclick="hxExcel()">⬇️ Excel</button></div>
     ${trabs.map(t => { const p = por[t], dif = p.auto - p.estCon; return `<details style="border:1px solid #E5E7EB;border-radius:8px;margin-bottom:6px;background:#fff"${p.difDias ? ' open' : ''}>
       <summary style="padding:8px;cursor:pointer;display:flex;gap:8px;flex-wrap:wrap;align-items:center"><b style="flex:1;min-width:120px">${escA(t)}</b><span>anotadas <b>${hxN(p.est)}</b> h</span><span>combustible <b>${hxN(p.auto)}</b> h</span>${p.difDias ? `<span style="color:#DC2626;font-weight:600">⚠️ ${p.difDias} día${p.difDias > 1 ? 's' : ''} con diferencia</span>` : '<span style="color:#16A34A">✓</span>'}</summary>
-      <div style="overflow-x:auto;padding:0 8px 8px"><table style="width:100%;font-size:12px;border-collapse:collapse;min-width:0"><thead><tr style="color:#6B7280"><th style="text-align:left;padding:4px 6px">Día</th><th style="${celda}">Anotadas</th><th style="${celda}">Última carga</th><th style="${celda}">Salida</th><th style="${celda}">Combustible</th><th style="${celda}">Dif.</th><th></th></tr></thead><tbody>
-      ${p.rows.map(x => { const i = HX.rows.indexOf(x), d = x.hx ? x.hx.horas - x.est : null, malo = d != null && Math.abs(d) >= 0.5; return `<tr${malo ? ' style="background:#FFF5F5"' : ''}><td style="padding:4px 6px;border-bottom:1px solid #E5E7EB">${fechaBonita(x.fecha)}${esFeriado(x.fecha) ? ' 🎌' : ''}</td><td style="${celda}">${hxN(x.est)}${x.manual ? ' ✍️' : ''}</td><td style="${celda}">${x.ult || '—'}</td><td style="${celda}">${x.hx ? escA(x.hx.salida) : '—'}</td><td style="${celda}">${x.hx ? hxN(x.hx.horas) : '—'}</td><td style="${celda};color:${malo ? '#DC2626' : '#6B7280'}">${d != null ? (d > 0 ? '+' : '') + hxN(d) : ''}</td><td style="${celda}">${malo ? `<button type="button" style="${WZ_SMALL};margin:0;padding:3px 8px" onclick="hxUsar(${i})">Usar ${hxN(x.hx.horas)}</button>` : ''}</td></tr>`; }).join('')}
+      <div style="overflow-x:auto;padding:0 8px 8px"><table style="width:100%;font-size:12px;border-collapse:collapse;min-width:0"><thead><tr style="color:#6B7280"><th style="text-align:left;padding:4px 6px">Día</th><th style="${celda}">Anotaron</th><th style="${celda}">Tuyo</th><th style="${celda}">Última carga</th><th style="${celda}">Salida</th><th style="${celda}">Combustible</th><th style="${celda}">Dif.</th><th></th></tr></thead><tbody>
+      ${p.rows.map(x => { const i = HX.rows.indexOf(x), d = x.hx ? x.hx.horas - x.est : null, malo = d != null && Math.abs(d) >= 0.5; return `<tr${malo ? ' style="background:#FFF5F5"' : ''}><td style="padding:4px 6px;border-bottom:1px solid #E5E7EB">${fechaBonita(x.fecha)}${esFeriado(x.fecha) ? ' 🎌' : ''}</td><td style="${celda};${hxColorAnot(x).css}">${x.anot != null ? hxN(x.anot) : '—'}</td><td style="${celda}">${x.est != null ? hxN(x.est) : '—'}${x.manual ? ' ✍️' : ''}</td><td style="${celda}">${x.ult || '—'}</td><td style="${celda}">${x.hx ? escA(x.hx.salida) : '—'}</td><td style="${celda}">${x.hx ? hxN(x.hx.horas) : '—'}</td><td style="${celda};color:${malo ? '#DC2626' : '#6B7280'}">${d != null ? (d > 0 ? '+' : '') + hxN(d) : ''}</td><td style="${celda}">${malo ? `<button type="button" style="${WZ_SMALL};margin:0;padding:3px 8px" onclick="hxUsar(${i})">Usar ${hxN(x.hx.horas)}</button>` : ''}</td></tr>`; }).join('')}
       </tbody></table>${p.difDias > 1 ? `<button type="button" class="btn" style="margin-top:6px" onclick="hxUsarTodos('${escA(t).replace(/'/g, "\\'")}')">Usar combustible en los ${p.difDias} días con diferencia</button>` : ''}</div></details>`; }).join('')}
     <div style="font-size:11px;color:#6B7280">✍️ = horas escritas a mano. «Usar» reemplaza las horas anotadas por las del combustible en ese día.</div>`;
 }
+const lunesDe = f => { const d = new Date(f + 'T12:00:00'); return fechaMasDias(f, -((d.getDay() + 6) % 7)); };
+const DIAS_L = ['L', 'M', 'M', 'J', 'V', 'S', 'D'];
+// Lo que anotó el trabajador vs tu número (o la estimación si no tienes): rojo = anotó más · azul = anotó menos
+function hxColorAnot(x) {
+  if (!x || x.anot == null) return { css: '', dif: 0 };
+  const ref = x.est != null && !x.sinTarja ? x.est : (x.hx ? x.hx.horas : null);
+  if (ref == null) return { css: '', dif: 0 };
+  const d = x.anot - ref;
+  if (d >= 0.5) return { css: 'background:#FEE2E2;color:#B91C1C;font-weight:700', dif: d, txt: `anotó ${hxN(d)} h más que ${x.est != null && !x.sinTarja ? 'tu número' : 'la estimación'}` };
+  if (d <= -0.5) return { css: 'background:#DBEAFE;color:#1D4ED8;font-weight:700', dif: d, txt: `anotó ${hxN(-d)} h menos que ${x.est != null && !x.sinTarja ? 'tu número' : 'la estimación'}` };
+  return { css: '', dif: d };
+}
+function hxRenderSemana(out) {
+  const L = HX.desde, dias = Array.from({ length: 7 }, (_, i) => fechaMasDias(L, i));
+  const por = {};
+  (HX.todas || HX.rows).forEach(x => { (por[x.trab] = por[x.trab] || {})[x.fecha] = x; });
+  const trabs = Object.keys(por).filter(t => Object.values(por[t]).some(x => x.est > 0 || x.hx || x.anot > 0));
+  if (!trabs.length) { out.innerHTML = '<div class="empty">Sin horas extra, planilla ni cargas de combustible esa semana.</div>'; return; }
+  const info = t => { const v = Object.values(por[t]); return { a: v.reduce((s, x) => s + (x.anot || 0), 0), e: v.reduce((s, x) => s + (x.hx ? x.hx.horas : 0), 0), t: v.reduce((s, x) => s + (x.est || 0), 0), dif: v.filter(x => hxColorAnot(x).css).length }; };
+  trabs.sort((a, b) => info(b).dif - info(a).dif || a.localeCompare(b, 'es'));
+  const tot = trabs.reduce((s, t) => { const i = info(t); return { a: s.a + i.a, e: s.e + i.e, t: s.t + i.t }; }, { a: 0, e: 0, t: 0 });
+  const c = 'padding:3px 2px;text-align:center;border-bottom:1px solid #E5E7EB;min-width:30px';
+  const v = n => n == null ? '<span style="color:#D1D5DB">·</span>' : hxN(n);
+  out.innerHTML = `<div style="margin-bottom:6px">Semana del <b>${fechaBonita(L)}</b> al <b>${fechaBonita(dias[6])}</b>: anotaron <b>${hxN(tot.a)} h</b> · estimado <b>${hxN(tot.e)} h</b> · tuyo <b>${hxN(tot.t)} h</b></div>
+    <div style="font-size:11px;margin-bottom:8px;display:flex;gap:10px;flex-wrap:wrap"><span><span style="display:inline-block;width:12px;height:12px;background:#FEE2E2;border:1px solid #FCA5A5;vertical-align:-2px"></span> anotó <b>más</b> que tu número (o que la estimación si no tienes)</span><span><span style="display:inline-block;width:12px;height:12px;background:#DBEAFE;border:1px solid #93C5FD;vertical-align:-2px"></span> anotó <b>menos</b></span><span style="color:#6B7280">Toca un día de «Tuyo» para corregirlo.</span></div>
+    <div style="display:flex;gap:6px;margin-bottom:8px"><button type="button" class="btn" onclick="hxExcel()">⬇️ Excel</button></div>
+    ${trabs.map(t => { const i = info(t), P = por[t], tq = escA(t).replace(/'/g, "\\'");
+      return `<div style="border:1px solid ${i.dif ? '#FCA5A5' : '#E5E7EB'};border-radius:8px;margin-bottom:8px;background:#fff;padding:6px 6px 4px">
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:baseline;margin:0 2px 4px"><b style="flex:1;min-width:120px">${escA(t)}</b><span style="font-size:12px">A <b>${hxN(i.a)}</b> · E <b>${hxN(i.e)}</b> · T <b>${hxN(i.t)}</b></span>${i.dif ? `<span style="font-size:11px;color:#B91C1C;font-weight:600">${i.dif} día${i.dif > 1 ? 's' : ''} distinto${i.dif > 1 ? 's' : ''}</span>` : ''}</div>
+        <div style="overflow-x:auto"><table style="width:100%;min-width:0;font-size:12px;border-collapse:collapse"><thead><tr style="color:#6B7280;font-size:11px"><th style="text-align:left;padding:3px 4px"></th>${dias.map((d, k) => `<th style="${c}${k === 6 || esFeriado(d) ? ';color:#B91C1C' : ''}">${DIAS_L[k]}<div style="font-weight:400">${+d.slice(8)}</div></th>`).join('')}<th style="${c};font-weight:700">Tot.</th></tr></thead><tbody>
+          <tr><td style="padding:3px 4px;font-size:11px;color:#374151;white-space:nowrap">Anotaron</td>${dias.map(d => { const x = P[d], col = hxColorAnot(x); return `<td style="${c};${col.css}" title="${escA(col.txt || '')}">${v(x ? x.anot : null)}</td>`; }).join('')}<td style="${c};font-weight:700">${hxN(i.a)}</td></tr>
+          <tr><td style="padding:3px 4px;font-size:11px;color:#374151;white-space:nowrap">Estimado</td>${dias.map(d => { const x = P[d]; return `<td style="${c};color:#4B5563" title="${x && x.ult ? 'Última carga ' + escA(x.ult) + (x.hx && x.hx.ingreso ? ' · inicio ' + escA(x.hx.ingreso) : '') : 'Sin carga de combustible'}">${v(x && x.hx ? x.hx.horas : null)}</td>`; }).join('')}<td style="${c};font-weight:700">${hxN(i.e)}</td></tr>
+          <tr><td style="padding:3px 4px;font-size:11px;color:#374151;white-space:nowrap">Tuyo</td>${dias.map(d => { const x = P[d]; return `<td style="${c};cursor:${x && x.id ? 'pointer' : 'default'};text-decoration:${x && x.id ? 'underline dotted #9CA3AF' : 'none'}" ${x && x.id ? `onclick="hxEditarTuyo('${tq}','${d}')"` : ''}>${v(x && !x.sinTarja ? x.est : null)}${x && x.manual ? '<span style="font-size:9px">✍️</span>' : ''}</td>`; }).join('')}<td style="${c};font-weight:700">${hxN(i.t)}</td></tr>
+        </tbody></table></div></div>`; }).join('')}
+    <div style="font-size:11px;color:#6B7280">Anotaron = la planilla del trabajador. Estimado = según el horario: inicio (ingreso o movimiento del equipo) y término (última carga de combustible). Tuyo = lo que quedó en la tarja (✍️ escrito a mano).</div>`;
+}
+window.hxEditarTuyo = async function(trab, fecha) {
+  const x = (HX && (HX.todas || HX.rows) || []).find(r => r.trab === trab && r.fecha === fecha && r.id); if (!x) { toast('Ese día no tiene tarja', false); return; }
+  const v = prompt(`${trab} · ${fechaBonita(fecha)}\nAnotaron: ${x.anot != null ? hxN(x.anot) : '—'} · Estimado: ${x.hx ? hxN(x.hx.horas) + ' (última carga ' + x.ult + ')' : '—'} · Tuyo: ${hxN(x.est)}\n\nHoras extra que quedan en la tarja:`, String(x.est || 0).replace('.', ','));
+  if (v == null) return;
+  const n = parseFloat(String(v).replace(',', '.'));
+  if (!(n >= 0 && n <= 16)) { toast('Valor no válido', false); return; }
+  try {
+    await updateDoc(doc(db, 'asistencia', x.id), { horas_registro: n, hextra_auto: false });
+    const r = asistenciaRegistros.find(a => a.id === x.id); if (r) { r.horas_registro = n; r.hextra_auto = false; }
+    toast('✓ Actualizado', true); hxCalcular();
+  } catch (e) { toast('Error: ' + e.message, false); }
+};
+// ── Lectura de la planilla semanal con IA ──
+let HXP = null;
+// Nombre de la planilla ("Cadiz Figueroa Patricio") → trabajador de la tarja: lo ya asociado antes, o el que comparte todas sus palabras (si hay dos posibles, se elige a mano)
+function hxMatch(nombre) {
+  const mp = config.mapaNomina || {};
+  if (Object.prototype.hasOwnProperty.call(mp, nombre)) return mp[nombre] || '__no__';
+  const toks = normNom(nombre).split(' ').filter(t => t.length > 1);
+  let best = '', bs = 0, dup = false;
+  (trabajadoresAsistenciaConfig || []).forEach(t => {
+    const tt = normNom(t).split(' ').filter(x => x.length > 1); if (!tt.length) return;
+    const sc = tt.filter(x => toks.includes(x)).length / tt.length;
+    if (sc > bs) { bs = sc; best = t; dup = false; } else if (sc === bs && sc > 0) dup = true;
+  });
+  return bs >= 0.66 && !dup ? best : '';
+}
+function lunesDePlanilla(dias, sugerido) {
+  const ds = (dias || []).map(Number).filter(n => n >= 1 && n <= 31).slice(0, 7);
+  if (!ds.length) return sugerido;
+  const calza = L => ds.every((n, i) => +fechaMasDias(L, i).slice(8) === n);
+  if (sugerido && calza(sugerido)) return sugerido;
+  const base = lunesDe(getNow().fecha);
+  for (let w = 1; w <= 10; w++) { const L = fechaMasDias(base, -7 * w); if (calza(L)) return L; }
+  if (calza(base)) return base;
+  return sugerido;
+}
+window.hxLeerPlanilla = async function(files) {
+  const est = document.getElementById('hx-pl-estado'), rev = document.getElementById('hx-pl-rev');
+  const fs = [...(files || [])].slice(0, 4); if (!fs.length) return;
+  try {
+    if (!sesionPinIA) { sesionPinIA = (prompt('Ingresa tu PIN para usar la lectura con IA') || '').trim(); if (!sesionPinIA) return; }
+    est.textContent = '🤖 Leyendo la planilla con IA… (puede tardar un minuto)'; rev.innerHTML = '';
+    const urls = [];
+    for (const f of fs) { const b = f.type.startsWith('image/') ? await comprimirImagen(f) : f; urls.push(await new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = () => no(new Error('No se pudo leer el archivo')); r.readAsDataURL(b); })); }
+    const dEl = document.getElementById('hx-desde'), sug = dEl && dEl.value && dEl.value === lunesDe(dEl.value) ? dEl.value : fechaMasDias(lunesDe(getNow().fecha), -7);
+    const resp = await fetch(URL_LECTOR_DOC, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ usuario: currentUser, pin: sesionPinIA, modo: 'horas_extra', documentos: urls, semana: sug }) });
+    if (resp.status === 401) { sesionPinIA = ''; throw new Error('PIN no válido para la lectura con IA'); }
+    const j = await resp.json().catch(() => ({}));
+    if (!resp.ok || !j.planilla) throw new Error(j.error || 'No se pudo leer la planilla');
+    const P = j.planilla, L = lunesDePlanilla(P.dias, sug);
+    const fechaDeDia = n => { for (let i = 0; i < 7; i++) { const f = fechaMasDias(L, i); if (+f.slice(8) === Number(n)) return f; } return null; };
+    const fuera = new Set();
+    HXP = { lunes: L, obs: P.observaciones || '', filas: (P.filas || []).map(f => {
+      const horas = {}, dud = {};
+      (f.valores || []).forEach(x => { const fe = fechaDeDia(x.dia); if (!fe) { fuera.add(x.dia); return; } horas[fe] = Number(x.horas) || 0; if (x.dudoso) dud[fe] = true; });
+      return { nombre: String(f.nombre || '').trim(), grupo: f.grupo || '', planilla: f.planilla || '', trab: hxMatch(String(f.nombre || '').trim()), horas, dud };
+    }).filter(f => f.nombre) };
+    est.innerHTML = `✓ Leída: <b>${HXP.filas.length} trabajadores</b>, semana del ${fechaBonita(L)}. <b>Revisa los números</b> contra la planilla y guarda.${fuera.size ? ` <span style="color:#B45309">Hay días que no calzan con esa semana (${[...fuera].join(', ')}).</span>` : ''}${HXP.obs ? '<br>🗒️ ' + escA(HXP.obs) : ''}`;
+    hxRenderRevPlanilla();
+  } catch (e) { est.innerHTML = '<span style="color:#B91C1C">' + escA(e.message) + '</span>'; }
+};
+function hxRenderRevPlanilla() {
+  const rev = document.getElementById('hx-pl-rev'); if (!rev || !HXP) return;
+  const dias = Array.from({ length: 7 }, (_, i) => fechaMasDias(HXP.lunes, i));
+  const usados = new Set(HXP.filas.map(f => f.trab).filter(Boolean));
+  const opts = sel => `<option value="">— elegir —</option>${(trabajadoresAsistenciaConfig || []).map(t => `<option value="${escA(t)}" ${t === sel ? 'selected' : ''}>${escA(t)}${t !== sel && usados.has(t) ? ' (ya asignado)' : ''}</option>`).join('')}<option value="__no__" ${sel === '__no__' ? 'selected' : ''}>No está en la tarja</option>`;
+  let grupo = null;
+  rev.innerHTML = `<div style="margin-top:8px"><div class="field" style="margin:0 0 6px;max-width:220px"><label>Semana (lunes)</label><input type="date" value="${HXP.lunes}" onchange="hxCambiarSemanaPl(this.value)"></div>
+    ${HXP.filas.map((f, i) => { const g = (f.planilla ? f.planilla + ' · ' : '') + (f.grupo || ''); const cab = g !== grupo ? (grupo = g, `<div style="font-size:11px;font-weight:700;color:#1D4ED8;margin:8px 0 2px;text-transform:uppercase">${escA(g || 'Planilla')}</div>`) : '';
+      return cab + `<div style="border:1px solid ${f.trab ? '#E5E7EB' : '#F59E0B'};border-radius:8px;padding:6px;margin-bottom:6px;background:#fff">
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:4px"><span style="font-size:12px;flex:1;min-width:140px">${escA(f.nombre)}</span>
+          <div class="select-wrapper" style="flex:1;min-width:150px"><select style="font-size:12px;padding:6px" onchange="hxPlAsignar(${i}, this.value)">${opts(f.trab)}</select></div></div>
+        <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:3px">${dias.map((d, k) => `<div style="text-align:center"><div style="font-size:10px;color:${k === 6 ? '#B91C1C' : '#6B7280'}">${DIAS_L[k]} ${+d.slice(8)}</div><input type="text" inputmode="decimal" value="${f.horas[d] != null ? String(f.horas[d]).replace('.', ',') : ''}" style="width:100%;padding:4px 2px;text-align:center;font-size:13px;${f.dud[d] ? 'background:#FEF3C7;border-color:#F59E0B' : ''}" onchange="hxPlValor(${i}, '${d}', this.value)"></div>`).join('')}</div>
+      </div>`; }).join('')}
+    <div class="hint">Amarillo = la IA no lo leyó con seguridad. El nombre de la planilla queda asociado al trabajador para las próximas veces.</div>
+    <div style="display:flex;gap:6px;margin-top:6px"><button type="button" class="btn btn-secondary" style="flex:1;justify-content:center" onclick="HXP=null;document.getElementById('hx-pl-rev').innerHTML='';document.getElementById('hx-pl-estado').innerHTML=''">Descartar</button><button type="button" class="btn btn-verde" style="flex:2" onclick="hxGuardarPlanilla()">✓ Guardar planilla de la semana</button></div></div>`;
+}
+window.hxCambiarSemanaPl = function(v) {
+  if (!HXP || !v) return; const L = lunesDe(v), dif = Math.round((new Date(L + 'T12:00:00') - new Date(HXP.lunes + 'T12:00:00')) / 86400000);
+  HXP.filas.forEach(f => { const h = {}, dd = {}; Object.entries(f.horas).forEach(([fe, x]) => { h[fechaMasDias(fe, dif)] = x; }); Object.keys(f.dud).forEach(fe => { dd[fechaMasDias(fe, dif)] = true; }); f.horas = h; f.dud = dd; });
+  HXP.lunes = L; hxRenderRevPlanilla();
+};
+window.hxPlAsignar = function(i, v) {
+  if (!HXP || !HXP.filas[i]) return; HXP.filas[i].trab = v;
+  config.mapaNomina = { ...(config.mapaNomina || {}), [HXP.filas[i].nombre]: v === '__no__' ? '' : v }; sueMapaGuardar(); hxRenderRevPlanilla();
+};
+window.hxPlValor = function(i, d, v) {
+  if (!HXP || !HXP.filas[i]) return; const f = HXP.filas[i], t = String(v || '').trim().replace('½', '.5').replace(/\s+1\/2/, '.5').replace(',', '.');
+  if (t === '') delete f.horas[d]; else { const n = parseFloat(t.startsWith('.') ? '0' + t : t); if (!(n >= 0 && n <= 24)) { toast('Valor no válido', false); hxRenderRevPlanilla(); return; } f.horas[d] = n; }
+  delete f.dud[d];
+};
+window.hxGuardarPlanilla = async function() {
+  if (!HXP) return;
+  const sin = HXP.filas.filter(f => !f.trab && Object.keys(f.horas).length);
+  if (sin.length && !confirm(`${sin.length} trabajador(es) con horas no tienen a quién asignarse en la tarja (${sin.map(f => f.nombre).join(', ')}). ¿Guardar igual?`)) return;
+  const dias = Array.from({ length: 7 }, (_, i) => fechaMasDias(HXP.lunes, i));
+  try {
+    const filas = HXP.filas.map(f => ({ nombre: f.nombre, grupo: f.grupo || '', planilla: f.planilla || '', trab: f.trab && f.trab !== '__no__' ? f.trab : '', horas: f.horas }));
+    await setDoc(doc(db, 'config', 'hxp_' + HXP.lunes), { lunes: HXP.lunes, filas, obs: HXP.obs || '', leidaPor: currentUser || '', ts: Date.now() });
+    // Lo anotado pasa a «Según el trabajador» de la tarja de cada día (si hay tarja)
+    let n = 0;
+    for (const f of filas) {
+      if (!f.trab) continue;
+      for (const d of dias) {
+        const r = asistenciaRegistros.find(a => a.trabajador === f.trab && a.fecha === d && (!a.estado || a.estado === 'presente'));
+        if (!r) continue;
+        const h = f.horas[d] != null ? f.horas[d] : 0;
+        if (r.horas_trabajador === h) continue;
+        await updateDoc(doc(db, 'asistencia', r.id), { horas_trabajador: h, horas_trabajador_origen: 'planilla' }); r.horas_trabajador = h; n++;
+      }
+    }
+    toast(`✓ Planilla guardada${n ? ' · ' + n + ' días actualizados en la tarja' : ''}`, true);
+    const L = HXP.lunes; HXP = null; document.getElementById('hx-pl-rev').innerHTML = ''; document.getElementById('hx-pl-estado').innerHTML = '';
+    document.getElementById('hx-desde').value = L; document.getElementById('hx-hasta').value = fechaMasDias(L, 6); hxCalcular();
+  } catch (e) { toast('Error: ' + e.message, false); }
+};
 async function hxAplicar(x) { await updateDoc(doc(db, 'asistencia', x.id), { horas_registro: x.hx.horas, hextra_auto: x.hx.horas > 0, hextra_carga: x.ult }); const r = asistenciaRegistros.find(a => a.id === x.id); if (r) { r.horas_registro = x.hx.horas; r.hextra_auto = x.hx.horas > 0; } }
 window.hxUsar = async function(i) { const x = HX && HX.rows[i]; if (!x || !x.hx) return; try { await hxAplicar(x); toast('✓ Actualizado', true); hxCalcular(); } catch (e) { toast('Error: ' + e.message, false); } }
 window.hxUsarTodos = async function(trab) {
@@ -6369,7 +6545,7 @@ window.hxUsarTodos = async function(trab) {
 window.hxExcel = function() {
   if (!HX || !HX.rows.length || typeof XLSX === 'undefined') { toast('No se puede generar el Excel ahora', false); return; }
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(HX.rows.map(x => ({ Trabajador: x.trab, Fecha: x.fecha, 'H. extra anotadas': x.est, 'Última carga': x.ult, 'Salida considerada': x.hx ? x.hx.salida : '', 'H. extra según combustible': x.hx ? x.hx.horas : '', Diferencia: x.hx ? Math.round((x.hx.horas - x.est) * 10) / 10 : '', Feriado: esFeriado(x.fecha) ? 'Sí' : '' }))), 'Horas extra');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(HX.rows.map(x => ({ Trabajador: x.trab, Fecha: x.fecha, 'Anotaron (planilla)': x.anot != null ? x.anot : '', 'H. extra anotadas': x.est, 'Última carga': x.ult, 'Salida considerada': x.hx ? x.hx.salida : '', 'H. extra según combustible': x.hx ? x.hx.horas : '', Diferencia: x.hx ? Math.round((x.hx.horas - x.est) * 10) / 10 : '', Feriado: esFeriado(x.fecha) ? 'Sí' : '' }))), 'Horas extra');
   XLSX.writeFile(wb, 'horas-extra-' + HX.desde + '_' + HX.hasta + '.xlsx');
 }
 window.wzFeriadoSel = function() {
