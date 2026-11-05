@@ -7596,7 +7596,7 @@ let enCursoOtro = {}; // tarjetas con el formulario "otro equipo u operador" abi
 function renderLaboresEnCurso() {
   const w = document.getElementById('campo-en-curso'); if (!w) return;
   const en = (laboresCampoTodos || []).filter(l => l.enCurso && l.fecha);
-  if (!en.length) { w.innerHTML = ''; return; }
+  if (!en.length) { w.innerHTML = ''; try { renderPorTractor(); } catch (e) {} return; }
   const grupos = {};
   en.forEach(l => { const k = claveEnCurso(l); (grupos[k] = grupos[k] || []).push(l); });
   const hoy = hoyCampoStr(), editar = puedeEditarCampo();
@@ -7635,10 +7635,11 @@ function renderLaboresEnCurso() {
         <button class="btn btn-secondary" style="padding:6px 10px;font-size:13px;width:auto" onclick="terminarLaborEnCurso('${k}')">🏁 Terminar</button></div>` : ''}
     </div>`;
   }).join('');
+  try { renderPorTractor(); } catch (e) { console.warn('por tractor', e); }
   w.innerHTML = `<div class="panel" style="border:2px solid #F59E0B"><div class="panel-title">🔄 Labores en curso (${Object.keys(grupos).length})</div>
     <div class="hint" style="margin-bottom:8px">Labores de varios días que todavía no terminan. Cada día que se trabaje, toca con qué equipo y operador se continuó (los de días anteriores aparecen listos, o agrega uno nuevo; puede ser más de uno). Al final, la fecha de término: en el cuaderno quedan como un rango (ej. del 11 al 15).</div>${tarjetas}</div>`;
 }
-window.continuarLaborEnCurso = async function(k, dia, par) {
+window.continuarLaborEnCurso = async function(k, dia, par, silencioso) {
   const g = (laboresCampoTodos || []).filter(l => l.enCurso && claveEnCurso(l) === k); if (!g.length) return;
   const d = dia || hoyCampoStr();
   try {
@@ -7654,9 +7655,9 @@ window.continuarLaborEnCurso = async function(k, dia, par) {
       batch.update(doc(db, 'labores_campo', l.id), cambios);
     });
     await batch.commit();
-    toast('✓ Marcado: la labor se continuó el ' + fCorta(d) + (par && (par.equipo || par.operador) ? ' con ' + parTxt(par) : ''), true);
+    if (!silencioso) toast('✓ Marcado: la labor se continuó el ' + fCorta(d) + (par && (par.equipo || par.operador) ? ' con ' + parTxt(par) : ''), true);
     setTimeout(() => guardarClimaLabores(g.map(l => l.id)).catch(e => console.warn('clima', e)), 2000);
-  } catch (e) { toast('Error: ' + e.message, false); }
+  } catch (e) { toast('Error: ' + e.message, false); if (silencioso) throw e; }
 }
 window.continuarConPar = function(k, par) { continuarLaborEnCurso(k, null, par); }
 window.enCursoToggleOtro = function(k) { enCursoOtro[k] = !enCursoOtro[k]; renderLaboresEnCurso(); }
@@ -7999,9 +8000,10 @@ function avanceHtml(t) {
   const filas = [...Object.values(t.avance || {}), ...sr].sort((a, b) => (a.fecha || '').localeCompare(b.fecha || '') || (a.equipo || '').localeCompare(b.equipo || '') || (a.sinReg ? 1 : 0) - (b.sinReg ? 1 : 0));
   if (!filas.length) return '<div class="hint">Sin avance registrado todavía.</div>';
   const ha = filas.reduce((a, x) => a + (Number(x.ha) || 0), 0);
-  return `<table style="width:100%;font-size:12px;border-collapse:collapse;margin-top:4px"><thead><tr style="color:#6B7280"><th style="text-align:left">Día</th><th style="text-align:left">Equipo</th><th style="text-align:left">Operador</th><th style="text-align:right">${tareaEsAplicacion(t) ? 'Aplicado' : 'Trabajado'}</th></tr></thead><tbody>${filas.map(x => x.sinReg ? `<tr style="color:#7C3AED"><td>${fCortaT(x.fecha)}</td><td colspan="2">✏️ sin registro: entrecalles ${escA(x.manual)}${x.horas ? ' · ' + cNum(x.horas) + ' h' : ''} <span style="color:#6B7280">(${escA(x.operador.replace('✏️ ', ''))})</span></td><td style="text-align:right">${(Math.round(x.ha * 10) / 10).toLocaleString('es-CL')} ha</td></tr>` : `<tr><td>${fCortaT(x.fecha)}</td><td>${escA(x.equipo || '')}</td><td>${escA(x.operador || '')}</td><td style="text-align:right">${x.ha != null ? (Math.round(x.ha * 10) / 10).toLocaleString('es-CL') + ' ha' : (x.fuente === 'jdlink' ? '📡 JDLink' : '—')}${x.km ? ` <span style="color:#6B7280">(${(Math.round(x.km * 10) / 10).toLocaleString('es-CL')} km)</span>` : ''}</td></tr>`).join('')}</tbody></table>${ha ? `<div style="font-size:12px;margin-top:4px">Total: <b>${(Math.round(ha * 10) / 10).toLocaleString('es-CL')} ha</b> (GPS aproximado: km recorridos ${tareaEsAplicacion(t) ? 'aplicando' : 'trabajando'} × ancho${sr.length ? '; incluye las entrecalles marcadas sin registro' : ''})</div>` : ''}${lab && potreroEsHuerto(lab.potrero) && puedeMarcarSinRegistro() ? `<button class="btn-pin" style="font-size:11px;padding:3px 8px;margin-top:4px" onclick="verHilerasLabor('${lab.id}')">🌳 Hileras por día · ✏️ marcar sin registro</button>` : ''}`;
+  return `<table style="width:100%;min-width:0;font-size:12px;border-collapse:collapse;margin-top:4px"><thead><tr style="color:#6B7280"><th style="text-align:left">Día</th><th style="text-align:left">Equipo</th><th style="text-align:left">Operador</th><th style="text-align:right">${tareaEsAplicacion(t) ? 'Aplicado' : 'Trabajado'}</th></tr></thead><tbody>${filas.map(x => x.sinReg ? `<tr style="color:#7C3AED"><td>${fCortaT(x.fecha)}</td><td colspan="2">✏️ sin registro: entrecalles ${escA(x.manual)}${x.horas ? ' · ' + cNum(x.horas) + ' h' : ''} <span style="color:#6B7280">(${escA(x.operador.replace('✏️ ', ''))})</span></td><td style="text-align:right">${(Math.round(x.ha * 10) / 10).toLocaleString('es-CL')} ha</td></tr>` : `<tr><td>${fCortaT(x.fecha)}</td><td>${escA(x.equipo || '')}</td><td>${escA(x.operador || '')}</td><td style="text-align:right">${x.ha != null ? (Math.round(x.ha * 10) / 10).toLocaleString('es-CL') + ' ha' : (x.fuente === 'jdlink' ? '📡 JDLink' : '—')}${x.km ? ` <span style="color:#6B7280">(${(Math.round(x.km * 10) / 10).toLocaleString('es-CL')} km)</span>` : ''}</td></tr>`).join('')}</tbody></table>${ha ? `<div style="font-size:12px;margin-top:4px">Total: <b>${(Math.round(ha * 10) / 10).toLocaleString('es-CL')} ha</b> (GPS aproximado: km recorridos ${tareaEsAplicacion(t) ? 'aplicando' : 'trabajando'} × ancho${sr.length ? '; incluye las entrecalles marcadas sin registro' : ''})</div>` : ''}${lab && potreroEsHuerto(lab.potrero) && puedeMarcarSinRegistro() ? `<button class="btn-pin" style="font-size:11px;padding:3px 8px;margin-top:4px" onclick="verHilerasLabor('${lab.id}')">🌳 Hileras por día · ✏️ marcar sin registro</button>` : ''}`;
 }
 window.renderTareas = function() {
+  try { renderPorTractor(); } catch (e) { console.warn('por tractor', e); }
   const w = document.getElementById('campo-tareas'); if (!w) return;
   const act = tareasProg.filter(t => t.estado === 'pendiente' || t.estado === 'en_curso').sort((a, b) => (a.estado === 'en_curso' ? 0 : 1) - (b.estado === 'en_curso' ? 0 : 1) || (a.fechaProgramada || '').localeCompare(b.fechaProgramada || ''));
   const term = tareasProg.filter(t => t.estado === 'terminada').slice(0, 15);
@@ -8028,6 +8030,83 @@ window.renderTareas = function() {
   </div>`;
 };
 window.togTareasTerminadas = () => { tareasVerTerminadas = !tareasVerTerminadas; renderTareas(); };
+// ── 🚜 Por tractor: eliges el equipo y marcas sus tareas pendientes y labores en curso para sumarlas al cuaderno ese día ──
+const CPT = { eq: '', sel: new Set(), fecha: '', op: {}, abierto: false, todos: false };
+const eqsDeLabor = l => new Set([l.equipo, ...Object.values(l.diasDetalle || {}).flat().map(x => x && x.equipo)].filter(Boolean));
+function itemsDeTractor(eq, fecha) {
+  const tareas = (tareasProg || []).filter(t => (t.estado === 'pendiente' || t.estado === 'en_curso') && (t.equipos || []).includes(eq))
+    .map(t => ({ tipo: 't', id: 't:' + t.id, t, hecho: !!(t.avance && t.avance[fecha + '|' + eq.replace(/\s+/g, '_')]) }));
+  const deTareas = new Set(tareas.map(x => x.t.laborId).filter(Boolean));
+  const grupos = {};
+  (laboresCampoTodos || []).filter(l => l.enCurso && l.fecha && !deTareas.has(l.id)).forEach(l => { const k = claveEnCurso(l); (grupos[k] = grupos[k] || []).push(l); });
+  const labores = Object.entries(grupos).map(([k, g]) => {
+    const eqs = new Set(g.flatMap(l => [...eqsDeLabor(l)]));
+    const hecho = g.some(l => (l.fecha === fecha && l.equipo === eq) || ((l.diasDetalle || {})[fecha] || []).some(x => x && x.equipo === eq));
+    return { tipo: 'l', id: 'l:' + k, k, g, propio: eqs.has(eq), sinEquipo: !eqs.size, eqs: [...eqs], hecho };
+  }).filter(x => x.propio || x.sinEquipo || CPT.todos).sort((a, b) => (b.propio ? 1 : 0) - (a.propio ? 1 : 0) || a.g[0].fecha.localeCompare(b.g[0].fecha));
+  return { tareas, labores };
+}
+function renderPorTractor() {
+  const w = document.getElementById('campo-por-tractor'); if (!w) return;
+  if (!puedeEditarCampo()) { w.innerHTML = ''; return; }
+  const hoy = hoyCampoStr(); if (!CPT.fecha) CPT.fecha = hoy;
+  const eqsCfg = (config.equipos || []).filter(e => e && !/otro/i.test(e));
+  const cuenta = eq => { const it = itemsDeTractor(eq, CPT.fecha); return it.tareas.length + it.labores.filter(x => x.propio).length; };
+  const conCosas = eqsCfg.map(e => [e, cuenta(e)]).filter(([, n]) => n > 0).sort((a, b) => a[0].localeCompare(b[0], 'es'));
+  const opsDe = eq => operadoresDeEquipo(eq).filter(o => (config.operadores || []).includes(o) || true);
+  const chip = ([e, n]) => { const op = opsDe(e)[0]; return `<button type="button" class="cultivo-chip ${CPT.eq === e ? 'sel' : ''}" onclick="cptEquipo('${escA(e).replace(/'/g, "\\'")}')">🚜 ${escA(e)}${op ? ' · ' + escA(op) : ''} <b>(${n})</b></button>`; };
+  let cuerpo = '';
+  if (CPT.eq) {
+    const eq = CPT.eq, { tareas, labores } = itemsDeTractor(eq, CPT.fecha);
+    const pre = opsDe(eq), ops = (config.operadores || []).filter(o => o && !/especificar/i.test(o));
+    const op = CPT.op[eq] != null ? CPT.op[eq] : (pre[0] || '');
+    const fila = (x, html) => `<label style="display:flex;gap:8px;align-items:flex-start;text-transform:none;letter-spacing:normal;font-weight:400;white-space:normal;color:var(--negro);min-width:0;padding:8px;border:1px solid ${x.hecho ? '#BBF7D0' : '#E5E7EB'};background:${x.hecho ? '#F0FDF4' : '#fff'};border-radius:8px;margin-bottom:6px;cursor:${x.hecho ? 'default' : 'pointer'}">
+        <input type="checkbox" style="margin-top:3px;width:18px;height:18px;flex:none" ${x.hecho ? 'disabled checked' : CPT.sel.has(x.id) ? 'checked' : ''} onchange="cptSel('${escA(x.id).replace(/'/g, "\\'")}', this.checked)">
+        <div style="flex:1;min-width:0;font-size:13px;overflow-wrap:anywhere">${html}${x.hecho ? `<div style="font-size:11px;color:#166534;font-weight:700">✓ ya está en el cuaderno el ${fCorta(CPT.fecha)} con este equipo</div>` : ''}</div></label>`;
+    const ft = tareas.map(x => { const t = x.t, enc = t.estado === 'en_curso';
+      return fila(x, `<b>📅 ${escA(t.texto || '')}</b> · ${escA(t.potrero || '')}${t.lote ? ' (' + escA(t.lote) + ')' : ''}<div style="font-size:11px;color:${enc ? '#1D4ED8' : '#7C3AED'}">${enc ? '🔄 tarea en curso desde ' + fCortaT(t.datosInicio || '') + ' · se suma el día' : '⏳ tarea pendiente · se empieza y queda en curso en el cuaderno'}${(t.equipos || []).length > 1 ? ' · también ' + escA(t.equipos.filter(e => e !== eq).join(', ')) : ''}</div>`); }).join('');
+    const fl = labores.map(x => { const g = x.g, tipos = [...new Set(g.map(nombreTipoDocCampo))].join(' + '), pots = [...new Set(g.map(l => l.lote ? `${l.potrero} · ${l.lote}` : l.potrero))].sort(cmpEs), ini = g.map(l => l.fecha).sort()[0];
+      return fila(x, `<b>🔄 ${escA(tipos)}</b> · ${escA(pots.join(', '))}<div style="font-size:11px;color:#92400E">labor en curso desde ${fCorta(ini)} · día ${Math.max(1, diasEntre(ini, CPT.fecha) + 1)}${x.propio ? '' : x.sinEquipo ? ' · <span style="color:#6B7280">sin equipo asignado todavía</span>' : ' · <span style="color:#6B7280">de ' + escA(x.eqs.join(', ')) + '</span>'}</div>`); }).join('');
+    const nSel = [...CPT.sel].filter(id => [...tareas, ...labores].some(x => x.id === id && !x.hecho)).length;
+    cuerpo = `<div style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0">
+        <div class="field" style="flex:1;min-width:140px;margin:0"><label>📅 Día</label><input type="date" value="${CPT.fecha}" max="${hoy}" onchange="cptFecha(this.value)"></div>
+        <div class="field" style="flex:1;min-width:160px;margin:0"><label>👷 Operador${pre.length ? ' <span style="font-weight:400;color:#6B7280">(★ preestablecido del equipo)</span>' : ''}</label><div class="select-wrapper"><select onchange="cptOperador(this.value)"><option value="">—</option>${[...pre, ...ops.filter(o => !pre.includes(o))].map(o => `<option value="${escA(o)}" ${o === op ? 'selected' : ''}>${pre.includes(o) ? '★ ' : ''}${escA(o)}</option>`).join('')}</select></div></div>
+      </div>
+      ${ft ? `<div class="cultivos-label">Tareas programadas para ${escA(eq)}</div>${ft}` : ''}
+      ${fl ? `<div class="cultivos-label" style="margin-top:6px">Labores en curso</div>${fl}` : ''}
+      ${!ft && !fl ? `<div class="hint">${escA(eq)} no tiene tareas pendientes ni labores en curso.</div>` : ''}
+      <label style="display:flex;gap:6px;align-items:center;font-size:12px;color:#6B7280;margin:4px 0 8px;text-transform:none;letter-spacing:normal;font-weight:400;white-space:normal"><input type="checkbox" style="flex:none" ${CPT.todos ? 'checked' : ''} onchange="cptTodos(this.checked)"> Mostrar también las labores en curso de otros equipos</label>
+      <button type="button" class="btn btn-verde btn-full" style="white-space:normal;${nSel ? '' : 'opacity:.45'}" ${nSel ? '' : 'disabled'} onclick="cptRegistrar()">✓ Sumar al cuaderno ${nSel ? '(' + nSel + ')' : ''} · ${fCorta(CPT.fecha)} · ${escA(eq)}${op ? ' · ' + escA(op) : ''}</button>`;
+  }
+  w.innerHTML = `<div class="panel" style="border:2px solid #60A5FA"><div class="panel-title" style="cursor:pointer" onclick="cptToggle()">🚜 Por tractor ${CPT.abierto ? '▲' : '▼'}</div>
+    ${CPT.abierto ? `<div class="hint" style="margin-bottom:8px">Elige el tractor y marca lo que hizo ese día: las tareas pendientes se empiezan y las labores en curso suman el día, con el equipo y su operador.</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap">${conCosas.map(chip).join('')}
+      <div class="select-wrapper" style="min-width:150px"><select onchange="cptEquipo(this.value)"><option value="">${conCosas.length ? 'Otro equipo…' : 'Elegir equipo…'}</option>${eqsCfg.filter(e => !conCosas.some(([x]) => x === e)).map(e => `<option value="${escA(e)}" ${CPT.eq === e ? 'selected' : ''}>${escA(e)}</option>`).join('')}</select></div></div>
+    ${cuerpo}` : `<div class="hint" style="margin:0">${conCosas.length ? conCosas.map(([e, n]) => escA(e) + ' (' + n + ')').join(' · ') : 'Ningún equipo tiene tareas pendientes ni labores en curso.'}</div>`}
+  </div>`;
+}
+window.cptToggle = () => { CPT.abierto = !CPT.abierto; renderPorTractor(); };
+window.cptEquipo = eq => { if (!eq) return; CPT.eq = CPT.eq === eq ? '' : eq; CPT.sel = new Set(); CPT.abierto = true; renderPorTractor(); };
+window.cptSel = (id, on) => { if (on) CPT.sel.add(id); else CPT.sel.delete(id); renderPorTractor(); };
+window.cptFecha = v => { CPT.fecha = v && v <= hoyCampoStr() ? v : hoyCampoStr(); CPT.sel = new Set(); renderPorTractor(); };
+window.cptOperador = v => { if (CPT.eq) CPT.op[CPT.eq] = v; renderPorTractor(); };
+window.cptTodos = v => { CPT.todos = !!v; renderPorTractor(); };
+window.cptRegistrar = async function() {
+  const eq = CPT.eq, F = CPT.fecha || hoyCampoStr(); if (!eq) return;
+  const pre = operadoresDeEquipo(eq), op = CPT.op[eq] != null ? CPT.op[eq] : (pre[0] || '');
+  const { tareas, labores } = itemsDeTractor(eq, F);
+  const ts = tareas.filter(x => CPT.sel.has(x.id) && !x.hecho), ls2 = labores.filter(x => CPT.sel.has(x.id) && !x.hecho);
+  if (!ts.length && !ls2.length) { toast('Marca al menos una tarea o labor', false); return; }
+  if (!op && !confirm(`No elegiste operador. ¿Sumar igual al cuaderno con ${eq} sin operador?`)) return;
+  let ok = 0;
+  try {
+    for (const x of ts) { await iniciarTareaDesdeApp(x.t, eq, op, F, 'cuaderno'); ok++; }
+    for (const x of ls2) { await continuarLaborEnCurso(x.k, F, { equipo: eq, operador: op }, true); ok++; }
+    CPT.sel = new Set();
+    toast(`✓ ${ok} ${ok === 1 ? 'quedó' : 'quedaron'} en el cuaderno el ${fCorta(F)} con ${eq}${op ? ' · ' + op : ''}`, true);
+  } catch (e) { toast('Error: ' + e.message + (ok ? ` (alcanzaron a quedar ${ok})` : ''), false); }
+  renderPorTractor();
+};
 window.togEquipoAplicacion = async function(e) {
   const l = equiposAplicacion(); config.equiposAplicacion = l.includes(e) ? l.filter(x => x !== e) : [...l, e];
   renderTareas();
@@ -8051,8 +8130,8 @@ window.terminarTarea = async function(id) {
   try { await cerrarTarea(t, hoyCampoStr()); toast('🏁 Tarea terminada', true); } catch (e) { toast('Error: ' + e.message, false); }
 };
 // Empezar o continuar una tarea sin modo tractor (equipos con JDLink: al entrar a la app)
-async function iniciarTareaDesdeApp(t, equipo, operador) {
-  const hoy = hoyCampoStr(), ahora = Date.now();
+async function iniciarTareaDesdeApp(t, equipo, operador, fecha, fuente) {
+  const hoy = fecha || hoyCampoStr(), ahora = Date.now();
   const fresca = await getDoc(doc(db, 'labores_programadas', t.id)); const T = fresca.exists() ? { id: t.id, ...fresca.data() } : t;
   if (T.estado === 'terminada' || T.estado === 'cancelada') { toast('Esa tarea ya no está pendiente', false); return; }
   let laborId = T.laborId;
@@ -8060,9 +8139,14 @@ async function iniciarTareaDesdeApp(t, equipo, operador) {
     const ref = doc(collection(db, 'labores_campo'));
     await setDoc(ref, { ...(T.datos || {}), fecha: hoy, anio: hoy.slice(0, 4), enCurso: true, diasTrabajo: [hoy], equipo, operadorLabor: operador, programadaId: T.id, origen: 'app', ts: ahora });
     laborId = ref.id;
-  } else await setDoc(doc(db, 'labores_campo', laborId), { diasTrabajo: arrayUnion(hoy) }, { merge: true });
+  } else {
+    const l = (laboresCampoTodos || []).find(x => x.id === laborId), det = { ...((l && l.diasDetalle) || {}) };
+    if (l && !det[l.fecha] && (l.equipo || l.operadorLabor)) det[l.fecha] = [{ equipo: l.equipo || '', operador: l.operadorLabor || '' }];
+    det[hoy] = [...(det[hoy] || []).filter(x => !(x.equipo === equipo && x.operador === (operador || ''))), { equipo: equipo || '', operador: operador || '' }];
+    await setDoc(doc(db, 'labores_campo', laborId), { diasTrabajo: arrayUnion(hoy), diasDetalle: det }, { merge: true });
+  }
   await setDoc(doc(db, 'labores_programadas', T.id), { estado: 'en_curso', laborId, iniciada: T.iniciada || ahora, iniciadaPor: T.iniciadaPor || operador, datosInicio: T.datosInicio || hoy,
-    avance: { [hoy + '|' + equipo.replace(/\s+/g, '_')]: { fecha: hoy, equipo, operador, fuente: fuenteHorometroDe(equipo) === 'jdlink' ? 'jdlink' : 'app', ts: ahora } } }, { merge: true });
+    avance: { [hoy + '|' + equipo.replace(/\s+/g, '_')]: { fecha: hoy, equipo, operador, fuente: fuente || (fuenteHorometroDe(equipo) === 'jdlink' ? 'jdlink' : 'app'), ts: ahora } } }, { merge: true });
 }
 // Al entrar a la app: si un equipo del operador con JDLink tiene una tarea asignada, pregunta si lo de hoy corresponde a esa tarea (una vez al día)
 async function preguntarTareaAlEntrar(nombre) {
@@ -16568,6 +16652,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       <button type="button" class="btn btn-secondary btn-full" style="margin-bottom:10px" onclick="abrirPrueba('cuaderno2')">🎤 Probar el cuaderno v2 por dictado (prueba, no toca este cuaderno)</button>
       <div id="campo-tareas"></div>
       <div id="campo-en-curso"></div>
+      <div id="campo-por-tractor"></div>
       <div id="campo-revision-wrap"></div>
       <div class="panel">
         <div class="panel-title">🌱 Potreros trabajados</div>
