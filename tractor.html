@@ -1586,6 +1586,7 @@ async function actualizarDatosCampo(manual) {
     const d = sd.exists() ? sd.data() : {};
     datosCampo = {
       equipos: d.equipos || [],
+      restriccionesEquipo: d.restriccionesEquipo || {},
       equipoOperador: d.equipoOperador || {},
       permisosPruebas: d.permisosPruebas || {},
       potreros: (d.potreros || []).filter(p => Array.isArray(p.poligono) && p.poligono.length >= 3).map(p => ({ nombre: p.nombre, poligono: p.poligono, cultivo: p.tipo === 'frutal' ? (p.cultivoPermanente || null) : null })),
@@ -1775,7 +1776,9 @@ function llenarEquipos() {
   chips.innerHTML = mios.map(e => `<button type="button" class="${e === eqElegido ? 'sel' : ''}" data-eq="${e}">🚜 ${e}</button>`).join('');
   chips.querySelectorAll('button').forEach(b => b.onclick = () => { eqElegido = b.dataset.eq; document.getElementById('aj-equipo').value = ''; llenarEquipos(); });
   document.getElementById('aj-lbl-mis').style.display = mios.length ? 'block' : 'none';
-  const otros = todos.filter(e => !mios.includes(e));
+  // Equipos particulares: solo los ven los administradores, los operadores elegidos y quien lo tiene asignado
+  const visible = e => { const r = ((datosCampo && datosCampo.restriccionesEquipo) || {})[e]; return !r || !r.privado || (sesion && sesion.admin) || (r.soloPara || []).includes(op) || mios.includes(e); };
+  const otros = todos.filter(e => !mios.includes(e) && visible(e));
   const sel = document.getElementById('aj-equipo');
   sel.innerHTML = '<option value="">— Elegir equipo —</option>' + otros.map(e => `<option value="${e}" ${e === eqElegido ? 'selected' : ''}>${e}</option>`).join('');
   sel.onchange = () => { eqElegido = sel.value; chips.querySelectorAll('button').forEach(b => b.classList.remove('sel')); };
