@@ -56,6 +56,45 @@ function equiposDe(operador) {
   if (!v) return [];
   return Array.isArray(v) ? v : [v];
 }
+// ── EQUIPOS PARTICULARES Y LÍMITES (Configurar → Equipos → 🔒) ──
+// config.restriccionesEquipo[equipo] = { privado, soloPara: [operadores], cargasMes, litrosMes, litrosCarga, diasSemana: [1..7], alExceder: 'bloquear'|'avisar' }
+const restriccionDe = eq => ((typeof config !== 'undefined' && config && config.restriccionesEquipo) || {})[eq] || null;
+// Un equipo particular solo lo ven los administradores (JC y Camila), los operadores elegidos y quien lo tenga asignado
+function equipoVisible(eq, user, admin) {
+  const r = restriccionDe(eq); if (!r || !r.privado) return true;
+  const u = user === undefined ? currentUser : user, a = admin === undefined ? isAdmin : admin;
+  if (a) return true;
+  return !!u && ((r.soloPara || []).includes(u) || equiposDe(u).includes(eq));
+}
+const equiposVisibles = lista => (lista || []).filter(e => equipoVisible(e));
+const DIAS_SEM = ['', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'];
+// Uso del mes del equipo (cargas y litros), para los límites
+async function usoMesEquipo(eq, fecha) {
+  const mes = (fecha || getNow().fecha).slice(0, 7);
+  const snap = await getDocs(query(collection(db, 'registros'), where('equipo', '==', eq), orderBy('ts', 'desc'), limit(300)));
+  const rs = snap.docs.map(d => d.data()).filter(r => (r.fecha || '').startsWith(mes));
+  return { cargas: rs.length, litros: rs.reduce((a, r) => a + (Number(r.litros) || 0), 0) };
+}
+function evaluarRestriccion(eq, uso, fecha) {
+  const r = restriccionDe(eq); if (!r) return null;
+  const n = v => Number(v) > 0 ? Number(v) : null;
+  const cM = n(r.cargasMes), lM = n(r.litrosMes), lC = n(r.litrosCarga), dias = Array.isArray(r.diasSemana) ? r.diasSemana : [];
+  if (!cM && !lM && !lC && !dias.length) return null;
+  const dow = ((new Date((fecha || getNow().fecha) + 'T12:00:00').getDay() + 6) % 7) + 1;
+  const problemas = [];
+  if (cM && uso.cargas >= cM) problemas.push(`ya tiene ${uso.cargas} de ${cM} cargas este mes`);
+  if (lM && uso.litros >= lM) problemas.push(`ya cargó ${Math.round(uso.litros)} de ${lM} L este mes`);
+  if (dias.length && !dias.includes(dow)) problemas.push(`no tiene carga autorizada los ${DIAS_SEM[dow]}`);
+  const quedanMes = lM ? Math.max(0, lM - uso.litros) : null;
+  const topes = [lC, quedanMes].filter(x => x != null);
+  const topeL = topes.length ? Math.round(Math.min(...topes) * 10) / 10 : null;
+  const partes = [];
+  if (cM) partes.push(`${cM} cargas/mes (lleva ${uso.cargas})`);
+  if (lM) partes.push(`${lM} L/mes (lleva ${Math.round(uso.litros)} L, quedan ${Math.round(quedanMes)} L)`);
+  if (lC) partes.push(`máx. ${lC} L por carga`);
+  if (dias.length) partes.push('solo ' + dias.slice().sort().map(d => DIAS_SEM[d].slice(0, 3)).join(', '));
+  return { problemas, topeL, texto: partes.join(' · '), bloquear: r.alExceder !== 'avisar' };
+}
 // PRESET POR OPERADOR (cultivo + trabajo + apero) — editable desde Configurar.
 // Si un operador tiene un preset guardado, la app le precarga esos 3 campos y
 // oculta por completo los selectores correspondientes — no ve esas opciones,
@@ -2267,6 +2306,7 @@ function iniciarLecturaESP32() {
     const litros = Math.max(0, litrosAcumulado - esp32BaselineLitros);
     const litrosInput = document.getElementById('litros');
     if (litrosInput) { litrosInput.value = litros.toFixed(1); litrosFuenteActual = 'esp32'; calcularEficiencia(); }
+    try { vigilarTopeCarga(litros, true); } catch (e) {}
     if (esp32Info) esp32Info.innerHTML = `<span style="color:#2D7D46;font-size:12px">📡 ESP32: <strong>${litros.toFixed(1)} L</strong> · ${data.pulsos != null ? data.pulsos + ' pulsos · ' : ''}en vivo</span>`;
   });
 }
@@ -2285,6 +2325,7 @@ function iniciarEstimacionESP32() {
   intervaloEstimacion = setInterval(() => {
     const minutos = (Date.now() - tiempoInicioEstimacion) / 60000;
     const litrosEst = minutos * LITROS_POR_MINUTO_EST;
+    try { vigilarTopeCarga(litrosEst, false); } catch (e) {}
     const info = document.getElementById('esp32-info');
     if (info) info.innerHTML = `<span style="color:#F5A623;font-size:12px">⏱ Tiempo: <strong>${minutos.toFixed(1)} min</strong> · Estimado: <strong>${litrosEst.toFixed(0)} L</strong> <span style="color:#9CA3AF;font-size:11px">(ref. 34 L/min)</span></span>`;
   }, 5000);
@@ -2493,10 +2534,12 @@ function construirRequisitosDesdeDefault() {
 function requisitosDe(eq) {
   const r = (requisitosEquipo && requisitosEquipo[eq]) || {};
   const esKm = tipoEquipo(eq) === 'km';
+  const exp = r.explicito === true; // definido en la ventana ⚙️ del equipo: vale también para equipos con km
   return {
     cultivo: r.cultivo !== false,
-    trabajo: r.trabajo !== false && !esKm,
-    apero: r.apero !== false && !esKm
+    trabajo: exp ? r.trabajo === true : (r.trabajo !== false && !esKm),
+    apero: exp ? r.apero === true && r.trabajo === true : (r.apero !== false && !esKm),
+    medidor: r.medidor !== false
   };
 }
 
@@ -3619,6 +3662,45 @@ window.responderSolicitud = async function(id, estado) {
   } catch(e) { toast('Error: ' + e.message, false); }
 }
 
+async function mostrarRestriccionEquipo(eq) {
+  const w = document.getElementById('equipo-restr-info'); if (!w) return;
+  const r = restriccionDe(eq);
+  if (!r || !evaluarRestriccion(eq, { cargas: 0, litros: 0 })) { w.style.display = 'none'; w.innerHTML = ''; return; }
+  w.style.display = 'block'; w.style.background = '#F3F4F6'; w.innerHTML = '🔒 Revisando límites del equipo…';
+  try {
+    const ev = evaluarRestriccion(eq, await usoMesEquipo(eq));
+    if ((document.getElementById('equipo') || {}).value !== eq) return;
+    w.style.background = ev.problemas.length ? '#FEE2E2' : '#EFF6FF'; w.style.color = ev.problemas.length ? '#991B1B' : '#1E3A8A';
+    w.innerHTML = `🔒 <b>Límites de ${escA(eq)}:</b> ${escA(ev.texto)}${ev.problemas.length ? `<div style="font-weight:700;margin-top:3px">⛔ ${escA(ev.problemas.join(' · '))}${isAdmin ? ' (como administrador puedes cargar igual)' : ev.bloquear ? ': no se puede cargar sin autorización del administrador' : ''}</div>` : ''}${ev.topeL != null && !ev.problemas.length ? `<div style="margin-top:2px">Esta carga: hasta <b>${ev.topeL} L</b>${modoESP32 ? ' (la bomba se corta sola al llegar)' : ''}.</div>` : ''}`;
+  } catch (e) { w.innerHTML = '🔒 No se pudieron revisar los límites: ' + escA(e.message); }
+}
+// Carga en curso: tope de litros y límites superados (se guardan en el registro)
+let restrCarga = null, topeAvisado = false;
+async function chequearRestriccionAntesDeCargar(eq) {
+  restrCarga = null; topeAvisado = false;
+  const r = restriccionDe(eq); if (!r || !evaluarRestriccion(eq, { cargas: 0, litros: 0 })) return true;
+  let ev;
+  try { ev = evaluarRestriccion(eq, await usoMesEquipo(eq)); } catch (e) { if (!isAdmin && r.alExceder !== 'avisar') { toast('⛔ No se pudieron revisar los límites del equipo (sin conexión). Intenta de nuevo.', false); return false; } return true; }
+  if (ev.problemas.length) {
+    const txt = ev.problemas.join(' · ');
+    if (isAdmin) { if (!confirm(`⚠️ ${eq}: ${txt}.\n\n¿Cargar igual como administrador?`)) return false; }
+    else if (!ev.bloquear) { if (!confirm(`⚠️ ${eq}: ${txt}.\n\nQuedará registrado y se avisará al administrador. ¿Cargar igual?`)) return false; }
+    else { toast(`⛔ ${eq}: ${txt}. Pide autorización al administrador.`, false); return false; }
+    restrCarga = { eq, topeL: null, excedida: ev.problemas };
+    return true;
+  }
+  restrCarga = { eq, topeL: ev.topeL, excedida: [] };
+  return true;
+}
+// Durante la carga: con caudalímetro se corta la bomba al llegar al tope; con estimación por tiempo, solo avisa
+function vigilarTopeCarga(litros, real) {
+  if (!restrCarga || restrCarga.topeL == null || topeAvisado) return;
+  if (litros >= restrCarga.topeL - (real ? 0.3 : 0)) {
+    topeAvisado = true;
+    if (real) { apagarBomba().catch(() => {}); restrCarga.cortada = true; toast(`⛔ Se cortó la bomba: ${restrCarga.eq} llegó a su tope de ${restrCarga.topeL} L. Registra la carga.`, false); }
+    else toast(`⚠️ Por el tiempo ya serían unos ${Math.round(litros)} L: el tope de ${restrCarga.eq} es ${restrCarga.topeL} L. Corta la carga.`, false);
+  }
+}
 window.confirmarPaso1YEncender = async function() {
   const eq = document.getElementById('equipo').value;
   const horarioOk = dentroDeHorarioPermitido() || excepcionHorarioActiva || isAdmin || operadorExcepcionActiva(currentUser);
@@ -3628,14 +3710,15 @@ window.confirmarPaso1YEncender = async function() {
   const req = requisitosDe(eq);
   const mvRaw = document.getElementById('medidor-valor').value;
   const mv = mvRaw === '' ? null : parseFloat(mvRaw);
-  if (!eq || (req.cultivo && centrosSeleccionados.length === 0) || (!esOtroEquipo && (mv === null || isNaN(mv) || mv < 0))) {
-    toast(esOtroEquipo ? 'Completa equipo y cultivo antes de encender' : (req.cultivo ? 'Completa equipo, cultivo y horómetro antes de encender' : 'Completa equipo y horómetro antes de encender'), false); return;
+  if (!eq || (req.cultivo && centrosSeleccionados.length === 0) || (!esOtroEquipo && req.medidor && (mv === null || isNaN(mv) || mv < 0))) {
+    toast(esOtroEquipo || !req.medidor ? 'Completa equipo y cultivo antes de encender' : (req.cultivo ? 'Completa equipo, cultivo y horómetro antes de encender' : 'Completa equipo y horómetro antes de encender'), false); return;
   }
-  if (!esOtroEquipo && ultimoRegistroEquipo?.medidor_valor != null && mv < ultimoRegistroEquipo.medidor_valor) {
+  if (!esOtroEquipo && mv != null && ultimoRegistroEquipo?.medidor_valor != null && mv < ultimoRegistroEquipo.medidor_valor) {
     toast(`⛔ El horómetro/odómetro (${mv}) no puede ser menor al último registrado (${ultimoRegistroEquipo.medidor_valor.toFixed(1)})`, false);
     return;
   }
 
+  if (!(await chequearRestriccionAntesDeCargar(eq))) return;
   const btn = document.getElementById('btn-bomba-on');
   btn.disabled = true; btn.textContent = 'Encendiendo...';
   try {
@@ -3764,7 +3847,7 @@ function initRegistro() {
     selOp.value = currentUser;
     if (selOp.value !== currentUser) selOp.value = (currentUser === ADMIN_NOMBRE) ? ADMIN_NOMBRE : '';
   } else { opField.style.display = 'none'; }
-  populateSelect('equipo', config.equipos, 'Seleccionar equipo');
+  populateSelect('equipo', equiposVisibles(config.equipos), 'Seleccionar equipo');
   const equiposAsignados = equiposDe(currentUser);
   if (equiposAsignados.length > 0 && !isAdmin) {
     if (equiposAsignados.length === 1) {
@@ -3906,9 +3989,9 @@ function renderTrabajoSelector() {
   }
 
   const eq = document.getElementById('equipo').value;
-  if (tipoEquipo(eq) === 'km' || eq === 'Otro (especificar)' || centrosSeleccionados.includes('Mantención') || centrosSeleccionados.includes('Otros (especificar)') || !requisitosDe(eq).trabajo) { container.innerHTML = ''; return; }
+  if (eq === 'Otro (especificar)' || centrosSeleccionados.includes('Mantención') || centrosSeleccionados.includes('Otros (especificar)') || !requisitosDe(eq).trabajo) { container.innerHTML = ''; return; }
 
-  if (centrosSeleccionados.length === 0) { container.innerHTML = ''; return; }
+  if (centrosSeleccionados.length === 0 && requisitosDe(eq).cultivo) { container.innerHTML = ''; return; }
 
   const lista = trabajosConfig;
 
@@ -4092,7 +4175,7 @@ window.validarPaso1 = function() {
 
   if (req.cultivo && centrosSeleccionados.length === 0) faltantes.push('Selecciona al menos un cultivo');
 
-  if (!esOtroEquipo) {
+  if (!esOtroEquipo && req.medidor) {
     if (mv === '' || isNaN(parseFloat(mv)) || parseFloat(mv) < 0) {
       faltantes.push(medidor === 'km' ? 'Ingresa el odómetro' : 'Ingresa el horómetro');
     }
@@ -4109,7 +4192,7 @@ window.validarPaso1 = function() {
   const esKm = tipoEquipo(eq) === 'km';
   const esMantencion = centrosSeleccionados.includes('Mantención');
 
-  if (!esKm && !esOtroEquipo && !esMantencion && !esCentroOtro && req.trabajo) {
+  if (!esOtroEquipo && !esMantencion && !esCentroOtro && req.trabajo) {
     if (!trabajosSel.length) {
       faltantes.push('Selecciona el tipo de trabajo');
     } else if (trabajosSel.includes(OTRO) && !trabajoObsTexto.trim()) {
@@ -4133,7 +4216,7 @@ window.validarPaso1 = function() {
 
   const btn = document.getElementById('btn-bomba-on');
   if (!btn) return;
-  if (ok && !esOtroEquipo && ultimoRegistroEquipo?.medidor_valor != null && mv !== '' && parseFloat(mv) < ultimoRegistroEquipo.medidor_valor) {
+  if (ok && !esOtroEquipo && req.medidor && ultimoRegistroEquipo?.medidor_valor != null && mv !== '' && parseFloat(mv) < ultimoRegistroEquipo.medidor_valor) {
     ok = false;
     faltantes.push(`El ${medidor==='km'?'odómetro':'horómetro'} no puede ser menor al último registrado (${ultimoRegistroEquipo.medidor_valor.toFixed(1)})`);
   }
@@ -4226,6 +4309,10 @@ window.onEquipoChange = async function() {
   }
   renderCentrosSelector();
 
+  mostrarRestriccionEquipo(eq);
+  { const sinMed = eq !== 'Otro (especificar)' && !requisitosDe(eq).medidor, mf = document.getElementById('medidor-field'), nr = document.getElementById('medidor-no-req');
+    if (mf) mf.style.display = sinMed ? 'none' : ''; if (nr) nr.style.display = sinMed ? 'block' : 'none';
+    if (sinMed) { const mi = document.getElementById('medidor-valor'); if (mi) mi.value = ''; } }
   await cargarUltimoRegistro(eq);
   cargarHorometroShelly(eq);
 
@@ -4238,7 +4325,7 @@ window.onEquipoChange = async function() {
     }
   }
 
-  if (trabajoSeleccionado) renderTrabajoSelector();
+  if (trabajoSeleccionado || !requisitosDe(eq).cultivo) renderTrabajoSelector();
   actualizarBotonesJDLink(eq);
   if ((fuenteHorometroDe(eq) === 'jdlink') && jdAccessToken) obtenerHorasJDLink();
   actualizarVisibilidadHorario();
@@ -4718,10 +4805,10 @@ async function registrarInterno() {
     operadorRegistro = otroInput && otroInput.value.trim() ? otroInput.value.trim() : operadorRegistro;
   }
 
-  if (!eq || (req.cultivo && centrosSeleccionados.length===0) || isNaN(lt)||lt<=0 || (!esOtroEquipo && (mv === null || isNaN(mv) || mv < 0)) || isNaN(tot)||tot<=0) {
+  if (!eq || (req.cultivo && centrosSeleccionados.length===0) || isNaN(lt)||lt<=0 || (!esOtroEquipo && req.medidor && (mv === null || isNaN(mv) || mv < 0)) || isNaN(tot)||tot<=0) {
     toast(req.cultivo ? 'Completa todos los campos y selecciona al menos un cultivo' : 'Completa todos los campos', false); return;
   }
-  if (!esOtroEquipo && ultimoRegistroEquipo?.medidor_valor != null && mv < ultimoRegistroEquipo.medidor_valor) {
+  if (!esOtroEquipo && mv != null && ultimoRegistroEquipo?.medidor_valor != null && mv < ultimoRegistroEquipo.medidor_valor) {
     toast(`⛔ El horómetro/odómetro (${mv}) no puede ser menor al último registrado (${ultimoRegistroEquipo.medidor_valor.toFixed(1)})`, false);
     return;
   }
@@ -4790,8 +4877,14 @@ async function registrarInterno() {
       alerta_totalizador: alertaTotalizador, dif_totalizador: difTot,
       alerta_trabajado: alertaTrabajado,
       alerta_eficiencia: alertaEficiencia,
+      ...(restrCarga && restrCarga.eq === eq ? { restriccion: { excedida: [...restrCarga.excedida, ...(restrCarga.topeL != null && lt > restrCarga.topeL + 1 ? [`pasó el tope de ${restrCarga.topeL} L`] : [])], tope: restrCarga.topeL, cortada: !!restrCarga.cortada } } : {}),
       obs, ts: Date.now()
     });
+    if (restrCarga && restrCarga.eq === eq) {
+      const exc = [...restrCarga.excedida, ...(restrCarga.topeL != null && lt > restrCarga.topeL + 1 ? [`pasó el tope de ${restrCarga.topeL} L`] : [])];
+      if (exc.length) enviarAlertaWsp(`🔒 *LÍMITE DE EQUIPO · Los Maitenes*\n\nEquipo: *${eq}*\nOperador: *${operadorRegistro}*\nFecha: ${fecha} ${hora}\nLitros: ${lt.toFixed(1)} L\n\n${exc.join('\n')}`);
+      restrCarga = null;
+    }
     sincronizarHextraConCombustible(operadorRegistro, fecha);
     await updateDoc(doc(db,'estanque','saldo'), { litros: increment(-lt) });
     totalizadorGlobal = tot;
@@ -8116,7 +8209,7 @@ function renderCampoQuien() {
   const se = document.getElementById('campo-labor-equipo'), so = document.getElementById('campo-labor-operador');
   if (!se || !so) return;
   const ve = se.value, vo = so.value;
-  const eqs = (config.equipos || []).filter(e => e !== 'Otro (especificar)'), ops = (config.operadores || []).filter(o => !/especificar/i.test(o));
+  const eqs = (config.equipos || []).filter(e => e !== 'Otro (especificar)' && equipoVisible(e)), ops = (config.operadores || []).filter(o => !/especificar/i.test(o));
   // Sugeridos: los equipos del operador elegido y los operadores del equipo elegido van primero, con ★
   const eqSug = vo ? equiposDe(vo).filter(e => eqs.includes(e)) : [], opSug = ve ? operadoresDeEquipo(ve).filter(o => ops.includes(o)) : [];
   const ordenar = (lista, sug) => [...sug, ...lista.filter(x => !sug.includes(x))];
@@ -8275,7 +8368,7 @@ function renderPorTractor() {
   const w = document.getElementById('campo-por-tractor'); if (!w) return;
   if (!puedeEditarCampo()) { w.innerHTML = ''; return; }
   const hoy = hoyCampoStr(); if (!CPT.fecha) CPT.fecha = hoy;
-  const eqsCfg = (config.equipos || []).filter(e => e && !/otro/i.test(e));
+  const eqsCfg = (config.equipos || []).filter(e => e && !/otro/i.test(e) && equipoVisible(e));
   const cuenta = eq => { const it = itemsDeTractor(eq, CPT.fecha); return it.tareas.length + it.labores.filter(x => x.propio).length; };
   const conCosas = eqsCfg.map(e => [e, cuenta(e)]).filter(([, n]) => n > 0).sort((a, b) => a[0].localeCompare(b[0], 'es'));
   const opsDe = eq => operadoresDeEquipo(eq).filter(o => (config.operadores || []).includes(o) || true);
@@ -12538,6 +12631,7 @@ window.eliminarItem = async function(tipo,idx) {
   const val = config[tipo][idx];
   config[tipo].splice(idx,1);
   if (tipo === 'equipos' && config.tiposEquipo) delete config.tiposEquipo[val];
+  if (tipo === 'equipos' && config.restriccionesEquipo) delete config.restriccionesEquipo[val];
   if (tipo === 'equipos' && config.requisitosEquipo) { delete config.requisitosEquipo[val]; requisitosEquipo = config.requisitosEquipo; }
   if (tipo === 'equipos' && Array.isArray(config.aperos)) {
     config.aperos.forEach(a => {
@@ -12651,6 +12745,67 @@ window.cambiarFuenteHorometro = async function(equipo) {
     toast(`✓ ${equipo}: horómetro ahora es ${etiquetas[siguiente]}`, true);
   } catch(e) { toast('Error: ' + e.message, false); }
 }
+// Editor de equipo particular y límites
+let RE = null;
+window.abrirRestriccionEquipo = async function(eq) {
+  if (!isAdmin) return;
+  const r = restriccionDe(eq) || {};
+  const rq = requisitosDe(eq);
+  RE = { eq, reqMedidor: rq.medidor, reqCultivo: rq.cultivo, reqTrabajo: rq.trabajo, reqApero: rq.apero, privado: !!r.privado, soloPara: [...(r.soloPara || [])], cargasMes: r.cargasMes || '', litrosMes: r.litrosMes || '', litrosCarga: r.litrosCarga || '', diasSemana: [...(r.diasSemana || [])], alExceder: r.alExceder === 'avisar' ? 'avisar' : 'bloquear', uso: null };
+  document.getElementById('modal-restr-equipo')?.remove();
+  document.body.insertAdjacentHTML('beforeend', `<div class="modal-overlay" id="modal-restr-equipo" style="display:flex" onclick="if(event.target===this)cerrarRestriccionEquipo()"><div class="modal-box" style="max-width:460px"><div id="re-cuerpo"></div></div></div>`);
+  pintarRestriccionEquipo();
+  try { RE.uso = await usoMesEquipo(eq); pintarRestriccionEquipo(); } catch (e) {}
+};
+window.cerrarRestriccionEquipo = () => { document.getElementById('modal-restr-equipo')?.remove(); RE = null; };
+function leerCamposRE() { if (!RE) return; ['cargasMes', 'litrosMes', 'litrosCarga'].forEach(k => { const el = document.getElementById('re-' + k); if (el) RE[k] = el.value; }); }
+function pintarRestriccionEquipo() {
+  const w = document.getElementById('re-cuerpo'); if (!w || !RE) return;
+  const ops = (config.operadores || []).filter(o => o && !/especificar/i.test(o) && o !== ADMIN_NOMBRE && !ADMINS_EQUIVALENTES.includes(o));
+  const asign = operadoresDeEquipo(RE.eq);
+  const chip = (on, txt, js) => `<button type="button" class="cultivo-chip ${on ? 'sel' : ''}" onclick="${js}">${txt}</button>`;
+  const siNo = (k, txtSi, txtNo) => `<div style="display:flex;gap:4px;flex-wrap:wrap">${chip(RE[k], txtSi, `reSet('${k}', true)`)}${chip(!RE[k], txtNo, `reSet('${k}', false)`)}</div>`;
+  w.innerHTML = `<div style="font-weight:800;font-size:16px;margin-bottom:8px">⚙️ ${escA(RE.eq)} <span style="font-weight:400;font-size:12px;color:#6B7280">(${tipoEquipo(RE.eq) === 'km' ? 'km' : 'horas'})</span></div>
+    <div style="font-weight:700;font-size:14px;margin:4px 0 6px">📋 Qué se pide al cargar combustible</div>
+    <div class="field" style="margin:0 0 6px"><label>${tipoEquipo(RE.eq) === 'km' ? 'Odómetro (km)' : 'Horómetro (horas)'}</label>${siNo('reqMedidor', '✓ Con registro', 'Sin registro')}</div>
+    <div class="field" style="margin:0 0 6px"><label>Cultivo</label>${siNo('reqCultivo', '✓ Obligatorio', 'No se pide')}</div>
+    <div class="field" style="margin:0 0 6px"><label>Labor (tipo de trabajo)</label>${siNo('reqTrabajo', '✓ Obligatoria', 'No se pide')}</div>
+    ${RE.reqTrabajo ? `<div class="field" style="margin:0 0 6px"><label>Apero</label>${siNo('reqApero', '✓ Obligatorio', 'No se pide')}</div>` : ''}
+    ${!RE.reqMedidor ? '<div class="hint" style="margin:0 0 6px">Sin registro de horas o km no se calcula su eficiencia (L/hr o km/L).</div>' : ''}
+    <div style="font-weight:700;font-size:14px;margin:12px 0 4px">🔒 Quién lo ve</div>
+    <label style="display:flex;gap:8px;align-items:center;text-transform:none;letter-spacing:normal;font-weight:600;font-size:14px;color:var(--negro)"><input type="checkbox" style="width:18px;height:18px" ${RE.privado ? 'checked' : ''} onchange="reSet('privado', this.checked)"> Equipo particular: solo lo ven algunas personas</label>
+    ${RE.privado ? `<div class="hint" style="margin:4px 0 6px">Siempre lo ven los administradores (JC y Camila)${asign.length ? ' y quien lo tiene asignado (' + escA(asign.join(', ')) + ')' : ''}. Además lo ven:</div>
+      <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px">${ops.map(o => chip(RE.soloPara.includes(o), escA(o), `reTogOp(${JSON.stringify(o).replace(/"/g, '&quot;')})`)).join('')}</div>` : '<div class="hint" style="margin:4px 0 10px">Si no lo marcas, todos lo ven.</div>'}
+    <div style="font-weight:700;font-size:14px;margin:10px 0 4px">📏 Límites de carga <span style="font-weight:400;font-size:12px;color:#6B7280">(vacío = sin límite)</span></div>
+    ${RE.uso ? `<div style="font-size:12px;color:#1E3A8A;margin-bottom:6px">Este mes lleva <b>${RE.uso.cargas}</b> carga${RE.uso.cargas === 1 ? '' : 's'} y <b>${Math.round(RE.uso.litros)} L</b>.</div>` : ''}
+    <div class="grid-2" style="gap:8px"><div class="field" style="margin:0"><label>Cargas por mes</label><input type="number" id="re-cargasMes" min="0" step="1" inputmode="numeric" value="${escA(String(RE.cargasMes))}"></div>
+      <div class="field" style="margin:0"><label>Litros por mes</label><input type="number" id="re-litrosMes" min="0" step="1" inputmode="decimal" value="${escA(String(RE.litrosMes))}"></div></div>
+    <div class="field" style="margin:8px 0 0"><label>Litros máximos por carga</label><input type="number" id="re-litrosCarga" min="0" step="1" inputmode="decimal" value="${escA(String(RE.litrosCarga))}"></div>
+    <div class="field" style="margin:8px 0 0"><label>Días en que puede cargar <span style="text-transform:none;font-weight:400">(ninguno marcado = todos)</span></label><div style="display:flex;gap:4px;flex-wrap:wrap">${[1, 2, 3, 4, 5, 6, 7].map(d => chip(RE.diasSemana.includes(d), DIAS_SEM[d].slice(0, 3), `reTogDia(${d})`)).join('')}</div></div>
+    <div class="field" style="margin:8px 0 0"><label>Si se pasa de un límite</label><div style="display:flex;gap:4px;flex-wrap:wrap">${chip(RE.alExceder === 'bloquear', '⛔ No deja cargar (tú sí puedes)', "reSet('alExceder','bloquear')")}${chip(RE.alExceder === 'avisar', '⚠️ Deja cargar, pero avisa', "reSet('alExceder','avisar')")}</div></div>
+    <div class="hint" style="margin-top:6px">Con el caudalímetro (ESP32), la bomba se corta sola al llegar a los litros que quedan (del mes o por carga). Si se pasa, queda marcado en el registro y te llega el aviso por WhatsApp.</div>
+    <div style="display:flex;gap:6px;margin-top:12px;flex-wrap:wrap">${restriccionDe(RE.eq) ? '<button type="button" class="btn btn-danger" style="flex:none" onclick="quitarRestriccionEquipo()">Quitar todo</button>' : ''}<button type="button" class="btn btn-secondary" style="flex:1;justify-content:center" onclick="cerrarRestriccionEquipo()">Cancelar</button><button type="button" class="btn btn-verde" style="flex:1" onclick="guardarRestriccionEquipo()">✓ Guardar</button></div>`;
+}
+window.reSet = (k, v) => { if (!RE) return; leerCamposRE(); RE[k] = v; if (k === 'reqTrabajo' && !v) RE.reqApero = false; pintarRestriccionEquipo(); };
+window.reTogOp = o => { if (!RE) return; leerCamposRE(); RE.soloPara = RE.soloPara.includes(o) ? RE.soloPara.filter(x => x !== o) : [...RE.soloPara, o]; pintarRestriccionEquipo(); };
+window.reTogDia = d => { if (!RE) return; leerCamposRE(); RE.diasSemana = RE.diasSemana.includes(d) ? RE.diasSemana.filter(x => x !== d) : [...RE.diasSemana, d]; pintarRestriccionEquipo(); };
+window.guardarRestriccionEquipo = async function() {
+  if (!RE) return; leerCamposRE();
+  const num = v => { const n = parseFloat(String(v || '').replace(',', '.')); return n > 0 ? n : null; };
+  const out = { privado: !!RE.privado, soloPara: RE.privado ? RE.soloPara : [], cargasMes: num(RE.cargasMes) ? Math.round(num(RE.cargasMes)) : null, litrosMes: num(RE.litrosMes), litrosCarga: num(RE.litrosCarga), diasSemana: RE.diasSemana.slice().sort(), alExceder: RE.alExceder };
+  const vacio = !out.privado && !out.cargasMes && !out.litrosMes && !out.litrosCarga && !out.diasSemana.length;
+  const mapa = { ...(config.restriccionesEquipo || {}) };
+  if (vacio) delete mapa[RE.eq]; else mapa[RE.eq] = out;
+  config.restriccionesEquipo = mapa;
+  config.requisitosEquipo = { ...(config.requisitosEquipo || {}), [RE.eq]: { cultivo: !!RE.reqCultivo, trabajo: !!RE.reqTrabajo, apero: !!(RE.reqTrabajo && RE.reqApero), medidor: !!RE.reqMedidor, explicito: true } };
+  requisitosEquipo = config.requisitosEquipo;
+  try { await saveConfig(); toast(`✓ ${RE.eq}: guardado`, true); cerrarRestriccionEquipo(); renderConfigListas(); } catch (e) { toast('Error: ' + e.message, false); }
+};
+window.quitarRestriccionEquipo = async function() {
+  if (!RE || !confirm(`¿Quitar todas las restricciones de ${RE.eq}? Lo verán todos y sin límites.`)) return;
+  const mapa = { ...(config.restriccionesEquipo || {}) }; delete mapa[RE.eq]; config.restriccionesEquipo = mapa;
+  try { await saveConfig(); toast('✓ Restricciones quitadas', true); cerrarRestriccionEquipo(); renderConfigListas(); } catch (e) { toast('Error: ' + e.message, false); }
+};
 function renderConfigListas() {
   ['equipos','operadores','centros','trabajos'].forEach(tipo=>{
     document.getElementById('lista-'+tipo).innerHTML=
@@ -12675,6 +12830,7 @@ function renderConfigListas() {
             ${badgeReq('Trabajo','trabajo',req.trabajo)}
             ${badgeReq('Apero','apero',req.apero)}
             <span class="badge" style='font-size:9px;margin-left:3px;cursor:pointer;background:${fuenteInfo.bg};color:${fuenteInfo.color}' title="Click para cambiar la fuente del horómetro: Manual → Shelly → JDLink" onclick='cambiarFuenteHorometro(${JSON.stringify(v)})'>⏱ ${fuenteInfo.label}</span>
+            ${(() => { const r = restriccionDe(v), lim = r && evaluarRestriccion(v, { cargas: 0, litros: 0 }); const on = !!(r && (r.privado || lim)); const sinMed = !requisitosDe(v).medidor; return `<span class="badge" style='font-size:9px;margin-left:3px;cursor:pointer;background:${on || sinMed ? '#FEF3C7' : '#F3F4F6'};color:${on || sinMed ? '#92400E' : '#6B7280'}' title="Qué se pide al cargar, quién lo ve y límites de carga" onclick='abrirRestriccionEquipo(${JSON.stringify(v)})'>⚙️ Ajustes${sinMed ? ' · sin ' + (tipoEquipo(v) === 'km' ? 'km' : 'horas') : ''}${r && r.privado ? ' · 🔒 particular' : ''}${lim ? ' · 📏 límites' : ''}</span>`; })()}
             <button class="btn btn-danger" onclick="eliminarItem('${tipo}',${i})">✕</button>
           </div>`;
         }
@@ -16206,6 +16362,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
           <div id="equipo-multi-wrap" style="display:none"><div class="centros-selector" id="equipo-multi-selector"></div></div>
           <div id="equipo-selector" class="select-wrapper"><select id="equipo" onchange="onEquipoChange()"></select></div>
           <div id="equipo-varios-wrap"></div>
+          <div id="equipo-restr-info" style="display:none;font-size:12px;margin-top:6px;padding:6px 8px;border-radius:8px"></div>
         </div>
         <div style="margin-bottom:14px">
           <div style="font-size:11px;font-weight:600;color:var(--acero);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Último registro de este equipo</div>
@@ -16223,7 +16380,8 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         <!-- TIPO DE TRABAJO + APERO -->
         <div id="trabajo-selector-wrap" style="margin-bottom:14px"></div>
 
-        <div class="field">
+        <div class="hint" id="medidor-no-req" style="display:none;margin:0 0 12px;padding:6px 8px;border-radius:8px;background:#F3F4F6">⏱ Este equipo se carga sin horómetro ni odómetro.</div>
+        <div class="field" id="medidor-field">
           <label>Medidor del equipo</label>
           <div class="medidor-group">
             <button class="medidor-btn" id="btn-km" onclick="setMedidor('km')">KM</button>
