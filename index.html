@@ -102,10 +102,20 @@ function evaluarRestriccion(eq, uso, fecha) {
 // simplificar al máximo la pantalla (ej. no saben leer bien). El admin lo
 // cambia cuando quiera desde Configurar; el operador nunca se entera del cambio.
 let presetsOperadorConfig = {}; // se carga desde Firestore (config.datos.presetsOperador)
-function presetDe(operador) {
-  const p = presetsOperadorConfig[operador];
-  return (p && p.activo !== false) ? p : null;
+// Un preset puede ser para un equipo en particular del operador (clave "operador|equipo") o para todos sus equipos (clave "operador").
+// Con un equipo se usa primero el de ese equipo; si no hay, el general.
+const clavePreset = (op, eq) => eq ? op + '|' + eq : op;
+function datosClavePreset(k) {
+  const p = presetsOperadorConfig[k] || {}, i = k.indexOf('|');
+  return { op: p.operador || (i >= 0 ? k.slice(0, i) : k), eq: p.equipo || (i >= 0 ? k.slice(i + 1) : null) };
 }
+function presetDe(operador, equipo) {
+  const ok = p => (p && p.activo !== false) ? p : null;
+  if (equipo) { const pe = ok(presetsOperadorConfig[clavePreset(operador, equipo)]); if (pe) return pe; }
+  return ok(presetsOperadorConfig[operador]);
+}
+let presetAplicado = false;
+const eqFormulario = () => (document.getElementById('equipo') || {}).value || '';
 // Estos 3 parámetros ahora son editables desde Configurar → Parámetros del
 // sistema. Las constantes _DEFAULT solo sirven de semilla para la primera
 // migración a Firestore (config.datos.parametros).
@@ -3888,7 +3898,8 @@ function initRegistro() {
       if ((fuenteHorometroDe(equipoAsignado) === 'jdlink') && jdAccessToken) obtenerHorasJDLink();
     }
   }
-  const preset = !isAdmin ? presetDe(currentUser) : null;
+  const preset = !isAdmin ? presetDe(currentUser, eqFormulario()) : null;
+  presetAplicado = !!preset;
   if (preset) {
     centrosSeleccionados = [...(preset.cultivos || [])];
     trabajoSeleccionado = preset.trabajo || null; trabajosSel = preset.trabajo ? [preset.trabajo] : [];
@@ -3933,7 +3944,7 @@ function renderCentrosSelector() {
     actualizarResumenCultivos();
     return;
   }
-  if (!isAdmin && presetDe(currentUser)) {
+  if (!isAdmin && presetDe(currentUser, eqFormulario())) {
     container.innerHTML = centrosSeleccionados.map(c => `<div class="cultivo-chip sel" style="cursor:default">${conIcono(c)}</div>`).join('');
     renderCentroOtroInput();
     actualizarResumenCultivos();
@@ -3976,7 +3987,7 @@ function renderTrabajoSelector() {
   const container = document.getElementById('trabajo-selector-wrap');
   if (!container) return;
 
-  if (!isAdmin && presetDe(currentUser)) {
+  if (!isAdmin && presetDe(currentUser, eqFormulario())) {
     let html = '';
     if (trabajoSeleccionado) {
       html += `<div class="cultivos-label">Tipo de trabajo</div><div class="centros-selector"><div class="cultivo-chip sel" style="cursor:default">${trabajoSeleccionado}</div></div>`;
@@ -4285,11 +4296,17 @@ window.onEquipoChange = async function() {
   if (!eq) return;
   setMedidor(tipoEquipo(eq));
 
-  const preset = !isAdmin ? presetDe(currentUser) : null;
+  const preset = !isAdmin ? presetDe(currentUser, eq) : null;
   if (preset) {
+    centrosSeleccionados = [...(preset.cultivos || [])]; centroObsTexto = '';
     trabajoSeleccionado = preset.trabajo || null; trabajosSel = preset.trabajo ? [preset.trabajo] : [];
     aperoSeleccionado = preset.apero || null; aperosSel = preset.apero ? [preset.apero] : [];
     aperoObsTexto = preset.aperoObsTexto || '';
+    presetAplicado = true;
+  } else if (presetAplicado) {
+    // venía con el preset de otro equipo: este no tiene, así que elige normalmente
+    centrosSeleccionados = []; centroObsTexto = ''; trabajoSeleccionado = null; trabajosSel = []; trabajoObsTexto = ''; aperoSeleccionado = null; aperosSel = []; aperoObsTexto = '';
+    presetAplicado = false;
   } else if (tipoEquipo(eq) === 'km' || eq === 'Otro (especificar)') {
     trabajoSeleccionado = null; trabajosSel = []; trabajoObsTexto = ''; aperoSeleccionado = null; aperosSel = []; aperoObsTexto = '';
   } else {
@@ -4325,7 +4342,7 @@ window.onEquipoChange = async function() {
     }
   }
 
-  if (trabajoSeleccionado || !requisitosDe(eq).cultivo) renderTrabajoSelector();
+  renderTrabajoSelector();
   actualizarBotonesJDLink(eq);
   if ((fuenteHorometroDe(eq) === 'jdlink') && jdAccessToken) obtenerHorasJDLink();
   actualizarVisibilidadHorario();
@@ -12659,6 +12676,7 @@ window.eliminarItem = async function(tipo,idx) {
   }
   if (tipo === 'operadores' && config.presetsOperador) {
     delete config.presetsOperador[val];
+    Object.keys(config.presetsOperador).forEach(k => { if (k.startsWith(val + '|')) delete config.presetsOperador[k]; });
     presetsOperadorConfig = config.presetsOperador;
   }
   if (tipo === 'trabajos') {
@@ -13347,6 +13365,7 @@ window.togglePermisoPrueba = async function(op, id) {
 
 // ─── PRESET DE CULTIVO/TRABAJO/APERO POR OPERADOR (Configurar) ────
 let presetEdicionOperador = null;
+let presetEdicionEquipo = '';
 let presetEdicionCultivos = [];
 let presetEdicionTrabajo = null;
 let presetEdicionApero = null;
@@ -13356,12 +13375,12 @@ let presetEdicionActivo = true;
 function renderPanelPresetsOperador() {
   const cont = document.getElementById('lista-presets-operador');
   if (cont) {
-    const entradas = Object.entries(presetsOperadorConfig);
-    cont.innerHTML = entradas.length ? entradas.map(([op, p]) => {
+    const entradas = Object.entries(presetsOperadorConfig).map(([k, p]) => [k, p, datosClavePreset(k)]).sort((a, b) => a[2].op.localeCompare(b[2].op, 'es') || (a[2].eq ? 1 : 0) - (b[2].eq ? 1 : 0) || String(a[2].eq).localeCompare(String(b[2].eq), 'es'));
+    cont.innerHTML = entradas.length ? entradas.map(([op, p, dd]) => {
       const activo = p.activo !== false;
       return `<div class="config-item" style="flex-wrap:wrap;gap:8px">
         <span style="flex:1;min-width:160px">
-          <strong>${op}</strong><br>
+          <strong>${escA(dd.op)}</strong> <span style="font-size:12px;color:${dd.eq ? '#1D4ED8' : '#6B7280'}">${dd.eq ? '🚜 ' + escA(dd.eq) : '· todos sus equipos'}</span><br>
           <span style="font-size:12px;color:var(--acero)">${(p.cultivos||[]).join(', ') || 'sin cultivo'} · ${p.trabajo || 'sin trabajo'} · ${p.apero || 'sin apero'}</span>
         </span>
         <span class="badge" style='font-size:11px;cursor:pointer;background:${activo?'var(--verde-suave)':'#F3F4F6'};color:${activo?'var(--verde)':'#9CA3AF'}' title="Click para activar o desactivar, sin borrar los datos guardados" onclick='togglePresetActivo(${JSON.stringify(op)})'>${activo?'✓ Activo':'✕ Inactivo'}</span>
@@ -13386,22 +13405,34 @@ window.togglePresetActivo = async function(op) {
   try {
     await saveConfig();
     renderPanelPresetsOperador();
-    toast(`✓ Preset de ${op} ahora está ${!actual ? 'activo' : 'inactivo'}`, true);
+    toast(`✓ Preset de ${datosClavePreset(op).op}${datosClavePreset(op).eq ? ' con ' + datosClavePreset(op).eq : ''} ahora está ${!actual ? 'activo' : 'inactivo'}`, true);
   } catch(e) { toast('Error: ' + e.message, false); }
 }
 
-window.editarPresetOperador = function(op) {
-  const sel = document.getElementById('preset-operador-sel');
-  sel.value = op;
-  onPresetOperadorSelChange();
+window.editarPresetOperador = function(k) {
+  const dd = datosClavePreset(k), sel = document.getElementById('preset-operador-sel');
+  sel.value = dd.op;
+  onPresetOperadorSelChange(dd.eq || '');
   sel.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
-window.onPresetOperadorSelChange = function() {
+window.onPresetOperadorSelChange = function(eqInicial) {
   const op = document.getElementById('preset-operador-sel').value;
-  const cont = document.getElementById('preset-operador-editor');
-  if (!op) { if (cont) cont.innerHTML = ''; return; }
+  const cont = document.getElementById('preset-operador-editor'), wrapEq = document.getElementById('preset-equipo-wrap'), selEq = document.getElementById('preset-equipo-sel');
+  if (!op) { if (cont) cont.innerHTML = ''; if (wrapEq) wrapEq.style.display = 'none'; return; }
   presetEdicionOperador = op;
-  const existente = presetsOperadorConfig[op] || {};
+  // Equipo: los asignados al operador primero (★), luego el resto
+  const asign = equiposDe(op), resto = (config.equipos || []).filter(e => e && !/especificar/i.test(e) && !asign.includes(e));
+  const conPreset = e => presetsOperadorConfig[clavePreset(op, e)] ? ' · ya tiene preset' : '';
+  presetEdicionEquipo = typeof eqInicial === 'string' ? eqInicial : (asign.length === 1 && !presetsOperadorConfig[op] ? asign[0] : '');
+  if (selEq) selEq.innerHTML = `<option value="">Todos sus equipos${presetsOperadorConfig[op] ? ' · ya tiene preset' : ''}</option>${asign.map(e => `<option value="${escA(e)}">★ ${escA(e)}${conPreset(e)}</option>`).join('')}${resto.map(e => `<option value="${escA(e)}">${escA(e)}${conPreset(e)}</option>`).join('')}`;
+  if (selEq) selEq.value = presetEdicionEquipo;
+  if (wrapEq) wrapEq.style.display = 'block';
+  cargarPresetEnEditor();
+}
+window.onPresetEquipoSelChange = function() { presetEdicionEquipo = (document.getElementById('preset-equipo-sel') || {}).value || ''; cargarPresetEnEditor(); };
+function cargarPresetEnEditor() {
+  const op = presetEdicionOperador; if (!op) return;
+  const existente = presetsOperadorConfig[clavePreset(op, presetEdicionEquipo)] || {};
   presetEdicionCultivos = [...(existente.cultivos || [])];
   presetEdicionTrabajo = existente.trabajo || null;
   presetEdicionApero = existente.apero || null;
@@ -13461,7 +13492,8 @@ window.guardarPresetOperador = async function() {
   if (!presetEdicionOperador) return;
   if (!presetEdicionCultivos.length) { toast('Selecciona al menos un cultivo', false); return; }
   if (!config.presetsOperador) config.presetsOperador = {};
-  config.presetsOperador[presetEdicionOperador] = {
+  config.presetsOperador[clavePreset(presetEdicionOperador, presetEdicionEquipo)] = {
+    operador: presetEdicionOperador, equipo: presetEdicionEquipo || null,
     cultivos: [...presetEdicionCultivos],
     trabajo: presetEdicionTrabajo,
     apero: presetEdicionApero,
@@ -13472,18 +13504,20 @@ window.guardarPresetOperador = async function() {
   try {
     await saveConfig();
     renderPanelPresetsOperador();
-    toast(`✓ Preset guardado para ${presetEdicionOperador}${presetEdicionActivo ? ' — ya no verá esas opciones' : ' (queda inactivo por ahora)'}`, true);
+    toast(`✓ Preset guardado para ${presetEdicionOperador}${presetEdicionEquipo ? ' con ' + presetEdicionEquipo : ' (todos sus equipos)'}${presetEdicionActivo ? ' — ya no verá esas opciones' : ' (queda inactivo por ahora)'}`, true);
+    onPresetOperadorSelChange(presetEdicionEquipo);
   } catch(e) { toast('Error: ' + e.message, false); }
 }
 
 window.eliminarPresetOperador = async function(op) {
-  if (!confirm(`¿Eliminar por completo el preset de ${op}? Se pierden los valores guardados.\n\nSi solo quieres pausarlo por un tiempo sin perder la configuración, usa el interruptor "Activo/Inactivo" en vez de esto.`)) return;
+  const dd = datosClavePreset(op);
+  if (!confirm(`¿Eliminar por completo el preset de ${dd.op}${dd.eq ? ' con ' + dd.eq : ' (todos sus equipos)'}? Se pierden los valores guardados.\n\nSi solo quieres pausarlo por un tiempo sin perder la configuración, usa el interruptor "Activo/Inactivo" en vez de esto.`)) return;
   delete presetsOperadorConfig[op];
   config.presetsOperador = presetsOperadorConfig;
   try {
     await saveConfig();
     renderPanelPresetsOperador();
-    toast(`Preset de ${op} eliminado`, false);
+    toast(`Preset de ${dd.op}${dd.eq ? ' con ' + dd.eq : ''} eliminado`, false);
   } catch(e) { toast('Error: ' + e.message, false); }
 }
 
@@ -16945,6 +16979,8 @@ tbody td{padding:10px 12px;vertical-align:middle;}
         <div class="field">
           <label>Elegir operador para editar su preset</label>
           <div class="select-wrapper"><select id="preset-operador-sel" onchange="onPresetOperadorSelChange()"></select></div>
+          <div id="preset-equipo-wrap" style="display:none;margin-top:8px"><label>Equipo</label><div class="select-wrapper"><select id="preset-equipo-sel" onchange="onPresetEquipoSelChange()"></select></div>
+            <div class="hint">El preset se aplica solo cuando el operador carga con ese equipo. Con «Todos sus equipos» se aplica con cualquiera que no tenga uno propio.</div></div>
         </div>
         <div id="preset-operador-editor"></div>
         <div class="cultivos-label" style="margin-top:16px">Presets guardados</div>
