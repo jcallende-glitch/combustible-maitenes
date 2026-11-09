@@ -1500,7 +1500,7 @@ async function envivoDibujarZonas() {
     } catch (err) { console.warn('zona', z, err); }
   });
 }
-let envivoRutaCapa = null, envivoAncho = null, envivoRutaDias = 0;
+let envivoRutaCapa = null, envivoAncho = null, envivoRutaDias = 0, envivoRegUnsub = null;
 // Equipos elegidos para ver su recorrido (uno o varios), sus datos y capas en el mapa
 let envivoSel = [], envivoRutas = {}, envivoRutaCapas = {}, envivoModo = 'lista', envivoInfoAbierta = false, envivoMulti = false, envivoMultiSel = new Set(), envivoCargando = {}, envivoEncuadrarPend = false;
 const ENVIVO_COLORES = ['#F97316', '#A855F7', '#06B6D4', '#EF4444', '#84CC16', '#EC4899'];
@@ -1609,12 +1609,14 @@ window.abrirEnVivo = function() {
     renderEnVivo();
   }, e => toast('Error leyendo posiciones: ' + e.message, false));
   clearInterval(envivoTimer); envivoTimer = setInterval(renderEnVivo, 30000);   // refresca el "hace X min"
+  if (!envivoRegUnsub) envivoRegUnsub = onSnapshot(query(collection(db, 'registros'), where('fecha', '==', envivoDiaStr(Date.now()))), snap => envivoAlCambiarCargas(snap.docs.map(x => x.data())), e => console.warn('cargas de hoy', e));
   traerUbicacionesJD();
   clearInterval(envivoJDTimer); envivoJDTimer = setInterval(traerUbicacionesJD, 120000);
 }
 window.cerrarEnVivo = function() {
   document.getElementById('modal-envivo').style.display = 'none';
   if (envivoUnsub) { envivoUnsub(); envivoUnsub = null; }
+  if (envivoRegUnsub) { envivoRegUnsub(); envivoRegUnsub = null; }
   clearInterval(envivoTimer); clearInterval(envivoJDTimer);
   envivoCerrarRuta();
 }
@@ -1977,6 +1979,30 @@ const anchoDeApero = n => { const ac = (aperosConfig || []).find(a => a.nombre =
 const envivoAnchoDia = (eq, dia, d) => { const ap = ((d.aperosDia || {})[dia] || []).find(a => anchoDeApero(a) > 0); return ap ? anchoDeApero(ap) : 0; };
 const litrosDeApero = n => { const c = (config.capacidadAperos || {})[n]; if (Number(c) > 0) return Number(c); const dflt = CAPACIDAD_APEROS_DEFAULT.find(([re]) => re.test(String(n || ''))); if (dflt) return dflt[1]; const m = String(n || '').match(/(\d{3,5})\s*(?:l\b|lts?\b|litros)?/i); const v = m ? +m[1] : 0; return v >= 100 && v <= 20000 ? v : 0; };
 let envivoRegDia = {}, envivoHist = {}, envivoCiclosGuardados = {};
+const aperosDeCargas = (regs, eq) => [...new Set(regs.filter(r => r.equipo === eq).flatMap(r => Array.isArray(r.aperos) && r.aperos.length ? r.aperos : (r.apero ? [r.apero] : [])).filter(a => a && !/^otro|^libre/i.test(a)))];
+// Llega o cambia una carga de petróleo de hoy: se recalcula el ancho de los equipos en el mapa
+function envivoAlCambiarCargas(regs) {
+  const dia = envivoDiaStr(Date.now());
+  envivoRegDia[dia] = { ts: Date.now(), regs };
+  let cambio = false;
+  Object.values(envivoRutas).forEach(d => {
+    if (!d || !d.aperosDia || !(dia in d.aperosDia)) return;
+    const nuevo = aperosDeCargas(regs, d.eq);
+    if (JSON.stringify(nuevo) !== JSON.stringify(d.aperosDia[dia])) { d.aperosDia[dia] = nuevo; cambio = true; }
+  });
+  if (cambio) envivoRenderRuta();
+}
+// Se llena o cambia el cuaderno de campo: si toca a un equipo del mapa, se recalcula
+let envivoFirmaLab = '';
+function envivoAlCambiarLabores() {
+  const eqs = new Set(Object.keys(envivoRutas || {}));
+  if (!eqs.size) return;
+  const f = (laboresCampoTodos || []).filter(l => (l.aperos || []).length && (eqs.has(l.equipo) || Object.values(equiposPorDia(l)).some(a => a.some(x => eqs.has(x.equipo)))))
+    .map(l => [l.id, l.potrero, (l.aperos || []).join('+'), JSON.stringify(equiposPorDia(l)), (l.diasTrabajo || []).join(','), l.fechaFin || ''].join(':')).sort().join('|');
+  if (f === envivoFirmaLab) return;
+  envivoFirmaLab = f;
+  envivoRenderRuta();
+}
 async function envivoAperosDelEquipo(eq, dias) {
   const out = {};
   for (const dia of dias) {
@@ -1985,7 +2011,7 @@ async function envivoAperosDelEquipo(eq, dias) {
         const sn = await getDocs(query(collection(db, 'registros'), where('fecha', '==', dia)));
         envivoRegDia[dia] = { ts: Date.now(), regs: sn.docs.map(x => x.data()) };
       }
-      out[dia] = [...new Set(envivoRegDia[dia].regs.filter(r => r.equipo === eq).flatMap(r => Array.isArray(r.aperos) && r.aperos.length ? r.aperos : (r.apero ? [r.apero] : [])).filter(a => a && !/^otro|^libre/i.test(a)))];
+      out[dia] = aperosDeCargas(envivoRegDia[dia].regs, eq);
     } catch (e) { out[dia] = []; }
   }
   return out;
@@ -2010,8 +2036,9 @@ window.envivoFijarAnchoApero = async function(nombre, v) {
 };
 // ── Ancho de trabajo ──
 // Plantaciones (huertos): el ancho predefinido de la entrecalle. Potreros sin ancho predefinido: el del apero que anda ocupando ese día:
-// 1) el de la labor del cuaderno en ese potrero ese día · 2) el elegido aquí para ese día · 3) el anotado al cargar petróleo ese día
-// 4) si aún no hay, se asume el último que usó · 5) el ancho general
+// 1) el de la labor del cuaderno en ese potrero ese día · 2) el anotado al cargar petróleo ese día
+// 3) mientras no haya ninguno de los dos: el elegido aquí, o se asume el último que usó · 4) el ancho general
+// Se actualiza solo cuando llega la carga de petróleo o se llena el cuaderno (envivoAlCambiarCargas / envivoAlCambiarLabores)
 const aperoValido = a => a && !/^otro|^libre/i.test(a);
 const envivoAperoElegido = (eq, dia) => (config.aperoDelDia || {})[eq + '|' + dia] || '';
 function envivoAnchoTrabajo(eq, dia, pot, d) {
@@ -2023,12 +2050,12 @@ function envivoAnchoTrabajo(eq, dia, pot, d) {
     const ap = mayor(labs.flatMap(l => l.aperos || []));
     if (ap) return { w: anchoDeApero(ap), apero: ap, tipo: 'labor', fuente: 'cuaderno de campo' };
   }
-  const eleg = envivoAperoElegido(eq, dia);
-  if (eleg) return anchoDeApero(eleg) > 0 ? { w: anchoDeApero(eleg), apero: eleg, tipo: 'elegido', fuente: 'elegido aquí' } : envivoAnchoSinApero(eq, dia, pot, eleg, 'elegido');
   const delDia = ((d && d.aperosDia) || {})[dia] || [];
   const apC = mayor(delDia);
   if (apC) return { w: anchoDeApero(apC), apero: apC, tipo: 'carga', fuente: 'carga de petróleo' };
   if (delDia.length) return envivoAnchoSinApero(eq, dia, pot, delDia[0], 'carga');
+  const eleg = envivoAperoElegido(eq, dia);
+  if (eleg) return anchoDeApero(eleg) > 0 ? { w: anchoDeApero(eleg), apero: eleg, tipo: 'elegido', fuente: 'elegido aquí' } : envivoAnchoSinApero(eq, dia, pot, eleg, 'elegido');
   const prev = ((d && d.histAperos) || []).find(x => x.fecha < dia && x.aperos.length);
   if (prev) { const a = mayor(prev.aperos) || prev.aperos[0]; return anchoDeApero(a) > 0 ? { w: anchoDeApero(a), apero: a, tipo: 'supuesto', fuente: 'supuesto: el último que usó (' + prev.fecha.slice(8, 10) + '-' + prev.fecha.slice(5, 7) + ')', fechaPrev: prev.fecha } : envivoAnchoSinApero(eq, dia, pot, a, 'supuesto', prev.fecha); }
   return { w: envivoAncho || 5, apero: '', tipo: 'defecto', fuente: 'por defecto: no sé con qué apero anda' };
@@ -2070,12 +2097,12 @@ function envivoAperoHtml(eq, d, dd) {
     const txt = (r.tipo === 'cultivo' ? `Huerto: ancho de la entrecalle, ${String(r.w).replace('.', ',')} m`
       : r.apero ? `<b>${escA(r.apero)}</b> · ${r.sinAncho ? '<span style="color:#B45309">sin ancho anotado, uso ' + String(r.w).replace('.', ',') + ' m</span>' : String(r.w).replace('.', ',') + ' m'} <span style="color:var(--acero)">(${escA(r.tipo === 'supuesto' ? 'supuesto: el último que usó, ' + (r.fechaPrev || '').slice(8, 10) + '-' + (r.fechaPrev || '').slice(5, 7) : r.tipo === 'carga' ? 'anotado al cargar petróleo' : r.tipo === 'elegido' ? 'elegido aquí' : r.tipo === 'labor' ? 'del cuaderno de campo' : r.fuente)})</span>`
       : `<span style="color:#B45309">No sé con qué apero anda: uso ${String(r.w).replace('.', ',')} m</span>`) + (varia ? ' <span style="color:var(--acero)">· varía por potrero (ver tabla)</span>' : '');
-    const sel = puede && !soloHuerto ? `<select style="font-size:12px;padding:3px 4px;max-width:180px" onchange="envivoElegirAperoDia('${eqJs}','${k}',this.value)"><option value="">${envivoAperoElegido(eq, k) ? '✕ Quitar elección' : r.apero ? '¿Es otro apero?' : '¿Con qué apero anda?'}</option>${propios.length ? `<optgroup label="Aperos de ${escA(eq)}">${propios.map(n => `<option value="${escA(n)}"${envivoAperoElegido(eq, k) === n ? ' selected' : ''}>${escA(n)}${anchoDeApero(n) ? ' · ' + String(anchoDeApero(n)).replace('.', ',') + ' m' : ''}</option>`).join('')}</optgroup>` : ''}${otros.length ? `<optgroup label="Otros aperos">${otros.map(n => `<option value="${escA(n)}"${envivoAperoElegido(eq, k) === n ? ' selected' : ''}>${escA(n)}${anchoDeApero(n) ? ' · ' + String(anchoDeApero(n)).replace('.', ',') + ' m' : ''}</option>`).join('')}</optgroup>` : ''}</select>` : '';
+    const sel = puede && !soloHuerto && !['carga', 'labor'].includes(r.tipo) ? `<select style="font-size:12px;padding:3px 4px;max-width:180px" onchange="envivoElegirAperoDia('${eqJs}','${k}',this.value)"><option value="">${envivoAperoElegido(eq, k) ? '✕ Quitar elección' : r.apero ? '¿Es otro apero?' : '¿Con qué apero anda?'}</option>${propios.length ? `<optgroup label="Aperos de ${escA(eq)}">${propios.map(n => `<option value="${escA(n)}"${envivoAperoElegido(eq, k) === n ? ' selected' : ''}>${escA(n)}${anchoDeApero(n) ? ' · ' + String(anchoDeApero(n)).replace('.', ',') + ' m' : ''}</option>`).join('')}</optgroup>` : ''}${otros.length ? `<optgroup label="Otros aperos">${otros.map(n => `<option value="${escA(n)}"${envivoAperoElegido(eq, k) === n ? ' selected' : ''}>${escA(n)}${anchoDeApero(n) ? ' · ' + String(anchoDeApero(n)).replace('.', ',') + ' m' : ''}</option>`).join('')}</optgroup>` : ''}</select>` : '';
     const ancho = puede && r.apero && r.sinAncho ? `<span style="white-space:nowrap">Ancho de ${escA(r.apero)}: <input type="number" min="0.5" max="60" step="0.5" inputmode="decimal" placeholder="m" style="width:64px;padding:3px 5px" onchange="envivoFijarAnchoApero('${envivoJs(r.apero)}', this.value)"> m</span>` : '';
     return `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:3px 0;color:${col}"><span style="min-width:38px;font-weight:700">${fDia(k)}</span><span style="flex:1;min-width:150px">${txt}${labs.length && r.tipo !== 'labor' ? ` <span style="color:var(--acero)">· en ${labs.length === 1 ? 'un potrero' : labs.length + ' potreros'} manda el apero del cuaderno</span>` : ''}</span>${sel}${ancho}</div>`;
   }).join('');
   return `<div style="background:#fff;border:1px solid var(--borde);border-radius:8px;padding:6px 8px;margin:6px 0;font-size:12px"><div style="font-weight:700;margin-bottom:2px">🧰 Apero y ancho de trabajo</div>${filas}
-    <div style="color:var(--acero);margin-top:2px">ha = recorrido × ancho. Huertos: la entrecalle. Otros potreros: el ancho del apero (del cuaderno, elegido aquí o anotado al cargar petróleo; si aún no hay, el último que usó).</div></div>`;
+    <div style="color:var(--acero);margin-top:2px">ha = recorrido × ancho. Huertos: la entrecalle. Otros potreros: el ancho del apero del cuaderno de campo o de la carga de petróleo; mientras no haya, el que elijas aquí o el último que usó. Se actualiza solo al cargar petróleo o llenar el cuaderno.</div></div>`;
 }
 window.envivoFijarApero = async function(nombre, v) {
   const n = parseFloat(String(v).replace(',', '.'));
@@ -7777,6 +7804,7 @@ function suscribirLaboresCampo() {
     recalcularLaboresCampoSeleccion();
     try { renderLaboresEnCurso(); } catch (e) { console.warn(e); }
     try { renderRevisionCampo(); } catch (e) { console.warn(e); }
+    try { envivoAlCambiarLabores(); } catch (e) { console.warn(e); }
   });
 }
 
