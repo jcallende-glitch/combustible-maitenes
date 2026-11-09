@@ -8379,7 +8379,11 @@ window.toggleCampoApero = function(a) {
 // labores_programadas/{id}: { datos (la labor tal como quedará en el cuaderno), potrero, lote, texto, fechaProgramada, equipos[],
 //   estado: 'pendiente' | 'en_curso' | 'terminada' | 'cancelada', laborId, aplicacionId, iniciada, iniciadaPor, avance{ 'fecha|equipo': {...} } }
 let campoProgramar = false, campoProgEquipos = [], tareasProg = [], tareasSubscrito = false, tareasVerTerminadas = false;
-const puedeProgramarTareas = () => isAdmin || isCampo || (Array.isArray(config.programanTareas) ? config.programanTareas : ['Nicolás Feris']).includes(currentUser);
+// Quiénes (además de admin y encargados de campo) programan, empiezan y terminan tareas. Se elige en «📅 Tareas programadas» (admin).
+// Se compara sin tildes ni mayúsculas; mientras no se haya elegido, vale para Nicolás (cualquier nombre que empiece con «Nicolás»/«Nico»).
+const normNombre = s => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+const esProgramadorTareas = n => { const x = normNombre(n); if (!x) return false; return Array.isArray(config.programanTareas) ? config.programanTareas.some(p => normNombre(p) === x) : /^nico(las)?( |$)/.test(x); };
+const puedeProgramarTareas = () => isAdmin || isCampo || esProgramadorTareas(currentUser);
 const TIPOS_NO_PROGRAMABLES = ['siembra', 'riego', 'cosecha'];
 const equiposAplicacion = () => Array.isArray(config.equiposAplicacion) ? config.equiposAplicacion : (config.equipos || []).filter(e => /5090|5076/.test(e));
 function textoTarea(d) {
@@ -8469,8 +8473,31 @@ window.renderTareas = function() {
     ${term.length ? `<button type="button" class="btn btn-secondary btn-full" style="margin-top:4px" onclick="togTareasTerminadas()">${tareasVerTerminadas ? '▲ Ocultar' : '▼ Ver'} terminadas (${term.length})</button>${tareasVerTerminadas ? '<div style="margin-top:8px">' + term.map(tarjeta).join('') + '</div>' : ''}` : ''}
     ${isAdmin ? `<details style="margin-top:10px"><summary style="cursor:pointer;font-size:13px">⚙️ Equipos que solo usan el modo tractor con una tarea (${escA(eqsAp.join(', ') || 'ninguno')})</summary>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">${[...(config.equipos || [])].filter(e => !/otro/i.test(e)).sort((a, b) => a.localeCompare(b, 'es')).map(e => `<button type="button" class="cultivo-chip ${eqsAp.includes(e) ? 'sel' : ''}" onclick="togEquipoAplicacion('${escA(e).replace(/'/g, "\\'")}')">${eqsAp.includes(e) ? '✓ ' : ''}${escA(e)}</button>`).join('')}</div>
-      <div class="hint">Estos equipos no pueden trabajar en el modo tractor (aplicación, trincha u otro) sin una tarea programada asignada a ellos.</div></details>` : ''}
+      <div class="hint">Estos equipos no pueden trabajar en el modo tractor (aplicación, trincha u otro) sin una tarea programada asignada a ellos.</div></details>
+    ${htmlProgramadoresTareas()}` : ''}
   </div>`;
+};
+// ── Admin: quiénes programan y empiezan tareas (solo nombres; los PIN no se muestran) ──
+let nombresCampoTareas = null, programadoresAbierto = false;
+function candidatosProgramadores() {
+  const n = new Set([...(config.operadores || []), ...Object.keys(equipoOperadorConfig || {}), ...(nombresCampoTareas || []), ...(Array.isArray(config.programanTareas) ? config.programanTareas : [])]);
+  return [...n].filter(x => x && !/especificar|otro/i.test(x) && x !== ADMIN_NOMBRE && !ADMINS_EQUIVALENTES.includes(x)).sort((a, b) => a.localeCompare(b, 'es'));
+}
+function htmlProgramadoresTareas() {
+  if (!isAdmin) return '';
+  if (nombresCampoTareas == null) { nombresCampoTareas = []; getPinesCampo().then(p => { nombresCampoTareas = Object.keys(p || {}); renderTareas(); }).catch(() => {}); }
+  const cands = candidatosProgramadores(), sel = cands.filter(esProgramadorTareas);
+  return `<details ${programadoresAbierto ? 'open' : ''} ontoggle="setProgramadoresAbierto(this.open)" style="margin-top:10px"><summary style="cursor:pointer;font-size:13px">👤 Quiénes programan y empiezan tareas (${escA(sel.join(', ') || 'nadie más')})</summary>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">${cands.map((e, i) => `<button type="button" class="cultivo-chip ${sel.includes(e) ? 'sel' : ''}" onclick="togProgramadorTareas(${i})">${sel.includes(e) ? '✓ ' : ''}${escA(e)}</button>`).join('')}</div>
+    <div class="hint">Además de los administradores y los encargados de campo. Ven «▶ Empezar», «＋ Sumar un día», «🏁 Terminar» y pueden programar tareas. Para que le aparezca, tiene que volver a abrir la app.</div></details>`;
+}
+window.setProgramadoresAbierto = v => { programadoresAbierto = !!v; };
+window.togProgramadorTareas = async function(i) {
+  const cands = candidatosProgramadores(), e = cands[i]; if (!e) return;
+  const actual = cands.filter(esProgramadorTareas);
+  config.programanTareas = actual.includes(e) ? actual.filter(x => x !== e) : [...actual, e];
+  programadoresAbierto = true; renderTareas();
+  try { await setDoc(doc(db, 'config', 'datos'), { programanTareas: config.programanTareas }, { merge: true }); toast('✓ Guardado', true); } catch (er) { toast('Error: ' + er.message, false); }
 };
 window.togTareasTerminadas = () => { tareasVerTerminadas = !tareasVerTerminadas; renderTareas(); };
 // ── 🚜 Por tractor: eliges el equipo y marcas sus tareas pendientes y labores en curso para sumarlas al cuaderno ese día ──
@@ -8988,7 +9015,7 @@ async function hilerasDelDiaVarios(pot, eqs, dia) {
 let HILC = null; // { id, l, res: {dia: resultado} }
 // ── Entrecalles trabajadas SIN registro (la app se conectó tarde, celular apagado…): las marca el administrador o Nicolás.
 // Su superficie y sus horas se suman al día, así el ha/h del día las incluye sin quedar inflado.
-const puedeMarcarSinRegistro = () => isAdmin || (Array.isArray(config.programanTareas) ? config.programanTareas : ['Nicolás Feris']).includes(currentUser);
+const puedeMarcarSinRegistro = () => isAdmin || esProgramadorTareas(currentUser);
 const haTotDia = r => (Number(r && r.ha) || 0) + (Number(r && r.haManual) || 0);
 const hTotDia = r => (Number(r && r.horas) || 0) + (Number(r && r.horasSinReg) || 0);
 const haHDia = r => { const a = haTotDia(r), h = hTotDia(r); return a && h > 0.05 ? Math.round(a / h * 100) / 100 : null; };
