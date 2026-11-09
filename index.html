@@ -1778,7 +1778,8 @@ window.togTractorAplicacion = async function(e) {
   envivoRenderRuta();
   try { await setDoc(doc(db, 'config', 'datos'), { tractoresAplicacion: config.tractoresAplicacion }, { merge: true }); toast('✓ Guardado', true); } catch (er) { toast('Error: ' + er.message, false); }
 };
-function envivoCalcular(puntos, aplic, anchoFijo) {
+function envivoCalcular(puntos, aplic, anchoFijo) { // anchoFijo: número, o función (potrero) → { w, apero, fuente }
+  const wCache = {};
   const pots = (potrerosConfig || []).filter(p => poligonoValido(p.poligono)).map(p => ({ nombre: p.nombre, poly: jdpNormPoligono(p.poligono) }));
   const dePot = (lat, lng) => { const q = pots.find(p => jdpPuntoEnPoligono(lat, lng, p.poly)); return q ? q.nombre : null; };
   const zona = z => ({ nombre: z.nombre, centro: z.centro, radio: z.radio, poly: z.poligono ? jdpNormPoligono(z.poligono) : null });
@@ -1841,12 +1842,13 @@ function envivoCalcular(puntos, aplic, anchoFijo) {
       clase = 'trabajo';
       tr.mov += dt; tr.km += m / 1000; tr.total += dt;
       tr.trabajo += dt; tr.kmTrabajo += m / 1000;
-      const w = anchoFijo || envivoAnchoPotrero(pot), ha = m * w / 10000;
+      const wi = typeof anchoFijo === 'function' ? (wCache[pot] || (wCache[pot] = anchoFijo(pot))) : null;
+      const w = wi ? wi.w : (anchoFijo || envivoAnchoPotrero(pot)), ha = m * w / 10000;
       tr.ha += ha;
-      const pp = tr.porPot[pot] || (tr.porPot[pot] = { ms: 0, ha: 0, w });
+      const pp = tr.porPot[pot] || (tr.porPot[pot] = { ms: 0, ha: 0, w, wi });
       pp.ms += dt; pp.ha += ha;
       sumaCiclo('trabajo', dt, b, ha);
-      tr.tramos.push({ a, b, clase, pot, w }); continue;
+      tr.tramos.push({ a, b, clase, pot, w, wi }); continue;
     } else { clase = 'traslado'; if (cuenta) { tr.total += dt; tr.mov += dt; tr.km += m / 1000; tr.traslado += dt; sumaCiclo('traslado', dt, b); } }
     tr.tramos.push({ a, b, clase, pot });
   }
@@ -1915,8 +1917,8 @@ function envivoDibujarRuta(tr, puntos, capa, colorEq) {
   const corridas = []; let run = null;
   tramos.forEach(t => {
     if (t.clase !== 'trabajo') { run = null; return; }
-    if (run && run.pot === t.pot && run.pts[run.pts.length - 1] === t.a) run.pts.push(t.b);
-    else { run = { pot: t.pot, w: t.w, pts: [t.a, t.b] }; corridas.push(run); }
+    if (run && run.pot === t.pot && run.w === t.w && run.pts[run.pts.length - 1] === t.a) run.pts.push(t.b);
+    else { run = { pot: t.pot, w: t.w, wi: t.wi, pts: [t.a, t.b] }; corridas.push(run); }
   });
   if (envivoVer.trabajo && envivoForma === 'linea') { // cada tramo GPS que se suma a las hectáreas, como línea
     tramos.filter(t => t.clase === 'trabajo').forEach(t => L.polyline([[t.a.lat, t.a.lng], [t.b.lat, t.b.lng]], { color: contado ? '#16A34A' : '#EAB308', weight: 3, opacity: 0.95, interactive: false }).addTo(envivoRutaCapa));
@@ -1955,7 +1957,7 @@ function envivoDibujarRuta(tr, puntos, capa, colorEq) {
         const pa = [A[0] + ux * t0, A[1] + uy * t0], pb = [A[0] + ux * t1, A[1] + uy * t1];
         const poly = [[pa[0] + nx, pa[1] + ny], [pb[0] + nx, pb[1] + ny], [pb[0] - nx, pb[1] - ny], [pa[0] - nx, pa[1] - ny]].map(q => P0.ll(q[0], q[1]));
         L.polygon(poly, { stroke: false, fillColor: contado ? '#16A34A' : hilColorVel(vs[k]), fillOpacity: contado ? 0.6 : 0.55 }).addTo(envivoRutaCapa)
-          .bindTooltip(`<b>${c.pot}</b><br>ancho ${String(w).replace('.', ',')} m · pasada de ${L2.toFixed(0)} m<br>${vs[k] != null ? vs[k].toFixed(1).replace('.', ',') + ' km/h aquí' : ''}${h > 0 ? ' · prom. ' + (km / h).toFixed(1).replace('.', ',') + ' km/h' : ''} · ${hora}`, { sticky: true });
+          .bindTooltip(`<b>${c.pot}</b><br>ancho ${String(w).replace('.', ',')} m${c.wi ? ' · ' + (c.wi.apero ? escA(c.wi.apero) + (c.wi.tipo === 'supuesto' ? ' (supuesto)' : '') + (c.wi.sinAncho ? ' (sin ancho anotado)' : '') : c.wi.tipo === 'cultivo' ? 'entrecalle' : 'por defecto, sin apero') : ''} · pasada de ${L2.toFixed(0)} m<br>${vs[k] != null ? vs[k].toFixed(1).replace('.', ',') + ' km/h aquí' : ''}${h > 0 ? ' · prom. ' + (km / h).toFixed(1).replace('.', ',') + ' km/h' : ''} · ${hora}`, { sticky: true });
       }
       L.polyline([P0.ll(A[0], A[1]), P0.ll(B[0], B[1])], { color: '#111827', weight: 1, opacity: 0.55, interactive: false }).addTo(envivoRutaCapa); // eje de la pasada
     });
@@ -1970,7 +1972,7 @@ const envivoH = ms => { const m = Math.round(ms / 60000); return m >= 60 ? `${Ma
 const ES_CARRETA_GASPARDO = /carreta.*gaspardo|gaspardo.*carreta|gaspardo.*barra|barra.*gaspardo/i;
 const CAPACIDAD_APEROS_DEFAULT = [[ES_CARRETA_GASPARDO, 3000]];
 const ANCHO_APEROS_DEFAULT = [[ES_CARRETA_GASPARDO, 24]];
-const anchoDeApero = n => { const c = (config.anchoAperos || {})[n]; if (Number(c) > 0) return Number(c); const dflt = ANCHO_APEROS_DEFAULT.find(([re]) => re.test(String(n || ''))); return dflt ? dflt[1] : 0; };
+const anchoDeApero = n => { const ac = (aperosConfig || []).find(a => a.nombre === n); if (ac && Number(ac.ancho) > 0) return Number(ac.ancho); const c = (config.anchoAperos || {})[n]; if (Number(c) > 0) return Number(c); const dflt = ANCHO_APEROS_DEFAULT.find(([re]) => re.test(String(n || ''))); return dflt ? dflt[1] : 0; };
 // Ancho de trabajo de ese día según el apero anotado al cargar petróleo (0 = el ancho del huerto o cultivo de cada potrero)
 const envivoAnchoDia = (eq, dia, d) => { const ap = ((d.aperosDia || {})[dia] || []).find(a => anchoDeApero(a) > 0); return ap ? anchoDeApero(ap) : 0; };
 const litrosDeApero = n => { const c = (config.capacidadAperos || {})[n]; if (Number(c) > 0) return Number(c); const dflt = CAPACIDAD_APEROS_DEFAULT.find(([re]) => re.test(String(n || ''))); if (dflt) return dflt[1]; const m = String(n || '').match(/(\d{3,5})\s*(?:l\b|lts?\b|litros)?/i); const v = m ? +m[1] : 0; return v >= 100 && v <= 20000 ? v : 0; };
@@ -2001,9 +2003,80 @@ function envivoEstanque(eq, dia, d) {
 window.envivoFijarAnchoApero = async function(nombre, v) {
   const n = parseFloat(String(v).replace(',', '.'));
   config.anchoAperos = { ...(config.anchoAperos || {}) }; if (n > 0) config.anchoAperos[nombre] = n; else delete config.anchoAperos[nombre];
+  const ac = (aperosConfig || []).find(a => a.nombre === nombre); // el mismo ancho queda en Equipos y aperos → Rendimiento
+  if (ac) { ac.ancho = n > 0 ? n : null; config.aperos = aperosConfig; }
   envivoRenderRuta();
-  try { await setDoc(doc(db, 'config', 'datos'), { anchoAperos: config.anchoAperos }, { merge: true }); toast('✓ Ancho de ' + nombre + ' guardado', true); } catch (e) { toast('Error: ' + e.message, false); }
+  try { await setDoc(doc(db, 'config', 'datos'), ac ? { anchoAperos: config.anchoAperos, aperos: aperosConfig } : { anchoAperos: config.anchoAperos }, { merge: true }); toast('✓ Ancho de ' + nombre + ' guardado', true); } catch (e) { toast('Error: ' + e.message, false); }
 };
+// ── Ancho de trabajo ──
+// Plantaciones (huertos): el ancho predefinido de la entrecalle. Potreros sin ancho predefinido: el del apero que anda ocupando ese día:
+// 1) el de la labor del cuaderno en ese potrero ese día · 2) el elegido aquí para ese día · 3) el anotado al cargar petróleo ese día
+// 4) si aún no hay, se asume el último que usó · 5) el ancho general
+const aperoValido = a => a && !/^otro|^libre/i.test(a);
+const envivoAperoElegido = (eq, dia) => (config.aperoDelDia || {})[eq + '|' + dia] || '';
+function envivoAnchoTrabajo(eq, dia, pot, d) {
+  const mayor = lista => lista.filter(a => anchoDeApero(a) > 0).sort((x, y) => anchoDeApero(y) - anchoDeApero(x))[0];
+  const wc = pot ? envivoAnchoCultivo(pot) : 0;
+  if (wc) return { w: wc, apero: '', tipo: 'cultivo', fuente: 'entrecalle del huerto' };
+  if (pot) {
+    const labs = (laboresCampoTodos || []).filter(l => l.potrero === pot && ((equiposPorDia(l)[dia] || []).some(x => x.equipo === eq) || (l.equipo === eq && diasDeLabor(l).includes(dia))));
+    const ap = mayor(labs.flatMap(l => l.aperos || []));
+    if (ap) return { w: anchoDeApero(ap), apero: ap, tipo: 'labor', fuente: 'cuaderno de campo' };
+  }
+  const eleg = envivoAperoElegido(eq, dia);
+  if (eleg) return anchoDeApero(eleg) > 0 ? { w: anchoDeApero(eleg), apero: eleg, tipo: 'elegido', fuente: 'elegido aquí' } : envivoAnchoSinApero(eq, dia, pot, eleg, 'elegido');
+  const delDia = ((d && d.aperosDia) || {})[dia] || [];
+  const apC = mayor(delDia);
+  if (apC) return { w: anchoDeApero(apC), apero: apC, tipo: 'carga', fuente: 'carga de petróleo' };
+  if (delDia.length) return envivoAnchoSinApero(eq, dia, pot, delDia[0], 'carga');
+  const prev = ((d && d.histAperos) || []).find(x => x.fecha < dia && x.aperos.length);
+  if (prev) { const a = mayor(prev.aperos) || prev.aperos[0]; return anchoDeApero(a) > 0 ? { w: anchoDeApero(a), apero: a, tipo: 'supuesto', fuente: 'supuesto: el último que usó (' + prev.fecha.slice(8, 10) + '-' + prev.fecha.slice(5, 7) + ')', fechaPrev: prev.fecha } : envivoAnchoSinApero(eq, dia, pot, a, 'supuesto', prev.fecha); }
+  return { w: envivoAncho || 5, apero: '', tipo: 'defecto', fuente: 'por defecto: no sé con qué apero anda' };
+}
+// Se sabe el apero pero no su ancho: se usa la entrecalle (huertos) o el ancho general hasta que se anote
+function envivoAnchoSinApero(eq, dia, pot, apero, tipo, fechaPrev) {
+  return { w: envivoAncho || 5, apero, tipo, sinAncho: true, fechaPrev, fuente: (tipo === 'supuesto' ? 'supuesto ' : '') + apero + ' sin ancho anotado: se usa el ancho general' };
+}
+// Ancho propio del cultivo del potrero (huertos: entrecalle). 0 = no tiene
+function envivoAnchoCultivo(nombre) {
+  const tabla = envivoAnchosCultivo || { 'Avellanos': 5, 'Cerezos': 4.5 };
+  const norm = t => String(t || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().replace(/e?s$/, '');
+  const c = typeof jdpCultivoDePotrero === 'function' ? jdpCultivoDePotrero(nombre) : '';
+  if (c) { const k = Object.keys(tabla).find(x => norm(x) === norm(c)); if (k && Number(tabla[k]) > 0) return Number(tabla[k]); }
+  return 0;
+}
+window.envivoElegirAperoDia = async function(eq, dia, apero) {
+  const lim = envivoDiaStr(Date.now() - 21 * 86400000), m = {};
+  Object.entries(config.aperoDelDia || {}).forEach(([k, v]) => { if (k.split('|')[1] >= lim) m[k] = v; }); // solo las últimas 3 semanas
+  if (apero) m[eq + '|' + dia] = apero; else delete m[eq + '|' + dia];
+  config.aperoDelDia = m;
+  envivoRenderRuta();
+  try { await updateDoc(doc(db, 'config', 'datos'), { aperoDelDia: m }); toast(apero ? '✓ ' + eq + ' anda con ' + apero : '✓ Elección quitada', true); } catch (e) { toast('Error: ' + e.message, false); }
+};
+// Bloque "con qué apero anda": por día, de dónde sale el ancho y para elegir o anotar el ancho
+function envivoAperoHtml(eq, d, dd) {
+  const eqJs = envivoJs(eq), puede = isAdmin;
+  const propios = (aperosConfig || []).filter(a => Array.isArray(a.equipos) && a.equipos.includes(eq)).map(a => a.nombre);
+  const otros = (aperosConfig || []).map(a => a.nombre).filter(n => !propios.includes(n));
+  const fDia = k => k === envivoDiaStr(Date.now()) ? 'Hoy' : k.slice(8, 10) + '-' + k.slice(5, 7);
+  const filas = dd.slice().reverse().map(({ k, tr }) => {
+    // lo que se usó en los potreros de ese día (el que tuvo más tiempo, o el que tiene un problema); sin potreros: lo que se usaría
+    const wis = Object.values(tr.porPot || {}).filter(v => v.wi).sort((a, b) => b.ms - a.ms).map(v => v.wi);
+    const r = wis.find(x => x.tipo === 'defecto' || x.sinAncho) || wis[0] || envivoAnchoTrabajo(eq, k, null, d);
+    const varia = new Set(wis.map(x => x.w + '|' + (x.apero || x.tipo))).size > 1;
+    const labs = wis.filter(x => x.tipo === 'labor');
+    const col = r.tipo === 'defecto' || r.sinAncho ? '#B45309' : r.tipo === 'supuesto' ? '#1D4ED8' : 'inherit';
+    const soloHuerto = r.tipo === 'cultivo' && !varia;
+    const txt = (r.tipo === 'cultivo' ? `Huerto: ancho de la entrecalle, ${String(r.w).replace('.', ',')} m`
+      : r.apero ? `<b>${escA(r.apero)}</b> · ${r.sinAncho ? '<span style="color:#B45309">sin ancho anotado, uso ' + String(r.w).replace('.', ',') + ' m</span>' : String(r.w).replace('.', ',') + ' m'} <span style="color:var(--acero)">(${escA(r.tipo === 'supuesto' ? 'supuesto: el último que usó, ' + (r.fechaPrev || '').slice(8, 10) + '-' + (r.fechaPrev || '').slice(5, 7) : r.tipo === 'carga' ? 'anotado al cargar petróleo' : r.tipo === 'elegido' ? 'elegido aquí' : r.tipo === 'labor' ? 'del cuaderno de campo' : r.fuente)})</span>`
+      : `<span style="color:#B45309">No sé con qué apero anda: uso ${String(r.w).replace('.', ',')} m</span>`) + (varia ? ' <span style="color:var(--acero)">· varía por potrero (ver tabla)</span>' : '');
+    const sel = puede && !soloHuerto ? `<select style="font-size:12px;padding:3px 4px;max-width:180px" onchange="envivoElegirAperoDia('${eqJs}','${k}',this.value)"><option value="">${envivoAperoElegido(eq, k) ? '✕ Quitar elección' : r.apero ? '¿Es otro apero?' : '¿Con qué apero anda?'}</option>${propios.length ? `<optgroup label="Aperos de ${escA(eq)}">${propios.map(n => `<option value="${escA(n)}"${envivoAperoElegido(eq, k) === n ? ' selected' : ''}>${escA(n)}${anchoDeApero(n) ? ' · ' + String(anchoDeApero(n)).replace('.', ',') + ' m' : ''}</option>`).join('')}</optgroup>` : ''}${otros.length ? `<optgroup label="Otros aperos">${otros.map(n => `<option value="${escA(n)}"${envivoAperoElegido(eq, k) === n ? ' selected' : ''}>${escA(n)}${anchoDeApero(n) ? ' · ' + String(anchoDeApero(n)).replace('.', ',') + ' m' : ''}</option>`).join('')}</optgroup>` : ''}</select>` : '';
+    const ancho = puede && r.apero && r.sinAncho ? `<span style="white-space:nowrap">Ancho de ${escA(r.apero)}: <input type="number" min="0.5" max="60" step="0.5" inputmode="decimal" placeholder="m" style="width:64px;padding:3px 5px" onchange="envivoFijarAnchoApero('${envivoJs(r.apero)}', this.value)"> m</span>` : '';
+    return `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:3px 0;color:${col}"><span style="min-width:38px;font-weight:700">${fDia(k)}</span><span style="flex:1;min-width:150px">${txt}${labs.length && r.tipo !== 'labor' ? ` <span style="color:var(--acero)">· en ${labs.length === 1 ? 'un potrero' : labs.length + ' potreros'} manda el apero del cuaderno</span>` : ''}</span>${sel}${ancho}</div>`;
+  }).join('');
+  return `<div style="background:#fff;border:1px solid var(--borde);border-radius:8px;padding:6px 8px;margin:6px 0;font-size:12px"><div style="font-weight:700;margin-bottom:2px">🧰 Apero y ancho de trabajo</div>${filas}
+    <div style="color:var(--acero);margin-top:2px">ha = recorrido × ancho. Huertos: la entrecalle. Otros potreros: el ancho del apero (del cuaderno, elegido aquí o anotado al cargar petróleo; si aún no hay, el último que usó).</div></div>`;
+}
 window.envivoFijarApero = async function(nombre, v) {
   const n = parseFloat(String(v).replace(',', '.'));
   config.capacidadAperos = { ...(config.capacidadAperos || {}) }; if (n > 0) config.capacidadAperos[nombre] = n; else delete config.capacidadAperos[nombre];
@@ -2106,12 +2179,12 @@ function envivoPanelRuta(d) {
   const porDia = {};
   puntos.forEach(p => { const k = envivoDiaStr(p.t); (porDia[k] = porDia[k] || []).push(p); });
   const esAplic = tractoresAplicacion().includes(eq);
-  const dd = Object.keys(porDia).sort().map(k => ({ k, tr: envivoCalcular(porDia[k], esAplic, esAplic ? envivoAnchoDia(eq, k, d) : 0), t: porDia[k][0].t }));
+  const dd = Object.keys(porDia).sort().map(k => ({ k, tr: envivoCalcular(porDia[k], esAplic, pot => envivoAnchoTrabajo(eq, k, pot, d)), t: porDia[k][0].t }));
   const tot = { ha: 0, trabajo: 0, detenido: 0, mov: 0, traslado: 0, carga: 0, bodega: 0, sinDatos: 0, jornada: 0, nCargas: 0, km: 0, kmTrabajo: 0, porPot: {}, porCarga: {} };
   dd.forEach(({ tr }) => {
     ['ha', 'trabajo', 'detenido', 'mov', 'traslado', 'carga', 'bodega', 'sinDatos', 'jornada', 'nCargas', 'km', 'kmTrabajo'].forEach(c => tot[c] += tr[c]);
     Object.entries(tr.porCarga || {}).forEach(([n, ms]) => tot.porCarga[n] = (tot.porCarga[n] || 0) + ms);
-    Object.entries(tr.porPot).forEach(([n, v]) => { const q = tot.porPot[n] || (tot.porPot[n] = { ms: 0, ha: 0, w: v.w }); q.ms += v.ms; q.ha += v.ha; });
+    Object.entries(tr.porPot).forEach(([n, v]) => { const q = tot.porPot[n] || (tot.porPot[n] = { ms: 0, ha: 0, w: v.w, wi: v.wi }); q.ms += v.ms; q.ha += v.ha; });
   });
   const enc = envivoDibujarRuta({ tramos: dd.flatMap(x => x.tr.tramos) }, puntos, capa, colEq);
   // Diagnóstico de datos: cuántos puntos llegaron y cuánto tiempo quedó sin cubrir por huecos
@@ -2126,7 +2199,7 @@ function envivoPanelRuta(d) {
   const hTrab = tot.trabajo / 3600000 + sinReg.h;
   const haH = hTrab > 0.05 ? (tot.ha + sinReg.ha) / hTrab : null;
   const th = 'text-align:right;padding:3px 4px';
-  const filasPot = Object.entries(tot.porPot).sort((a, b) => b[1].ms - a[1].ms).map(([n, v]) => `<tr><td style="padding:3px 4px">${n}<span style="color:var(--acero);font-size:11px"> · ${String(v.w).replace('.', ',')} m</span></td><td style="${th}">${envivoH(v.ms)}</td><td style="${th}">${f1(v.ha)}</td><td style="${th}"><strong>${v.ms > 180000 ? f1(v.ha / (v.ms / 3600000)) : '—'}</strong></td></tr>`).join('');
+  const filasPot = Object.entries(tot.porPot).sort((a, b) => b[1].ms - a[1].ms).map(([n, v]) => `<tr><td style="padding:3px 4px">${n}<span style="color:${v.wi && (v.wi.tipo === 'defecto' || v.wi.sinAncho) ? '#B45309' : 'var(--acero)'};font-size:11px"> · ${String(v.w).replace('.', ',')} m${v.wi ? (v.wi.apero ? ' ' + escA(v.wi.apero) + (v.wi.tipo === 'supuesto' ? ' (supuesto)' : '') : v.wi.tipo === 'cultivo' ? ' entrecalle' : ' (sin apero)') : ''}</span></td><td style="${th}">${envivoH(v.ms)}</td><td style="${th}">${f1(v.ha)}</td><td style="${th}"><strong>${v.ms > 180000 ? f1(v.ha / (v.ms / 3600000)) : '—'}</strong></td></tr>`).join('');
   const filasDia = dd.length > 1 ? dd.slice().reverse().map(({ tr, t }) => { const h = tr.trabajo / 3600000; return `<tr><td style="padding:3px 4px">${fDia(t)}</td><td style="${th}">${tr.jornada ? envivoH(tr.jornada) : '—'}</td><td style="${th}">${tr.jornada ? Math.round(tr.trabajo / tr.jornada * 100) + '%' : envivoH(tr.trabajo)}</td><td style="${th}">${tr.jornada ? Math.round(tr.traslado / tr.jornada * 100) + '%' : envivoH(tr.traslado)}</td><td style="${th}">${tr.jornada ? Math.round(tr.carga / tr.jornada * 100) + '%' : envivoH(tr.carga)}${tr.nCargas ? ' (' + tr.nCargas + ')' : ''}</td><td style="${th}">${tr.jornada ? Math.round(tr.detenido / tr.jornada * 100) + '%' : envivoH(tr.detenido)}</td><td style="${th}">${f1(tr.ha)}</td><td style="${th}"><strong>${h > 0.05 ? f1(tr.ha / h) : '—'}</strong></td></tr>`; }).join('') : '';
   const html = `<div style="background:var(--fondo);border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:13px">
     <div style="display:flex;align-items:center;gap:8px"><strong style="flex:1">${punto}${fuente === 'celular' ? '📱' : '📡'} ${escA(eq)} · ${dias === 0 ? 'recorrido de hoy' : 'últimos ' + (dias + 1) + ' días'}</strong>
@@ -2151,6 +2224,7 @@ function envivoPanelRuta(d) {
     ${sinReg.n ? `<div style="font-size:12px;color:#7C3AED">✏️ + ${f1(sinReg.ha)} ha y ${f1(sinReg.h)} h sin registro marcadas en el cuaderno (🌳 Hileras por día): ya están sumadas en el ha/h.</div>` : ''}
     ${respaldo}
     ${fuenteEq}
+    ${envivoAperoHtml(eq, d, dd)}
     <div style="font-size:11px;color:var(--acero);margin-top:4px">🔎 Datos recibidos (${envivoNomFuente(fuente)}): ${diagTxt}</div>
     ${filasDia ? `<table style="width:100%;min-width:0;font-size:12px;margin-top:6px;border-collapse:collapse"><thead><tr><th style="text-align:left;padding:3px 4px">Día</th><th style="${th}">Jornada</th><th style="${th}">Trab.</th><th style="${th}">Trasl.</th><th style="${th}">Carga</th><th style="${th}">Det.</th><th style="${th}">ha</th><th style="${th}">ha/h</th></tr></thead><tbody>${filasDia}</tbody></table>` : ''}
     ${filasPot ? `<table style="width:100%;min-width:0;font-size:12px;margin-top:6px;border-collapse:collapse"><thead><tr><th style="text-align:left;padding:3px 4px">Potrero · ancho${dd.length > 1 ? ' (todos los días)' : ''}</th><th style="${th}">Tiempo</th><th style="${th}">ha</th><th style="${th}">ha/h</th></tr></thead><tbody>${filasPot}</tbody></table>` : ''}
@@ -2280,9 +2354,15 @@ async function envivoCargarRuta(eq) {
     if (!envivoZonasListas) { await jdpCargarZonas(); envivoZonasListas = true; envivoDibujarZonas(); }
     const { puntos, fuente, pref } = await envivoPuntosDelDia(eq, dias);
     if (!envivoSel.includes(eq) || envivoRutaDias !== dias) return; // cambió mientras cargaba
-    const aperosDia = tractoresAplicacion().includes(eq) ? await envivoAperosDelEquipo(eq, [...new Set(puntos.map(p => envivoDiaStr(p.t)))]) : {};
+    const aperosDia = await envivoAperosDelEquipo(eq, [...new Set(puntos.map(p => envivoDiaStr(p.t)))]);
+    if (!laboresCampoSubscrito) { try { suscribirLaboresCampo(); } catch (e) { console.warn(e); } }
+    let histAperos = [];
+    try { // últimas cargas del equipo: si hoy aún no hay apero anotado, se asume el último que usó
+      const sn = await getDocs(query(collection(db, 'registros'), where('equipo', '==', eq), orderBy('ts', 'desc'), limit(30)));
+      histAperos = sn.docs.map(x => x.data()).map(r => ({ fecha: r.fecha || '', aperos: (Array.isArray(r.aperos) && r.aperos.length ? r.aperos : (r.apero ? [r.apero] : [])).filter(aperoValido) })).filter(x => x.fecha).sort((a, b) => b.fecha.localeCompare(a.fecha));
+    } catch (e) { console.warn('aperos anteriores', e); }
     if (tractoresAplicacion().includes(eq) && !envivoHist[eq]) envivoCargarHist(eq);
-    envivoRutas[eq] = { eq, puntos, fuente, dias, pref, fuenteN: envivoFuenteN, aperosDia };
+    envivoRutas[eq] = { eq, puntos, fuente, dias, pref, fuenteN: envivoFuenteN, aperosDia, histAperos };
   } catch (e) { envivoRutas[eq] = null; toast('No se pudo cargar el recorrido de ' + eq + ': ' + e.message, false); }
   finally { delete envivoCargando[eq]; envivoPintarCargando(); }
   envivoRenderRuta();
@@ -14375,7 +14455,8 @@ function initInventario() {
   cargarSagAbejasRemoto();
   if (!permisosInvCargados) cargarPermisosInv().then(() => { renderInventarioTabla(); renderInventarioHeader(); });
   suscribirProductosInv();
-  if (inventarioInicializado) { renderInventarioTabla(); renderAlertasInv(); renderStatsInv(); renderIngresosInv(); return; }
+  suscribirDteInv();
+  if (inventarioInicializado) { renderInventarioTabla(); renderAlertasInv(); renderStatsInv(); renderIngresosInv(); renderDteRecibidosInv(); return; }
   inventarioInicializado = true;
   renderInventarioHeader();
   unsubIngresosInv = onSnapshot(query(collection(dbInv, "ingresos"), orderBy("ts", "desc")), snap => {
@@ -15454,10 +15535,15 @@ window.confirmarIngresoInv = async function() {
     }
     const fotoIds = [];
     for (const f of fotosIngresoInv) { const r = await addDoc(collection(dbInv, "docs_fotos"), { tipo: 'ingreso', data: f, ts: Date.now(), por: currentUser || "" }); fotoIds.push(r.id); }
-    await addDoc(collection(dbInv, "ingresos"), {
+    // Si vino de un XML recibido, queda enlazado (solo si el N° sigue siendo el del documento)
+    const dteLig = dteIngresoActualId && dteRecibidosInv.find(x => x.id === dteIngresoActualId && (nroDocumento.match(/\d+/g) || []).some(n => Number(n) === Number(x.folio))) ? dteIngresoActualId : '';
+    const refIngreso = await addDoc(collection(dbInv, "ingresos"), {
+      ...(dteLig ? { dteId: dteLig } : {}),
       proveedor, nroDocumento, bodega: [...new Set(items.map(it => it.bodega))].length === 1 ? items[0].bodega : 'Varias', items: items.map(({ _pid, ...r }) => r), itemsPendientes: nuevos, fotoIds, recibe: (document.getElementById('inv-ingreso-recibe') || {}).value || '',
       fecha: new Date().toISOString(), ts: Date.now(), por: currentUser || "",
     });
+    if (dteLig) { try { await updateDoc(doc(dbInv, 'dte_recibidos', dteLig), { estado: 'ingresado', ingresoId: refIngreso.id, ingresadoPor: currentUser || '', ingresadoTs: Date.now() }); } catch (e) { console.warn('dte', e); } }
+    dteIngresoActualId = null;
     fotosIngresoInv = []; renderFotosIngresoInv(); cerrarModalInv('modal-inv-ingreso-confirm');
     { const av = document.getElementById('inv-ingreso-ia-aviso'); if (av) av.innerHTML = ''; }
     itemsIngresoInv = [{nombre:'',cantidad:1,unidad:'L',precioUnitario:0}]; totalDocIAInv = 0;
@@ -15476,7 +15562,7 @@ function bodegaItemIngreso(it, ing) {
 }
 function renderIngresosInv() {
   const tabBtn = document.getElementById("tab-inv-ingresos");
-  if (tabBtn) tabBtn.textContent = `📥 Ingresos${ingresosInv.length ? ` (${ingresosInv.length})` : ""}`;
+  if (tabBtn) tabBtn.textContent = `📥 Ingresos${ingresosInv.length ? ` (${ingresosInv.length})` : ""}${verValoresInv() && pendientesDteInv() ? ` · 📨 ${pendientesDteInv()}` : ''}`;
   const pendientes = ingresosInv.filter(i => (i.itemsPendientes||[]).length > 0);
   const panel = document.getElementById("inv-panel-pendientes");
   if (panel) {
@@ -15504,6 +15590,499 @@ function renderIngresosInv() {
         return `<span class="badge" style="background:${pend?"var(--amarillo-suave)":"var(--verde-suave)"};color:${pend?"#92400E":"var(--verde)"}">${pend?"⚠️ ":""}${it.nombre} · ${it.cantidad} ${it.unidad}${ing.bodega === 'Varias' && it.bodega ? ' · ' + it.bodega.replace('Bodega ', '') : ''}</span>`;
       }).join("")}</div>
     </div>`).join("");
+}
+
+// ═══════════════════════════════════════════════════════════
+// FACTURAS Y GUÍAS RECIBIDAS (XML del SII)
+// La empresa recibe con el sistema gratuito del SII: los proveedores mandan el XML a la casilla del SII
+// y queda en "Ver documentos recibidos". Aquí se importan esos XML (respaldo del SII, correo del proveedor)
+// o se traen solos con /api/dte-recibidos (API Gateway), y se pasan al ingreso de bodega con los datos exactos.
+// ═══════════════════════════════════════════════════════════
+const URL_DTE_SII = '/api/dte-recibidos';
+const TIPOS_DTE_INV = { 33: 'Factura electrónica', 34: 'Factura exenta', 39: 'Boleta', 41: 'Boleta exenta', 43: 'Liquidación factura', 46: 'Factura de compra', 52: 'Guía de despacho', 56: 'Nota de débito', 61: 'Nota de crédito', 110: 'Factura de exportación' };
+const DTE_INGRESABLES = [33, 34, 43, 46, 52];
+const DTE_NOTAS = [56, 61];
+let dteRecibidosInv = [], dteSubscrito = false, filtroDteInv = 'pendientes', dteIngresoActualId = null, dteVerMasInv = false, dteBuscarInv = '';
+let siiDteConfig = null;      // null = sin consultar · false = función no publicada · { configurado }
+let dteSyncEnCurso = false;
+const nombreTipoDte = t => TIPOS_DTE_INV[t] || ('Documento tipo ' + t);
+const abrevTipoDte = t => ({ 33: 'Factura', 34: 'Factura exenta', 43: 'Liquidación', 46: 'Factura compra', 52: 'Guía', 56: 'N. débito', 61: 'N. crédito', 39: 'Boleta' })[t] || ('Doc ' + t);
+const colorTipoDte = t => t === 52 ? ['#DBEAFE', '#1D4ED8'] : t === 61 ? ['#FEE2E2', '#B91C1C'] : t === 56 ? ['#FFEDD5', '#C2410C'] : ['#DCFCE7', '#15803D'];
+const normRutDte = r => String(r || '').replace(/\./g, '').replace(/\s/g, '').toUpperCase();
+const idDteInv = (rut, tipo, folio) => `${normRutDte(rut).split('-')[0].replace(/\D/g, '')}_${tipo}_${folio}`;
+const rutFmtDte = r => { const m = /^(\d+)-?([\dK])$/.exec(normRutDte(r)); return m ? m[1].replace(/\B(?=(\d{3})+(?!\d))/g, '.') + '-' + m[2] : String(r || ''); };
+const sumarDiasIso = (iso, n) => { const d = new Date(iso + 'T12:00:00'); d.setDate(d.getDate() + n); return fechaLocalDeTs(d.getTime()); };
+const fechaCortaDte = f => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(f || ''); return m ? new Date(+m[1], +m[2] - 1, +m[3]).toLocaleDateString('es-CL', { day: '2-digit', month: 'short', year: 'numeric' }) : (f || ''); };
+
+// ── Lectura del XML ──
+// Los XML del SII vienen en ISO-8859-1; algunos emisores usan UTF-8 aunque declaren otra cosa.
+function textoXmlInv(buf) {
+  const u8 = new Uint8Array(buf);
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(u8); } catch (e) {}
+  return new TextDecoder('windows-1252').decode(u8);
+}
+// ZIP mínimo: por si el respaldo o el correo trae los XML comprimidos
+async function leerZipInv(buf) {
+  const dv = new DataView(buf), u8 = new Uint8Array(buf), out = [];
+  let eocd = -1;
+  for (let i = u8.length - 22; i >= Math.max(0, u8.length - 65557); i--) if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  if (eocd < 0) throw new Error('El ZIP está dañado');
+  const n = dv.getUint16(eocd + 10, true);
+  let p = dv.getUint32(eocd + 16, true);
+  for (let k = 0; k < n; k++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) break;
+    const metodo = dv.getUint16(p + 10, true), comp = dv.getUint32(p + 20, true), lnom = dv.getUint16(p + 28, true), lext = dv.getUint16(p + 30, true), lcom = dv.getUint16(p + 32, true), off = dv.getUint32(p + 42, true);
+    const nombre = new TextDecoder().decode(u8.subarray(p + 46, p + 46 + lnom));
+    p += 46 + lnom + lext + lcom;
+    if (!/\.xml$/i.test(nombre) || /(^|\/)__MACOSX\//.test(nombre)) continue;
+    const ini = off + 30 + dv.getUint16(off + 26, true) + dv.getUint16(off + 28, true);
+    const datos = u8.slice(ini, ini + comp);
+    if (metodo === 0) out.push({ nombre, buf: datos.buffer });
+    else if (metodo === 8) {
+      if (typeof DecompressionStream === 'undefined') throw new Error('Este navegador no abre ZIP: descomprímelo y sube los XML');
+      const ds = new Blob([datos]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+      out.push({ nombre, buf: await new Response(ds).arrayBuffer() });
+    }
+  }
+  return out;
+}
+const desXmlInv = s => String(s || '').replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1').replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16))).replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(+d))
+  .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim();
+const reTagInv = (n, g) => new RegExp('<(?:[\\w-]+:)?' + n + '(?:\\s[^>]*)?>([\\s\\S]*?)</(?:[\\w-]+:)?' + n + '>', g ? 'g' : '');
+const tagInv = (s, n) => { const m = reTagInv(n).exec(s || ''); return m ? m[1] : ''; };
+const tagsInv = (s, n) => [...String(s || '').matchAll(reTagInv(n, true))].map(m => m[1]);
+const valInv = (s, n) => desXmlInv(tagInv(s, n));
+const numInv = (s, n) => { const v = valInv(s, n); return v === '' ? 0 : (Number(v) || 0); };
+// Devuelve los documentos (DTE) que trae un XML: un DTE suelto, un EnvioDTE con varios, o el respaldo del SII
+function parsearDtesXmlInv(txt) {
+  const s = String(txt || '');
+  let bloques = [...s.matchAll(/<((?:[\w-]+:)?)DTE(?:\s[^>]*)?>[\s\S]*?<\/\1DTE>/g)].map(m => m[0]);
+  if (!bloques.length) bloques = [...s.matchAll(/<((?:[\w-]+:)?)Documento(?:\s[^>]*)?>[\s\S]*?<\/\1Documento>/g)].map(m => m[0]);
+  const out = [];
+  for (const b of bloques) {
+    const enc = tagInv(b, 'Encabezado'); if (!enc) continue;
+    const id = tagInv(enc, 'IdDoc'), em = tagInv(enc, 'Emisor'), re = tagInv(enc, 'Receptor'), tot = tagInv(enc, 'Totales');
+    const tipo = parseInt(valInv(id, 'TipoDTE'), 10), folio = parseInt(valInv(id, 'Folio'), 10);
+    const rutEmisor = normRutDte(valInv(em, 'RUTEmisor'));
+    if (!tipo || !folio || !rutEmisor) continue;
+    const bruto = valInv(id, 'MntBruto') === '1', tasa = numInv(tot, 'TasaIVA') || 19;
+    const items = tagsInv(b, 'Detalle').map((d, i) => {
+      const cantidad = numInv(d, 'QtyItem'), precio = numInv(d, 'PrcItem'), exento = ['1', '2'].includes(valInv(d, 'IndExe'));
+      const descuento = numInv(d, 'DescuentoMonto'), recargo = numInv(d, 'RecargoMonto');
+      let monto = numInv(d, 'MontoItem');
+      if (!monto && precio > 0 && cantidad > 0) monto = precio * cantidad - descuento + recargo;
+      if (bruto && !exento) monto = monto / (1 + tasa / 100);
+      const cods = tagsInv(d, 'CdgItem').map(c => valInv(c, 'VlrCodigo')).filter(Boolean);
+      return { n: parseInt(valInv(d, 'NroLinDet'), 10) || i + 1, codigo: cods[0] || '', nombre: valInv(d, 'NmbItem'), descripcion: valInv(d, 'DscItem').slice(0, 300), cantidad, unidad: valInv(d, 'UnmdItem'), precio, descuento, monto: Math.round(monto * 100) / 100, exento };
+    });
+    const neto = numInv(tot, 'MntNeto'), exe = numInv(tot, 'MntExe');
+    // Descuentos o recargos globales: se reparten en las líneas afectas para que el costo unitario sea el real
+    const sumAf = items.filter(x => !x.exento).reduce((a, x) => a + x.monto, 0);
+    const factor = neto > 0 && sumAf > 0 && Math.abs(neto - sumAf) / sumAf > 0.005 ? neto / sumAf : 1;
+    items.forEach(x => {
+      x.montoNeto = Math.round(x.monto * (x.exento ? 1 : factor) * 100) / 100;
+      x.neto = x.cantidad > 0 ? Math.round(x.montoNeto / x.cantidad * 10000) / 10000 : 0;
+    });
+    const refs = tagsInv(b, 'Referencia').map(r => ({ tipo: valInv(r, 'TpoDocRef'), folio: valInv(r, 'FolioRef'), fecha: valInv(r, 'FchRef'), razon: valInv(r, 'RazonRef').slice(0, 120) })).filter(r => r.tipo || r.folio);
+    // Suelto debe declarar el espacio de nombres del SII (en un EnvioDTE venía declarado en la raíz)
+    let xml = b;
+    const mt = /^<((?:([\w-]+):)?)(DTE|Documento)([^>]*)>/.exec(xml);
+    if (mt) { const pref = mt[2], decl = pref ? 'xmlns:' + pref : 'xmlns'; if (!mt[4].includes(decl + '=')) xml = xml.replace(mt[0], `<${mt[1]}${mt[3]} ${decl}="http://www.sii.cl/SiiDte"${mt[4]}>`); }
+    out.push({ id: idDteInv(rutEmisor, tipo, folio), tipo, folio, fecha: valInv(id, 'FchEmis'), rutEmisor, razonSocial: valInv(em, 'RznSoc') || valInv(em, 'RznSocEmisor'),
+      giro: (valInv(em, 'GiroEmis') || valInv(em, 'GiroEmisor')).slice(0, 120), rutReceptor: normRutDte(valInv(re, 'RUTRecep')), razonSocialReceptor: valInv(re, 'RznSocRecep'),
+      neto: Math.round(neto), exento: Math.round(exe), iva: Math.round(numInv(tot, 'IVA')), total: Math.round(numInv(tot, 'MntTotal')),
+      ajusteGlobal: factor !== 1 ? Math.round((factor - 1) * 10000) / 100 : 0, bruto, indTraslado: valInv(id, 'IndTraslado'), items, refs, xml });
+  }
+  return out;
+}
+// Guarda en Firestore sin pisar el estado (ingresado / no va a bodega) de los que ya estaban
+async function guardarDtesInv(docs, origen) {
+  let nuevos = 0, completados = 0, repetidos = 0;
+  for (const d of docs) {
+    const { xml, id, ...datos } = d;
+    let actual = dteRecibidosInv.find(x => x.id === id) || null;
+    if (!actual) { try { const s = await getDoc(doc(dbInv, 'dte_recibidos', id)); if (s.exists()) actual = s.data(); } catch (e) {} }
+    if (actual && !actual.sinXml && (actual.items || []).length) { repetidos++; continue; }
+    const base = { ...datos, origen, sinXml: false, actualizado: Date.now() };
+    if (xml && xml.length < 900000) {
+      try { await setDoc(doc(dbInv, 'docs_fotos', 'dte_' + id), { tipo: 'dte_xml', data: xml, ts: Date.now(), por: currentUser || '' }); base.xmlId = 'dte_' + id; } catch (e) { console.warn('xml', e); }
+    }
+    if (actual) { await setDoc(doc(dbInv, 'dte_recibidos', id), base, { merge: true }); completados++; }
+    else { await setDoc(doc(dbInv, 'dte_recibidos', id), { ...base, estado: 'pendiente', creado: Date.now(), por: currentUser || '' }); nuevos++; }
+  }
+  return { nuevos, completados, repetidos };
+}
+window.importarXmlDteInv = async function(inp) {
+  const archivos = [...(inp.files || [])]; inp.value = '';
+  if (!archivos.length) return;
+  const btn = document.getElementById('btn-dte-importar');
+  if (btn) btn.firstChild.textContent = '⏳ Leyendo…';
+  const docs = [], errores = [];
+  try {
+    for (const f of archivos) {
+      try {
+        const buf = await f.arrayBuffer(), cab = new Uint8Array(buf.slice(0, 2));
+        const partes = cab[0] === 0x50 && cab[1] === 0x4b ? await leerZipInv(buf) : [{ nombre: f.name, buf }];
+        for (const p of partes) {
+          const ds = parsearDtesXmlInv(textoXmlInv(p.buf));
+          if (!ds.length) errores.push(p.nombre + ': no trae facturas ni guías');
+          docs.push(...ds);
+        }
+      } catch (e) { errores.push(f.name + ': ' + e.message); }
+    }
+    const unicos = [...new Map(docs.map(d => [d.id, d])).values()];
+    if (!unicos.length) { toast(errores[0] || 'No encontré documentos en el archivo', false); return; }
+    const r = await guardarDtesInv(unicos, 'xml');
+    filtroDteInv = 'pendientes';
+    toast(`✓ ${r.nuevos} documento(s) nuevo(s)${r.completados ? ` · ${r.completados} completado(s)` : ''}${r.repetidos ? ` · ${r.repetidos} ya estaba(n)` : ''}${errores.length ? ` · ⚠️ ${errores.length} archivo(s) sin documentos` : ''}`, true);
+  } catch (e) {
+    toast(/permission/i.test(e.message) ? 'Firestore no deja guardar: falta permitir la colección dte_recibidos en las reglas del inventario' : 'Error: ' + e.message, false);
+  } finally { if (btn) btn.firstChild.textContent = '📂 Importar XML'; renderDteRecibidosInv(); }
+}
+
+// ── Conexión con el SII (Portal MIPYME vía /api/dte-recibidos) ──
+async function consultarSiiDteInv() {
+  try {
+    const r = await fetch(URL_DTE_SII, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ accion: 'estado' }) });
+    const d = r.status === 404 ? null : await r.json().catch(() => null);
+    siiDteConfig = d && d.ok ? { configurado: !!d.configurado } : false;
+  } catch (e) { siiDteConfig = false; }
+  renderDteRecibidosInv();
+}
+async function llamarDteSiiInv(datos) {
+  const r = await fetch(URL_DTE_SII, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ usuario: currentUser, pin: sesionPinIA, ...datos }) });
+  if (r.status === 404) throw new Error('La conexión con el SII no está publicada (falta dte-recibidos.mjs en Netlify)');
+  const d = await r.json().catch(() => null);
+  if (r.status === 401) { sesionPinIA = ''; const e = new Error('PIN no válido (solo JC y Camila)'); e.status = 401; throw e; }
+  if (!d) throw new Error('El SII tardó demasiado en responder: intenta de nuevo');
+  if (!r.ok || !d.ok) throw new Error(d.error || ('error ' + r.status));
+  return d;
+}
+async function bajarXmlsSiiInv(lista, paso) {
+  let ok = 0, err = 0, ultimoError = '';
+  for (let i = 0; i < lista.length; i += 3) {
+    const lote = lista.slice(i, i + 3);
+    if (paso) paso(`⏳ Bajando XML ${Math.min(i + 3, lista.length)} de ${lista.length}…`);
+    let d;
+    try { d = await llamarDteSiiInv({ accion: 'xml', docs: lote }); }
+    catch (e) { if (e.status === 401) throw e; err += lote.length; ultimoError = e.message; continue; }
+    for (const r of d.resultados || []) {
+      if (!r.ok) { err++; ultimoError = r.error || 'sin XML'; continue; }
+      const docs = parsearDtesXmlInv(r.xml);
+      if (!docs.length) { err++; ultimoError = 'el XML no trae el documento'; continue; }
+      await guardarDtesInv(docs, 'sii'); ok++;
+    }
+  }
+  return { ok, err, ultimoError };
+}
+window.traerDteSiiInv = async function() {
+  if (dteSyncEnCurso) return;
+  if (!sesionPinIA) { sesionPinIA = (prompt('Ingresa tu PIN para conectarte al SII') || '').trim(); if (!sesionPinIA) return; }
+  dteSyncEnCurso = true;
+  const paso = t => { const b = document.getElementById('btn-dte-sii'); if (b) { b.textContent = t; b.disabled = true; } };
+  try {
+    const hoy = fechaLocalDeTs(Date.now());
+    let desde = '';
+    try { const s = await getDoc(doc(dbInv, 'dte_recibidos', '_sync')); if (s.exists() && s.data().hasta) desde = sumarDiasIso(s.data().hasta, -10); } catch (e) {}
+    if (!desde) desde = sumarDiasIso(hoy, -60);
+    const encontrados = [];
+    let pagina = 1, nPag = 1;
+    do {
+      paso(`⏳ Revisando el SII… (página ${pagina}${nPag > 1 ? ' de ' + nPag : ''})`);
+      const d = await llamarDteSiiInv({ accion: 'listar', desde, hasta: hoy, pagina });
+      encontrados.push(...(d.documentos || [])); nPag = d.n_paginas || 1; pagina++;
+    } while (pagina <= nPag && pagina <= 20);
+    const faltan = encontrados.filter(x => { const l = dteRecibidosInv.find(y => y.id === idDteInv(x.rut, x.dte, x.folio)); return !l || l.sinXml || !(l.items || []).length; });
+    // Primero quedan anotados (aunque después falle el XML), para que no se pierdan de vista
+    for (const x of faltan) {
+      const id = idDteInv(x.rut, x.dte, x.folio);
+      if (!dteRecibidosInv.find(y => y.id === id)) {
+        await setDoc(doc(dbInv, 'dte_recibidos', id), { tipo: x.dte, folio: x.folio, fecha: x.fecha, rutEmisor: x.rut + '-' + x.dv, razonSocial: x.razon_social, total: x.total || 0, origen: 'sii', sinXml: true, items: [], refs: [], estado: 'pendiente', creado: Date.now(), por: currentUser || '' }, { merge: true });
+      }
+    }
+    const r = await bajarXmlsSiiInv(faltan.map(x => ({ rut: x.rut, dv: x.dv, dte: x.dte, folio: x.folio, fecha: x.fecha })), paso);
+    await setDoc(doc(dbInv, 'dte_recibidos', '_sync'), { hasta: hoy, ts: Date.now(), por: currentUser || '' }, { merge: true });
+    filtroDteInv = 'pendientes';
+    toast(faltan.length ? `✓ SII: ${r.ok} documento(s) con su detalle${r.err ? ` · ⚠️ ${r.err} sin XML (${r.ultimoError})` : ''}` : '✓ SII revisado: no hay documentos nuevos', r.ok > 0 || !r.err);
+  } catch (e) { toast('SII: ' + e.message, false); }
+  finally { dteSyncEnCurso = false; renderDteRecibidosInv(); }
+}
+window.dteReintentarXmlInv = async function(id) {
+  const d = dteRecibidosInv.find(x => x.id === id); if (!d) return;
+  if (!siiDteConfig || !siiDteConfig.configurado) { toast('Importa el XML de este documento (la conexión con el SII no está activa)', false); return; }
+  if (!sesionPinIA) { sesionPinIA = (prompt('Ingresa tu PIN para conectarte al SII') || '').trim(); if (!sesionPinIA) return; }
+  const [rut, dv] = normRutDte(d.rutEmisor).split('-');
+  try {
+    toast('⏳ Bajando el XML del SII…', true);
+    const r = await bajarXmlsSiiInv([{ rut, dv, dte: d.tipo, folio: d.folio, fecha: d.fecha }]);
+    toast(r.ok ? '✓ XML descargado' : 'No se pudo: ' + r.ultimoError, !!r.ok);
+  } catch (e) { toast('SII: ' + e.message, false); }
+}
+
+// ── Relación con ingresos y entre documentos ──
+function rutPropioDteInv() {
+  const c = {}; dteRecibidosInv.forEach(d => { if (d.rutReceptor) c[d.rutReceptor] = (c[d.rutReceptor] || 0) + 1; });
+  const k = Object.keys(c).sort((a, b) => c[b] - c[a])[0];
+  return k && c[k] >= 3 ? k : '';
+}
+// Ingreso ya hecho de este documento (por la app, o a mano con el mismo N° y proveedor)
+function ingresoPrevioDteInv(d) {
+  const prov = normNom(d.razonSocial).split(' ').filter(t => t.length > 3 && !['sociedad', 'limitada', 'comercial', 'agricola', 'servicios'].includes(t));
+  return ingresosInv.find(i => {
+    if (i.dteId) return i.dteId === d.id;
+    if (!(String(i.nroDocumento || '').match(/\d+/g) || []).some(n => Number(n) === Number(d.folio))) return false;
+    const ip = normNom(i.proveedor || '');
+    return !ip || !prov.length || prov.some(t => ip.includes(t));
+  }) || null;
+}
+const guiasDeFacturaInv = d => (d.refs || []).filter(r => String(r.tipo) === '52' && Number(r.folio)).map(r => ({ folio: Number(r.folio), doc: dteRecibidosInv.find(x => x.tipo === 52 && normRutDte(x.rutEmisor) === normRutDte(d.rutEmisor) && Number(x.folio) === Number(r.folio)) || null }));
+const facturaDeGuiaInv = d => dteRecibidosInv.find(x => [33, 34, 46].includes(x.tipo) && normRutDte(x.rutEmisor) === normRutDte(d.rutEmisor) && (x.refs || []).some(r => String(r.tipo) === '52' && Number(r.folio) === Number(d.folio))) || null;
+function avisosDteInv(d) {
+  const out = [], propio = rutPropioDteInv();
+  if (propio && d.rutReceptor && d.rutReceptor !== propio) out.push(['#B91C1C', `⚠️ Viene a nombre de otro RUT (${rutFmtDte(d.rutReceptor)} ${escA(d.razonSocialReceptor || '')})`]);
+  if (propio && normRutDte(d.rutEmisor) === propio) out.push(['#B91C1C', '⚠️ Es un documento emitido por ustedes, no recibido']);
+  if (d.estado !== 'ingresado') {
+    const prev = ingresoPrevioDteInv(d);
+    if (prev) out.push(['#B45309', `⚠️ Parece ya ingresado a bodega el ${new Date(prev.ts).toLocaleDateString('es-CL', { day: '2-digit', month: 'short' })} (doc ${escA(prev.nroDocumento || '')}). <a href="#" onclick="event.preventDefault();dteMarcarInv('${d.id}','ingresado','${prev.id}')">Marcar como ingresado</a>`]);
+  }
+  if ([33, 34, 46].includes(d.tipo)) {
+    const gs = guiasDeFacturaInv(d);
+    if (gs.length) {
+      const ing = gs.filter(g => g.doc && g.doc.estado === 'ingresado');
+      out.push([ing.length ? '#B45309' : '#1D4ED8', `🔗 Factura de la(s) guía(s) N° ${gs.map(g => g.folio).join(', ')}${ing.length ? ` — ${ing.length === gs.length ? 'ya ingresada(s) a bodega por la guía: no la ingreses de nuevo' : 'algunas ya ingresadas por la guía'}` : ''}`]);
+    }
+  }
+  if (d.tipo === 52) { const f = facturaDeGuiaInv(d); if (f) out.push(['#1D4ED8', `🔗 Facturada en la factura N° ${f.folio}${f.estado === 'ingresado' ? ' (ya ingresada a bodega)' : ''}`]); }
+  if (DTE_NOTAS.includes(d.tipo) && (d.refs || []).length) out.push(['#1D4ED8', `🔗 Corrige: ${(d.refs || []).map(r => `${TIPOS_DTE_INV[Number(r.tipo)] ? abrevTipoDte(Number(r.tipo)) : 'Doc ' + escA(r.tipo)} N° ${escA(r.folio)}${r.razon ? ' (' + escA(r.razon) + ')' : ''}`).join(', ')}`]);
+  if (d.sinXml) out.push(['#B45309', `⏳ Falta el detalle (XML). ${siiDteConfig && siiDteConfig.configurado ? `<a href="#" onclick="event.preventDefault();dteReintentarXmlInv('${d.id}')">↻ Bajarlo del SII</a>` : 'Impórtalo con 📂 Importar XML.'}`]);
+  return out;
+}
+
+// ── Panel ──
+const estadoDte = d => d.estado || 'pendiente';
+function grupoDteInv(d) {
+  const e = estadoDte(d);
+  if (e === 'ingresado') return 'ingresado';
+  if (e === 'ignorado') return 'ignorado';
+  if (DTE_NOTAS.includes(d.tipo)) return 'notas';
+  if (!DTE_INGRESABLES.includes(d.tipo)) return 'ignorado';
+  return 'pendientes';
+}
+function pendientesDteInv() { return dteRecibidosInv.filter(d => grupoDteInv(d) === 'pendientes').length; }
+window.dteVerMasDteInv = () => { dteVerMasInv = true; renderDteRecibidosInv(); };
+window.setFiltroDteInv = f => { filtroDteInv = f; dteVerMasInv = false; renderDteRecibidosInv(); };
+window.buscarDteInv = v => { dteBuscarInv = v; renderDteRecibidosInv(true); };
+function tarjetaDteInv(d) {
+  const [bg, fg] = colorTipoDte(d.tipo), e = estadoDte(d), g = grupoDteInv(d);
+  const prods = (d.items || []).filter(x => x.nombre);
+  const resumen = prods.slice(0, 3).map(x => `${escA(x.nombre)}${x.cantidad ? ` <span style="color:var(--acero)">(${nfInv(x.cantidad)}${x.unidad ? ' ' + escA(x.unidad) : ''})</span>` : ''}`).join(' · ') + (prods.length > 3 ? ` · +${prods.length - 3} más` : '');
+  const est = e === 'ingresado' ? `<span class="badge" style="background:var(--verde-suave);color:var(--verde)">${d.soloPrecios ? '💲 Precios actualizados' : '✓ Ingresado'}</span>` : e === 'ignorado' ? '<span class="badge" style="background:#F3F4F6;color:#6B7280">No va a bodega</span>' : '';
+  const acciones = [];
+  if (g === 'pendientes') acciones.push(`<button class="btn-add" style="padding:6px 10px" onclick="dteAIngresoInv('${d.id}')">📥 Ingresar a bodega</button>`);
+  if (g === 'pendientes' && sugierePreciosDteInv(d)) acciones.push(`<button class="btn-add" style="padding:6px 10px;background:#EFF6FF;color:#1D4ED8" onclick="dtePreciosInv('${d.id}')">💲 Solo actualizar precios</button>`);
+  acciones.push(`<button class="btn-add" style="padding:6px 10px;background:var(--fondo);color:var(--negro)" onclick="dteVerInv('${d.id}')">👁 Ver</button>`);
+  if (g === 'pendientes' || g === 'notas') acciones.push(`<button class="btn-add" style="padding:6px 10px;background:var(--fondo);color:var(--acero)" onclick="dteMarcarInv('${d.id}','ignorado')">🚫 No va a bodega</button>`);
+  if (e === 'ignorado' || e === 'ingresado') acciones.push(`<button class="btn-add" style="padding:6px 10px;background:var(--fondo);color:var(--acero)" onclick="dteMarcarInv('${d.id}','pendiente')">↩️ Volver a pendiente</button>`);
+  return `<div class="config-item" style="flex-direction:column;align-items:stretch;gap:6px;min-width:0">
+    <div style="display:flex;justify-content:space-between;gap:6px;flex-wrap:wrap;min-width:0">
+      <div style="min-width:0;overflow-wrap:anywhere"><span class="badge" style="background:${bg};color:${fg}">${abrevTipoDte(d.tipo)}</span> <strong>N° ${d.folio}</strong> · ${escA(d.razonSocial || rutFmtDte(d.rutEmisor))} ${est}</div>
+      <div style="font-size:12px;color:var(--acero);white-space:nowrap">${fechaCortaDte(d.fecha)}${d.total ? ' · ' + pesoInv(d.total) : ''}</div>
+    </div>
+    ${resumen ? `<div style="font-size:12px;overflow-wrap:anywhere">${resumen}</div>` : ''}
+    ${avisosDteInv(d).map(([c, t]) => `<div style="font-size:12px;color:${c};overflow-wrap:anywhere">${t}</div>`).join('')}
+    <div style="display:flex;gap:6px;flex-wrap:wrap">${acciones.join('')}</div>
+  </div>`;
+}
+function renderDteRecibidosInv(soloLista) {
+  const cont = document.getElementById('inv-panel-dte'); if (!cont) return;
+  if (!verValoresInv()) { cont.style.display = 'none'; return; }
+  cont.style.display = '';
+  { const tb = document.getElementById('tab-inv-ingresos'); if (tb) tb.textContent = `📥 Ingresos${ingresosInv.length ? ` (${ingresosInv.length})` : ''}${pendientesDteInv() ? ` · 📨 ${pendientesDteInv()}` : ''}`; }
+  const cuenta = g => dteRecibidosInv.filter(d => grupoDteInv(d) === g).length;
+  const q = normNom(dteBuscarInv);
+  let lista = dteRecibidosInv.filter(d => filtroDteInv === 'todos' || grupoDteInv(d) === filtroDteInv);
+  if (q) lista = lista.filter(d => normNom(`${d.razonSocial} ${d.folio} ${abrevTipoDte(d.tipo)} ${(d.items || []).map(x => x.nombre).join(' ')}`).includes(q));
+  const tope = dteVerMasInv ? 300 : 15;
+  const htmlLista = (lista.length ? lista.slice(0, tope).map(tarjetaDteInv).join('') : `<div class="empty">${dteRecibidosInv.length ? 'No hay documentos en este grupo' : 'Todavía no hay documentos: importa el XML o tráelos del SII'}</div>`)
+    + (lista.length > tope ? `<button class="btn-add" style="width:100%;justify-content:center;margin-top:8px" onclick="dteVerMasDteInv()">Ver ${lista.length - tope} más</button>` : '');
+  if (soloLista) { const l = document.getElementById('dte-lista'); if (l) { l.innerHTML = htmlLista; return; } }
+  const chip = (f, t, n) => `<span class="cultivo-chip${filtroDteInv === f ? ' sel' : ''}" onclick="setFiltroDteInv('${f}')">${t}${n != null ? ` (${n})` : ''}</span>`;
+  const conSii = siiDteConfig && siiDteConfig.configurado;
+  cont.innerHTML = `
+    <div class="panel-title">📨 Facturas y guías recibidas</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+      ${conSii ? `<button class="btn btn-verde" id="btn-dte-sii" style="flex:1;min-width:160px;justify-content:center" onclick="traerDteSiiInv()"${dteSyncEnCurso ? ' disabled' : ''}>${dteSyncEnCurso ? '⏳ Revisando el SII…' : '🔄 Traer del SII'}</button>` : ''}
+      <label class="btn btn-secondary" id="btn-dte-importar" style="flex:1;min-width:160px;justify-content:center;cursor:pointer;text-transform:none;letter-spacing:normal;font-size:15px;margin:0">📂 Importar XML<input type="file" accept=".xml,.zip,text/xml,application/xml,application/zip" multiple style="display:none" onchange="importarXmlDteInv(this)"></label>
+    </div>
+    <details style="font-size:12px;color:var(--acero);margin-bottom:8px"><summary style="cursor:pointer">¿De dónde saco el XML?</summary>
+      <div style="margin-top:6px;line-height:1.5">
+        • <strong>Del SII</strong> (todo lo que te facturan llega ahí): sii.cl → Servicios online → Factura electrónica → Sistema de facturación gratuito → Historial de DTE y respuesta a documentos recibidos → <em>Ver documentos recibidos</em> → filtra por fechas → <em>Archivo Respaldo</em> (hasta 20 por vez) y súbelo aquí.<br>
+        • <strong>Del correo</strong>: el .xml que manda el proveedor junto al PDF.<br>
+        ${conSii ? '• <strong>🔄 Traer del SII</strong> revisa los últimos días y baja los nuevos solo.' : siiDteConfig === null ? '' : '• La descarga automática desde el SII se activa con la función dte-recibidos en Netlify.'}<br>
+        Las guías de despacho no salen en el Registro de Compras y Ventas: en "Ver documentos recibidos" elige el tipo Guía de despacho.
+      </div></details>
+    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">
+      ${chip('pendientes', '📥 Por ingresar', cuenta('pendientes'))}${chip('ingresado', '✓ Ingresados', cuenta('ingresado'))}${chip('ignorado', 'No van a bodega', cuenta('ignorado'))}${cuenta('notas') ? chip('notas', 'Notas de crédito/débito', cuenta('notas')) : ''}${chip('todos', 'Todos', dteRecibidosInv.length)}
+    </div>
+    <input type="text" placeholder="🔎 Buscar proveedor, N° o producto" value="${escA(dteBuscarInv)}" oninput="buscarDteInv(this.value)" style="width:100%;box-sizing:border-box;margin-bottom:8px">
+    <div id="dte-lista">${htmlLista}</div>`;
+}
+
+// ── Detalle ──
+window.dteVerInv = function(id) {
+  const d = dteRecibidosInv.find(x => x.id === id); if (!d) return;
+  const vieja = document.getElementById('dte-modal'); if (vieja) vieja.remove();
+  const ov = document.createElement('div'); ov.id = 'dte-modal'; ov.dataset.id = id;
+  ov.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.55);display:flex;align-items:flex-start;justify-content:center;padding:16px 10px;overflow-y:auto;box-sizing:border-box';
+  ov.onclick = e => { if (e.target === ov) ov.remove(); };
+  const filas = (d.items || []).map(x => `<div style="padding:8px 0;border-bottom:1px solid var(--borde)"><div style="font-weight:600;font-size:13px;overflow-wrap:break-word">${escA(x.nombre)}</div>${x.descripcion ? `<div style="font-size:11px;color:var(--acero)">${escA(x.descripcion)}</div>` : ''}<div style="font-size:12px;display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:2px"><span>${nfInv(x.cantidad)} ${escA(x.unidad || '')}</span>${x.neto ? `<span>${pesoInv(x.neto)} c/u</span>` : ''}${x.montoNeto ? `<strong>${pesoInv(x.montoNeto)} neto</strong>` : ''}${x.exento ? '<span style="color:#B45309">exento</span>' : ''}${x.codigo ? `<span style="color:var(--acero)">cód. ${escA(x.codigo)}</span>` : ''}</div></div>`).join('');
+  const g = grupoDteInv(d);
+  ov.innerHTML = `<div style="background:var(--blanco);border-radius:12px;max-width:720px;width:100%;padding:16px;box-sizing:border-box;min-width:0">
+    <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start"><div style="font-weight:800;font-size:16px">${nombreTipoDte(d.tipo)} N° ${d.folio}</div><span style="cursor:pointer;font-size:20px;line-height:1" onclick="document.getElementById('dte-modal').remove()">✕</span></div>
+    <div style="font-size:13px;margin:6px 0 10px;line-height:1.5"><strong>${escA(d.razonSocial || '')}</strong> · RUT ${rutFmtDte(d.rutEmisor)}${d.giro ? `<br><span style="color:var(--acero)">${escA(d.giro)}</span>` : ''}<br>Fecha ${fechaCortaDte(d.fecha)}${d.razonSocialReceptor ? ` · Para ${escA(d.razonSocialReceptor)} (${rutFmtDte(d.rutReceptor)})` : ''}</div>
+    ${avisosDteInv(d).map(([c, t]) => `<div style="font-size:12px;color:${c};margin-bottom:4px">${t}</div>`).join('')}
+    ${filas ? `<div style="border-top:1px solid var(--borde)">${filas}</div>` : '<div class="empty">Sin detalle de productos</div>'}
+    <div style="font-size:13px;margin-top:8px;text-align:right;line-height:1.6">${d.neto ? `Neto ${pesoInv(d.neto)}<br>` : ''}${d.exento ? `Exento ${pesoInv(d.exento)}<br>` : ''}${d.iva ? `IVA ${pesoInv(d.iva)}<br>` : ''}${d.total ? `<strong>Total ${pesoInv(d.total)}</strong>` : ''}${d.ajusteGlobal ? `<div style="font-size:11px;color:var(--acero)">Incluye ${d.ajusteGlobal < 0 ? 'descuento' : 'recargo'} global de ${Math.abs(d.ajusteGlobal)}% repartido en los productos</div>` : ''}${d.bruto ? '<div style="font-size:11px;color:var(--acero)">Precios del documento con IVA incluido: aquí se muestran netos</div>' : ''}</div>
+    ${(d.refs || []).length ? `<div style="font-size:12px;color:var(--acero);margin-top:6px">Referencias: ${(d.refs || []).map(r => `${escA(TIPOS_DTE_INV[Number(r.tipo)] || (r.tipo === '801' ? 'Orden de compra' : 'Doc ' + r.tipo))} N° ${escA(r.folio)}${r.fecha ? ' del ' + fechaCortaDte(r.fecha) : ''}${r.razon ? ' · ' + escA(r.razon) : ''}`).join('; ')}</div>` : ''}
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+      ${g === 'pendientes' ? `<button class="btn btn-verde" style="flex:1;min-width:150px;justify-content:center" onclick="document.getElementById('dte-modal').remove();dteAIngresoInv('${d.id}')">📥 Ingresar a bodega</button>` : ''}
+      ${g === 'pendientes' && sugierePreciosDteInv(d) ? `<button class="btn btn-secondary" style="flex:1;min-width:150px;justify-content:center" onclick="document.getElementById('dte-modal').remove();dtePreciosInv('${d.id}')">💲 Solo actualizar precios</button>` : ''}
+      ${d.xmlId ? `<button class="btn btn-secondary" style="flex:1;min-width:150px;justify-content:center" onclick="dteDescargarXmlInv('${d.id}')">⬇️ Descargar XML</button>` : ''}
+    </div>
+    <div style="font-size:11px;color:var(--acero);margin-top:8px">${d.origen === 'sii' ? 'Traído del SII' : 'Importado desde XML'}${d.por ? ' por ' + escA(d.por) : ''}${d.creado ? ' el ' + new Date(d.creado).toLocaleDateString('es-CL') : ''}${d.ingresadoPor ? ` · ${d.soloPrecios ? 'Precios actualizados' : 'Ingresado a bodega'} por ${escA(d.ingresadoPor)}` : ''}</div>
+  </div>`;
+  document.body.appendChild(ov);
+}
+window.dteDescargarXmlInv = async function(id) {
+  const d = dteRecibidosInv.find(x => x.id === id); if (!d || !d.xmlId) return;
+  try {
+    const s = await getDoc(doc(dbInv, 'docs_fotos', d.xmlId));
+    if (!s.exists()) { toast('XML no disponible', false); return; }
+    const blob = new Blob(['<?xml version="1.0" encoding="UTF-8"?>\n' + s.data().data], { type: 'application/xml' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+    a.download = `${abrevTipoDte(d.tipo).replace(/\W+/g, '_')}_${d.folio}_${normRutDte(d.rutEmisor)}.xml`;
+    document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  } catch (e) { toast('Error: ' + e.message, false); }
+}
+window.dteMarcarInv = async function(id, estado, ingresoId) {
+  const cambios = { estado, marcadoPor: currentUser || '', marcadoTs: Date.now() };
+  if (estado === 'ingresado') { cambios.ingresoId = ingresoId || ''; cambios.ingresadoPor = currentUser || ''; cambios.ingresadoTs = Date.now(); }
+  if (estado === 'pendiente') { cambios.ingresoId = ''; }
+  try {
+    await updateDoc(doc(dbInv, 'dte_recibidos', id), cambios);
+    toast(estado === 'ignorado' ? '✓ Marcado: no va a bodega' : estado === 'ingresado' ? '✓ Marcado como ingresado' : '✓ Vuelve a pendientes', true);
+  } catch (e) { toast('Error: ' + e.message, false); }
+}
+
+// Factura de mercadería que ya entró (por su guía o a mano): solo se actualiza el precio, sin sumar stock
+function sugierePreciosDteInv(d) {
+  if (d.sinXml || !(d.items || []).length || ![33, 34, 46].includes(d.tipo)) return false;
+  return guiasDeFacturaInv(d).some(g => g.doc && g.doc.estado === 'ingresado') || !!ingresoPrevioDteInv(d);
+}
+window.dtePreciosInv = async function(id) {
+  const d = dteRecibidosInv.find(x => x.id === id); if (!d || !(d.items || []).length) return;
+  const { items } = itemsIngresoDesdeDteInv(d);
+  const cambios = items.map(it => ({ it, p: productoInvPorNombre(it.nombre) })).filter(x => x.p && x.it._contenido > 0 && x.it.precioUnitario > 0);
+  if (!cambios.length) { toast('No hay productos del inventario con precio y contenido por envase para actualizar: usa 📥 Ingresar a bodega y corrige ahí', false); return; }
+  const sin = items.length - cambios.length;
+  const txt = cambios.map(x => `• ${x.p.nombre}: ${pesoInv(x.p.precio || 0)} → ${pesoInv(x.it.precioUnitario)} por ${x.p.unidad || 'L'}`).join('\n');
+  if (!confirm(`Actualizar el precio neto según la ${nombreTipoDte(d.tipo).toLowerCase()} N° ${d.folio}, SIN sumar stock:\n${txt}${sin ? `\n\n(${sin} producto(s) sin reconocer o sin contenido por envase quedan igual)` : ''}`)) return;
+  try {
+    for (const x of cambios) await updateDoc(doc(dbInv, 'productos', x.p.id), { precio: x.it.precioUnitario });
+    await updateDoc(doc(dbInv, 'dte_recibidos', id), { estado: 'ingresado', soloPrecios: true, preciosActualizados: cambios.map(x => ({ producto: x.p.nombre, antes: x.p.precio || 0, nuevo: x.it.precioUnitario })), ingresadoPor: currentUser || '', ingresadoTs: Date.now() });
+    toast(`✓ ${cambios.length} precio(s) actualizado(s); el stock no cambió`, true);
+  } catch (e) { toast('Error: ' + e.message, false); }
+}
+
+// ── Del documento al ingreso de bodega ──
+// "ROUNDUP BIDON 20 LT" → 20 L por envase. No lee concentraciones como "480 G/L".
+function tamanoEnNombreInv(txt) {
+  const s = ' ' + String(txt || '').toUpperCase().replace(/(\d),(\d)/g, '$1.$2') + ' ';
+  const re = /(\d+(?:\.\d+)?)\s*(LITROS?|LTS?|LTR|L|KILOS?|KGS?|K|CC|ML|GRAMOS|GRS?|G)(?![A-Z0-9])(?!\s*\/)/g;
+  let m, ult = null;
+  while ((m = re.exec(s))) { if (/^G/.test(m[2]) && m[2] === 'G' && Number(m[1]) < 50) continue; ult = m; }
+  if (!ult) return null;
+  const n = Number(ult[1]), u = ult[2];
+  if (!(n > 0)) return null;
+  if (u === 'CC' || u === 'ML') return { cont: r4(n / 1000), unidad: 'L' };
+  if (/^G/.test(u)) return { cont: r4(n / 1000), unidad: 'kg' };
+  if (/^L/.test(u)) return { cont: n, unidad: 'L' };
+  return { cont: n, unidad: 'kg' };
+}
+// Último ingreso con ese mismo nombre de documento (para reconocer el producto y su envase)
+function ultimoItemPorNombreDocInv(nom) {
+  const n = normNom(nom); if (!n) return null;
+  for (const ing of ingresosInv) for (const it of (ing.items || [])) if (normNom(it.nombreDoc || it.nombre) === n) return it;
+  return null;
+}
+function itemsIngresoDesdeDteInv(d) {
+  const items = [], omitidos = [];
+  for (const li of d.items || []) {
+    const nom = String(li.nombre || '').trim();
+    if (!nom) continue;
+    if (!(li.cantidad > 0) || /^(flete|fletes|despacho|transporte|servicio|arriendo|mano de obra)\b/i.test(nom)) { omitidos.push(nom); continue; }
+    const previo = ultimoItemPorNombreDocInv(nom);
+    let pInv = previo ? productoInvPorNombre(previo.nombre) : null;
+    if (!pInv) { const c = similaresInv(nom, 3); if (c.length && (c[0].s === 1 || (c[0].s >= 0.92 && !(c[1] && c[1].s >= 0.92)))) pInv = c[0].p; }
+    const umDoc = String(li.unidad || '').trim();
+    let cont = null, uni = null;
+    if (esUmBaseInv(umDoc)) { cont = 1; uni = /^k/i.test(umDoc) ? 'kg' : 'L'; }
+    else {
+      const t = tamanoEnNombreInv(nom) || tamanoEnNombreInv(li.descripcion);
+      if (t) { cont = t.cont; uni = t.unidad; }
+      else if (previo && previo.contenidoEnvase > 0 && normNom(previo.umDoc || '') === normNom(umDoc)) { cont = previo.contenidoEnvase; uni = previo.unidad; }
+    }
+    const unidad = pInv && UNIDADES_INV.includes(pInv.unidad) ? pInv.unidad : (uni || (previo && previo.unidad) || 'L');
+    const pEnv = Number(li.neto) || 0;
+    const r = { nombre: pInv ? pInv.nombre : nom, _nombreDoc: nom, unidad, _ia: true, _xml: true, _unidadIA: !!uni,
+      _envases: li.cantidad, _umDoc: umDoc, _contenido: cont, _precioEnvase: pEnv, _totalLinea: Number(li.montoNeto) || 0, cantidad: li.cantidad, precioUnitario: pEnv };
+    recalcEnvaseInv(r);
+    items.push(r);
+  }
+  return { items, omitidos };
+}
+window.dteAIngresoInv = function(id) {
+  const d = dteRecibidosInv.find(x => x.id === id); if (!d) return;
+  if (d.sinXml || !(d.items || []).length) { toast('Falta el detalle de este documento: tráelo del SII o importa su XML', false); return; }
+  const prev = ingresoPrevioDteInv(d);
+  if (prev && !confirm(`Este documento parece ya ingresado (doc ${prev.nroDocumento || ''} del ${new Date(prev.ts).toLocaleDateString('es-CL')}).\n¿Ingresarlo de todas formas?`)) return;
+  if ([33, 34, 46].includes(d.tipo)) {
+    const ing = guiasDeFacturaInv(d).filter(g => g.doc && g.doc.estado === 'ingresado');
+    if (ing.length && !confirm(`Esta factura corresponde a la(s) guía(s) N° ${ing.map(g => g.folio).join(', ')}, que ya ingresaste a bodega.\nSi la ingresas, el stock se sumaría dos veces. ¿Ingresarla igual?`)) return;
+  }
+  if (itemsIngresoInv.some(it => it.nombre && it.nombre.trim()) && !confirm('El formulario de ingreso ya tiene productos. ¿Reemplazarlos por los del documento?')) return;
+  const { items, omitidos } = itemsIngresoDesdeDteInv(d);
+  if (!items.length) { toast('El documento no trae productos para la bodega', false); return; }
+  document.getElementById('inv-ingreso-proveedor').value = d.razonSocial || '';
+  document.getElementById('inv-ingreso-nrodoc').value = abrevTipoDte(d.tipo) + ' ' + d.folio;
+  itemsIngresoInv = items;
+  totalDocIAInv = items.reduce((a, it) => a + (it._totalLinea || 0), 0);
+  dteIngresoActualId = d.id;
+  renderItemsIngresoInv();
+  const porBuscar = items.map((it, i) => (it.nombre && !productoInvPorNombre(it.nombre)) ? i : -1).filter(i => i >= 0);
+  if (porBuscar.length && sesionPinIA) buscarIngredientesItemsInv(porBuscar);
+  const faltaCont = items.filter(it => !(it._contenido > 0)).length, reconocidos = items.filter(it => productoInvPorNombre(it.nombre)).length;
+  const aviso = document.getElementById('inv-ingreso-ia-aviso');
+  if (aviso) aviso.innerHTML = `<div style="background:#EFF6FF;color:#1E3A8A;border-radius:8px;padding:8px 10px;font-size:12px;margin-top:8px">📨 Datos del XML de la ${escA(nombreTipoDte(d.tipo).toLowerCase())} N° ${d.folio} de ${escA(d.razonSocial || '')} (${fechaCortaDte(d.fecha)}): nombres, cantidades y valores netos exactos.
+    <strong>Revisa la bodega${faltaCont ? ' y completa los litros o kilos por envase' : ''}</strong> y confirma.
+    ${reconocidos ? `<br>📦 ${reconocidos} reconocido(s) en el inventario.` : ''}${items.length - reconocidos ? `<br>🆕 ${items.length - reconocidos} sin reconocer: elige el producto del inventario o quedará pendiente de registrar.` : ''}${faltaCont ? `<br>📦 ${faltaCont} sin el contenido por envase.` : ''}${omitidos.length ? `<br>Omití (no son productos de bodega): ${omitidos.map(escA).join(', ')}.` : ''}${d.ajusteGlobal ? `<br>Los valores incluyen el ${d.ajusteGlobal < 0 ? 'descuento' : 'recargo'} global de ${Math.abs(d.ajusteGlobal)}%.` : ''}</div>`;
+  { const el = document.getElementById('inv-ingreso-proveedor'); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+  toast('✓ Documento pasado al ingreso: revisa y confirma', true);
+}
+function suscribirDteInv() {
+  if (dteSubscrito || !verValoresInv()) return;
+  dteSubscrito = true;
+  onSnapshot(query(collection(dbInv, 'dte_recibidos'), orderBy('fecha', 'desc'), limit(400)), snap => {
+    dteRecibidosInv = snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(d => !d.id.startsWith('_'));
+    const ab = document.getElementById('dte-modal');
+    renderDteRecibidosInv();
+    if (ab && ab.dataset.id) dteVerInv(ab.dataset.id);
+  }, e => {
+    console.warn('dte_recibidos', e);
+    const c = document.getElementById('inv-panel-dte');
+    if (c) { c.style.display = ''; c.innerHTML = `<div class="panel-title">📨 Facturas y guías recibidas</div><div style="font-size:12px;color:#B91C1C">No se pudieron leer los documentos recibidos${/permission/i.test(e.message) ? ': falta permitir la colección <code>dte_recibidos</code> en las reglas de Firestore del inventario' : ': ' + escA(e.message)}.</div>`; }
+  });
+  consultarSiiDteInv();
 }
 
 // ── Modal Nuevo Producto desde Ingreso pendiente ───────────
@@ -17484,6 +18063,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     </div>
 
     <div id="tc-inv-ingresos" class="tab-content">
+      <div id="inv-panel-dte" class="panel" style="display:none"></div>
       <div id="inv-panel-pendientes" style="display:none;margin-bottom:16px"></div>
       <div class="panel">
         <div class="panel-title">📥 Nuevo ingreso de bodega</div>
