@@ -1780,6 +1780,7 @@ window.togTractorAplicacion = async function(e) {
   envivoRenderRuta();
   try { await setDoc(doc(db, 'config', 'datos'), { tractoresAplicacion: config.tractoresAplicacion }, { merge: true }); toast('✓ Guardado', true); } catch (er) { toast('Error: ' + er.message, false); }
 };
+const ENVIVO_CARGA_MIN = 15; // minutos dentro de la zona de carga para que cuente como una carga (menos = solo pasó por ahí)
 function envivoCalcular(puntos, aplic, anchoFijo) { // anchoFijo: número, o función (potrero) → { w, apero, fuente }
   const wCache = {};
   const pots = (potrerosConfig || []).filter(p => poligonoValido(p.poligono)).map(p => ({ nombre: p.nombre, poly: jdpNormPoligono(p.poligono) }));
@@ -1807,7 +1808,7 @@ function envivoCalcular(puntos, aplic, anchoFijo) { // anchoFijo: número, o fun
     if (ini != null && fin > ini) { tr.ini = ini; tr.fin = fin; tr.jornada = fin - ini; }
   }
   const enJornada = (a, b) => !aplic || (tr.ini != null && a.t >= tr.ini && b.t <= tr.fin);
-  let cargaAct = null; // visita en curso a una zona de carga (se cuenta como carga si dura al menos 2 min)
+  let cargaAct = null; // visita en curso a una zona de carga (se cuenta como carga si dura al menos ENVIVO_CARGA_MIN minutos)
   // Ciclos de carga (tractores de aplicación): cada carga empieza un ciclo que dura hasta la carga siguiente
   const nuevoCiclo = (ini, conCarga, zona) => ({ inicio: ini, fin: ini, conCarga, zona: zona || '', carga: 0, trabajo: 0, traslado: 0, detenido: 0, bodega: 0, ha: 0 });
   tr.ciclos = []; let ciclo = aplic && tr.ini != null ? nuevoCiclo(tr.ini, false) : null, pend = 0;
@@ -1830,7 +1831,7 @@ function envivoCalcular(puntos, aplic, anchoFijo) { // anchoFijo: número, o fun
         tr.porCarga[zcar] = (tr.porCarga[zcar] || 0) + dt;
         if (!cargaAct || cargaAct.z !== zcar || a.t - cargaAct.fin > 10 * 60000) { flushPend(); cargaAct = { z: zcar, ini: a.t, fin: b.t, contada: false }; } else cargaAct.fin = b.t;
         if (cargaAct.contada) sumaCiclo('carga', dt, b); else pend += dt;
-        if (!cargaAct.contada && cargaAct.fin - cargaAct.ini >= 2 * 60000) {
+        if (!cargaAct.contada && cargaAct.fin - cargaAct.ini >= ENVIVO_CARGA_MIN * 60000) {
           cargaAct.contada = true; tr.nCargas++;
           if (ciclo) { ciclo.fin = cargaAct.ini; tr.ciclos.push(ciclo); ciclo = nuevoCiclo(cargaAct.ini, true, zcar); ciclo.carga = pend; ciclo.fin = b.t; pend = 0; }
         }
@@ -2163,7 +2164,7 @@ function envivoCargasHtml(eq, d, dd) {
   const dias = dd.filter(x => (x.tr.ciclos || []).some(c => c.conCarga));
   const est0 = envivoEstanque(eq, dd.length ? dd[dd.length - 1].k : envivoDiaStr(Date.now()), d), eqJs = envivoJs(eq);
   const inputEst = `<span style="white-space:nowrap">Estanque: <input type="number" min="0" step="50" inputmode="numeric" value="${(config.estanqueAplicacion || {})[eq] || ''}" placeholder="${est0.litros || 'litros'}" style="width:80px;padding:3px 5px" onchange="envivoFijarEstanque('${eqJs}', this.value)"> L</span>`;
-  if (!dias.length) return `<div style="font-size:12px;color:var(--acero);margin:6px 0">💧 Sin cargas registradas en el período (pasar 2 min o más dentro de una zona de carga). ${inputEst}${envivoEditorAperosHtml(eq, d)}</div>`;
+  if (!dias.length) return `<div style="font-size:12px;color:var(--acero);margin:6px 0">💧 Sin cargas registradas en el período (estar ${ENVIVO_CARGA_MIN} min o más dentro de una zona de carga). ${inputEst}${envivoEditorAperosHtml(eq, d)}</div>`;
   const th = 'text-align:right;padding:3px 4px', hh = t => new Date(t).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' }), fDia = k => k.slice(8, 10) + '-' + k.slice(5, 7);
   let filas = '', comp = [], litrosTot = 0;
   dias.forEach(({ k, tr }) => {
@@ -2188,7 +2189,7 @@ function envivoCargasHtml(eq, d, dd) {
     ${comp.length ? `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(78px,1fr));gap:6px;margin-bottom:6px">
       ${[['L/ha', lhaProm != null ? lhaProm.toLocaleString('es-CL') : '—', '#0F766E'], ['Carga', minTxt(prom('carga')), '#0F766E'], ['Traslado', minTxt(prom('traslado')), '#2563EB'], ['Botar carga', minTxt(prom('trabajo')), '#16A34A']].map(([t, v, c]) => `<div style="background:#fff;border:1px solid var(--borde);border-radius:8px;padding:5px"><div style="font-size:10px;color:var(--acero)">${t} prom.</div><div style="font-weight:800;color:${c};font-size:16px">${v}</div></div>`).join('')}</div>` : ''}
     <div style="overflow-x:auto"><table style="width:100%;min-width:0;border-collapse:collapse"><thead><tr style="color:var(--acero)"><th style="text-align:left;padding:3px 4px">Carga</th><th style="${th}">Cargando</th><th style="${th}">Traslado</th><th style="${th}">Botar</th><th style="${th}">Det.</th><th style="${th}">ha</th><th style="${th}">L/ha</th></tr></thead><tbody>${filas}</tbody></table></div>
-    <div style="color:var(--acero);margin-top:4px">Cada carga dura desde que entra a cargar hasta la carga siguiente (cargar + ida + aplicar + vuelta). Botar = tiempo aplicando dentro del potrero. L/ha = litros del estanque ÷ ha aplicadas con esa carga (las ha salen del GPS × ancho, son aproximadas). * Última carga del día: no entra en los promedios porque puede no haberse vaciado.${litrosTot ? ` · ≈ ${litrosTot.toLocaleString('es-CL')} L cargados en el período.` : ''}</div>
+    <div style="color:var(--acero);margin-top:4px">Una carga cuenta cuando el equipo está ${ENVIVO_CARGA_MIN} min o más en la zona de carga; si solo pasa por ahí, no cuenta. Cada carga dura desde que entra a cargar hasta la carga siguiente (cargar + ida + aplicar + vuelta). Botar = tiempo aplicando dentro del potrero. L/ha = litros del estanque ÷ ha aplicadas con esa carga (las ha salen del GPS × ancho, son aproximadas). * Última carga del día: no entra en los promedios porque puede no haberse vaciado.${litrosTot ? ` · ≈ ${litrosTot.toLocaleString('es-CL')} L cargados en el período.` : ''}</div>
     ${hist.length ? `<details style="margin-top:6px"><summary style="cursor:pointer;font-weight:700">📈 Historial 30 días: ${hHa > 0.05 && hLit ? Math.round(hLit / hHa).toLocaleString('es-CL') + ' L/ha' : '— L/ha'} promedio · ${hC} cargas · carga ${hProm('cargaMin') ?? '—'} min · traslado ${hProm('trasladoMin') ?? '—'} min · botar ${hProm('botarMin') ?? '—'} min</summary>
       <table style="width:100%;min-width:0;border-collapse:collapse;margin-top:4px"><thead><tr style="color:var(--acero)"><th style="text-align:left;padding:3px 4px">Día</th><th style="${th}">Cargas</th><th style="${th}">L/ha</th><th style="${th}">Carga</th><th style="${th}">Trasl.</th><th style="${th}">Botar</th></tr></thead><tbody>${hist.map(x => `<tr><td style="padding:3px 4px">${fDia(x.dia)}</td><td style="${th}">${x.nCargas}</td><td style="${th}"><b>${x.prom && x.prom.lha != null ? x.prom.lha.toLocaleString('es-CL') : '—'}</b></td><td style="${th}">${x.prom ? x.prom.cargaMin + ' min' : '—'}</td><td style="${th}">${x.prom ? x.prom.trasladoMin + ' min' : '—'}</td><td style="${th}">${x.prom ? x.prom.botarMin + ' min' : '—'}</td></tr>`).join('')}</tbody></table>
       <div style="color:var(--acero);margin-top:3px">El historial se guarda cada vez que se abre el recorrido del equipo (con «＋ Sumar día anterior» se agregan días pasados, hasta 7).</div></details>` : ''}
