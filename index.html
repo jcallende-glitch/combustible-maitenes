@@ -1974,6 +1974,16 @@ const envivoH = ms => { const m = Math.round(ms / 60000); return m >= 60 ? `${Ma
 const ES_CARRETA_GASPARDO = /carreta.*gaspardo|gaspardo.*carreta|gaspardo.*barra|barra.*gaspardo/i;
 const CAPACIDAD_APEROS_DEFAULT = [[ES_CARRETA_GASPARDO, 3000]];
 const ANCHO_APEROS_DEFAULT = [[ES_CARRETA_GASPARDO, 24]];
+// Apero con el que SIEMPRE anda cada tractor al fumigar/nebulizar (de ahí salen los litros por carga). Se puede cambiar en config.aperoFumigacion {equipo: apero}.
+const APERO_FUMIGACION_DEFAULT = [[/5090/, 'Gama 4000'], [/5076|5082/, 'Gaspardo 2000']];
+const aperoFumigacionDe = eq => {
+  if (!eq) return '';
+  const c = (config.aperoFumigacion || {})[eq]; if (c) return c;
+  const d = APERO_FUMIGACION_DEFAULT.find(([re]) => re.test(String(eq))); if (!d) return '';
+  const real = (aperosConfig || []).find(a => normNombre(a.nombre) === normNombre(d[1])); // respeta cómo lo escribiste en Equipos y aperos
+  return real ? real.nombre : d[1];
+};
+const ES_LABOR_FUMIGACION = /fumig|nebuliz|aplicaci|pulveriz/i;
 const anchoDeApero = n => { const ac = (aperosConfig || []).find(a => a.nombre === n); if (ac && Number(ac.ancho) > 0) return Number(ac.ancho); const c = (config.anchoAperos || {})[n]; if (Number(c) > 0) return Number(c); const dflt = ANCHO_APEROS_DEFAULT.find(([re]) => re.test(String(n || ''))); return dflt ? dflt[1] : 0; };
 // Ancho de trabajo de ese día según el apero anotado al cargar petróleo (0 = el ancho del huerto o cultivo de cada potrero)
 const envivoAnchoDia = (eq, dia, d) => { const ap = ((d.aperosDia || {})[dia] || []).find(a => anchoDeApero(a) > 0); return ap ? anchoDeApero(ap) : 0; };
@@ -2022,6 +2032,8 @@ function envivoEstanque(eq, dia, d) {
   if (ap) return { litros: litrosDeApero(ap), fuente: ap + ' (según la carga de petróleo)' };
   const fijo = Number((config.estanqueAplicacion || {})[eq]) || 0;
   if (fijo > 0) return { litros: fijo, fuente: 'fijado para ' + eq };
+  const pf = aperoFumigacionDe(eq);
+  if (pf && litrosDeApero(pf) > 0) return { litros: litrosDeApero(pf), fuente: pf + ' (el que siempre usa ' + eq + ')' };
   const asig = (aperosConfig || []).filter(a => Array.isArray(a.equipos) && a.equipos.includes(eq) && litrosDeApero(a.nombre) > 0);
   if (asig.length === 1) return { litros: litrosDeApero(asig[0].nombre), fuente: asig[0].nombre + ' (apero asignado al tractor)' };
   return { litros: 0, fuente: '' };
@@ -4133,6 +4145,8 @@ window.seleccionarTrabajo = function(t) {
   // se mantienen solo los aperos que siguen siendo válidos para las labores elegidas
   const validos = new Set(aperosParaLabores().map(a => a.nombre));
   aperosSel = aperosSel.filter(a => a === OTRO || a === 'LIBRE' || validos.has(a));
+  // fumigación / nebulizador: ya viene marcado el apero con el que siempre anda ese tractor (se puede cambiar)
+  if (i < 0 && ES_LABOR_FUMIGACION.test(t) && !aperosSel.length) { const pf = aperoFumigacionDe((document.getElementById('equipo') || {}).value); if (pf && validos.has(pf)) aperosSel = [pf]; }
   if (!aperosSel.includes(OTRO) && !aperosSel.includes('LIBRE')) aperoObsTexto = '';
   aperoSeleccionado = aperosSel[0] || null;
   renderTrabajoSelector();
@@ -8355,7 +8369,20 @@ document.addEventListener('change', e => {
     renderCampoAperos();
   }
 });
+// Fumigación/aplicación en el cuaderno: viene marcado el apero con el que siempre anda ese tractor
+function campoAperoPrefijado() {
+  const tipo = campoTipoLaborSeleccionado, eq = (document.getElementById('campo-labor-equipo') || {}).value;
+  if (!tipo || !eq) return;
+  if (campoAperosSel.length && !(campoAperosSel.length === 1 && campoAperosSel[0] === campoAperoAuto)) return; // ya eligió otro: no se toca
+  campoAperoAuto = '';
+  const nom = tipo === 'personalizado' ? ((document.getElementById('campo-nombre-tipo') || {}).value || '') : tipo;
+  if (!(TIPOS_APLIC_TAREA.includes(tipo) || ES_LABOR_FUMIGACION.test(nom))) return;
+  const pf = aperoFumigacionDe(eq);
+  if (pf && (aperosConfig || []).some(a => a.nombre === pf && (!a.equipos || !a.equipos.length || a.equipos.includes(eq)))) { campoAperosSel = [pf]; campoAperoAuto = pf; } else campoAperosSel = [];
+}
+let campoAperoAuto = '';
 function renderCampoAperos() {
+  campoAperoPrefijado();
   renderCampoQuien();
   const wrap = document.getElementById('campo-labor-aperos');
   if (!wrap) return;
