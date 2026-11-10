@@ -1766,7 +1766,16 @@ async function envivoPuntosDelDia(eq, dias) {
   const desde = new Date(); desde.setHours(0, 0, 0, 0); desde.setDate(desde.getDate() - (dias || 0));
   const t0 = desde.getTime(), t1 = Date.now();
   const pref = envivoPrefDe(eq);
-  const orden = pref === 'jdlink' ? ['jdlink', 'celular'] : ['celular', 'jdlink']; // automática: primero el celular (más puntos), si no hay, JDLink
+  if (pref === 'auto') { // automática: el celular (más puntos) y, donde el celular no tiene datos, se completa con JDLink
+    const [pc, pj] = await Promise.all([envivoPuntosCelular(eq, t0, t1).catch(() => []), envivoPuntosJD(eq, t0, t1).catch(() => [])]);
+    if (pc.length && !pj.length) return { puntos: pc, fuente: 'celular', pref, t0, t1 };
+    if (!pc.length) return pj.length ? { puntos: pj, fuente: 'jdlink', pref, t0, t1 } : { puntos: [], fuente: null, pref, t0, t1 };
+    const tc = pc.map(p => p.t).sort((a, b) => a - b), cerca = t => { let lo = 0, hi = tc.length; while (lo < hi) { const m = (lo + hi) >> 1; if (tc[m] < t) lo = m + 1; else hi = m; } return Math.min(lo < tc.length ? tc[lo] - t : Infinity, lo > 0 ? t - tc[lo - 1] : Infinity); };
+    const extra = pj.filter(q => cerca(q.t) > 2 * 60000); // JDLink solo donde el celular lleva más de 2 min sin mandar nada
+    if (!extra.length) return { puntos: pc, fuente: 'celular', pref, t0, t1 };
+    return { puntos: [...pc, ...extra].sort((a, b) => a.t - b.t), fuente: 'celular', jdExtra: extra.length, pref, t0, t1 };
+  }
+  const orden = pref === 'jdlink' ? ['jdlink', 'celular'] : ['celular', 'jdlink'];
   for (const f of orden) {
     const puntos = f === 'celular' ? await envivoPuntosCelular(eq, t0, t1) : await envivoPuntosJD(eq, t0, t1);
     if (puntos.length) return { puntos, fuente: f, pref, t0, t1 };
@@ -2231,7 +2240,7 @@ function envivoPanelRuta(d) {
   let nHuecos = 0, msHuecos = 0, msCub = 0;
   for (let i = 1; i < puntos.length; i++) { const dt = puntos[i].t - puntos[i - 1].t; if (envivoDiaStr(puntos[i].t) !== envivoDiaStr(puntos[i - 1].t)) continue; if (dt > ENVIVO_HUECO_MS) { nHuecos++; msHuecos += dt; } else if (dt > 0) msCub += dt; }
   const hhmm = ms => new Date(ms).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' });
-  const diagTxt = `${puntos.length} puntos · primero ${hhmm(puntos[0].t)}, último ${hhmm(puntos[puntos.length - 1].t)} · un punto cada ${Math.round(msCub / Math.max(1, puntos.length - 1 - nHuecos) / 1000)} s` + (nHuecos ? ` · <strong>${nHuecos} huecos sin datos (${envivoH(msHuecos)})</strong>` : '') + (fuente === 'jdlink' && d.fuenteN ? ` · JDLink: ${d.fuenteN.bc} del recorrido + ${d.fuenteN.loc} de ubicaciones (${d.fuenteN.llam} consultas)` : '') + (Date.now() - puntos[puntos.length - 1].t > 30 * 60000 ? ` · <strong>el último dato tiene ${envivoH(Date.now() - puntos[puntos.length - 1].t)}</strong>` : '');
+  const diagTxt = `${puntos.length} puntos · primero ${hhmm(puntos[0].t)}, último ${hhmm(puntos[puntos.length - 1].t)} · un punto cada ${Math.round(msCub / Math.max(1, puntos.length - 1 - nHuecos) / 1000)} s` + (nHuecos ? ` · <strong>${nHuecos} huecos sin datos (${envivoH(msHuecos)})</strong>` : '') + (d.jdExtra ? ` · 📱 celular completado con 📡 JDLink en los huecos (${d.jdExtra} puntos)` : '') + (fuente === 'jdlink' && d.fuenteN ? ` · JDLink: ${d.fuenteN.bc} del recorrido + ${d.fuenteN.loc} de ubicaciones (${d.fuenteN.llam} consultas)` : '') + (Date.now() - puntos[puntos.length - 1].t > 30 * 60000 ? ` · <strong>el último dato tiene ${envivoH(Date.now() - puntos[puntos.length - 1].t)}</strong>` : '');
   // Entrecalles marcadas sin registro en el cuaderno (🌳 Hileras por día) para este equipo en estos días
   const sinReg = { ha: 0, h: 0, n: 0 };
   if (!laboresCampoSubscrito) { try { suscribirLaboresCampo(); } catch (e) { console.warn(e); } }
@@ -2392,7 +2401,7 @@ async function envivoCargarRuta(eq) {
     }
     const dias = envivoRutaDias;
     if (!envivoZonasListas) { await jdpCargarZonas(); envivoZonasListas = true; envivoDibujarZonas(); }
-    const { puntos, fuente, pref } = await envivoPuntosDelDia(eq, dias);
+    const { puntos, fuente, pref, jdExtra } = await envivoPuntosDelDia(eq, dias);
     if (!envivoSel.includes(eq) || envivoRutaDias !== dias) return; // cambió mientras cargaba
     const aperosDia = await envivoAperosDelEquipo(eq, [...new Set(puntos.map(p => envivoDiaStr(p.t)))]);
     if (!laboresCampoSubscrito) { try { suscribirLaboresCampo(); } catch (e) { console.warn(e); } }
@@ -2402,7 +2411,7 @@ async function envivoCargarRuta(eq) {
       histAperos = sn.docs.map(x => x.data()).map(r => ({ fecha: r.fecha || '', aperos: (Array.isArray(r.aperos) && r.aperos.length ? r.aperos : (r.apero ? [r.apero] : [])).filter(aperoValido) })).filter(x => x.fecha).sort((a, b) => b.fecha.localeCompare(a.fecha));
     } catch (e) { console.warn('aperos anteriores', e); }
     if (tractoresAplicacion().includes(eq) && !envivoHist[eq]) envivoCargarHist(eq);
-    envivoRutas[eq] = { eq, puntos, fuente, dias, pref, fuenteN: envivoFuenteN, aperosDia, histAperos };
+    envivoRutas[eq] = { eq, puntos, fuente, jdExtra: jdExtra || 0, dias, pref, fuenteN: envivoFuenteN, aperosDia, histAperos };
   } catch (e) { envivoRutas[eq] = null; toast('No se pudo cargar el recorrido de ' + eq + ': ' + e.message, false); }
   finally { delete envivoCargando[eq]; envivoPintarCargando(); }
   envivoRenderRuta();
