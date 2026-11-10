@@ -8456,6 +8456,7 @@ window.renderTareas = function() {
   const term = tareasProg.filter(t => t.estado === 'terminada').slice(0, 15);
   const prog = puedeProgramarTareas();
   if (!act.length && !term.length && !prog) { w.innerHTML = ''; return; }
+  const sinPermiso = !prog ? `<div class="hint" style="margin-top:6px">Entraste como «<b>${escA(currentUser || '')}</b>». Con este nombre no se puede empezar ni programar tareas. Pide al administrador que te marque en «👤 Quiénes programan y empiezan tareas».</div>` : '';
   const tarjeta = t => {
     const enc = t.estado === 'en_curso', ter = t.estado === 'terminada';
     return `<div style="border:1px solid ${enc ? '#93C5FD' : ter ? '#E5E7EB' : '#C4B5FD'};background:${enc ? '#EFF6FF' : ter ? '#F9FAFB' : '#F5F3FF'};border-radius:10px;padding:10px;margin-bottom:8px">
@@ -8475,6 +8476,7 @@ window.renderTareas = function() {
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">${[...(config.equipos || [])].filter(e => !/otro/i.test(e)).sort((a, b) => a.localeCompare(b, 'es')).map(e => `<button type="button" class="cultivo-chip ${eqsAp.includes(e) ? 'sel' : ''}" onclick="togEquipoAplicacion('${escA(e).replace(/'/g, "\\'")}')">${eqsAp.includes(e) ? '✓ ' : ''}${escA(e)}</button>`).join('')}</div>
       <div class="hint">Estos equipos no pueden trabajar en el modo tractor (aplicación, trincha u otro) sin una tarea programada asignada a ellos.</div></details>
     ${htmlProgramadoresTareas()}` : ''}
+    ${sinPermiso}
   </div>`;
 };
 // ── Admin: quiénes programan y empiezan tareas (solo nombres; los PIN no se muestran) ──
@@ -8485,7 +8487,7 @@ function candidatosProgramadores() {
 }
 function htmlProgramadoresTareas() {
   if (!isAdmin) return '';
-  if (nombresCampoTareas == null) { nombresCampoTareas = []; getPinesCampo().then(p => { nombresCampoTareas = Object.keys(p || {}); renderTareas(); }).catch(() => {}); }
+  if (nombresCampoTareas == null) { nombresCampoTareas = []; getPinesCampo().then(p => { getPines().then(q => { nombresCampoTareas = [...new Set([...nombresCampoTareas, ...Object.keys(q || {})])]; renderTareas(); }).catch(() => {}); nombresCampoTareas = Object.keys(p || {}); renderTareas(); }).catch(() => {}); }
   const cands = candidatosProgramadores(), sel = cands.filter(esProgramadorTareas);
   return `<details ${programadoresAbierto ? 'open' : ''} ontoggle="setProgramadoresAbierto(this.open)" style="margin-top:10px"><summary style="cursor:pointer;font-size:13px">👤 Quiénes programan y empiezan tareas (${escA(sel.join(', ') || 'nadie más')})</summary>
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">${cands.map((e, i) => `<button type="button" class="cultivo-chip ${sel.includes(e) ? 'sel' : ''}" onclick="togProgramadorTareas(${i})">${sel.includes(e) ? '✓ ' : ''}${escA(e)}</button>`).join('')}</div>
