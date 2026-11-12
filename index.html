@@ -8539,7 +8539,7 @@ window.renderTareas = function() {
     ${isAdmin ? `<details style="margin-top:10px"><summary style="cursor:pointer;font-size:13px">⚙️ Equipos que solo usan el modo tractor con una tarea (${escA(eqsAp.join(', ') || 'ninguno')})</summary>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">${[...(config.equipos || [])].filter(e => !/otro/i.test(e)).sort((a, b) => a.localeCompare(b, 'es')).map(e => `<button type="button" class="cultivo-chip ${eqsAp.includes(e) ? 'sel' : ''}" onclick="togEquipoAplicacion('${escA(e).replace(/'/g, "\\'")}')">${eqsAp.includes(e) ? '✓ ' : ''}${escA(e)}</button>`).join('')}</div>
       <div class="hint">Estos equipos no pueden trabajar en el modo tractor (aplicación, trincha u otro) sin una tarea programada asignada a ellos.</div></details>
-    ${htmlProgramadoresTareas()}${htmlAperoFumigacionEquipos()}` : ''}
+    ${htmlProgramadoresTareas()}` : ''}
     ${sinPermiso}
   </div>`;
 };
@@ -8557,6 +8557,13 @@ function htmlAperoFumigacionEquipos() {
     ${eqs.map(fila).join('')}
     <div class="hint">Es el apero que viene marcado al programar o registrar una fumigación/aplicación, y de él salen los litros por carga (4.000 L, 2.000 L…). Se puede cambiar en cada tarea. Los litros salen del número en el nombre del apero.</div></details>`;
 }
+window.setAperoFumEq = async function(e, v) {
+  if (!isAdmin) { toast('Solo el administrador puede hacer esto', false); return; }
+  const m = { ...(config.aperoFumigacion || {}) }; if (v) m[e] = v; else delete m[e];
+  config.aperoFumigacion = m;
+  try { await setDoc(doc(db, 'config', 'datos'), { aperoFumigacion: m }, { merge: true }); toast('✓ ' + e + ': ' + (v === '-' ? 'sin apero fijo' : v), true); } catch (er) { toast('Error: ' + er.message, false); }
+  try { renderConfigListas(); } catch (er) {} try { renderTareas(); } catch (er) {}
+};
 window.setAperoFumigacionEq = async function(i, v) {
   const eqs = (config.equipos || []).filter(e => e && !/otro|generador/i.test(e)).sort((a, b) => (equiposAplicacion().includes(b) - equiposAplicacion().includes(a)) || a.localeCompare(b, 'es')), e = eqs[i]; if (!e) return;
   const m = { ...(config.aperoFumigacion || {}) }; if (v) m[e] = v; else delete m[e];
@@ -13265,6 +13272,7 @@ function renderConfigListas() {
             ${badgeReq('Apero','apero',req.apero)}
             <span class="badge" style='font-size:9px;margin-left:3px;cursor:pointer;background:${fuenteInfo.bg};color:${fuenteInfo.color}' title="Click para cambiar la fuente del horómetro: Manual → Shelly → JDLink" onclick='cambiarFuenteHorometro(${JSON.stringify(v)})'>⏱ ${fuenteInfo.label}</span>
             ${(() => { const r = restriccionDe(v), lim = r && evaluarRestriccion(v, { cargas: 0, litros: 0 }); const on = !!(r && (r.privado || lim)); const sinMed = !requisitosDe(v).medidor; return `<span class="badge" style='font-size:9px;margin-left:3px;cursor:pointer;background:${on || sinMed ? '#FEF3C7' : '#F3F4F6'};color:${on || sinMed ? '#92400E' : '#6B7280'}' title="Qué se pide al cargar, quién lo ve y límites de carga" onclick='abrirRestriccionEquipo(${JSON.stringify(v)})'>⚙️ Ajustes${sinMed ? ' · sin ' + (tipoEquipo(v) === 'km' ? 'km' : 'horas') : ''}${r && r.privado ? ' · 🔒 particular' : ''}${lim ? ' · 📏 límites' : ''}</span>`; })()}
+            ${(() => { if (/otro|generador/i.test(v) || !(aperosConfig || []).length) return ''; const ef = aperoFumigacionDe(v); return `<div style="flex-basis:100%;display:flex;gap:6px;align-items:center;font-size:12px"><span style="color:#6B7280">🧴 Apero al fumigar:</span><select style="flex:1;max-width:240px;padding:4px 6px;font-size:12px" onchange='setAperoFumEq(${JSON.stringify(v)}, this.value)'><option value="-" ${!ef ? 'selected' : ''}>— sin apero fijo —</option>${(aperosConfig || []).map(a => `<option value="${escA(a.nombre)}" ${ef === a.nombre ? 'selected' : ''}>${escA(a.nombre)}${litrosDeApero(a.nombre) > 0 ? ' · ' + litrosDeApero(a.nombre).toLocaleString('es-CL') + ' L' : ''}</option>`).join('')}</select></div>`; })()}
             <button class="btn btn-danger" onclick="eliminarItem('${tipo}',${i})">✕</button>
           </div>`;
         }
