@@ -1985,15 +1985,23 @@ const ES_CARRETA_GASPARDO = /carreta.*gaspardo|gaspardo.*carreta|gaspardo.*barra
 const CAPACIDAD_APEROS_DEFAULT = [[ES_CARRETA_GASPARDO, 3000]];
 const ANCHO_APEROS_DEFAULT = [[ES_CARRETA_GASPARDO, 24]];
 // Apero con el que SIEMPRE anda cada tractor al fumigar/nebulizar (de ahí salen los litros por carga). Se puede cambiar en config.aperoFumigacion {equipo: apero}.
-const APERO_FUMIGACION_DEFAULT = [[/5090/, 'Gama 4000'], [/5076|5082/, 'Gaspardo 2000']];
+const APERO_FUMIGACION_DEFAULT = [[/5090/, 'Gama 4000'], [/5076|5082|6910/, 'Gaspardo 2000']];
 const aperoFumigacionDe = eq => {
   if (!eq) return '';
-  const c = (config.aperoFumigacion || {})[eq]; if (c) return c;
+  const c = (config.aperoFumigacion || {})[eq]; if (c === '-') return ''; if (c) return c;
   const d = APERO_FUMIGACION_DEFAULT.find(([re]) => re.test(String(eq))); if (!d) return '';
   const real = (aperosConfig || []).find(a => normNombre(a.nombre) === normNombre(d[1])); // respeta cómo lo escribiste en Equipos y aperos
   return real ? real.nombre : d[1];
 };
 const ES_LABOR_FUMIGACION = /fumig|nebuliz|aplicaci|pulveriz/i;
+// Apero de CADA equipo en una labor (una tarea puede tener varios equipos, cada uno con su apero): labor.aperosEquipo = { equipo: [apero] }
+const aperosDeLaborEq = (l, eq) => {
+  const m = (l && l.aperosEquipo) || {}; if (Array.isArray(m[eq]) && m[eq].length) return m[eq];
+  const u = (l && Array.isArray(l.aperos) ? l.aperos : (l && l.apero ? [l.apero] : [])).filter(a => a && a !== OTRO && a !== 'LIBRE');
+  const pf = aperoFumigacionDe(eq); if (pf && u.includes(pf)) return [pf];
+  return u;
+};
+const txtApEq = (l, eq) => { const aps = aperosDeLaborEq(l, eq); return `🚜 ${escA(eq)} → ${aps.length ? aps.map(a => '🧰 ' + escA(a) + (litrosDeApero(a) > 0 ? ' (' + litrosDeApero(a).toLocaleString('es-CL') + ' L)' : '')).join(' + ') : '<i>sin apero</i>'}`; };
 const anchoDeApero = n => { const ac = (aperosConfig || []).find(a => a.nombre === n); if (ac && Number(ac.ancho) > 0) return Number(ac.ancho); const c = (config.anchoAperos || {})[n]; if (Number(c) > 0) return Number(c); const dflt = ANCHO_APEROS_DEFAULT.find(([re]) => re.test(String(n || ''))); return dflt ? dflt[1] : 0; };
 // Ancho de trabajo de ese día según el apero anotado al cargar petróleo (0 = el ancho del huerto o cultivo de cada potrero)
 const envivoAnchoDia = (eq, dia, d) => { const ap = ((d.aperosDia || {})[dia] || []).find(a => anchoDeApero(a) > 0); return ap ? anchoDeApero(ap) : 0; };
@@ -2038,6 +2046,8 @@ async function envivoAperosDelEquipo(eq, dias) {
 }
 // Litros del estanque ese día: el apero anotado al cargar petróleo → el valor fijado para el tractor → el único apero con litros asignado al tractor
 function envivoEstanque(eq, dia, d) {
+  const lab = (laboresCampoTodos || []).find(l => !l.pendiente && ((equiposPorDia(l)[dia] || []).some(x => x.equipo === eq)) && aperosDeLaborEq(l, eq).some(a => litrosDeApero(a) > 0));
+  if (lab) { const a = aperosDeLaborEq(lab, eq).find(x => litrosDeApero(x) > 0); return { litros: litrosDeApero(a), fuente: a + ' (según la labor del cuaderno)' }; }
   const ap = ((d.aperosDia || {})[dia] || []).find(a => litrosDeApero(a) > 0);
   if (ap) return { litros: litrosDeApero(ap), fuente: ap + ' (según la carga de petróleo)' };
   const fijo = Number((config.estanqueAplicacion || {})[eq]) || 0;
@@ -8372,7 +8382,7 @@ document.addEventListener('change', e => {
   if (e.target.id === 'campo-labor-equipo') {
     const eq = e.target.value, ops = eq ? operadoresDeEquipo(eq) : [], so = document.getElementById('campo-labor-operador');
     if (so && ops.length === 1) { so.value = ops[0]; }
-    renderCampoAperos();
+    campoAperoCambiar = false; renderCampoAperos();
   } else if (e.target.id === 'campo-labor-operador') {
     const op = e.target.value, eqs = op ? equiposDe(op) : [], se = document.getElementById('campo-labor-equipo');
     if (se && eqs.length === 1) { se.value = eqs[0]; }
@@ -8390,7 +8400,8 @@ function campoAperoPrefijado() {
   const pf = aperoFumigacionDe(eq);
   if (pf && (aperosConfig || []).some(a => a.nombre === pf && (!a.equipos || !a.equipos.length || a.equipos.includes(eq)))) { campoAperosSel = [pf]; campoAperoAuto = pf; } else campoAperosSel = [];
 }
-let campoAperoAuto = '';
+let campoAperoAuto = '', campoAperoCambiar = false;
+window.campoAperoCambiarTog = () => { campoAperoCambiar = true; renderCampoAperos(); };
 function renderCampoAperos() {
   campoAperoPrefijado();
   renderCampoQuien();
@@ -8402,6 +8413,10 @@ function renderCampoAperos() {
   const lista = (aperosConfig || []).filter(a => !eq || !a.equipos || a.equipos.length === 0 || a.equipos.includes(eq)).map(a => a.nombre);
   campoAperosSel = campoAperosSel.filter(a => lista.includes(a));
   if (!lista.length) { wrap.innerHTML = ''; return; }
+  if (campoAperoAuto && campoAperosSel.length === 1 && campoAperosSel[0] === campoAperoAuto && !campoAperoCambiar) {
+    wrap.innerHTML = `<div class="cultivos-label" style="margin-top:10px">Apero utilizado</div><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><div style="font-size:14px;font-weight:600">🧰 ${escA(campoAperoAuto)}${litrosDeApero(campoAperoAuto) > 0 ? ' · ' + litrosDeApero(campoAperoAuto).toLocaleString('es-CL') + ' L' : ''} <span style="font-weight:400;color:#6B7280;font-size:12px">(el de ${escA(eq)})</span></div><button type="button" style="background:none;border:none;color:#7C3AED;font-size:12px;text-decoration:underline;cursor:pointer;padding:0" onclick="campoAperoCambiarTog()">cambiar (caso especial)</button></div>`;
+    return;
+  }
   wrap.innerHTML = `<div class="cultivos-label" style="margin-top:10px">Apero utilizado <span style="font-weight:400;color:#6B7280">(opcional, puedes elegir más de uno)</span></div>
     <div class="centros-selector">${lista.map(a => `<div class="cultivo-chip ${campoAperosSel.includes(a)?'sel':''}" onclick='toggleCampoApero(${JSON.stringify(a)})'>${a}</div>`).join('')}</div>`;
 }
@@ -8415,7 +8430,7 @@ window.toggleCampoApero = function(a) {
 // ═══ 📅 TAREAS PROGRAMADAS (las deja el administrador o Nicolás; los equipos asignados las ejecutan) ═══
 // labores_programadas/{id}: { datos (la labor tal como quedará en el cuaderno), potrero, lote, texto, fechaProgramada, equipos[],
 //   estado: 'pendiente' | 'en_curso' | 'terminada' | 'cancelada', laborId, aplicacionId, iniciada, iniciadaPor, avance{ 'fecha|equipo': {...} } }
-let campoProgramar = false, campoProgEquipos = [], tareasProg = [], tareasSubscrito = false, tareasVerTerminadas = false;
+let campoProgCambiar = {}, campoProgAperos = {}, campoProgramar = false, campoProgEquipos = [], tareasProg = [], tareasSubscrito = false, tareasVerTerminadas = false;
 // Quiénes (además de admin y encargados de campo) programan, empiezan y terminan tareas. Se elige en «📅 Tareas programadas» (admin).
 // Se compara sin tildes ni mayúsculas; mientras no se haya elegido, vale para Nicolás (cualquier nombre que empiece con «Nicolás»/«Nico»).
 const normNombre = s => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
@@ -8440,17 +8455,28 @@ window.renderProgramarCampo = function() {
     ${campoProgramar ? `<div class="hint" style="margin:6px 0">Queda pendiente para el equipo asignado. La labor entra al cuaderno <b>cuando se empieza</b>: desde el modo tractor, al entrar a la app el operador de un equipo con JDLink, o con <b>▶ Empezar</b> en «📅 Tareas programadas» (para equipos que no usan el modo tractor y se guían por su propio monitor). La fecha de arriba es la fecha programada.</div>
       <div class="cultivos-label">Equipo(s) que la harán</div>
       <div style="display:flex;gap:6px;flex-wrap:wrap">${eqs.map((e, i) => `<button type="button" class="cultivo-chip ${campoProgEquipos.includes(e) ? 'sel' : ''}" onclick="campoProgEqTog(${i})">${campoProgEquipos.includes(e) ? '✓ ' : ''}🚜 ${escA(e)}${fuenteHorometroDe(e) === 'jdlink' ? ' · JDLink' : ''}</button>`).join('')}</div>` : ''}
+    ${campoProgEquipos.length && (TIPOS_APLIC_TAREA.includes(tipo) || ES_LABOR_FUMIGACION.test(tipo === 'personalizado' ? ((document.getElementById('campo-nombre-tipo') || {}).value || '') : tipo)) ? `<div class="cultivos-label" style="margin-top:10px">Apero de cada equipo <span style="font-weight:400;color:#6B7280">(de ahí salen los litros por carga)</span></div>
+      ${campoProgEquipos.map(e => { const lista = aperosPosiblesEq(e), sel = aperosProgDe(e), pf = aperoFumigacionDe(e);
+        if (pf && lista.includes(pf) && !campoProgCambiar[e]) return `<div style="margin-bottom:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><div style="font-size:13px;font-weight:600">🚜 ${escA(e)} → 🧰 ${escA(pf)}${litrosDeApero(pf) > 0 ? ' · ' + litrosDeApero(pf).toLocaleString('es-CL') + ' L' : ''}</div><button type="button" style="background:none;border:none;color:#7C3AED;font-size:12px;text-decoration:underline;cursor:pointer;padding:0" onclick='campoProgCambiarTog(${JSON.stringify(e)})'>cambiar (caso especial)</button></div>`;
+        return `<div style="margin-bottom:6px"><div style="font-size:13px;font-weight:600">🚜 ${escA(e)}${pf ? ` <button type="button" style="background:none;border:none;color:#7C3AED;font-size:12px;text-decoration:underline;cursor:pointer;padding:0" onclick='campoProgCambiarTog(${JSON.stringify(e)})'>volver a ${escA(pf)}</button>` : ''}</div><div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:3px">${lista.map(a => `<button type="button" class="cultivo-chip ${sel.includes(a) ? 'sel' : ''}" onclick='campoProgApTog(${JSON.stringify(e)},${JSON.stringify(a)})'>${sel.includes(a) ? '✓ ' : ''}${escA(a)}${litrosDeApero(a) > 0 ? ' · ' + litrosDeApero(a).toLocaleString('es-CL') + ' L' : ''}</button>`).join('') || '<span class="hint">Sin aperos cargados</span>'}</div></div>`; }).join('')}` : ''}
   </div>`;
   window._progEqs = eqs;
   if (btn) btn.textContent = campoProgramar ? '📅 Programar tarea' : '✓ Guardar labor';
 };
+const aperosPosiblesEq = eq => (aperosConfig || []).filter(a => !a.equipos || !a.equipos.length || a.equipos.includes(eq)).map(a => a.nombre);
+const aperosProgDe = eq => Array.isArray(campoProgAperos[eq]) ? campoProgAperos[eq] : (() => { const pf = aperoFumigacionDe(eq); return pf && aperosPosiblesEq(eq).includes(pf) ? [pf] : []; })();
+window.campoProgCambiarTog = eq => { if (campoProgCambiar[eq]) { delete campoProgCambiar[eq]; delete campoProgAperos[eq]; } else campoProgCambiar[eq] = true; renderProgramarCampo(); };
+window.campoProgApTog = (eq, a) => { const cur = aperosProgDe(eq).slice(), i = cur.indexOf(a); if (i >= 0) cur.splice(i, 1); else cur.push(a); campoProgAperos[eq] = cur; renderProgramarCampo(); };
 window.campoProgramarTog = v => { campoProgramar = !!v; if (campoProgramar && !campoProgEquipos.length) { const e = (document.getElementById('campo-labor-equipo') || {}).value; if (e) campoProgEquipos = [e]; } renderProgramarCampo(); };
 window.campoProgEqTog = i => { const e = (window._progEqs || [])[i]; if (!e) return; campoProgEquipos = campoProgEquipos.includes(e) ? campoProgEquipos.filter(x => x !== e) : [...campoProgEquipos, e]; renderProgramarCampo(); };
 async function guardarTareaProgramada(payloadBase) {
   if (!campoProgEquipos.length) { toast('Elige el equipo (o los equipos) que harán la tarea', false); return; }
   const btn = document.getElementById('btn-registrar-labor-campo');
   btn.disabled = true; btn.textContent = 'Guardando...';
-  const datos = { ...payloadBase }; ['multiId', 'fechaFin', 'enCurso', 'diasTrabajo', 'comboId', 'equipo', 'operadorLabor'].forEach(k => delete datos[k]);
+  const datos = { ...payloadBase };
+  { const aplic = TIPOS_APLIC_TAREA.includes(datos.tipo) || ES_LABOR_FUMIGACION.test(datos.nombreTipo || datos.tipo || '');
+    if (aplic) { const m = {}; campoProgEquipos.forEach(e => { const a = aperosProgDe(e); if (a.length) m[e] = a; }); if (Object.keys(m).length) { datos.aperosEquipo = m; datos.aperos = [...new Set(Object.values(m).flat())]; } } }
+  ['multiId', 'fechaFin', 'enCurso', 'diasTrabajo', 'comboId', 'equipo', 'operadorLabor'].forEach(k => delete datos[k]);
   try {
     const batch = writeBatch(db);
     camposLaborPotrerosSel.forEach(u => {
@@ -8461,7 +8487,7 @@ async function guardarTareaProgramada(payloadBase) {
     await batch.commit();
     const n = camposLaborPotrerosSel.length;
     toast(`📅 Tarea programada${n > 1 ? ' en ' + n + ' potreros' : ''} para ${campoProgEquipos.join(', ')}`, true);
-    campoProgramar = false; campoProgEquipos = [];
+    campoProgramar = false; campoProgEquipos = []; campoProgAperos = {}; campoProgCambiar = {};
     document.getElementById('campo-labor-obs').value = '';
     campoColaLabores = []; campoComboId = null; campoMultiId = null; campoTipoLaborSeleccionado = null;
     renderTipoLaborSelector(); document.getElementById('campo-labor-campos').innerHTML = ''; renderProgramarCampo();
@@ -8500,6 +8526,7 @@ window.renderTareas = function() {
       <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><div><b>${escA(t.texto || '')}</b> · ${escA(t.potrero || '')}${t.lote ? ' (' + escA(t.lote) + ')' : ''}</div>
       <div style="font-size:12px;font-weight:700;color:${enc ? '#1D4ED8' : ter ? '#16A34A' : '#7C3AED'}">${enc ? '🔄 en curso desde ' + fCortaT(t.datosInicio || (t.iniciada ? new Date(t.iniciada).toISOString().slice(0, 10) : '')) : ter ? '🏁 terminada' + (t.fin ? ' el ' + new Date(t.fin).toLocaleDateString('es-CL', { day: '2-digit', month: '2-digit' }) : '') : '📅 programada para el ' + fCortaT(t.fechaProgramada)}</div></div>
       <div style="font-size:12px;color:#4B5563;margin-top:2px">🚜 ${escA((t.equipos || []).join(', '))}${t.creadaPor ? ' · la programó ' + escA(t.creadaPor) : ''}${t.iniciadaPor ? ' · la empezó ' + escA(t.iniciadaPor) : ''}${t.iniciadaDesde === 'cuaderno' && t.iniciadaRegistro && t.iniciadaRegistro !== t.iniciadaPor ? ' (anotó ' + escA(t.iniciadaRegistro) + ')' : ''}</div>
+      ${(t.datos && (t.datos.aperosEquipo || (t.datos.aperos || []).length)) ? `<div style="font-size:12px;margin-top:3px;display:flex;flex-direction:column;gap:1px">${(t.equipos || []).map(e => '<span>' + txtApEq(t.datos, e) + '</span>').join('')}</div>` : ''}
       ${(t.datos && t.datos.productos || []).length ? `<div style="font-size:12px;margin-top:2px">${t.datos.productos.map(p => escA(p.producto) + (p.dosis ? ' ' + escA(p.dosis) : '')).join(' · ')}${t.datos.mojamiento ? ' · mojamiento ' + t.datos.mojamiento + ' L/ha' : ''}</div>` : ''}
       ${enc || ter ? `<details ${enc ? 'open' : ''} style="margin-top:6px"><summary style="cursor:pointer;font-size:13px;font-weight:600">Avance día a día</summary>${avanceHtml(t)}</details>` : ''}
       ${prog && !ter ? `<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap"><button type="button" class="btn btn-verde" style="width:auto;padding:6px 12px;font-size:12px" onclick="empezarTareaCuaderno('${t.id}')">${enc ? '＋ Sumar un día' : '▶ Empezar'}</button>${enc ? `<button type="button" class="btn btn-secondary" style="padding:6px 10px;font-size:12px" onclick="terminarTarea('${t.id}')">🏁 Terminar</button>` : `<button type="button" class="btn btn-secondary" style="padding:6px 10px;font-size:12px" onclick="cancelarTarea('${t.id}')">✕ Cancelar tarea</button>`}</div>` : ''}
@@ -8512,9 +8539,29 @@ window.renderTareas = function() {
     ${isAdmin ? `<details style="margin-top:10px"><summary style="cursor:pointer;font-size:13px">⚙️ Equipos que solo usan el modo tractor con una tarea (${escA(eqsAp.join(', ') || 'ninguno')})</summary>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">${[...(config.equipos || [])].filter(e => !/otro/i.test(e)).sort((a, b) => a.localeCompare(b, 'es')).map(e => `<button type="button" class="cultivo-chip ${eqsAp.includes(e) ? 'sel' : ''}" onclick="togEquipoAplicacion('${escA(e).replace(/'/g, "\\'")}')">${eqsAp.includes(e) ? '✓ ' : ''}${escA(e)}</button>`).join('')}</div>
       <div class="hint">Estos equipos no pueden trabajar en el modo tractor (aplicación, trincha u otro) sin una tarea programada asignada a ellos.</div></details>
-    ${htmlProgramadoresTareas()}` : ''}
+    ${htmlProgramadoresTareas()}${htmlAperoFumigacionEquipos()}` : ''}
     ${sinPermiso}
   </div>`;
+};
+// ── Admin: apero con el que anda cada equipo al fumigar/aplicar (define los litros por carga) ──
+let aperoFumAbierto = false;
+window.setAperoFumAbierto = v => { aperoFumAbierto = !!v; };
+function htmlAperoFumigacionEquipos() {
+  if (!isAdmin) return '';
+  const eqs = (config.equipos || []).filter(e => e && !/otro|generador/i.test(e)).sort((a, b) => (equiposAplicacion().includes(b) - equiposAplicacion().includes(a)) || a.localeCompare(b, 'es'));
+  const aps = (aperosConfig || []).map(a => a.nombre);
+  const fila = (e, i) => { const v = aperoFumigacionDe(e), fijo = (config.aperoFumigacion || {})[e];
+    return `<div style="display:flex;gap:6px;align-items:center;margin-top:5px"><div style="flex:1;font-size:13px">🚜 ${escA(e)}</div><div class="select-wrapper" style="flex:1.4"><select onchange="setAperoFumigacionEq(${i}, this.value)"><option value="" ${!fijo ? 'selected' : ''}>${v ? 'Normal: ' + escA(v) : '— sin apero fijo —'}</option><option value="-" ${fijo === '-' ? 'selected' : ''}>Ninguno (elegir cada vez)</option>${aps.map(a => `<option value="${escA(a)}" ${fijo === a ? 'selected' : ''}>${escA(a)}${litrosDeApero(a) > 0 ? ' · ' + litrosDeApero(a).toLocaleString('es-CL') + ' L' : ''}</option>`).join('')}</select></div></div>`; };
+  const resumen = eqs.map(e => [e, aperoFumigacionDe(e)]).filter(x => x[1]).map(x => x[0].replace(/^JD /, '') + ' → ' + x[1]).join(' · ');
+  return `<details ${aperoFumAbierto ? 'open' : ''} ontoggle="setAperoFumAbierto(this.open)" style="margin-top:10px"><summary style="cursor:pointer;font-size:13px">🧰 Apero de cada equipo al fumigar (${escA(resumen || 'sin definir')})</summary>
+    ${eqs.map(fila).join('')}
+    <div class="hint">Es el apero que viene marcado al programar o registrar una fumigación/aplicación, y de él salen los litros por carga (4.000 L, 2.000 L…). Se puede cambiar en cada tarea. Los litros salen del número en el nombre del apero.</div></details>`;
+}
+window.setAperoFumigacionEq = async function(i, v) {
+  const eqs = (config.equipos || []).filter(e => e && !/otro|generador/i.test(e)).sort((a, b) => (equiposAplicacion().includes(b) - equiposAplicacion().includes(a)) || a.localeCompare(b, 'es')), e = eqs[i]; if (!e) return;
+  const m = { ...(config.aperoFumigacion || {}) }; if (v) m[e] = v; else delete m[e];
+  config.aperoFumigacion = m; aperoFumAbierto = true; renderTareas();
+  try { await setDoc(doc(db, 'config', 'datos'), { aperoFumigacion: m }, { merge: true }); toast('✓ Guardado', true); } catch (er) { toast('Error: ' + er.message, false); }
 };
 // ── Admin: quiénes programan y empiezan tareas (solo nombres; los PIN no se muestran) ──
 let nombresCampoTareas = null, programadoresAbierto = false;
@@ -9820,6 +9867,7 @@ window.registrarLaborCampo = async function() {
     if (!fechaFin) payloadBase.diasTrabajo = [fecha];
   }
   if (campoAperosSel.length) payloadBase.aperos = [...campoAperosSel];
+  { const e0 = (document.getElementById('campo-labor-equipo') || {}).value; if (e0 && campoAperosSel.length) payloadBase.aperosEquipo = { [e0]: [...campoAperosSel] }; }
   { const e = (document.getElementById('campo-labor-equipo') || {}).value, o = (document.getElementById('campo-labor-operador') || {}).value;
     if (e) payloadBase.equipo = e;
     if (o) payloadBase.operadorLabor = o;
@@ -10320,6 +10368,147 @@ window.addEventListener('afterprint', () => { if (window.__tituloPrevio) documen
 
 // Quien tiene acceso al Cuaderno (admin, encargados de campo, operadores con acceso a campo) puede editar y eliminar registros
 const puedeEditarCampo = () => isAdmin || isCampo || campoTambien;
+// ─── 💲 PLANILLA COSTO POTRERO (vista comercial del cuaderno) ─────────────────
+// Por labor: apero usado, combustible L/ha y, en fumigación/fertilización, la dosis/ha valorizada con el precio del Inventario.
+let campoVistaPlanilla = false;
+try { campoVistaPlanilla = localStorage.getItem('campoVistaPlanilla') === '1'; } catch (e) {}
+window.toggleVistaPlanilla = function() {
+  campoVistaPlanilla = !campoVistaPlanilla;
+  try { localStorage.setItem('campoVistaPlanilla', campoVistaPlanilla ? '1' : '0'); } catch (e) {}
+  renderHistorialLabores();
+};
+const aperosDeLabor = l => (Array.isArray(l.aperos) && l.aperos.length ? l.aperos : (l.apero ? [l.apero] : [])).filter(a => a && a !== OTRO && a !== 'LIBRE');
+const nombreLaborPlano = l => { if (l.tipo === 'personalizado') return l.nombreTipo || 'Labor'; const t = TIPOS_LABOR_CAMPO.find(x => x.id === l.tipo); return t ? t.label.replace(/^[^\p{L}]+/u, '') : (l.tipo || 'Labor'); };
+// Litros reales de cada labor: lo cargado ese día por el equipo que la hizo (si el equipo hizo varias labores el mismo día, se reparte por ha)
+// Las cargas de petróleo se leen aparte (desde la fecha de la labor más antigua) porque en el cuaderno no están cargadas
+let planillaRegs = null, planillaRegsDesde = '', planillaRegsTs = 0, planillaRegsCargando = false;
+function planillaCargarRegistros(desde, cont) {
+  if (planillaRegsCargando) return;
+  planillaRegsCargando = true;
+  getDocs(query(collection(db, 'registros'), where('fecha', '>=', desde))).then(sn => { planillaRegs = sn.docs.map(d => d.data()); planillaRegsDesde = desde; planillaRegsTs = Date.now(); })
+    .catch(e => { console.warn('planilla: cargas', e); planillaRegs = planillaRegs || []; planillaRegsDesde = desde; planillaRegsTs = Date.now(); })
+    .finally(() => { planillaRegsCargando = false; if (campoVistaPlanilla) renderHistorialLabores(); });
+}
+// Consumo L/h del equipo con las cargas leídas aquí (misma lógica que consumoLHr, que usa el listado general de cargas)
+function consumoLHrPlanilla(equipo, apero) {
+  if ((registros || []).length) return consumoLHr(equipo, apero);
+  const hr = (planillaRegs || []).filter(r => r.equipo === equipo && r.medidor_tipo === 'hr' && efValida(r));
+  const prom = l => l.length ? l.reduce((x, r) => x + r.eficiencia, 0) / l.length : null;
+  const ca = prom(hr.filter(r => r.apero === apero)); if (ca != null) return { lh: ca, fuente: 'con este apero' };
+  const e = prom(hr); return e != null ? { lh: e, fuente: 'promedio del equipo' } : null;
+}
+function combustiblePorLabor() {
+  const reg = {};
+  (planillaRegs || []).forEach(r => { if (!r.fecha || !r.equipo || !(Number(r.litros) > 0)) return; const k = r.fecha + '|' + r.equipo; reg[k] = (reg[k] || 0) + Number(r.litros); });
+  const porDiaEq = {}, todas = (laboresCampoTodos || []).filter(l => l.fecha && !l.pendiente);
+  todas.forEach(l => {
+    const epd = equiposPorDia(l), dias = Object.keys(epd), nd = dias.length || 1, ha = haDeLabor(l) || 0;
+    dias.forEach(d => [...new Set(epd[d].map(x => x.equipo).filter(Boolean))].forEach(eq => { (porDiaEq[d + '|' + eq] = porDiaEq[d + '|' + eq] || []).push({ id: l.id, w: (ha || 1) / nd }); }));
+  });
+  const out = {};
+  Object.entries(porDiaEq).forEach(([k, lista]) => {
+    if (!reg[k]) return; const tot = lista.reduce((a, x) => a + x.w, 0) || 1;
+    lista.forEach(x => { out[x.id] = (out[x.id] || 0) + reg[k] * x.w / tot; });
+  });
+  return out;
+}
+function insumosDeLabor(l, inv, haOv) {
+  const o = { items: [], costo: 0, sinPrecio: [], sinInv: [], sinDosis: [] };
+  if (!Array.isArray(l.productos) || !l.productos.length) return o;
+  const ha = haDeLabor(l) || haOv;
+  l.productos.forEach(pr => {
+    const p = inv[normNom(pr.producto)];
+    if (!p) { o.sinInv.push(pr.producto); return; }
+    if (!(p.precio > 0)) { o.sinPrecio.push(p.nombre); return; }
+    const c = dosisACantidad(pr.dosis, ha, l.mojamiento), q = c ? cantidadEnUnidadProducto(c, p.unidad) : null;
+    if (q == null || !ha) { o.sinDosis.push(pr.producto); return; }
+    o.items.push({ n: p.nombre, dosis: dosisTxt(pr.dosis, l.mojamiento), precio: p.precio, u: p.unidad || 'L', costoHa: q * p.precio / ha, costo: q * p.precio });
+    o.costo += q * p.precio;
+  });
+  return o;
+}
+window.renderPlanillaCostoPotrero = function(data, cont) {
+  const $ = n => n == null ? '—' : '$' + Math.round(n).toLocaleString('es-CL');
+  const f1 = n => n == null ? '—' : n.toLocaleString('es-CL', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  const precioL = costosParams().precio, admin = isAdmin;
+  { const hace = new Date(Date.now() - 200 * 86400000).toISOString().slice(0, 10), minL = data.map(l => l.fecha).filter(Boolean).sort()[0] || '';
+    const desde = minL ? (minL < hace ? minL : hace) : '';  // además de las labores, ~6 meses atrás para el consumo L/h de cada equipo
+    if (desde && (planillaRegs == null || desde < planillaRegsDesde || Date.now() - planillaRegsTs > 300000)) { planillaCargarRegistros(desde < planillaRegsDesde || !planillaRegsDesde ? desde : planillaRegsDesde); if (planillaRegs == null) { cont.innerHTML = '<div class="empty"><div class="empty-icon">⏳</div>Calculando combustible por labor…</div>'; return; } } }
+  const inv = {}; productosInv.forEach(p => { inv[normNom(p.nombre)] = p; }); productosInv.forEach(p => (p.nombresAnteriores || []).forEach(a => { const k = normNom(a); if (k && !inv[k]) inv[k] = p; }));
+  const litrosReales = combustiblePorLabor();
+  const claveLab = l => nombreLaborPlano(l) + ' · ' + (aperosDeLabor(l).slice().sort(cmpEs).join(' + ') || 'sin apero');
+  // 1) litros/ha real de cada labor y promedio ponderado por labor+apero (con todas las labores, no solo las filtradas)
+  const grupo = {};
+  (laboresCampoTodos || []).filter(l => l.fecha && !l.pendiente).forEach(l => {
+    const ha = haDeLabor(l), lt = litrosReales[l.id]; if (!ha || !lt) return;
+    const g = grupo[claveLab(l)] || (grupo[claveLab(l)] = { lt: 0, ha: 0 }); g.lt += lt; g.ha += ha;
+  });
+  // L/ha = L/h del equipo ÷ ha/h del apero (ancho × velocidad × eficiencia). Huertos: el ancho es la entrecalle.
+  const efic = costosParams().efic;
+  const lhaDe = l => {
+    const eqs = [...new Set(Object.values(equiposPorDia(l)).flat().map(x => x.equipo).filter(Boolean))]; if (!eqs.length && l.equipo) eqs.push(l.equipo);
+    const wCult = envivoAnchoCultivo(l.potrero) || 0, res = [];
+    eqs.forEach(eq => {
+      let mejor = null;
+      aperosDeLaborEq(l, eq).forEach(n => {
+        const a = (aperosConfig || []).find(x => x.nombre === n); if (!a) return;
+        const vel = Number((a.velEquipo || {})[eq]) || Number(a.velocidad) || 0, w = wCult || Number(a.ancho) || 0, c = consumoLHrPlanilla(eq, n);
+        if (!vel || !w || !c || !c.lh) return;
+        const haH = w * vel / 10 * efic / 100, r = { v: c.lh / haH, lh: c.lh, haH, w, vel, ap: n, eq };
+        if (!mejor || haH < mejor.haH) mejor = r; // con varios aperos manda el más lento (el que limita)
+      });
+      if (mejor) res.push(mejor);
+    });
+    if (res.length) { const m = res.reduce((a, r) => a + r.v, 0) / res.length; return { v: m, t: 'teo', det: res.map(r => `${r.eq}: ${f1(r.lh)} L/h ÷ ${f1(r.haH)} ha/h (${f1(r.w)} m × ${f1(r.vel)} km/h × ${efic}%)`).join(' · ') }; }
+    const ha = haDeLabor(l), lt = litrosReales[l.id];
+    if (ha && lt) return { v: lt / ha, t: 'real' };
+    const g = grupo[claveLab(l)]; if (g && g.ha) return { v: g.lt / g.ha, t: 'prom' };
+    return null;
+  };
+  const filas = data.filter(l => l.fecha && !l.pendiente).map(l => {
+    const haDecl = haDeLabor(l), c = lhaDe(l), lt = litrosReales[l.id];
+    // ha trabajadas estimadas con el combustible: litros cargados ÷ L/ha de referencia (L/h ÷ ha/h del apero)
+    const haEst = c && c.t === 'teo' && lt ? lt / c.v : null, ha = haDecl || haEst, ins = insumosDeLabor(l, inv, ha);
+    const combHa = c && precioL ? c.v * precioL : null, insHa = ha && ins.costo ? ins.costo / ha : 0;
+    return { l, ha, haDecl, haEst, c, combHa, ins, insHa, totHa: (combHa || 0) + insHa, key: l.lote ? l.potrero + SEP_LOTE + l.lote : l.potrero };
+  });
+  if (!filas.length) { cont.innerHTML = '<div class="empty"><div class="empty-icon">💲</div>Sin labores con fecha para valorizar.</div>'; return; }
+  // 2) promedio por labor y apero (solo con litros reales; si no hay, el teórico)
+  const prom = {};
+  filas.forEach(f => { const k = claveLab(f.l), g = prom[k] || (prom[k] = { n: 0, ha: 0, lt: 0, haL: 0, ins: 0, haI: 0, teo: [] }); g.n++; if (f.ha) g.ha += f.ha;
+    if (f.c && f.ha) { g.lt += f.c.v * f.ha; g.haL += f.ha; } else if (f.c) g.teo.push(f.c.v);
+    if (f.ins.costo && f.ha) { g.ins += f.ins.costo; g.haI += f.ha; } });
+  const resumen = Object.entries(prom).sort((a, b) => cmpEs(a[0], b[0])).map(([k, g]) => {
+    const lha = g.haL ? g.lt / g.haL : (g.teo.length ? g.teo.reduce((a, b) => a + b, 0) / g.teo.length : null), tipo = g.haL ? '' : (lha != null ? ' ≈' : '');
+    return `<tr><td style="font-weight:600">${escA(k)}</td><td style="text-align:center">${g.n}</td><td style="text-align:right">${lha != null ? f1(lha) + tipo : '—'}</td>${admin ? `<td style="text-align:right">${lha != null && precioL ? $(lha * precioL) : '—'}</td><td style="text-align:right">${g.haI ? $(g.ins / g.haI) : '—'}</td>` : ''}</tr>`;
+  }).join('');
+  // 3) planilla por potrero
+  const pots = {};
+  filas.forEach(f => { (pots[f.key] = pots[f.key] || []).push(f); });
+  const bloques = Object.keys(pots).sort(cmpEs).map(k => {
+    const fs = pots[k].sort((a, b) => (a.l.fecha || '').localeCompare(b.l.fecha || ''));
+    const nombre = fs[0].l.lote ? fs[0].l.potrero + ' · ' + fs[0].l.lote : fs[0].l.potrero;
+    const totHa = fs.reduce((a, f) => a + f.totHa, 0), totCosto = fs.reduce((a, f) => a + f.totHa * (f.ha || 0), 0);
+    const avisos = [...new Set(fs.flatMap(f => f.ins.sinInv))], sp = [...new Set(fs.flatMap(f => f.ins.sinPrecio))], sd = [...new Set(fs.flatMap(f => f.ins.sinDosis))];
+    const filasH = fs.map(f => {
+      const ap = aperosDeLabor(f.l), eq = [...new Set(Object.values(equiposPorDia(f.l)).flat().map(x => x.equipo).filter(Boolean))];
+      const insTxt = f.ins.items.map(i => `<div style="font-size:11px">${escA(i.n)} <span style="color:#6B7280">${escA(i.dosis)}</span> × ${$(i.precio)}/${escA(i.u)} = <b>${$(i.costoHa)}/ha</b></div>`).join('') || ((f.l.productos || []).length ? '<span style="color:#92400E;font-size:11px">sin valorizar</span>' : '');
+      const badge = f.c ? (f.c.t === 'teo' ? '' : f.c.t === 'real' ? ' <span title="Litros cargados ese día ÷ ha de la labor (el apero no tiene ancho/velocidad o el equipo no tiene L/h)" style="color:#6B7280">real</span>' : ' <span title="Promedio de esta labor con este apero" style="color:#6B7280">≈</span>') : '';
+      const detLh = f.c && f.c.det ? `<div style="font-size:10px;color:#6B7280">${escA(f.c.det)}</div>` : '';
+      return `<tr><td class="td-mono" style="white-space:nowrap">${fCorta(f.l.fecha)}</td>
+        <td style="font-size:13px"><b>${escA(nombreLaborPlano(f.l))}</b><div style="font-size:11px;color:#6B7280">${eq.length ? eq.map(e => txtApEq(f.l, e)).join('<br>') : (ap.length ? '🧰 ' + ap.map(escA).join(' + ') : 'sin apero')}</div></td>
+        <td style="text-align:right">${f.haDecl ? f1(f.haDecl) : (f.haEst ? '≈' + f1(f.haEst) : '—')}${f.haEst && f.haDecl ? `<div style="font-size:10px;color:#6B7280" title="Litros cargados ÷ L/ha de referencia">≈${f1(f.haEst)} por comb.</div>` : ''}</td>
+        <td style="text-align:right">${f.c ? '<b>' + f1(f.c.v) + '</b>' + badge + detLh : '—'}</td>
+        ${admin ? `<td style="text-align:right">${f.combHa != null ? $(f.combHa) : '—'}</td><td>${insTxt}</td><td style="text-align:right;font-weight:700">${f.totHa ? $(f.totHa) : '—'}</td>` : `<td>${f.ins.items.map(i => `<div style="font-size:11px">${escA(i.n)} <span style="color:#6B7280">${escA(i.dosis)}</span></div>`).join('')}</td>`}</tr>`;
+    }).join('');
+    return `<div style="margin:16px 0 6px;font-weight:700;font-size:14px">📍 ${escA(nombre)}${admin ? ` <span style="font-weight:400;font-size:12px;color:#6B7280">· acumulado ${$(totHa)}/ha · ${$(totCosto)} en total</span>` : ''}</div>
+      <div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Labor / apero</th><th style="text-align:right">ha</th><th style="text-align:right">⛽ L/ha</th>${admin ? '<th style="text-align:right">⛽ $/ha</th><th>🧪 Insumos (dosis × precio)</th><th style="text-align:right">Total $/ha</th>' : '<th>🧪 Productos</th>'}</tr></thead><tbody>${filasH}</tbody></table></div>
+      ${[avisos.length ? `No están en Inventario: ${avisos.map(escA).join(', ')}` : '', sp.length ? `Sin precio en Inventario: ${sp.map(escA).join(', ')}` : '', sd.length ? `Dosis sin "/ha" o "total": ${sd.map(escA).join(', ')}` : ''].filter(Boolean).map(t => `<div style="font-size:11px;color:#92400E;margin-top:4px">⚠️ ${t}</div>`).join('')}`;
+  }).join('');
+  cont.innerHTML = `<div class="hint" style="margin-bottom:8px">Combustible: <b>L/ha = L/h del equipo ÷ ha/h del apero</b>, con ha/h = ancho × velocidad × eficiencia (en huertos el ancho es la entrecalle). Las <b>ha por combustible</b> = litros cargados ese día ÷ L/ha de referencia; sirven de ha cuando la labor no las tiene claras. Si el apero no tiene ancho/velocidad o el equipo no tiene L/h, usa los litros cargados ese día ÷ ha (<b>real</b>) o el promedio de la labor (<b>≈</b>). Insumos: dosis/ha × precio de la última compra en Inventario.${precioL ? '' : ' <b>Falta el precio del petróleo</b> (Eficiencia → costos) para valorizar el combustible.'}</div>
+    <div style="font-weight:700;font-size:14px;margin:6px 0">📊 Gasto promedio por labor y apero</div>
+    <div class="table-wrap"><table><thead><tr><th>Labor · apero</th><th>N°</th><th style="text-align:right">⛽ L/ha</th>${admin ? '<th style="text-align:right">⛽ $/ha</th><th style="text-align:right">🧪 Insumos $/ha</th>' : ''}</tr></thead><tbody>${resumen}</tbody></table></div>${bloques}`;
+};
 window.renderHistorialLabores = function() {
   const fAnio = document.getElementById('campo-filtro-anio')?.value || '';
   let data = [...laboresCampoRegistros];
@@ -10330,6 +10519,8 @@ window.renderHistorialLabores = function() {
   try { renderCostoInsumos(); } catch (e) { console.warn(e); }
   renderSueloLista();
   if (!data.length) { cont.innerHTML = '<div class="empty"><div class="empty-icon">📋</div>Sin labores registradas.</div>'; return; }
+  { const b = document.getElementById('campo-btn-planilla'); if (b) { b.style.background = campoVistaPlanilla ? 'var(--amarillo)' : ''; b.style.color = campoVistaPlanilla ? '#111' : ''; } }
+  if (campoVistaPlanilla) { try { renderPlanillaCostoPotrero(camposLaborPotrerosSel.length ? data.filter(l => camposLaborPotrerosSel.some(n => laborEsDeUnidad(l, n))) : data, cont); } catch (e) { console.warn(e); cont.innerHTML = '<div class="empty">No se pudo armar la planilla: ' + escA(e.message) + '</div>'; } return; }
   // Orden por la fecha real de la labor (no por cuándo se ingresó al sistema).
   // Los registros sin fecha (ej. siembra pendiente) quedan al final.
   data.sort((a, b) => {
@@ -17878,6 +18069,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
           <div class="cultivo-chip sel" id="campo-orden-asc" onclick="setCampoHistorialOrden('asc')">↑ Más antiguo primero</div>
           <div class="cultivo-chip" id="campo-orden-desc" onclick="setCampoHistorialOrden('desc')">↓ Más reciente primero</div>
           <button type="button" class="btn btn-secondary" style="padding:8px 14px;font-size:13px" onclick="imprimirCuaderno()">📄 PDF / Imprimir</button>
+          <button type="button" id="campo-btn-planilla" class="btn btn-secondary" style="padding:8px 14px;font-size:13px" onclick="toggleVistaPlanilla()">💲 Planilla costo potrero</button>
         </div>
         <div id="campo-historial-container"></div>
       </div>
