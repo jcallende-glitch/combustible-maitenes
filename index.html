@@ -16420,6 +16420,10 @@ window.renderConfigContInv = function() {
       <div style="display:flex;gap:6px;margin-top:10px"><input type="text" id="caja-nueva" placeholder="Nombre de la nueva caja chica" style="flex:1;min-width:0;box-sizing:border-box;margin:0"><button class="btn-add" style="padding:6px 12px" onclick="agregarCajaInv()">＋ Crear</button></div>
     </div>
     <div class="panel">
+      <div class="panel-title">🤖 Robot SII (descarga automática)</div>
+      ${robotSiiInv ? lineaRobotInv() + `<div style="font-size:12px;color:var(--acero)">Computador: ${escA(robotSiiInv.pc || '—')}${robotSiiInv.desde ? ` · revisa del ${fmtFechaInv(robotSiiInv.desde)} al ${fmtFechaInv(robotSiiInv.hasta)}` : ''}${robotSiiInv.version ? ` · versión ${escA(robotSiiInv.version)}` : ''}</div>` : '<div style="font-size:12px;color:var(--acero)">Todavía no se instala. Es un programa que corre en un computador del campo u oficina (en Chile), entra al SII con la clave cada algunas horas, baja las facturas, guías y notas recibidas y las deja aquí solas. La clave queda solo en ese computador.</div>'}
+    </div>
+    <div class="panel">
       <div class="panel-title">👤 Autorizados a pagar y rendir</div>
       <div style="font-size:12px;color:var(--acero);margin-bottom:8px">Al registrar un pago, la app pregunta quién pagó y lo elige de esta lista. Con esto después se rinde cada caja chica por persona. Si la lista está vacía, no se pregunta.</div>
       ${(personasPagoInv || []).length ? personasPagoInv.map((p, i) => `<div class="config-item" style="${p.on === false ? 'opacity:.5' : ''}"><span>👤 <strong>${escA(p.n)}</strong>${p.on === false ? ' (oculta)' : ''}</span><span style="white-space:nowrap"><a href="#" onclick="event.preventDefault();renombrarPersonaPagoInv(${i})">✏️</a> <a href="#" onclick="event.preventDefault();ocultarPersonaPagoInv(${i})">${p.on === false ? '👁' : '🚫'}</a></span></div>`).join('') : '<div class="empty">Todavía no hay personas autorizadas</div>'}
@@ -16748,6 +16752,47 @@ function avisosDteInv(d) {
   return out;
 }
 
+// ── Robot SII: un computador en Chile baja los recibidos y los deja en el buzón ──
+let robotSiiInv = null;
+const buzonEnCursoInv = new Set();
+async function procesarBuzonInv(snap) {
+  let nuevos = 0, completos = 0, malos = 0;
+  for (const dd of snap.docs) {
+    const id = dd.id, b = dd.data();
+    if (buzonEnCursoInv.has(id)) continue;
+    buzonEnCursoInv.add(id);
+    try {
+      const docs = parsearDtesXmlInv(b.xml || '');
+      if (docs.length) { const r = await guardarDtesInv(docs, 'sii-auto'); nuevos += r.nuevos; completos += r.completados; }
+      else malos++;
+      await deleteDoc(doc(dbInv, 'dte_recibidos', id));
+    } catch (e) { console.warn('buzón SII', e); buzonEnCursoInv.delete(id); }
+  }
+  if (nuevos || completos) toast(`🤖 Llegaron del SII ${nuevos} documento(s) nuevo(s)${completos ? ` y ${completos} completado(s)` : ''}`, true);
+  if (malos) console.warn('buzón SII: paquetes sin documentos legibles', malos);
+}
+function haceTxtInv(ts) {
+  const m = Math.round((Date.now() - ts) / 60000);
+  if (m < 2) return 'recién';
+  if (m < 60) return `hace ${m} min`;
+  const h = Math.round(m / 60);
+  return h < 36 ? `hace ${h} h` : `hace ${Math.round(h / 24)} días`;
+}
+function lineaRobotInv(conBoton) {
+  const r = robotSiiInv; if (!r || !r.ultimaEjecucion) return '';
+  const cuando = `${haceTxtInv(r.ultimaEjecucion)} (${new Date(r.ultimaEjecucion).toLocaleString('es-CL', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })})`;
+  const atrasado = Date.now() - r.ultimaEjecucion > 30 * 3600000;
+  let col = 'var(--verde)', txt;
+  if (r.pausado) { col = '#B91C1C'; txt = `🤖 Robot SII <strong>pausado</strong>: ${escA(r.error || '')}. No reintenta solo para que el SII no bloquee la clave.`; }
+  else if (r.ok === false) { col = '#B45309'; txt = `🤖 Robot SII: la última revisión ${cuando} falló: ${escA(r.error || '')}. Reintenta en la próxima ejecución.`; }
+  else { if (atrasado) col = '#B45309'; txt = `🤖 Robot SII: última revisión ${cuando}${r.nuevos ? ` · ${r.nuevos} nuevo(s)` : ' · sin documentos nuevos'}${atrasado ? ' · no ha vuelto a correr: revisa que el computador esté encendido' : ''}`; }
+  const av = r.avisos ? `<div style="color:#B45309;margin-top:2px">⚠️ ${escA(r.avisos)}</div>` : '';
+  return `<div style="font-size:12px;color:${col};margin-bottom:8px;line-height:1.5">${txt}${av}${r.pausado && conBoton !== false ? ` <button class="btn-add" style="padding:4px 10px;margin-left:4px" onclick="reanudarRobotInv()">▶️ Reanudar</button>` : ''}</div>`;
+}
+window.reanudarRobotInv = async function() {
+  if (!confirm('¿Ya revisaste el RUT y la clave en config.txt del computador del robot?\nSi la clave sigue mal y el robot reintenta, el SII puede bloquearla.')) return;
+  try { await updateDoc(doc(dbInv, 'dte_recibidos', '_robot'), { pausado: false, error: '', codigo: '' }); toast('✓ Robot reanudado: probará en su próxima ejecución', true); } catch (e) { toast('Error: ' + e.message, false); }
+}
 // ── Panel ──
 const estadoDte = d => d.estado || 'pendiente';
 function grupoDteInv(d) {
@@ -16894,6 +16939,7 @@ function renderDteRecibidosInv(soloLista) {
       <label class="btn btn-secondary" id="btn-dte-importar" style="flex:1;min-width:160px;justify-content:center;cursor:pointer;text-transform:none;letter-spacing:normal;font-size:15px;margin:0">📂 Importar XML<input type="file" accept=".xml,.zip,text/xml,application/xml,application/zip" multiple style="display:none" onchange="importarXmlDteInv(this)"></label>
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px"><button class="btn btn-secondary" style="flex:1;min-width:160px;justify-content:center;text-transform:none;letter-spacing:normal;font-size:14px" onclick="abrirPlanCuentasInv()">📒 Plan de cuentas</button><button class="btn btn-secondary" style="flex:1;min-width:160px;justify-content:center;text-transform:none;letter-spacing:normal;font-size:14px" onclick="exportarCodificacionInv()">⬇️ Exportar mes (Excel)</button></div>
+    ${lineaRobotInv()}
     <details style="font-size:12px;color:var(--acero);margin-bottom:8px"><summary style="cursor:pointer">¿De dónde saco el XML?</summary>
       <div style="margin-top:6px;line-height:1.5">
         • <strong>Del SII</strong> (todo lo que te facturan llega ahí): sii.cl → Servicios online → Factura electrónica → Sistema de facturación gratuito → Historial de DTE y respuesta a documentos recibidos → <em>Ver documentos recibidos</em> → filtra por fechas → <em>Archivo Respaldo</em> (hasta 20 por vez) y súbelo aquí.<br>
@@ -16934,7 +16980,7 @@ window.dteVerInv = function(id) {
       ${g === 'pendientes' && sugierePreciosDteInv(d) ? `<button class="btn btn-secondary" style="flex:1;min-width:150px;justify-content:center" onclick="document.getElementById('dte-modal').remove();dtePreciosInv('${d.id}')">💲 Solo actualizar precios</button>` : ''}
       ${d.xmlId ? `<button class="btn btn-secondary" style="flex:1;min-width:150px;justify-content:center" onclick="dteDescargarXmlInv('${d.id}')">⬇️ Descargar XML</button>` : ''}
     </div>
-    <div style="font-size:11px;color:var(--acero);margin-top:8px">${d.origen === 'sii' ? 'Traído del SII' : 'Importado desde XML'}${d.por ? ' por ' + escA(d.por) : ''}${d.creado ? ' el ' + new Date(d.creado).toLocaleDateString('es-CL') : ''}${d.ingresadoPor ? ` · ${d.soloPrecios ? 'Precios actualizados' : 'Ingresado a bodega'} por ${escA(d.ingresadoPor)}` : ''}</div>
+    <div style="font-size:11px;color:var(--acero);margin-top:8px">${d.origen === 'sii-auto' ? '🤖 Traído automáticamente del SII' : d.origen === 'sii' ? 'Traído del SII' : 'Importado desde XML'}${d.por ? ' por ' + escA(d.por) : ''}${d.creado ? ' el ' + new Date(d.creado).toLocaleDateString('es-CL') : ''}${d.ingresadoPor ? ` · ${d.soloPrecios ? 'Precios actualizados' : 'Ingresado a bodega'} por ${escA(d.ingresadoPor)}` : ''}</div>
   </div>`;
   document.body.appendChild(ov);
 }
@@ -17072,6 +17118,8 @@ function suscribirDteInv() {
     if (c) { c.style.display = ''; c.innerHTML = `<div class="panel-title">📨 Facturas y guías recibidas</div><div style="font-size:12px;color:#B91C1C">No se pudieron leer los documentos recibidos${/permission/i.test(e.message) ? ': falta permitir la colección <code>dte_recibidos</code> en las reglas de Firestore del inventario' : ': ' + escA(e.message)}.</div>`; }
   });
   onSnapshot(doc(dbInv, 'dte_recibidos', '_plan_cuentas'), sn => { planCuentasInv = sn.exists() ? (sn.data().cuentas || []) : []; renderDteRecibidosInv(); renderConfigContInv(); }, e => console.warn('plan_cuentas', e));
+  onSnapshot(query(collection(dbInv, 'dte_recibidos'), where('buzon', '==', true)), snap => { if (snap.docs.length) procesarBuzonInv(snap); }, e => console.warn('buzón SII', e));
+  onSnapshot(doc(dbInv, 'dte_recibidos', '_robot'), sn => { robotSiiInv = sn.exists() ? sn.data() : null; renderDteRecibidosInv(); renderConfigContInv(); }, e => console.warn('robot', e));
   onSnapshot(doc(dbInv, 'dte_recibidos', '_personas'), sn => { personasPagoInv = sn.exists() ? (sn.data().personas || []) : null; renderConfigContInv(); }, e => console.warn('personas', e));
   onSnapshot(doc(dbInv, 'dte_recibidos', '_cajas'), sn => { cajasCfgInv = sn.exists() ? (sn.data().cajas || []) : null; renderConfigContInv(); }, e => console.warn('cajas', e));
   consultarSiiDteInv();
