@@ -16456,8 +16456,8 @@ window.exportarCodificacionInv = function() {
   const esc = v => { const s = String(v == null ? '' : v); return /[;"\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
   const fp = d => d.pago === 'cuenta' ? 'Cuenta' : d.pago === 'caja' ? 'Caja chica ' + (d.pagoDetalle || '') : d.pago === 'credito' ? (d.pagada ? 'Crédito pagado' : 'Crédito por pagar') : '';
   const rec = d => !esFacturaDteInv(d) ? '' : d.recepcion === 'recibida' ? 'Recibida' : d.recepcion === 'despacho' ? ((estadoRecepcionInv(d) || {}).t || '').replace(/^\S+\s/, '') : '';
-  const filas = [['Fecha', 'Tipo', 'N°', 'RUT proveedor', 'Proveedor', 'Neto', 'Exento', 'IVA', 'Total', 'Cód. cuenta', 'Cuenta', 'Clasif. costo', 'Forma de pago', 'Vence', 'Saldo por pagar', 'Recepción']]
-    .concat(docs.map(d => [d.fecha || '', abrevTipoDte(d.tipo), d.folio, rutFmtDte(d.rutEmisor), d.razonSocial || '', d.neto || 0, d.exento || 0, d.iva || 0, d.total || 0, d.cuenta || '', d.cuentaNombre || '', d.clasifNombre || '', fp(d), d.vence || '', d.pago === 'credito' ? saldoPagarInv(d) : 0, rec(d)]));
+  const filas = [['Fecha', 'Tipo', 'N°', 'RUT proveedor', 'Proveedor', 'Neto', 'Exento', 'IVA', 'Total', 'Cód. cuenta', 'Cuenta', 'Clasif. costo', 'Forma de pago', 'Vence', 'Saldo por pagar', 'Recepción', 'Pendiente de revisión']]
+    .concat(docs.map(d => [d.fecha || '', abrevTipoDte(d.tipo), d.folio, rutFmtDte(d.rutEmisor), d.razonSocial || '', d.neto || 0, d.exento || 0, d.iva || 0, d.total || 0, d.cuenta || '', d.cuentaNombre || '', d.clasifNombre || '', fp(d), d.vence || '', d.pago === 'credito' ? saldoPagarInv(d) : 0, rec(d), d.revision ? (d.revisionNota || 'Sí') : '']));
   const csv = '﻿' + filas.map(r => r.map(esc).join(';')).join('\r\n');
   const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
   a.download = `facturas_codificadas_${mes.trim()}.csv`; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
@@ -16518,6 +16518,22 @@ window.dteEnviarAInv = function(id) {
     DESTINOS_DTE_INV.map(x => x.activo
       ? `<div class="config-item" style="cursor:pointer" onclick="document.getElementById('dte-elegir').remove();${x.k === 'inventario' ? `document.getElementById('dte-modal') && document.getElementById('dte-modal').remove();dteAIngresoInv('${d.id}')` : x.k === 'contabilidad' ? `document.getElementById('dte-modal') && document.getElementById('dte-modal').remove();dteMarcarInv('${d.id}','ignorado')` : `document.getElementById('dte-modal') && document.getElementById('dte-modal').remove();dteACombustibleInv('${d.id}')`}">${x.t}</div>`
       : `<div class="config-item" style="opacity:.55"><span>${x.t}</span><span style="font-size:11px">próximamente</span></div>`));
+}
+// ── Dejar un documento pendiente para revisarlo después (con Camila, por ejemplo) ──
+window.dteRevisionInv = async function(id) {
+  const d = dteRecibidosInv.find(x => x.id === id); if (!d) return;
+  const n = prompt('¿Qué duda tienes? (queda anotada para revisarla después)', d.revisionNota || ''); if (n === null) return;
+  try { await updateDoc(doc(dbInv, 'dte_recibidos', id), { revision: true, revisionNota: n.trim(), revisionPor: currentUser || '', revisionTs: Date.now() }); toast('✓ Queda pendiente de revisión', true); } catch (e) { toast('Error: ' + e.message, false); }
+}
+window.dteRevisadaInv = async function(id) {
+  const d = dteRecibidosInv.find(x => x.id === id); if (!d) return;
+  const r = prompt('Resolución (opcional): ¿qué se decidió?', ''); if (r === null) return;
+  try { await updateDoc(doc(dbInv, 'dte_recibidos', id), { revision: false, revisionResuelta: r.trim(), revisionResueltaPor: currentUser || '', revisionResueltaTs: Date.now() }); toast('✓ Revisión resuelta', true); } catch (e) { toast('Error: ' + e.message, false); }
+}
+function bloqueRevisionInv(d) {
+  if (d.revision) return `<div style="border:1px solid #F9A8D4;background:#FDF2F8;border-radius:10px;padding:10px;margin:10px 0"><div style="font-weight:700;font-size:13px;color:#9D174D">❓ Pendiente de revisión</div>${d.revisionNota ? `<div style="font-size:13px;margin-top:4px;overflow-wrap:anywhere">${escA(d.revisionNota)}</div>` : ''}<div style="font-size:11px;color:var(--acero);margin-top:2px">${escA(d.revisionPor || '')}${d.revisionTs ? ' · ' + new Date(d.revisionTs).toLocaleDateString('es-CL') : ''}</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"><button class="btn-add" style="padding:6px 10px" onclick="dteRevisadaInv('${d.id}')">✅ Ya está resuelta</button><button class="btn-add" style="padding:6px 10px;background:var(--fondo);color:var(--negro)" onclick="dteRevisionInv('${d.id}')">✏️ Cambiar la nota</button></div></div>`;
+  return `<div style="margin:10px 0"><button class="btn-add" style="padding:6px 10px;background:#FDF2F8;color:#9D174D" onclick="dteRevisionInv('${d.id}')">❓ Dejar pendiente para revisar</button>${d.revisionResuelta ? `<div style="font-size:12px;color:var(--acero);margin-top:4px">Revisada${d.revisionResueltaPor ? ' por ' + escA(d.revisionResueltaPor) : ''}: ${escA(d.revisionResuelta)}</div>` : ''}</div>`;
 }
 function bloquePagoInv(d) {
   if (!esPagableDteInv(d)) return '';
@@ -16659,7 +16675,7 @@ window.verPendRecProductoInv = function(pid) {
 function insigniasEstadoDteInv(d) {
   const er = estadoRecepcionInv(d), ep = estadoPagoInv(d), ec = estadoCuentaInv(d);
   const ins = e => `<span class="badge" style="background:${e.bg};color:${e.fg}">${e.t}</span>`;
-  let h = [er, ep, ec, d.combustibleLitros ? { t: `⛽ En cisterna: ${nfInv(d.combustibleLitros)} L`, bg: '#DBEAFE', fg: '#1D4ED8' } : null].filter(Boolean).map(ins).join(' ');
+  let h = [d.revision ? { t: `❓ Por revisar${d.revisionNota ? ': ' + escA(d.revisionNota.slice(0, 60)) : ''}`, bg: '#FCE7F3', fg: '#9D174D' } : null, er, ep, ec, d.combustibleLitros ? { t: `⛽ En cisterna: ${nfInv(d.combustibleLitros)} L`, bg: '#DBEAFE', fg: '#1D4ED8' } : null].filter(Boolean).map(ins).join(' ');
   if (er && er.pend && er.pend.length) h += `<div style="font-size:12px;margin-top:4px;overflow-wrap:anywhere">Saldo por despachar: ${er.pend.map(textoSaldoInv).join(' · ')}</div>`;
   return h ? `<div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">${h}</div>` : '';
 }
@@ -16673,6 +16689,7 @@ function tarjetaDteInv(d) {
   if (g === 'pendientes' && sugierePreciosDteInv(d)) acciones.push(`<button class="btn-add" style="padding:6px 10px;background:#EFF6FF;color:#1D4ED8" onclick="dtePreciosInv('${d.id}')">💲 Solo actualizar precios</button>`);
   acciones.push(`<button class="btn-add" style="padding:6px 10px;background:var(--fondo);color:var(--negro)" onclick="dteVerInv('${d.id}')">👁 Ver${esFacturaDteInv(d) || d.tipo === 52 || esPagableDteInv(d) ? ' / Recepción y pago' : ''}</button>`);
   if (esCodificableDteInv(d) && !d.cuenta) { const sg = sugerenciaCuentaInv(d); acciones.push(sg ? `<button class="btn-add" style="padding:6px 10px;background:#EDE9FE;color:#5B21B6" onclick="dteGuardarCuentaInv('${d.id}','${escA(sg.c)}')">📒 Usar ${escA(sg.c)}</button>` : `<button class="btn-add" style="padding:6px 10px;background:#EDE9FE;color:#5B21B6" onclick="dteElegirCuentaInv('${d.id}')">📒 Elegir cuenta</button>`); }
+  acciones.push(d.revision ? `<button class="btn-add" style="padding:6px 10px;background:#FCE7F3;color:#9D174D" onclick="dteRevisadaInv('${d.id}')">✅ Revisada</button>` : `<button class="btn-add" style="padding:6px 10px;background:var(--fondo);color:#9D174D" onclick="dteRevisionInv('${d.id}')">❓ Dejar pendiente</button>`);
   if (d.pago === 'credito' && !d.pagada) acciones.push(`<button class="btn-add" style="padding:6px 10px" onclick="dteRegistrarPagoInv('${d.id}')">💵 Registrar pago</button>`);
   if (d.tipo === 52 && !facturaDeGuiaInv(d)) acciones.push(`<button class="btn-add" style="padding:6px 10px;background:#EFF6FF;color:#1D4ED8" onclick="dteAsignarFacturaInv('${d.id}')">🔗 Asignar a factura</button>`);
   if (esFacturaDteInv(d) && d.recepcion === 'despacho') acciones.push(`<button class="btn-add" style="padding:6px 10px;background:#EFF6FF;color:#1D4ED8" onclick="dteAsignarGuiaInv('${d.id}')">＋ Asignar guía</button>`);
@@ -16701,7 +16718,7 @@ function renderDteRecibidosInv(soloLista) {
   const porPagar = d => d.pago === 'credito' && !d.pagada;
   const sinDefinir = d => (esFacturaDteInv(d) && !d.recepcion) || (esPagableDteInv(d) && !d.pago) || (esCodificableDteInv(d) && !d.cuenta);
   const sinCuenta = d => esCodificableDteInv(d) && !d.cuenta;
-  const filtros = { despachar: porDespachar, pagar: porPagar, sindefinir: sinDefinir, sincuenta: sinCuenta };
+  const filtros = { despachar: porDespachar, pagar: porPagar, sindefinir: sinDefinir, sincuenta: sinCuenta, revisar: d => !!d.revision };
   let lista = dteRecibidosInv.filter(d => filtros[filtroDteInv] ? filtros[filtroDteInv](d) : (filtroDteInv === 'todos' || grupoDteInv(d) === filtroDteInv));
   if (q) lista = lista.filter(d => normNom(`${d.razonSocial} ${d.folio} ${abrevTipoDte(d.tipo)} ${(d.items || []).map(x => x.nombre).join(' ')}`).includes(q));
   if (filtroDteInv === 'pagar') lista.sort((a, b) => { const x = diasVenceInv(a), y = diasVenceInv(b); return (x === null ? 1e9 : x) - (y === null ? 1e9 : y); });
@@ -16729,7 +16746,7 @@ function renderDteRecibidosInv(soloLista) {
       ${chip('pendientes', '📥 Por ingresar', cuenta('pendientes'))}${chip('ingresado', '✓ Ya enviados', cuenta('ingresado'))}${chip('ignorado', '🧾 Solo contabilidad', cuenta('ignorado'))}${cuenta('notas') ? chip('notas', 'Notas de crédito/débito', cuenta('notas')) : ''}${chip('todos', 'Todos', dteRecibidosInv.length)}
     </div>
     <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">
-      ${chip('sindefinir', '❔ Falta algo por definir', dteRecibidosInv.filter(sinDefinir).length)}${chip('sincuenta', '📒 Sin cuenta', dteRecibidosInv.filter(sinCuenta).length)}${chip('despachar', '🚚 Por despachar', dteRecibidosInv.filter(porDespachar).length)}${chip('pagar', '💳 Por pagar', dteRecibidosInv.filter(porPagar).length)}
+      ${chip('sindefinir', '❔ Falta algo por definir', dteRecibidosInv.filter(sinDefinir).length)}${chip('revisar', '❓ Por revisar', dteRecibidosInv.filter(d => d.revision).length)}${chip('sincuenta', '📒 Sin cuenta', dteRecibidosInv.filter(sinCuenta).length)}${chip('despachar', '🚚 Por despachar', dteRecibidosInv.filter(porDespachar).length)}${chip('pagar', '💳 Por pagar', dteRecibidosInv.filter(porPagar).length)}
     </div>
     <input type="text" placeholder="🔎 Buscar proveedor, N° o producto" value="${escA(dteBuscarInv)}" oninput="buscarDteInv(this.value)" style="width:100%;box-sizing:border-box;margin-bottom:8px">
     <div id="dte-lista">${htmlLista}</div>`;
@@ -16748,7 +16765,7 @@ window.dteVerInv = function(id) {
     <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start"><div style="font-weight:800;font-size:16px">${nombreTipoDte(d.tipo)} N° ${d.folio}</div><span style="cursor:pointer;font-size:20px;line-height:1" onclick="document.getElementById('dte-modal').remove()">✕</span></div>
     <div style="font-size:13px;margin:6px 0 10px;line-height:1.5"><strong>${escA(d.razonSocial || '')}</strong> · RUT ${rutFmtDte(d.rutEmisor)}${d.giro ? `<br><span style="color:var(--acero)">${escA(d.giro)}</span>` : ''}<br>Fecha ${fechaCortaDte(d.fecha)}${d.razonSocialReceptor ? ` · Para ${escA(d.razonSocialReceptor)} (${rutFmtDte(d.rutReceptor)})` : ''}</div>
     ${avisosDteInv(d).map(([c, t]) => `<div style="font-size:12px;color:${c};margin-bottom:4px">${t}</div>`).join('')}
-    ${bloqueRecepcionInv(d)}${bloquePagoInv(d)}${bloqueCuentaInv(d)}
+    ${bloqueRevisionInv(d)}${bloqueRecepcionInv(d)}${bloquePagoInv(d)}${bloqueCuentaInv(d)}
     ${filas ? `<div style="border-top:1px solid var(--borde)">${filas}</div>` : '<div class="empty">Sin detalle de productos</div>'}
     <div style="font-size:13px;margin-top:8px;text-align:right;line-height:1.6">${d.neto ? `Neto ${pesoInv(d.neto)}<br>` : ''}${d.exento ? `Exento ${pesoInv(d.exento)}<br>` : ''}${d.iva ? `IVA ${pesoInv(d.iva)}<br>` : ''}${d.total ? `<strong>Total ${pesoInv(d.total)}</strong>` : ''}${d.ajusteGlobal ? `<div style="font-size:11px;color:var(--acero)">Incluye ${d.ajusteGlobal < 0 ? 'descuento' : 'recargo'} global de ${Math.abs(d.ajusteGlobal)}% repartido en los productos</div>` : ''}${d.bruto ? '<div style="font-size:11px;color:var(--acero)">Precios del documento con IVA incluido: aquí se muestran netos</div>' : ''}</div>
     ${(d.refs || []).length ? `<div style="font-size:12px;color:var(--acero);margin-top:6px">Referencias: ${(d.refs || []).map(r => `${escA(TIPOS_DTE_INV[Number(r.tipo)] || (r.tipo === '801' ? 'Orden de compra' : 'Doc ' + r.tipo))} N° ${escA(r.folio)}${r.fecha ? ' del ' + fechaCortaDte(r.fecha) : ''}${r.razon ? ' · ' + escA(r.razon) : ''}`).join('; ')}</div>` : ''}
