@@ -16459,18 +16459,59 @@ window.exportarCodificacionInv = function() {
   a.download = `facturas_codificadas_${mes.trim()}.csv`; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
   const sin = docs.filter(d => !d.cuenta).length; toast(`✓ ${docs.length} documentos exportados${sin ? ` (${sin} sin cuenta contable)` : ''}`, true);
 }
+// ── Destino Combustible: el petróleo de la factura o guía entra como carga de la cisterna ──
+const ES_COMBUSTIBLE_DTE = /petr[oó]leo|di[eé]sel|diesel|gasoil|gas[oó]leo|combustible/i;
+const litrosDeItemDteInv = x => { const um = String(x.unidad || '').toUpperCase().replace(/[^A-Z0-9]/g, ''); return /^(M3|MT3|MTS3)$/.test(um) ? x.cantidad * 1000 : x.cantidad; };
+window.dteACombustibleInv = function(id) {
+  const d = dteRecibidosInv.find(x => x.id === id); if (!d) return;
+  if (d.sinXml || !(d.items || []).length) { toast('Falta el detalle de este documento: tráelo del SII o importa su XML', false); return; }
+  const items = d.items.map((x, i) => ({ x, i })).filter(o => o.x.nombre && o.x.cantidad > 0);
+  const hay = items.some(o => ES_COMBUSTIBLE_DTE.test(o.x.nombre));
+  const inp = 'box-sizing:border-box;margin:0';
+  const ult = d.combustibleCargaId ? `<div style="font-size:12px;color:#B45309;margin-bottom:8px">⚠️ Este documento ya se cargó a la cisterna (${nfInv(d.combustibleLitros || 0)} L). Si lo cargas otra vez se sumará de nuevo.</div>` : '';
+  modalElegirDteInv('⛽ Cargar a la cisterna', `${escA(nombreTipoDte(d.tipo))} N° ${d.folio} · ${escA(d.razonSocial || '')}`, [
+    ult + (hay ? '' : '<div style="font-size:12px;color:#B45309;margin-bottom:8px">No reconocí petróleo en este documento: marca la línea que corresponda.</div>'),
+    items.map(o => `<div style="display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--borde)"><input type="checkbox" id="cb-ck-${o.i}" ${ES_COMBUSTIBLE_DTE.test(o.x.nombre) ? 'checked' : ''} onchange="dteRecalcCombustibleInv()"><span style="flex:1;min-width:0;overflow-wrap:anywhere;font-size:13px">${escA(o.x.nombre)} <span style="color:var(--acero);font-size:11px">(${nfInv(o.x.cantidad)} ${escA(o.x.unidad || '')})</span></span><input type="number" id="cb-lt-${o.i}" value="${Math.round(litrosDeItemDteInv(o.x) * 100) / 100}" oninput="dteRecalcCombustibleInv()" style="${inp};width:90px"> <span style="font-size:12px">L</span></div>`).join(''),
+    `<div style="display:flex;gap:8px;margin:10px 0 6px"><div style="flex:1"><label style="font-size:12px">Fecha de la carga</label><input type="date" id="cb-fecha" value="${escA(d.fecha || hoyIsoInv())}" style="${inp};width:100%"></div><div style="width:110px"><label style="font-size:12px">Hora</label><input type="time" id="cb-hora" value="12:00" style="${inp};width:100%"></div></div>
+     <label style="font-size:12px">Observación</label><input type="text" id="cb-obs" value="${escA(abrevTipoDte(d.tipo) + ' ' + d.folio + ' · ' + (d.razonSocial || ''))}" style="${inp};width:100%;margin-bottom:8px">
+     <div id="cb-total" style="font-weight:800;margin-bottom:8px"></div>
+     <button class="btn btn-verde" style="width:100%;justify-content:center" onclick="dteGuardarCombustibleInv('${d.id}')">✓ Cargar a la cisterna</button>`]);
+  dteRecalcCombustibleInv();
+}
+window.dteRecalcCombustibleInv = function() {
+  const el = document.getElementById('cb-total'); if (!el) return;
+  let t = 0; document.querySelectorAll('[id^="cb-ck-"]').forEach(c => { if (c.checked) t += Number(document.getElementById('cb-lt-' + c.id.slice(6)).value) || 0; });
+  el.textContent = `Total a cargar: ${nfInv(t)} L`;
+}
+window.dteGuardarCombustibleInv = async function(id) {
+  const d = dteRecibidosInv.find(x => x.id === id); if (!d) return;
+  let lt = 0, neto = 0;
+  document.querySelectorAll('[id^="cb-ck-"]').forEach(c => { if (!c.checked) return; const i = c.id.slice(6); const l = Number(document.getElementById('cb-lt-' + i).value) || 0; lt += l; const it = d.items[Number(i)]; if (it && it.cantidad > 0) neto += (Number(it.montoNeto) || 0) * (l / litrosDeItemDteInv(it)); });
+  const fecha = document.getElementById('cb-fecha').value, hora = document.getElementById('cb-hora').value || '12:00', obs = document.getElementById('cb-obs').value.trim();
+  if (!(lt > 0) || !fecha) { toast('Marca la línea de petróleo e indica la fecha', false); return; }
+  const ts = new Date(fecha + 'T' + hora + ':00').getTime();
+  try {
+    const ref = await addDoc(collection(db, 'cargas_cisterna'), { fecha, hora, litros: lt, obs, operador: currentUser, ts: isFinite(ts) ? ts : Date.now(), origen: 'contabilidad', dteId: d.id, documento: abrevTipoDte(d.tipo) + ' ' + d.folio, proveedor: d.razonSocial || '', neto: Math.round(neto), precioLitroNeto: lt > 0 ? Math.round(neto / lt * 100) / 100 : 0 });
+    const saldoRef = doc(db, 'estanque', 'saldo');
+    const snap = await getDoc(saldoRef);
+    if (snap.exists()) await updateDoc(saldoRef, { litros: increment(lt) }); else await setDoc(saldoRef, { litros: lt });
+    await updateDoc(doc(dbInv, 'dte_recibidos', id), { combustibleCargaId: ref.id, combustibleLitros: (d.combustibleCargaId ? (d.combustibleLitros || 0) : 0) + lt, combustibleTs: Date.now(), combustiblePor: currentUser || '' });
+    const m = document.getElementById('dte-elegir'); if (m) m.remove();
+    toast(`✓ ${nfInv(lt)} L cargados a la cisterna`, true);
+  } catch (e) { toast('Error: ' + e.message, false); }
+}
 // ── Destinos: a qué sección se envía lo que trae cada documento ──
 const DESTINOS_DTE_INV = [
   { k: 'inventario', t: '📦 Inventario (bodega de agroquímicos y fertilizantes)', activo: true },
+  { k: 'combustible', t: '⛽ Combustible (carga de petróleo a la cisterna)', activo: true },
   { k: 'energia', t: '⚡ Energía eléctrica (facturas y medidores)', activo: false },
-  { k: 'combustible', t: '⛽ Combustible (compras de petróleo a la cisterna)', activo: false },
   { k: 'mantencion', t: '🔧 Mantención y repuestos de equipos', activo: false }
 ];
 window.dteEnviarAInv = function(id) {
   const d = dteRecibidosInv.find(x => x.id === id); if (!d) return;
   modalElegirDteInv(`📤 Enviar ${escA(nombreTipoDte(d.tipo).toLowerCase())} N° ${d.folio}`, 'Elige a qué sección va lo que trae este documento. La cuenta contable, la recepción y el pago se quedan aquí en Contabilidad.',
     DESTINOS_DTE_INV.map(x => x.activo
-      ? `<div class="config-item" style="cursor:pointer" onclick="document.getElementById('dte-elegir').remove();${x.k === 'inventario' ? `document.getElementById('dte-modal') && document.getElementById('dte-modal').remove();dteAIngresoInv('${d.id}')` : ''}">${x.t}</div>`
+      ? `<div class="config-item" style="cursor:pointer" onclick="document.getElementById('dte-elegir').remove();${x.k === 'inventario' ? `document.getElementById('dte-modal') && document.getElementById('dte-modal').remove();dteAIngresoInv('${d.id}')` : `document.getElementById('dte-modal') && document.getElementById('dte-modal').remove();dteACombustibleInv('${d.id}')`}">${x.t}</div>`
       : `<div class="config-item" style="opacity:.55"><span>${x.t}</span><span style="font-size:11px">próximamente</span></div>`));
 }
 function bloquePagoInv(d) {
@@ -16532,6 +16573,7 @@ const estadoDte = d => d.estado || 'pendiente';
 function grupoDteInv(d) {
   const e = estadoDte(d);
   if (e === 'ingresado') return 'ingresado';
+  if (d.combustibleLitros && e === 'pendiente') return 'ingresado';
   if (e === 'ignorado') return 'ignorado';
   if (DTE_NOTAS.includes(d.tipo)) return 'notas';
   if (!DTE_INGRESABLES.includes(d.tipo)) return 'ignorado';
@@ -16549,7 +16591,7 @@ function resumenPagarInv(lista) {
 function insigniasEstadoDteInv(d) {
   const er = estadoRecepcionInv(d), ep = estadoPagoInv(d), ec = estadoCuentaInv(d);
   const ins = e => `<span class="badge" style="background:${e.bg};color:${e.fg}">${e.t}</span>`;
-  let h = [er, ep, ec].filter(Boolean).map(ins).join(' ');
+  let h = [er, ep, ec, d.combustibleLitros ? { t: `⛽ En cisterna: ${nfInv(d.combustibleLitros)} L`, bg: '#DBEAFE', fg: '#1D4ED8' } : null].filter(Boolean).map(ins).join(' ');
   if (er && er.pend && er.pend.length) h += `<div style="font-size:12px;margin-top:4px;overflow-wrap:anywhere">Saldo por despachar: ${er.pend.map(textoSaldoInv).join(' · ')}</div>`;
   return h ? `<div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">${h}</div>` : '';
 }
@@ -16615,7 +16657,7 @@ function renderDteRecibidosInv(soloLista) {
         Las guías de despacho no salen en el Registro de Compras y Ventas: en "Ver documentos recibidos" elige el tipo Guía de despacho.
       </div></details>
     <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">
-      ${chip('pendientes', '📥 Por ingresar', cuenta('pendientes'))}${chip('ingresado', '✓ Ingresados', cuenta('ingresado'))}${chip('ignorado', 'No van a bodega', cuenta('ignorado'))}${cuenta('notas') ? chip('notas', 'Notas de crédito/débito', cuenta('notas')) : ''}${chip('todos', 'Todos', dteRecibidosInv.length)}
+      ${chip('pendientes', '📥 Por ingresar', cuenta('pendientes'))}${chip('ingresado', '✓ Ya enviados', cuenta('ingresado'))}${chip('ignorado', 'No van a bodega', cuenta('ignorado'))}${cuenta('notas') ? chip('notas', 'Notas de crédito/débito', cuenta('notas')) : ''}${chip('todos', 'Todos', dteRecibidosInv.length)}
     </div>
     <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">
       ${chip('sindefinir', '❔ Falta algo por definir', dteRecibidosInv.filter(sinDefinir).length)}${chip('sincuenta', '📒 Sin cuenta', dteRecibidosInv.filter(sinCuenta).length)}${chip('despachar', '🚚 Por despachar', dteRecibidosInv.filter(porDespachar).length)}${chip('pagar', '💳 Por pagar', dteRecibidosInv.filter(porPagar).length)}
