@@ -3523,7 +3523,7 @@ const SECCIONES_TABS = {
   equipos: ['tab-eficiencia','tab-analytics','tab-informes','tab-config-equipos'],
   asistencia: ['tab-asistencia','tab-config-trabajadores'],
   campo: ['tab-campo','tab-config-potreros','tab-config-gps'],
-  inventario: ['tab-inv-inventario','tab-inv-ingresos','tab-inv-movimientos','tab-inv-alertas'],
+  inventario: ['tab-inv-inventario','tab-inv-ingresos','tab-inv-pendrec','tab-inv-movimientos','tab-inv-alertas'],
   contabilidad: ['tab-cont-docs'],
   autorizaciones: ['tab-autorizaciones']
 };
@@ -3565,6 +3565,7 @@ window.abrirSeccion = function(seccion) {
       Object.values(SECCIONES_TABS).flat().forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
       ['tab-registro','tab-historial','tab-mantencion','tab-campo'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
       SECCIONES_TABS.inventario.forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'block'; });
+      { const pr = document.getElementById('tab-inv-pendrec'); if (pr && !verValoresInv()) pr.style.display = 'none'; }
       document.getElementById('panel-secciones').style.display = 'none';
       document.getElementById('tabs-bar').style.display = 'flex';
       document.getElementById('app-main').style.display = 'block';
@@ -13969,6 +13970,7 @@ window.setTab = function(id,el) {
   if(id==='config-gps') { jdpCargarZonas().then(() => { renderListaZonasSinCultivo(); renderVelEquipos(); }); }
   if(id==='inv-ingresos') { renderItemsIngresoInv(); { const r = document.getElementById('inv-ingreso-recibe'); if (r) { const v = r.value; r.innerHTML = opcionesAplicador('— nadie en particular —'); r.value = v; } } }
   if(id==='cont-docs') { renderDteRecibidosInv(); }
+  if(id==='inv-pendrec') { renderPendRecInv(); }
   if(id==='inv-movimientos') { initMovimientosInv(); }
   if(id==='cisterna') { initControlCisterna(); }
   if(id==='autorizaciones') { try { renderPanelAplicadores(); } catch (e) {} }
@@ -15015,6 +15017,7 @@ function renderInventarioTabla() {
   });
   if (!data.length) { tbody.innerHTML = `<tr><td colspan="${colCount}" class="empty">No se encontraron productos</td></tr>`; return; }
 
+  let pendRecMapa = {}; try { pendRecMapa = pendRecPorProductoInv(); } catch (e) { console.warn('pendrec', e); }
   const celdaBodega = (p, bodega) => {
     const s = stockInv(p, bodega);
     const ec = estadoConfigInv[getEstadoInvBodega(p, bodega)];
@@ -15037,6 +15040,7 @@ function renderInventarioTabla() {
         <div style="font-weight:600">${p.nombre}</div>
         ${p.fabricante ? `<div style="font-size:11px;color:var(--acero)">${p.fabricante}</div>` : ""}
         <div style="margin-top:3px">${badgeSagInv(p)}</div>
+        ${badgePendRecInv(p, pendRecMapa)}
       </td>
       <td><span class="badge" style="background:${cc}22;color:${cc}">${p.categoria}</span></td>
       <td style="font-size:12px">${p.ingredienteActivo || '<span style="color:#92400E">⚠ sin definir</span>'}</td>
@@ -16588,6 +16592,69 @@ function resumenPagarInv(lista) {
   const caja = (t, v, c) => `<div style="flex:1;min-width:120px;background:var(--fondo);border-radius:8px;padding:8px"><div style="font-size:11px;color:var(--acero)">${t}</div><div style="font-weight:800;color:${c || 'var(--negro)'}">${pesoInv(v)}</div></div>`;
   return `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">${caja('Total por pagar', suma(() => true))}${caja('Vencido', suma(d => dv(d) !== null && dv(d) < 0), '#B91C1C')}${caja('Próximos 7 días', suma(d => dv(d) !== null && dv(d) >= 0 && dv(d) <= 7), '#B45309')}${caja('Después o sin fecha', suma(d => dv(d) === null || dv(d) > 7))}</div>`;
 }
+// ── Pestaña de Inventario: mercadería facturada que todavía no llega (aparte del stock real) ──
+function lineasPendRecInv() {
+  const out = [];
+  dteRecibidosInv.filter(f => esFacturaDteInv(f) && f.recepcion === 'despacho' && (f.items || []).length).forEach(f => {
+    const e = estadoRecepcionInv(f); if (!e || !e.pend || !e.pend.length) return;
+    const { items } = itemsIngresoDesdeDteInv(f);
+    const lineas = e.pend.map(l => {
+      const it = items.find(i => i._nombreDoc === String(l.x.nombre || '').trim());
+      const conv = it && it.cantidad > 0 && l.pedido > 0 ? { cant: Math.round(it.cantidad * l.saldo / l.pedido * 100) / 100, unidad: it.unidad, nombre: it.nombre, reconocido: !!productoInvPorNombre(it.nombre) } : null;
+      return { l, conv };
+    });
+    out.push({ f, lineas, guias: e.s ? e.s.guias : [] });
+  });
+  return out.sort((a, b) => String(a.f.fecha).localeCompare(String(b.f.fecha)));
+}
+window.renderPendRecInv = function() {
+  const cont = document.getElementById('inv-panel-pendrec');
+  const tb = document.getElementById('tab-inv-pendrec');
+  if (!verValoresInv()) { if (tb) tb.style.display = 'none'; return; }
+  const grupos = lineasPendRecInv();
+  if (tb) tb.textContent = `🚚 Por recibir${grupos.length ? ` (${grupos.length})` : ''}`;
+  if (!cont) return;
+  const hoy = new Date(hoyIsoInv() + 'T00:00:00');
+  const tot = {};
+  grupos.forEach(g => g.lineas.forEach(({ l, conv }) => { const k = conv ? conv.nombre + '|' + conv.unidad : '?' + l.x.nombre; if (!tot[k]) tot[k] = { nombre: conv ? conv.nombre : l.x.nombre, unidad: conv ? conv.unidad : (l.x.unidad || ''), cant: 0, ok: conv ? conv.reconocido : false, conv: !!conv }; tot[k].cant += conv ? conv.cant : l.saldo; }));
+  const resumen = Object.values(tot).sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'));
+  cont.innerHTML = `<div class="panel-title">🚚 Pendiente de recepción</div>
+    <div style="font-size:12px;color:var(--acero);margin-bottom:10px">Productos ya facturados que todavía no llegan. <strong>No están en el stock</strong>: suben cuando ingresas cada guía de despacho. Se administran en Contabilidad → Facturas y guías.</div>
+    ${grupos.length ? `<div style="font-weight:700;font-size:13px;margin-bottom:4px">Total por recibir</div>
+    <div style="margin-bottom:12px">${resumen.map(r => `<div class="config-item" style="padding:6px 10px"><span style="overflow-wrap:anywhere">${escA(r.nombre)}${r.ok ? '' : ' <span style="font-size:11px;color:#B45309">(sin reconocer en el inventario)</span>'}</span><strong style="white-space:nowrap">${nfInv(r.cant)} ${escA(r.unidad)}</strong></div>`).join('')}</div>
+    <div style="font-weight:700;font-size:13px;margin-bottom:4px">Por factura</div>
+    ${grupos.map(({ f, lineas, guias }) => { const dias = Math.max(0, Math.round((hoy - new Date((f.fecha || hoyIsoInv()) + 'T00:00:00')) / 86400000)); return `<div class="config-item" style="flex-direction:column;align-items:stretch;gap:4px">
+      <div style="display:flex;justify-content:space-between;gap:6px;flex-wrap:wrap"><div style="overflow-wrap:anywhere"><strong>Factura N° ${f.folio}</strong> · ${escA(f.razonSocial || '')}</div><div style="font-size:12px;color:${dias > 15 ? '#B91C1C' : 'var(--acero)'};white-space:nowrap">${fechaCortaDte(f.fecha)} · hace ${dias} d</div></div>
+      ${lineas.map(({ l, conv }) => `<div style="font-size:12px;display:flex;justify-content:space-between;gap:8px"><span style="overflow-wrap:anywhere">${escA(conv ? conv.nombre : l.x.nombre)}</span><span style="white-space:nowrap">faltan <strong>${conv ? nfInv(conv.cant) + ' ' + escA(conv.unidad) : nfInv(l.saldo) + ' ' + escA(l.x.unidad || '')}</strong>${conv ? ` <span style="color:var(--acero)">(${nfInv(l.saldo)} ${escA(l.x.unidad || '')} de ${nfInv(l.pedido)})</span>` : ` <span style="color:var(--acero)">(de ${nfInv(l.pedido)})</span>`}</span></div>`).join('')}
+      <div style="font-size:12px;color:var(--acero)">${guias.length ? `Guías recibidas: ${guias.map(g => 'N° ' + g.folio).join(', ')}` : 'Aún no llega ninguna guía'}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn-add" style="padding:6px 10px;background:var(--fondo);color:var(--negro)" onclick="dteVerInv('${f.id}')">👁 Ver factura</button><button class="btn-add" style="padding:6px 10px" onclick="dteAsignarGuiaInv('${f.id}')">＋ Asignar guía</button></div></div>`; }).join('')}` : '<div class="empty">No hay mercadería pendiente de recepción</div>'}`;
+}
+// ── Mercadería facturada que aún no llega, vista por producto del inventario ──
+function pendRecPorProductoInv() {
+  const mapa = {};
+  lineasPendRecInv().forEach(g => g.lineas.forEach(({ l, conv }) => {
+    if (!conv || !conv.reconocido) return;
+    const p = productoInvPorNombre(conv.nombre); if (!p) return;
+    (mapa[p.id] = mapa[p.id] || []).push({ f: g.f, cant: conv.cant, unidad: conv.unidad, guias: g.guias, saldoDoc: l.saldo, umDoc: l.x.unidad || '', pedidoDoc: l.pedido });
+  }));
+  return mapa;
+}
+function badgePendRecInv(p, mapa) {
+  const l = mapa[p.id]; if (!l || !l.length) return '';
+  const tot = l.reduce((a, x) => a + x.cant, 0);
+  return `<div style="margin-top:3px"><a href="#" class="badge" style="background:#FEF3C7;color:#B45309;text-decoration:none" onclick="event.preventDefault();verPendRecProductoInv('${p.id}')">🚚 +${nfInv(Math.round(tot * 100) / 100)} ${escA(l[0].unidad || p.unidad || 'L')} por recibir</a></div>`;
+}
+window.verPendRecProductoInv = function(pid) {
+  const p = productosInv.find(x => x.id === pid); if (!p) return;
+  const l = pendRecPorProductoInv()[pid] || [];
+  modalElegirDteInv(`🚚 ${escA(p.nombre)}: por recibir`, `Stock en bodega hoy: <strong>${nfInv(stockTotalInv(p))} ${escA(p.unidad || 'L')}</strong>. Lo de abajo está facturado, pero aún no llega y no está en el stock.`,
+    l.map(x => `<div class="config-item" style="flex-direction:column;align-items:stretch;gap:3px">
+      <div><strong>${escA(x.f.razonSocial || '')}</strong></div>
+      <div style="font-size:13px">Factura N° <strong>${x.f.folio}</strong> del ${fechaCortaDte(x.f.fecha)}</div>
+      <div style="font-size:13px">Faltan <strong>${nfInv(x.cant)} ${escA(x.unidad)}</strong> <span style="color:var(--acero);font-size:12px">(${nfInv(x.saldoDoc)} ${escA(x.umDoc)} de ${nfInv(x.pedidoDoc)})</span></div>
+      <div style="font-size:12px;color:var(--acero)">${x.guias.length ? 'Guías recibidas: ' + x.guias.map(g => 'N° ' + g.folio).join(', ') : 'Aún no llega ninguna guía'}</div>
+      <div><button class="btn-add" style="padding:6px 10px;background:var(--fondo);color:var(--negro)" onclick="document.getElementById('dte-elegir').remove();dteVerInv('${x.f.id}')">👁 Ver factura</button></div></div>`));
+}
 function insigniasEstadoDteInv(d) {
   const er = estadoRecepcionInv(d), ep = estadoPagoInv(d), ec = estadoCuentaInv(d);
   const ins = e => `<span class="badge" style="background:${e.bg};color:${e.fg}">${e.t}</span>`;
@@ -16622,6 +16689,7 @@ function tarjetaDteInv(d) {
   </div>`;
 }
 function renderDteRecibidosInv(soloLista) {
+  try { renderPendRecInv(); } catch (e) { console.warn('pendrec', e); }
   const cont = document.getElementById('inv-panel-dte'); if (!cont) return;
   if (!verValoresInv()) { cont.style.display = 'none'; return; }
   cont.style.display = '';
@@ -16818,6 +16886,7 @@ function suscribirDteInv() {
     dteRecibidosInv = snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(d => !d.id.startsWith('_'));
     const ab = document.getElementById('dte-modal');
     renderDteRecibidosInv();
+    try { renderInventarioTabla(); } catch (e) {}
     if (ab && ab.dataset.id) dteVerInv(ab.dataset.id);
   }, e => {
     console.warn('dte_recibidos', e);
@@ -17675,6 +17744,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     <button class="tab" id="tab-cont-docs" style="display:none" onclick="setTab('cont-docs',this)">📨 Facturas y guías</button>
     <button class="tab" id="tab-inv-inventario" style="display:none" onclick="setTab('inv-inventario',this)">📦 Inventario</button>
     <button class="tab" id="tab-inv-ingresos" style="display:none" onclick="setTab('inv-ingresos',this)">📥 Ingresos</button>
+    <button class="tab" id="tab-inv-pendrec" style="display:none" onclick="setTab('inv-pendrec',this)">🚚 Por recibir</button>
     <button class="tab" id="tab-inv-movimientos" style="display:none" onclick="setTab('inv-movimientos',this)">📜 Movimientos</button>
     <button class="tab" id="tab-inv-alertas" style="display:none" onclick="setTab('inv-alertas',this)">🔔 Alertas</button>
   </div>
@@ -18810,6 +18880,10 @@ tbody td{padding:10px 12px;vertical-align:middle;}
 
     <div id="tc-cont-docs" class="tab-content">
       <div id="inv-panel-dte" class="panel" style="display:none"></div>
+    </div>
+
+    <div id="tc-inv-pendrec" class="tab-content">
+      <div id="inv-panel-pendrec" class="panel"></div>
     </div>
 
     <div id="tc-inv-ingresos" class="tab-content">
