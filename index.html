@@ -16790,6 +16790,7 @@ window.dteAIngresoInv = function(id) {
     const ing = guiasDeFacturaInv(d).filter(g => g.doc && g.doc.estado === 'ingresado');
     if (ing.length && !confirm(`Esta factura corresponde a la(s) guía(s) N° ${ing.map(g => g.folio).join(', ')}, que ya ingresaste a bodega.\nSi la ingresas, el stock se sumaría dos veces. ¿Ingresarla igual?`)) return;
   }
+  if (esFacturaDteInv(d) && d.recepcion === 'despacho' && !confirm('Esta factura está esperando despacho: si la ingresas ahora, el stock sube completo antes de que llegue el producto.\n\nLo habitual es ingresar cada guía de despacho cuando llega y dejar la factura solo para actualizar precios.\n\n¿Ingresarla igual?')) return;
   if (itemsIngresoInv.some(it => it.nombre && it.nombre.trim()) && !confirm('El formulario de ingreso ya tiene productos. ¿Reemplazarlos por los del documento?')) return;
   const { items, omitidos } = itemsIngresoDesdeDteInv(d);
   if (!items.length) { toast('El documento no trae productos para la bodega', false); return; }
