@@ -3524,7 +3524,7 @@ const SECCIONES_TABS = {
   asistencia: ['tab-asistencia','tab-config-trabajadores'],
   campo: ['tab-campo','tab-config-potreros','tab-config-gps'],
   inventario: ['tab-inv-inventario','tab-inv-ingresos','tab-inv-pendrec','tab-inv-movimientos','tab-inv-alertas'],
-  contabilidad: ['tab-cont-docs'],
+  contabilidad: ['tab-cont-docs','tab-cont-rend','tab-cont-config'],
   autorizaciones: ['tab-autorizaciones']
 };
 
@@ -13970,6 +13970,8 @@ window.setTab = function(id,el) {
   if(id==='config-gps') { jdpCargarZonas().then(() => { renderListaZonasSinCultivo(); renderVelEquipos(); }); }
   if(id==='inv-ingresos') { renderItemsIngresoInv(); { const r = document.getElementById('inv-ingreso-recibe'); if (r) { const v = r.value; r.innerHTML = opcionesAplicador('— nadie en particular —'); r.value = v; } } }
   if(id==='cont-docs') { renderDteRecibidosInv(); }
+  if(id==='cont-config') { renderConfigContInv(); }
+  if(id==='cont-rend') { renderRendCajaInv(); }
   if(id==='inv-pendrec') { renderPendRecInv(); }
   if(id==='inv-movimientos') { initMovimientosInv(); }
   if(id==='cisterna') { initControlCisterna(); }
@@ -16305,20 +16307,174 @@ function estadoPagoInv(d) {
   }
   return { k: '', t: '❔ Pago sin definir', bg: '#F3F4F6', fg: '#6B7280' };
 }
-window.dtePagoInv = async function(id, forma) {
+const CAJAS_BASE_INV = ['Caja chica', 'Caja chica JCAZ'];
+// ── Personas autorizadas a pagar y rendir ──
+let personasPagoInv = null; // null = sin configurar (no se pregunta quién pagó)
+let pagoPendInv = null;
+async function guardarPersonasPagoInv(arr) { await setDoc(doc(dbInv, 'dte_recibidos', '_personas'), { personas: arr, actualizado: Date.now(), por: currentUser || '' }); }
+const personasActivasInv = () => (personasPagoInv || []).filter(p => p.on !== false).map(p => p.n);
+window.agregarPersonaPagoInv = async function() {
+  const n = (document.getElementById('persona-nueva').value || '').trim();
+  if (!n) { toast('Escribe el nombre', false); return; }
+  const arr = (personasPagoInv || []).map(p => ({ ...p })), ex = arr.find(p => normNom(p.n) === normNom(n));
+  if (ex && ex.on !== false) { toast('Esa persona ya está en la lista', false); return; }
+  if (ex) ex.on = true; else arr.push({ n, on: true });
+  try { await guardarPersonasPagoInv(arr); toast('✓ Persona agregada', true); } catch (e) { toast('Error: ' + e.message, false); }
+}
+window.renombrarPersonaPagoInv = async function(i) {
+  const arr = (personasPagoInv || []).map(p => ({ ...p })); if (!arr[i]) return;
+  const n = prompt('Nombre', arr[i].n); if (n === null || !n.trim()) return;
+  arr[i].n = n.trim();
+  try { await guardarPersonasPagoInv(arr); toast('✓ Nombre actualizado (los pagos ya hechos conservan el anterior)', true); } catch (e) { toast('Error: ' + e.message, false); }
+}
+window.ocultarPersonaPagoInv = async function(i) {
+  const arr = (personasPagoInv || []).map(p => ({ ...p })); if (!arr[i]) return;
+  arr[i].on = arr[i].on === false;
+  try { await guardarPersonasPagoInv(arr); } catch (e) { toast('Error: ' + e.message, false); }
+}
+// Pregunta quién pagó (solo si hay personas configuradas) y sigue con el pago
+function pedirPagadorInv(id, forma, caja) {
+  const ps = personasActivasInv();
+  if (!ps.length) { dtePagoInv(id, forma, caja, ''); return; }
+  pagoPendInv = { id, forma, caja };
+  modalElegirDteInv('👤 ¿Quién pagó?', 'Solo las personas autorizadas a pagar y rendir.', ps.map((n, i) => `<div class="config-item" style="cursor:pointer" onclick="dtePagadorIdxInv(${i})">👤 ${escA(n)}</div>`));
+}
+window.dtePagadorIdxInv = function(i) { const n = personasActivasInv()[i], p = pagoPendInv; const m = document.getElementById('dte-elegir'); if (m) m.remove(); if (p && n) dtePagoInv(p.id, p.forma, p.caja, n); }
+let cajasCfgInv = null; // null = aún sin configurar: se usan las de partida y las ya usadas
+async function guardarCajasInv(arr) { await setDoc(doc(dbInv, 'dte_recibidos', '_cajas'), { cajas: arr, actualizado: Date.now(), por: currentUser || '' }); }
+function cajasEfectivasInv() { return cajasCfgInv ? cajasCfgInv.map(c => ({ ...c })) : cajasChicasPorUsoInv().map(n => ({ n, on: true })); }
+function cajasChicasInv() { return cajasCfgInv ? cajasCfgInv.filter(c => c.on !== false).map(c => c.n) : cajasChicasPorUsoInv(); }
+function cajasChicasPorUsoInv() {
+  const usadas = [];
+  dteRecibidosInv.forEach(d => { if (d.pago === 'caja' && d.pagoDetalle) usadas.push(d.pagoDetalle); (d.abonos || []).forEach(a => { if (a.medio === 'caja' && a.detalle) usadas.push(a.detalle); }); });
+  const vistos = new Set(), out = [];
+  [...CAJAS_BASE_INV, ...usadas].forEach(n => { const k = normNom(n); if (n && !vistos.has(k)) { vistos.add(k); out.push(n); } });
+  return out;
+}
+// ── Rendición de cajas chicas ──
+let rendCajaSelInv = '', rendPersSelInv = '', rendVerInv = 'pendientes';
+function pagosCajaInv() {
+  const out = [];
+  dteRecibidosInv.forEach(d => {
+    if (d.pago === 'caja' && esPagableDteInv(d)) out.push({ d, i: -1, monto: d.total || 0, caja: d.pagoDetalle || '(sin caja)', quien: d.pagadoPor || '', fecha: d.fechaPago ? fechaLocalDeTs(d.fechaPago) : (d.fecha || ''), rendida: !!d.rendida });
+    (d.abonos || []).forEach((a, i) => { if (a.medio === 'caja') out.push({ d, i, monto: a.monto || 0, caja: a.detalle || '(sin caja)', quien: a.quien || '', fecha: a.fecha || '', rendida: !!a.rendida }); });
+  });
+  return out.sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)));
+}
+const filtrarRendInv = () => pagosCajaInv().filter(e => (!rendCajaSelInv || e.caja === rendCajaSelInv) && (!rendPersSelInv || e.quien === rendPersSelInv) && (rendVerInv === 'rendidas' ? e.rendida : !e.rendida));
+window.setRendInv = (k, v) => { if (k === 'caja') rendCajaSelInv = v; else if (k === 'pers') rendPersSelInv = v; else rendVerInv = v; renderRendCajaInv(); };
+window.renderRendCajaInv = function() {
+  const cont = document.getElementById('cont-rend-panel'); if (!cont) return;
+  const todos = pagosCajaInv();
+  const cajas = [...new Set(todos.map(e => e.caja))], pers = [...new Set(todos.map(e => e.quien).filter(Boolean))];
+  const lista = filtrarRendInv(), total = lista.reduce((a, e) => a + e.monto, 0);
+  const pend = todos.filter(e => !e.rendida), totPend = pend.reduce((a, e) => a + e.monto, 0);
+  const opt = (arr, sel, todas) => `<option value="">${todas}</option>` + arr.map(x => `<option value="${escA(x)}"${x === sel ? ' selected' : ''}>${escA(x)}</option>`).join('');
+  cont.innerHTML = `<div class="panel"><div class="panel-title">💵 Rendición de cajas chicas</div>
+    <div style="background:var(--fondo);border-radius:8px;padding:8px 10px;font-size:13px;margin-bottom:10px">Pendiente de rendir en total: <strong>${pesoInv(totPend)}</strong> (${pend.length} pago${pend.length === 1 ? '' : 's'})</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
+      <span class="cultivo-chip${rendVerInv === 'pendientes' ? ' sel' : ''}" onclick="setRendInv('ver','pendientes')">Por rendir</span><span class="cultivo-chip${rendVerInv === 'rendidas' ? ' sel' : ''}" onclick="setRendInv('ver','rendidas')">Ya rendidas</span></div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px"><select onchange="setRendInv('caja',this.value)" style="flex:1;min-width:140px;margin:0">${opt(cajas, rendCajaSelInv, 'Todas las cajas')}</select><select onchange="setRendInv('pers',this.value)" style="flex:1;min-width:140px;margin:0">${opt(pers, rendPersSelInv, 'Todas las personas')}</select></div>
+    ${lista.length ? lista.map(e => `<div class="config-item" style="flex-direction:column;align-items:stretch;gap:2px"><div style="display:flex;justify-content:space-between;gap:6px"><span style="overflow-wrap:anywhere"><strong>${escA(e.d.razonSocial || '')}</strong> · ${abrevTipoDte(e.d.tipo)} ${e.d.folio}</span><strong style="white-space:nowrap">${pesoInv(e.monto)}</strong></div>
+      <div style="font-size:12px;color:var(--acero)">${fmtFechaInv(e.fecha)} · 💵 ${escA(e.caja)}${e.quien ? ' · pagó ' + escA(e.quien) : ' · <span style="color:#B45309">sin persona</span>'}${e.d.cuentaNombre ? ' · ' + escA(e.d.cuenta) + ' ' + escA(e.d.cuentaNombre) : ' · <span style="color:#B45309">sin cuenta contable</span>'}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn-add" style="padding:4px 8px;background:var(--fondo);color:var(--negro)" onclick="dteVerInv('${e.d.id}')">👁 Ver</button>${e.rendida ? `<button class="btn-add" style="padding:4px 8px;background:var(--fondo);color:var(--acero)" onclick="rendirPagoInv('${e.d.id}',${e.i},false)">↩ Volver a pendiente</button>` : `<button class="btn-add" style="padding:4px 8px" onclick="rendirPagoInv('${e.d.id}',${e.i},true)">✅ Rendir</button>`}</div></div>`).join('') : `<div class="empty">${rendVerInv === 'rendidas' ? 'Todavía no hay pagos rendidos' : 'No hay pagos con caja chica por rendir'}</div>`}
+    <div style="font-weight:800;margin:10px 0 8px;text-align:right">Total de esta lista: ${pesoInv(total)}</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">${rendVerInv === 'pendientes' && lista.length ? `<button class="btn btn-verde" style="flex:1;min-width:150px;justify-content:center" onclick="rendirTodoInv()">✅ Rendir todo esto (${lista.length})</button>` : ''}${lista.length ? `<button class="btn btn-secondary" style="flex:1;min-width:150px;justify-content:center" onclick="exportarRendInv()">⬇️ Exportar (Excel)</button>` : ''}</div></div>`;
+}
+async function marcarRendidosInv(entradas, valor) {
+  const porDoc = {}; entradas.forEach(e => (porDoc[e.d.id] = porDoc[e.d.id] || []).push(e));
+  for (const [id, es] of Object.entries(porDoc)) {
+    const d = dteRecibidosInv.find(x => x.id === id), c = {};
+    if (es.some(e => e.i === -1)) { c.rendida = valor; c.rendidaTs = valor ? Date.now() : 0; c.rendidaPor = valor ? (currentUser || '') : ''; }
+    const idx = es.filter(e => e.i >= 0).map(e => e.i);
+    if (idx.length) c.abonos = (d.abonos || []).map((a, k) => idx.includes(k) ? { ...a, rendida: valor, rendidaTs: valor ? Date.now() : 0, rendidaPor: valor ? (currentUser || '') : '' } : a);
+    await updateDoc(doc(dbInv, 'dte_recibidos', id), c);
+  }
+}
+window.rendirPagoInv = async function(id, i, valor) {
+  const e = pagosCajaInv().find(x => x.d.id === id && x.i === i); if (!e) return;
+  try { await marcarRendidosInv([e], valor); toast(valor ? '✓ Pago rendido' : '✓ Vuelve a pendiente', true); } catch (er) { toast('Error: ' + er.message, false); }
+}
+window.rendirTodoInv = async function() {
+  const l = filtrarRendInv(); if (!l.length) return;
+  if (!confirm(`¿Marcar como rendidos ${l.length} pago(s) por ${pesoInv(l.reduce((a, e) => a + e.monto, 0))}?`)) return;
+  try { await marcarRendidosInv(l, true); toast(`✓ ${l.length} pago(s) rendidos`, true); } catch (er) { toast('Error: ' + er.message, false); }
+}
+window.exportarRendInv = function() {
+  const l = filtrarRendInv(); if (!l.length) return;
+  const esc = v => { const t = String(v == null ? '' : v); return /[;"\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
+  const filas = [['Fecha', 'Caja chica', 'Pagó', 'Proveedor', 'Documento', 'N°', 'Monto', 'Cód. cuenta', 'Cuenta', 'Estado']].concat(l.map(e => [e.fecha, e.caja, e.quien, e.d.razonSocial || '', abrevTipoDte(e.d.tipo), e.d.folio, e.monto, e.d.cuenta || '', e.d.cuentaNombre || '', e.rendida ? 'Rendida' : 'Por rendir']));
+  const csv = '\ufeff' + filas.map(r => r.map(esc).join(';')).join('\r\n');
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+  a.download = `rendicion_caja_chica_${hoyIsoInv()}.csv`; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
+// ── Configuración de Contabilidad ──
+window.renderConfigContInv = function() {
+  const cont = document.getElementById('cont-config-panel'); if (!cont) return;
+  const cajas = cajasEfectivasInv();
+  const usos = n => dteRecibidosInv.filter(d => (d.pago === 'caja' && d.pagoDetalle === n) || (d.abonos || []).some(a => a.medio === 'caja' && a.detalle === n)).length;
+  cont.innerHTML = `<div class="panel">
+      <div class="panel-title">💵 Cajas chicas</div>
+      <div style="font-size:12px;color:var(--acero);margin-bottom:8px">Son las opciones que aparecen al pagar con caja chica. Si ocultas una, deja de ofrecerse, pero los documentos ya pagados con ella la conservan.</div>
+      ${cajas.length ? cajas.map((c, i) => `<div class="config-item" style="${c.on === false ? 'opacity:.5' : ''}"><span style="min-width:0;overflow-wrap:anywhere">💵 <strong>${escA(c.n)}</strong>${c.on === false ? ' (oculta)' : ''} <span style="font-size:11px;color:var(--acero)">${usos(c.n) ? usos(c.n) + ' pago(s)' : ''}</span></span><span style="white-space:nowrap"><a href="#" onclick="event.preventDefault();renombrarCajaInv(${i})">✏️</a> <a href="#" onclick="event.preventDefault();ocultarCajaInv(${i})">${c.on === false ? '👁' : '🚫'}</a></span></div>`).join('') : '<div class="empty">Todavía no hay cajas chicas</div>'}
+      <div style="display:flex;gap:6px;margin-top:10px"><input type="text" id="caja-nueva" placeholder="Nombre de la nueva caja chica" style="flex:1;min-width:0;box-sizing:border-box;margin:0"><button class="btn-add" style="padding:6px 12px" onclick="agregarCajaInv()">＋ Crear</button></div>
+    </div>
+    <div class="panel">
+      <div class="panel-title">👤 Autorizados a pagar y rendir</div>
+      <div style="font-size:12px;color:var(--acero);margin-bottom:8px">Al registrar un pago, la app pregunta quién pagó y lo elige de esta lista. Con esto después se rinde cada caja chica por persona. Si la lista está vacía, no se pregunta.</div>
+      ${(personasPagoInv || []).length ? personasPagoInv.map((p, i) => `<div class="config-item" style="${p.on === false ? 'opacity:.5' : ''}"><span>👤 <strong>${escA(p.n)}</strong>${p.on === false ? ' (oculta)' : ''}</span><span style="white-space:nowrap"><a href="#" onclick="event.preventDefault();renombrarPersonaPagoInv(${i})">✏️</a> <a href="#" onclick="event.preventDefault();ocultarPersonaPagoInv(${i})">${p.on === false ? '👁' : '🚫'}</a></span></div>`).join('') : '<div class="empty">Todavía no hay personas autorizadas</div>'}
+      <div style="display:flex;gap:6px;margin-top:10px"><input type="text" id="persona-nueva" list="lista-personas-pago" placeholder="Nombre de la persona" style="flex:1;min-width:0;box-sizing:border-box;margin:0"><datalist id="lista-personas-pago">${((typeof config !== 'undefined' && config.operadores) || []).map(n => `<option value="${escA(n)}">`).join('')}</datalist><button class="btn-add" style="padding:6px 12px" onclick="agregarPersonaPagoInv()">＋ Agregar</button></div>
+    </div>
+    <div class="panel">
+      <div class="panel-title">📒 Plan de cuentas</div>
+      <div style="font-size:12px;color:var(--acero);margin-bottom:8px">${(planCuentasInv || []).length ? `${(planCuentasInv || []).filter(c => c.on !== false).length} cuentas activas de ${(planCuentasInv || []).length}.` : 'Aún no se carga el plan de la contadora.'} Aquí creas cuentas nuevas, cambias nombres u ocultas las que no uses.</div>
+      <button class="btn btn-secondary" style="justify-content:center;text-transform:none;letter-spacing:normal;font-size:14px" onclick="abrirPlanCuentasInv()">📒 Abrir el plan de cuentas</button>
+    </div>`;
+}
+window.agregarCajaInv = async function() {
+  const n = (document.getElementById('caja-nueva').value || '').trim();
+  if (!n) { toast('Escribe el nombre de la caja chica', false); return; }
+  const cajas = cajasEfectivasInv();
+  const ex = cajas.find(c => normNom(c.n) === normNom(n));
+  if (ex && ex.on !== false) { toast('Esa caja chica ya existe', false); return; }
+  if (ex) ex.on = true; else cajas.push({ n, on: true });
+  try { await guardarCajasInv(cajas); toast('✓ Caja chica creada', true); } catch (e) { toast('Error: ' + e.message, false); }
+}
+window.renombrarCajaInv = async function(i) {
+  const cajas = cajasEfectivasInv(), c = cajas[i]; if (!c) return;
+  const n = prompt('Nuevo nombre de la caja chica', c.n); if (n === null || !n.trim()) return;
+  if (cajas.some((x, k) => k !== i && normNom(x.n) === normNom(n))) { toast('Ya existe una caja con ese nombre', false); return; }
+  c.n = n.trim();
+  try { await guardarCajasInv(cajas); toast('✓ Nombre actualizado (los pagos ya hechos conservan el nombre anterior)', true); } catch (e) { toast('Error: ' + e.message, false); }
+}
+window.ocultarCajaInv = async function(i) {
+  const cajas = cajasEfectivasInv(); if (!cajas[i]) return;
+  cajas[i].on = cajas[i].on === false;
+  try { await guardarCajasInv(cajas); } catch (e) { toast('Error: ' + e.message, false); }
+}
+window.modalCajaInv = function(id) {
+  const cs = cajasChicasInv();
+  modalElegirDteInv('💵 ¿Con qué caja chica se pagó?', 'Elige una o crea otra: queda guardada para la próxima vez.', [
+    ...cs.map((n, i) => `<div class="config-item" style="cursor:pointer" onclick="dtePagoCajaIdxInv('${id}', ${i})">💵 ${escA(n)}</div>`),
+    `<div class="config-item" style="cursor:pointer;color:#1D4ED8" onclick="dtePagoCajaOtraInv('${id}')">＋ Otra caja…</div>`]);
+}
+window.dtePagoCajaIdxInv = function(id, i) { const n = cajasChicasInv()[i]; const m = document.getElementById('dte-elegir'); if (m) m.remove(); dtePagoInv(id, 'caja', n); }
+window.dtePagoCajaOtraInv = function(id) { const n = prompt('Nombre de la caja chica (por ejemplo, el responsable)', ''); if (n === null || !n.trim()) return; const m = document.getElementById('dte-elegir'); if (m) m.remove(); dtePagoInv(id, 'caja', n.trim()); }
+window.dtePagoInv = async function(id, forma, caja, quien) {
   const d = dteRecibidosInv.find(x => x.id === id); if (!d) return;
   const c = { pago: forma, pagoPor: currentUser || '', pagoTs: Date.now() };
   if (forma === 'caja') {
-    const ult = dteRecibidosInv.filter(x => x.pago === 'caja' && x.pagoDetalle).sort((a, b) => (b.pagoTs || 0) - (a.pagoTs || 0))[0];
-    const n = prompt('¿Qué caja chica? (nombre o responsable)', ult ? ult.pagoDetalle : ''); if (n === null) return;
-    c.pagoDetalle = n.trim(); c.pagada = true; c.fechaPago = Date.now();
-  } else if (forma === 'cuenta') { c.pagoDetalle = ''; c.pagada = true; c.fechaPago = Date.now(); }
+    if (caja === undefined) { modalCajaInv(id); return; }
+    if (quien === undefined) { pedirPagadorInv(id, forma, caja); return; }
+    c.pagoDetalle = String(caja).trim(); c.pagada = true; c.fechaPago = Date.now(); c.pagadoPor = quien; c.rendida = false;
+  } else if (forma === 'cuenta') { if (quien === undefined) { pedirPagadorInv(id, forma); return; } c.pagoDetalle = ''; c.pagada = true; c.fechaPago = Date.now(); c.pagadoPor = quien; }
   else if (forma === 'credito') {
     const v = prompt('¿Cuándo vence? (dd-mm-aaaa). Déjalo vacío si no tiene fecha.', fmtFechaInv(d.vence || vencePorDefectoInv(d))); if (v === null) return;
     if (v.trim() && !parseVenceInv(v)) { toast('Fecha no válida: usa dd-mm-aaaa', false); return; }
     c.vence = parseVenceInv(v); c.pagoDetalle = ''; c.pagada = false; c.fechaPago = 0;
   }
   else { c.pagoDetalle = ''; c.pagada = false; c.fechaPago = 0; }
+  if (forma === 'credito' || forma === '') { c.pagadoPor = ''; c.rendida = false; }
   try { await updateDoc(doc(dbInv, 'dte_recibidos', id), c); toast('✓ Forma de pago guardada', true); } catch (e) { toast('Error: ' + e.message, false); }
 }
 window.dteMarcarPagadaInv = function(id) { dteRegistrarPagoInv(id); };
@@ -16331,16 +16487,18 @@ window.dteRegistrarPagoInv = function(id) {
     <label style="font-size:12px">Monto pagado ($)</label><input type="number" id="pg-monto" value="${s}" style="${inp}">
     <label style="font-size:12px">Fecha del pago</label><input type="date" id="pg-fecha" value="${hoyIsoInv()}" style="${inp}">
     <label style="font-size:12px">Se pagó con</label><select id="pg-medio" style="${inp}" onchange="document.getElementById('pg-det-w').style.display=this.value==='caja'?'':'none'"><option value="cuenta">🏦 Desde la cuenta</option><option value="caja">💵 Caja chica</option></select>
-    <div id="pg-det-w" style="display:none"><label style="font-size:12px">¿Qué caja chica?</label><input type="text" id="pg-det" value="${escA(ult ? ult.detalle : '')}" style="${inp}"></div>
+    <div id="pg-det-w" style="display:none"><label style="font-size:12px">¿Qué caja chica?</label><select id="pg-det-sel" style="${inp};width:100%;margin-bottom:8px" onchange="document.getElementById('pg-det').style.display=this.value==='__otra'?'':'none'">${cajasChicasInv().map(n => `<option value="${escA(n)}"${ult && ult.detalle === n ? ' selected' : ''}>${escA(n)}</option>`).join('')}<option value="__otra">＋ Otra…</option></select><input type="text" id="pg-det" placeholder="Nombre de la caja chica" style="${inp};display:none;width:100%;margin-bottom:8px"></div>
+    ${personasActivasInv().length ? `<label style="font-size:12px">¿Quién pagó?</label><select id="pg-quien" style="${inp}">${personasActivasInv().map(n => `<option>${escA(n)}</option>`).join('')}</select>` : ''}
     <button class="btn btn-verde" style="width:100%;justify-content:center" onclick="dteGuardarPagoInv('${d.id}')">✓ Guardar pago</button>`]);
 }
 window.dteGuardarPagoInv = async function(id) {
   const d = dteRecibidosInv.find(x => x.id === id); if (!d) return;
   const monto = Math.round(Number(document.getElementById('pg-monto').value) || 0), medio = document.getElementById('pg-medio').value;
-  const fecha = document.getElementById('pg-fecha').value || hoyIsoInv(), det = (document.getElementById('pg-det') || {}).value || '';
+  const fecha = document.getElementById('pg-fecha').value || hoyIsoInv(), det = (() => { const sel = document.getElementById('pg-det-sel'); if (!sel) return ''; return sel.value === '__otra' ? (document.getElementById('pg-det').value || '') : sel.value; })();
   if (!(monto > 0)) { toast('Indica el monto pagado', false); return; }
   if (medio === 'caja' && !det.trim()) { toast('Indica qué caja chica', false); return; }
-  const abonos = [...(d.abonos || []), { fecha, monto, medio, detalle: medio === 'caja' ? det.trim() : '', por: currentUser || '', ts: Date.now() }];
+  const quien = (document.getElementById('pg-quien') || {}).value || '';
+  const abonos = [...(d.abonos || []), { fecha, monto, medio, detalle: medio === 'caja' ? det.trim() : '', quien, por: currentUser || '', ts: Date.now() }];
   const saldo = Math.max(0, (d.total || 0) - abonos.reduce((a, x) => a + x.monto, 0)), pagada = saldo <= 1;
   try {
     await updateDoc(doc(dbInv, 'dte_recibidos', id), { abonos, pagada, fechaPago: pagada ? Date.now() : 0 });
@@ -16540,9 +16698,10 @@ function bloquePagoInv(d) {
   const e = estadoPagoInv(d);
   const btn = (v, t, sel) => `<button class="btn-add" style="padding:6px 10px;${sel ? '' : 'background:var(--fondo);color:var(--negro)'}" onclick="dtePagoInv('${d.id}','${v}')">${t}</button>`;
   return `<div style="border:1px solid var(--borde);border-radius:10px;padding:10px;margin:10px 0"><div style="font-weight:700;font-size:13px;margin-bottom:6px">💰 Pago: <span style="color:${e.fg}">${e.t}</span></div>
+    ${(d.pago === 'cuenta' || d.pago === 'caja') && d.pagadoPor ? `<div style="font-size:12px;color:var(--acero);margin-bottom:6px">Pagó: ${escA(d.pagadoPor)}${d.pago === 'caja' ? (d.rendida ? ' · ✅ rendida' : ' · pendiente de rendir') : ''}</div>` : ''}
     <div style="display:flex;gap:6px;flex-wrap:wrap">${btn('cuenta', '🏦 De la cuenta', d.pago === 'cuenta')}${btn('credito', '💳 A crédito', d.pago === 'credito')}${btn('caja', '💵 Caja chica', d.pago === 'caja')}${d.pago ? btn('', '↩ Sin definir', false) : ''}</div>
     ${d.pago === 'credito' ? `<div style="font-size:12px;margin-top:8px;line-height:1.6">Total ${pesoInv(d.total || 0)}${(d.abonos || []).length ? ` · abonado ${pesoInv(sumAbonosInv(d))}` : ''} · <strong>saldo ${pesoInv(saldoPagarInv(d))}</strong><br>Vence: ${d.vence ? fmtFechaInv(d.vence) : 'sin fecha'} · <a href="#" onclick="event.preventDefault();dteEditarVenceInv('${d.id}')">cambiar</a>
-      ${(d.abonos || []).map((a, i) => `<br>• ${fmtFechaInv(a.fecha)} · ${pesoInv(a.monto)} · ${a.medio === 'caja' ? 'caja chica ' + escA(a.detalle || '') : 'desde la cuenta'} <a href="#" style="color:#B91C1C" onclick="event.preventDefault();dteQuitarAbonoInv('${d.id}',${i})">quitar</a>`).join('')}</div>
+      ${(d.abonos || []).map((a, i) => `<br>• ${fmtFechaInv(a.fecha)} · ${pesoInv(a.monto)} · ${a.medio === 'caja' ? 'caja chica ' + escA(a.detalle || '') : 'desde la cuenta'}${a.quien ? ' · pagó ' + escA(a.quien) : ''}${a.rendida ? ' · rendida' : ''} <a href="#" style="color:#B91C1C" onclick="event.preventDefault();dteQuitarAbonoInv('${d.id}',${i})">quitar</a>`).join('')}</div>
       ${!d.pagada ? `<button class="btn-add" style="padding:6px 10px;margin-top:8px" onclick="dteRegistrarPagoInv('${d.id}')">💵 Registrar pago</button>` : ''}` : ''}
     </div>`;
 }
@@ -16905,13 +17064,16 @@ function suscribirDteInv() {
     const ab = document.getElementById('dte-modal');
     renderDteRecibidosInv();
     try { renderInventarioTabla(); } catch (e) {}
+    try { renderRendCajaInv(); } catch (e) {}
     if (ab && ab.dataset.id) dteVerInv(ab.dataset.id);
   }, e => {
     console.warn('dte_recibidos', e);
     const c = document.getElementById('inv-panel-dte');
     if (c) { c.style.display = ''; c.innerHTML = `<div class="panel-title">📨 Facturas y guías recibidas</div><div style="font-size:12px;color:#B91C1C">No se pudieron leer los documentos recibidos${/permission/i.test(e.message) ? ': falta permitir la colección <code>dte_recibidos</code> en las reglas de Firestore del inventario' : ': ' + escA(e.message)}.</div>`; }
   });
-  onSnapshot(doc(dbInv, 'dte_recibidos', '_plan_cuentas'), sn => { planCuentasInv = sn.exists() ? (sn.data().cuentas || []) : []; renderDteRecibidosInv(); }, e => console.warn('plan_cuentas', e));
+  onSnapshot(doc(dbInv, 'dte_recibidos', '_plan_cuentas'), sn => { planCuentasInv = sn.exists() ? (sn.data().cuentas || []) : []; renderDteRecibidosInv(); renderConfigContInv(); }, e => console.warn('plan_cuentas', e));
+  onSnapshot(doc(dbInv, 'dte_recibidos', '_personas'), sn => { personasPagoInv = sn.exists() ? (sn.data().personas || []) : null; renderConfigContInv(); }, e => console.warn('personas', e));
+  onSnapshot(doc(dbInv, 'dte_recibidos', '_cajas'), sn => { cajasCfgInv = sn.exists() ? (sn.data().cajas || []) : null; renderConfigContInv(); }, e => console.warn('cajas', e));
   consultarSiiDteInv();
 }
 
@@ -17760,6 +17922,8 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     <button class="tab" id="tab-config-potreros" style="display:none" onclick="setTab('config-potreros',this)">⚙️ Config. Potreros</button>
     <button class="tab" id="tab-config-gps" style="display:none" onclick="setTab('config-gps',this)">📡 Config. GPS</button>
     <button class="tab" id="tab-cont-docs" style="display:none" onclick="setTab('cont-docs',this)">📨 Facturas y guías</button>
+    <button class="tab" id="tab-cont-rend" style="display:none" onclick="setTab('cont-rend',this)">💵 Rendición de cajas</button>
+    <button class="tab" id="tab-cont-config" style="display:none" onclick="setTab('cont-config',this)">⚙️ Configuración</button>
     <button class="tab" id="tab-inv-inventario" style="display:none" onclick="setTab('inv-inventario',this)">📦 Inventario</button>
     <button class="tab" id="tab-inv-ingresos" style="display:none" onclick="setTab('inv-ingresos',this)">📥 Ingresos</button>
     <button class="tab" id="tab-inv-pendrec" style="display:none" onclick="setTab('inv-pendrec',this)">🚚 Por recibir</button>
@@ -18898,6 +19062,14 @@ tbody td{padding:10px 12px;vertical-align:middle;}
 
     <div id="tc-cont-docs" class="tab-content">
       <div id="inv-panel-dte" class="panel" style="display:none"></div>
+    </div>
+
+    <div id="tc-cont-rend" class="tab-content">
+      <div id="cont-rend-panel"></div>
+    </div>
+
+    <div id="tc-cont-config" class="tab-content">
+      <div id="cont-config-panel"></div>
     </div>
 
     <div id="tc-inv-pendrec" class="tab-content">
