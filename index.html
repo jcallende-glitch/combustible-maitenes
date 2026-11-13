@@ -3524,6 +3524,7 @@ const SECCIONES_TABS = {
   asistencia: ['tab-asistencia','tab-config-trabajadores'],
   campo: ['tab-campo','tab-config-potreros','tab-config-gps'],
   inventario: ['tab-inv-inventario','tab-inv-ingresos','tab-inv-movimientos','tab-inv-alertas'],
+  contabilidad: ['tab-cont-docs'],
   autorizaciones: ['tab-autorizaciones']
 };
 
@@ -3531,6 +3532,7 @@ window.mostrarSelectorSecciones = function() {
   const per = isAdmin ? ['tractor', 'reparto', 'cuaderno2', 'energia', 'cosecha', 'rendimiento'] : permisosPruebasDe(currentUser);
   ['asistencia', 'campo', 'inventario', 'autorizaciones', 'equipos'].forEach(sec => { const b = document.getElementById('sec-btn-' + sec); if (b) b.style.display = (isAdmin || (sec === 'campo' && campoTambien)) ? '' : 'none'; });
   { const bc = document.getElementById('sec-btn-combustible'); if (bc) bc.style.display = ''; }
+  { const bco = document.getElementById('sec-btn-contabilidad'); if (bco) bco.style.display = esAdminPleno() ? '' : 'none'; }
   { const bi = document.getElementById('sec-btn-inventario'); if (bi && !isAdmin && per.includes('inventario')) bi.style.display = ''; }
   document.getElementById('sec-btn-tractor').style.display = per.includes('tractor') ? '' : 'none';
   document.getElementById('sec-btn-reparto').style.display = per.includes('reparto') ? '' : 'none';
@@ -3596,6 +3598,9 @@ window.abrirSeccion = function(seccion) {
   } else if (seccion === 'inventario') {
     initInventario();
     setTab('inv-inventario', document.getElementById('tab-inv-inventario'));
+  } else if (seccion === 'contabilidad') {
+    initInventario();
+    setTab('cont-docs', document.getElementById('tab-cont-docs'));
   } else if (seccion === 'autorizaciones') {
     setTab('autorizaciones', document.getElementById('tab-autorizaciones'));
   }
@@ -13963,6 +13968,7 @@ window.setTab = function(id,el) {
   if(id==='config-potreros') { renderConfigPotreros(); }
   if(id==='config-gps') { jdpCargarZonas().then(() => { renderListaZonasSinCultivo(); renderVelEquipos(); }); }
   if(id==='inv-ingresos') { renderItemsIngresoInv(); { const r = document.getElementById('inv-ingreso-recibe'); if (r) { const v = r.value; r.innerHTML = opcionesAplicador('— nadie en particular —'); r.value = v; } } }
+  if(id==='cont-docs') { renderDteRecibidosInv(); }
   if(id==='inv-movimientos') { initMovimientosInv(); }
   if(id==='cisterna') { initControlCisterna(); }
   if(id==='autorizaciones') { try { renderPanelAplicadores(); } catch (e) {} }
@@ -15906,7 +15912,7 @@ function bodegaItemIngreso(it, ing) {
 }
 function renderIngresosInv() {
   const tabBtn = document.getElementById("tab-inv-ingresos");
-  if (tabBtn) tabBtn.textContent = `📥 Ingresos${ingresosInv.length ? ` (${ingresosInv.length})` : ""}${verValoresInv() && pendientesDteInv() ? ` · 📨 ${pendientesDteInv()}` : ''}`;
+  if (tabBtn) tabBtn.textContent = `📥 Ingresos${ingresosInv.length ? ` (${ingresosInv.length})` : ""}`;
   const pendientes = ingresosInv.filter(i => (i.itemsPendientes||[]).length > 0);
   const panel = document.getElementById("inv-panel-pendientes");
   if (panel) {
@@ -16453,6 +16459,20 @@ window.exportarCodificacionInv = function() {
   a.download = `facturas_codificadas_${mes.trim()}.csv`; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
   const sin = docs.filter(d => !d.cuenta).length; toast(`✓ ${docs.length} documentos exportados${sin ? ` (${sin} sin cuenta contable)` : ''}`, true);
 }
+// ── Destinos: a qué sección se envía lo que trae cada documento ──
+const DESTINOS_DTE_INV = [
+  { k: 'inventario', t: '📦 Inventario (bodega de agroquímicos y fertilizantes)', activo: true },
+  { k: 'energia', t: '⚡ Energía eléctrica (facturas y medidores)', activo: false },
+  { k: 'combustible', t: '⛽ Combustible (compras de petróleo a la cisterna)', activo: false },
+  { k: 'mantencion', t: '🔧 Mantención y repuestos de equipos', activo: false }
+];
+window.dteEnviarAInv = function(id) {
+  const d = dteRecibidosInv.find(x => x.id === id); if (!d) return;
+  modalElegirDteInv(`📤 Enviar ${escA(nombreTipoDte(d.tipo).toLowerCase())} N° ${d.folio}`, 'Elige a qué sección va lo que trae este documento. La cuenta contable, la recepción y el pago se quedan aquí en Contabilidad.',
+    DESTINOS_DTE_INV.map(x => x.activo
+      ? `<div class="config-item" style="cursor:pointer" onclick="document.getElementById('dte-elegir').remove();${x.k === 'inventario' ? `document.getElementById('dte-modal') && document.getElementById('dte-modal').remove();dteAIngresoInv('${d.id}')` : ''}">${x.t}</div>`
+      : `<div class="config-item" style="opacity:.55"><span>${x.t}</span><span style="font-size:11px">próximamente</span></div>`));
+}
 function bloquePagoInv(d) {
   if (!esPagableDteInv(d)) return '';
   const e = estadoPagoInv(d);
@@ -16563,7 +16583,7 @@ function renderDteRecibidosInv(soloLista) {
   const cont = document.getElementById('inv-panel-dte'); if (!cont) return;
   if (!verValoresInv()) { cont.style.display = 'none'; return; }
   cont.style.display = '';
-  { const tb = document.getElementById('tab-inv-ingresos'); if (tb) tb.textContent = `📥 Ingresos${ingresosInv.length ? ` (${ingresosInv.length})` : ''}${pendientesDteInv() ? ` · 📨 ${pendientesDteInv()}` : ''}`; }
+  { const tb = document.getElementById('tab-cont-docs'); if (tb) tb.textContent = `📨 Facturas y guías${pendientesDteInv() ? ` (${pendientesDteInv()} por ingresar)` : ''}`; }
   const cuenta = g => dteRecibidosInv.filter(d => grupoDteInv(d) === g).length;
   const q = normNom(dteBuscarInv);
   const porDespachar = d => { const e = estadoRecepcionInv(d); return !!e && (e.k === 'espera' || e.k === 'parcial'); };
@@ -16623,6 +16643,7 @@ window.dteVerInv = function(id) {
     ${(d.refs || []).length ? `<div style="font-size:12px;color:var(--acero);margin-top:6px">Referencias: ${(d.refs || []).map(r => `${escA(TIPOS_DTE_INV[Number(r.tipo)] || (r.tipo === '801' ? 'Orden de compra' : 'Doc ' + r.tipo))} N° ${escA(r.folio)}${r.fecha ? ' del ' + fechaCortaDte(r.fecha) : ''}${r.razon ? ' · ' + escA(r.razon) : ''}`).join('; ')}</div>` : ''}
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
       ${g === 'pendientes' ? `<button class="btn btn-verde" style="flex:1;min-width:150px;justify-content:center" onclick="document.getElementById('dte-modal').remove();dteAIngresoInv('${d.id}')">📥 Ingresar a bodega</button>` : ''}
+      ${esCodificableDteInv(d) || d.tipo === 52 ? `<button class="btn btn-secondary" style="flex:1;min-width:150px;justify-content:center" onclick="dteEnviarAInv('${d.id}')">📤 Enviar a otra sección…</button>` : ''}
       ${g === 'pendientes' && sugierePreciosDteInv(d) ? `<button class="btn btn-secondary" style="flex:1;min-width:150px;justify-content:center" onclick="document.getElementById('dte-modal').remove();dtePreciosInv('${d.id}')">💲 Solo actualizar precios</button>` : ''}
       ${d.xmlId ? `<button class="btn btn-secondary" style="flex:1;min-width:150px;justify-content:center" onclick="dteDescargarXmlInv('${d.id}')">⬇️ Descargar XML</button>` : ''}
     </div>
@@ -16743,7 +16764,8 @@ window.dteAIngresoInv = function(id) {
   if (aviso) aviso.innerHTML = `<div style="background:#EFF6FF;color:#1E3A8A;border-radius:8px;padding:8px 10px;font-size:12px;margin-top:8px">📨 Datos del XML de la ${escA(nombreTipoDte(d.tipo).toLowerCase())} N° ${d.folio} de ${escA(d.razonSocial || '')} (${fechaCortaDte(d.fecha)}): nombres, cantidades y valores netos exactos.
     <strong>Revisa la bodega${faltaCont ? ' y completa los litros o kilos por envase' : ''}</strong> y confirma.
     ${reconocidos ? `<br>📦 ${reconocidos} reconocido(s) en el inventario.` : ''}${items.length - reconocidos ? `<br>🆕 ${items.length - reconocidos} sin reconocer: elige el producto del inventario o quedará pendiente de registrar.` : ''}${faltaCont ? `<br>📦 ${faltaCont} sin el contenido por envase.` : ''}${omitidos.length ? `<br>Omití (no son productos de bodega): ${omitidos.map(escA).join(', ')}.` : ''}${d.ajusteGlobal ? `<br>Los valores incluyen el ${d.ajusteGlobal < 0 ? 'descuento' : 'recargo'} global de ${Math.abs(d.ajusteGlobal)}%.` : ''}</div>`;
-  { const el = document.getElementById('inv-ingreso-proveedor'); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+  try { abrirSeccion('inventario'); setTab('inv-ingresos', document.getElementById('tab-inv-ingresos')); } catch (e) {}
+  setTimeout(() => { const el = document.getElementById('inv-ingreso-proveedor'); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 150);
   toast('✓ Documento pasado al ingreso: revisa y confirma', true);
 }
 function suscribirDteInv() {
@@ -17576,6 +17598,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       <button class="btn" style="background:var(--negro);color:var(--amarillo);justify-content:flex-start;padding:20px;font-size:16px;border-radius:10px" id="sec-btn-asistencia" onclick="abrirSeccion('asistencia')">🕒 Asistencia</button>
       <button class="btn" style="background:var(--negro);color:var(--amarillo);justify-content:flex-start;padding:20px;font-size:16px;border-radius:10px" id="sec-btn-campo" onclick="abrirSeccion('campo')">🌱 Cuaderno de Campo</button>
       <button class="btn" style="background:var(--negro);color:var(--amarillo);justify-content:flex-start;padding:20px;font-size:16px;border-radius:10px" id="sec-btn-inventario" onclick="abrirSeccion('inventario')">📦 Inventario Agroquímicos</button>
+      <button class="btn" style="background:var(--negro);color:var(--amarillo);justify-content:flex-start;padding:20px;font-size:16px;border-radius:10px;display:none" id="sec-btn-contabilidad" onclick="abrirSeccion('contabilidad')">🧾 Contabilidad</button>
       <button class="btn" style="background:var(--negro);color:var(--amarillo);justify-content:flex-start;padding:20px;font-size:16px;border-radius:10px" id="sec-btn-envivo" onclick="abrirEnVivo()">📡 Ubicación equipos</button>
       <button class="btn" style="background:var(--negro);color:var(--amarillo);justify-content:flex-start;padding:20px;font-size:16px;border-radius:10px" id="sec-btn-autorizaciones" onclick="abrirSeccion('autorizaciones')">🔐 Autorizaciones</button>
       <div id="sec-lbl-pruebas" style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--acero);margin:8px 0 0;text-align:center">Pruebas</div>
@@ -17606,6 +17629,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     <button class="tab" id="tab-campo" style="display:none" onclick="setTab('campo',this)">🌱 Cuaderno de Campo</button>
     <button class="tab" id="tab-config-potreros" style="display:none" onclick="setTab('config-potreros',this)">⚙️ Config. Potreros</button>
     <button class="tab" id="tab-config-gps" style="display:none" onclick="setTab('config-gps',this)">📡 Config. GPS</button>
+    <button class="tab" id="tab-cont-docs" style="display:none" onclick="setTab('cont-docs',this)">📨 Facturas y guías</button>
     <button class="tab" id="tab-inv-inventario" style="display:none" onclick="setTab('inv-inventario',this)">📦 Inventario</button>
     <button class="tab" id="tab-inv-ingresos" style="display:none" onclick="setTab('inv-ingresos',this)">📥 Ingresos</button>
     <button class="tab" id="tab-inv-movimientos" style="display:none" onclick="setTab('inv-movimientos',this)">📜 Movimientos</button>
@@ -18741,8 +18765,11 @@ tbody td{padding:10px 12px;vertical-align:middle;}
       </div>
     </div>
 
-    <div id="tc-inv-ingresos" class="tab-content">
+    <div id="tc-cont-docs" class="tab-content">
       <div id="inv-panel-dte" class="panel" style="display:none"></div>
+    </div>
+
+    <div id="tc-inv-ingresos" class="tab-content">
       <div id="inv-panel-pendientes" style="display:none;margin-bottom:16px"></div>
       <div class="panel">
         <div class="panel-title">📥 Nuevo ingreso de bodega</div>
