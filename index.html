@@ -16508,6 +16508,7 @@ window.dteGuardarCombustibleInv = async function(id) {
 const DESTINOS_DTE_INV = [
   { k: 'inventario', t: '📦 Inventario (bodega de agroquímicos y fertilizantes)', activo: true },
   { k: 'combustible', t: '⛽ Combustible (carga de petróleo a la cisterna)', activo: true },
+  { k: 'contabilidad', t: '🧾 Solo contabilidad (no mueve stock: semillas, repuestos, servicios…)', activo: true },
   { k: 'energia', t: '⚡ Energía eléctrica (facturas y medidores)', activo: false },
   { k: 'mantencion', t: '🔧 Mantención y repuestos de equipos', activo: false }
 ];
@@ -16515,7 +16516,7 @@ window.dteEnviarAInv = function(id) {
   const d = dteRecibidosInv.find(x => x.id === id); if (!d) return;
   modalElegirDteInv(`📤 Enviar ${escA(nombreTipoDte(d.tipo).toLowerCase())} N° ${d.folio}`, 'Elige a qué sección va lo que trae este documento. La cuenta contable, la recepción y el pago se quedan aquí en Contabilidad.',
     DESTINOS_DTE_INV.map(x => x.activo
-      ? `<div class="config-item" style="cursor:pointer" onclick="document.getElementById('dte-elegir').remove();${x.k === 'inventario' ? `document.getElementById('dte-modal') && document.getElementById('dte-modal').remove();dteAIngresoInv('${d.id}')` : `document.getElementById('dte-modal') && document.getElementById('dte-modal').remove();dteACombustibleInv('${d.id}')`}">${x.t}</div>`
+      ? `<div class="config-item" style="cursor:pointer" onclick="document.getElementById('dte-elegir').remove();${x.k === 'inventario' ? `document.getElementById('dte-modal') && document.getElementById('dte-modal').remove();dteAIngresoInv('${d.id}')` : x.k === 'contabilidad' ? `document.getElementById('dte-modal') && document.getElementById('dte-modal').remove();dteMarcarInv('${d.id}','ignorado')` : `document.getElementById('dte-modal') && document.getElementById('dte-modal').remove();dteACombustibleInv('${d.id}')`}">${x.t}</div>`
       : `<div class="config-item" style="opacity:.55"><span>${x.t}</span><span style="font-size:11px">próximamente</span></div>`));
 }
 function bloquePagoInv(d) {
@@ -16666,7 +16667,7 @@ function tarjetaDteInv(d) {
   const [bg, fg] = colorTipoDte(d.tipo), e = estadoDte(d), g = grupoDteInv(d);
   const prods = (d.items || []).filter(x => x.nombre);
   const resumen = prods.slice(0, 3).map(x => `${escA(x.nombre)}${x.cantidad ? ` <span style="color:var(--acero)">(${nfInv(x.cantidad)}${x.unidad ? ' ' + escA(x.unidad) : ''})</span>` : ''}`).join(' · ') + (prods.length > 3 ? ` · +${prods.length - 3} más` : '');
-  const est = e === 'ingresado' ? `<span class="badge" style="background:var(--verde-suave);color:var(--verde)">${d.soloPrecios ? '💲 Precios actualizados' : '✓ Ingresado'}</span>` : e === 'ignorado' ? '<span class="badge" style="background:#F3F4F6;color:#6B7280">No va a bodega</span>' : '';
+  const est = e === 'ingresado' ? `<span class="badge" style="background:var(--verde-suave);color:var(--verde)">${d.soloPrecios ? '💲 Precios actualizados' : '✓ Ingresado'}</span>` : e === 'ignorado' ? '<span class="badge" style="background:#F3F4F6;color:#6B7280">🧾 Solo contabilidad</span>' : '';
   const acciones = [];
   if (g === 'pendientes') acciones.push(`<button class="btn-add" style="padding:6px 10px" onclick="dteAIngresoInv('${d.id}')">📥 Ingresar a bodega</button>`);
   if (g === 'pendientes' && sugierePreciosDteInv(d)) acciones.push(`<button class="btn-add" style="padding:6px 10px;background:#EFF6FF;color:#1D4ED8" onclick="dtePreciosInv('${d.id}')">💲 Solo actualizar precios</button>`);
@@ -16675,7 +16676,7 @@ function tarjetaDteInv(d) {
   if (d.pago === 'credito' && !d.pagada) acciones.push(`<button class="btn-add" style="padding:6px 10px" onclick="dteRegistrarPagoInv('${d.id}')">💵 Registrar pago</button>`);
   if (d.tipo === 52 && !facturaDeGuiaInv(d)) acciones.push(`<button class="btn-add" style="padding:6px 10px;background:#EFF6FF;color:#1D4ED8" onclick="dteAsignarFacturaInv('${d.id}')">🔗 Asignar a factura</button>`);
   if (esFacturaDteInv(d) && d.recepcion === 'despacho') acciones.push(`<button class="btn-add" style="padding:6px 10px;background:#EFF6FF;color:#1D4ED8" onclick="dteAsignarGuiaInv('${d.id}')">＋ Asignar guía</button>`);
-  if (g === 'pendientes' || g === 'notas') acciones.push(`<button class="btn-add" style="padding:6px 10px;background:var(--fondo);color:var(--acero)" onclick="dteMarcarInv('${d.id}','ignorado')">🚫 No va a bodega</button>`);
+  if (g === 'pendientes' || g === 'notas') acciones.push(`<button class="btn-add" style="padding:6px 10px;background:var(--fondo);color:var(--acero)" onclick="dteMarcarInv('${d.id}','ignorado')">🧾 Solo contabilidad</button>`);
   if (e === 'ignorado' || e === 'ingresado') acciones.push(`<button class="btn-add" style="padding:6px 10px;background:var(--fondo);color:var(--acero)" onclick="dteMarcarInv('${d.id}','pendiente')">↩️ Volver a pendiente</button>`);
   return `<div class="config-item" style="flex-direction:column;align-items:stretch;gap:6px;min-width:0">
     <div style="display:flex;justify-content:space-between;gap:6px;flex-wrap:wrap;min-width:0">
@@ -16725,7 +16726,7 @@ function renderDteRecibidosInv(soloLista) {
         Las guías de despacho no salen en el Registro de Compras y Ventas: en "Ver documentos recibidos" elige el tipo Guía de despacho.
       </div></details>
     <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">
-      ${chip('pendientes', '📥 Por ingresar', cuenta('pendientes'))}${chip('ingresado', '✓ Ya enviados', cuenta('ingresado'))}${chip('ignorado', 'No van a bodega', cuenta('ignorado'))}${cuenta('notas') ? chip('notas', 'Notas de crédito/débito', cuenta('notas')) : ''}${chip('todos', 'Todos', dteRecibidosInv.length)}
+      ${chip('pendientes', '📥 Por ingresar', cuenta('pendientes'))}${chip('ingresado', '✓ Ya enviados', cuenta('ingresado'))}${chip('ignorado', '🧾 Solo contabilidad', cuenta('ignorado'))}${cuenta('notas') ? chip('notas', 'Notas de crédito/débito', cuenta('notas')) : ''}${chip('todos', 'Todos', dteRecibidosInv.length)}
     </div>
     <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">
       ${chip('sindefinir', '❔ Falta algo por definir', dteRecibidosInv.filter(sinDefinir).length)}${chip('sincuenta', '📒 Sin cuenta', dteRecibidosInv.filter(sinCuenta).length)}${chip('despachar', '🚚 Por despachar', dteRecibidosInv.filter(porDespachar).length)}${chip('pagar', '💳 Por pagar', dteRecibidosInv.filter(porPagar).length)}
@@ -16778,7 +16779,7 @@ window.dteMarcarInv = async function(id, estado, ingresoId) {
   if (estado === 'pendiente') { cambios.ingresoId = ''; }
   try {
     await updateDoc(doc(dbInv, 'dte_recibidos', id), cambios);
-    toast(estado === 'ignorado' ? '✓ Marcado: no va a bodega' : estado === 'ingresado' ? '✓ Marcado como ingresado' : '✓ Vuelve a pendientes', true);
+    toast(estado === 'ignorado' ? '✓ Queda solo en contabilidad: no mueve stock' : estado === 'ingresado' ? '✓ Marcado como ingresado' : '✓ Vuelve a pendientes', true);
   } catch (e) { toast('Error: ' + e.message, false); }
 }
 
