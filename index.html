@@ -16032,7 +16032,7 @@ function parsearDtesXmlInv(txt) {
     let xml = b;
     const mt = /^<((?:([\w-]+):)?)(DTE|Documento)([^>]*)>/.exec(xml);
     if (mt) { const pref = mt[2], decl = pref ? 'xmlns:' + pref : 'xmlns'; if (!mt[4].includes(decl + '=')) xml = xml.replace(mt[0], `<${mt[1]}${mt[3]} ${decl}="http://www.sii.cl/SiiDte"${mt[4]}>`); }
-    out.push({ id: idDteInv(rutEmisor, tipo, folio), tipo, folio, fecha: valInv(id, 'FchEmis'), rutEmisor, razonSocial: valInv(em, 'RznSoc') || valInv(em, 'RznSocEmisor'),
+    out.push({ id: idDteInv(rutEmisor, tipo, folio), tipo, folio, fecha: valInv(id, 'FchEmis'), fchVenc: valInv(id, 'FchVenc'), rutEmisor, razonSocial: valInv(em, 'RznSoc') || valInv(em, 'RznSocEmisor'),
       giro: (valInv(em, 'GiroEmis') || valInv(em, 'GiroEmisor')).slice(0, 120), rutReceptor: normRutDte(valInv(re, 'RUTRecep')), razonSocialReceptor: valInv(re, 'RznSocRecep'),
       neto: Math.round(neto), exento: Math.round(exe), iva: Math.round(numInv(tot, 'IVA')), total: Math.round(numInv(tot, 'MntTotal')),
       ajusteGlobal: factor !== 1 ? Math.round((factor - 1) * 10000) / 100 : 0, bruto, indTraslado: valInv(id, 'IndTraslado'), items, refs, xml });
@@ -16180,7 +16180,312 @@ function ingresoPrevioDteInv(d) {
   }) || null;
 }
 const guiasDeFacturaInv = d => (d.refs || []).filter(r => String(r.tipo) === '52' && Number(r.folio)).map(r => ({ folio: Number(r.folio), doc: dteRecibidosInv.find(x => x.tipo === 52 && normRutDte(x.rutEmisor) === normRutDte(d.rutEmisor) && Number(x.folio) === Number(r.folio)) || null }));
-const facturaDeGuiaInv = d => dteRecibidosInv.find(x => [33, 34, 46].includes(x.tipo) && normRutDte(x.rutEmisor) === normRutDte(d.rutEmisor) && (x.refs || []).some(r => String(r.tipo) === '52' && Number(r.folio) === Number(d.folio))) || null;
+const facturaDeGuiaInv = d => (d.facturaId && dteRecibidosInv.find(x => x.id === d.facturaId)) || dteRecibidosInv.find(x => [33, 34, 46].includes(x.tipo) && normRutDte(x.rutEmisor) === normRutDte(d.rutEmisor) && (x.refs || []).some(r => String(r.tipo) === '52' && Number(r.folio) === Number(d.folio))) || null;
+
+// ── Recepción de la mercadería: factura → guías de despacho → saldo por despachar ──
+const esFacturaDteInv = d => [33, 34, 46].includes(d.tipo);
+const NO_ES_PRODUCTO_DTE = /^(flete|fletes|despacho|transporte|servicio|arriendo|mano de obra)\b/i;
+function guiasAsignadasInv(f) {
+  const m = new Map();
+  guiasDeFacturaInv(f).filter(g => g.doc).forEach(g => m.set(g.doc.id, g.doc));
+  dteRecibidosInv.filter(g => g.tipo === 52 && g.facturaId === f.id).forEach(g => m.set(g.id, g));
+  return [...m.values()];
+}
+// Une cada línea de la guía con la de la factura: por código, o por nombre
+function lineaFacturaDeItemInv(lineas, x) {
+  const cod = String(x.codigo || '').trim().toLowerCase(), nom = normNom(x.nombre);
+  let i = cod ? lineas.findIndex(l => String(l.x.codigo || '').trim().toLowerCase() === cod) : -1;
+  if (i < 0 && nom) i = lineas.findIndex(l => normNom(l.x.nombre) === nom);
+  if (i < 0 && nom.length > 4) i = lineas.findIndex(l => { const n = normNom(l.x.nombre); return n.length > 4 && (n.includes(nom) || nom.includes(n)); });
+  return i;
+}
+function saldoFacturaInv(f) {
+  const gs = guiasAsignadasInv(f);
+  const lineas = (f.items || []).filter(x => x.nombre && x.cantidad > 0 && !NO_ES_PRODUCTO_DTE.test(String(x.nombre).trim())).map(x => ({ x, pedido: x.cantidad, recibido: 0, saldo: x.cantidad }));
+  const sinLinea = [];
+  gs.forEach(g => (g.items || []).forEach(x => {
+    if (!(x.cantidad > 0) || !x.nombre) return;
+    const i = lineaFacturaDeItemInv(lineas, x);
+    if (i >= 0) lineas[i].recibido += x.cantidad; else sinLinea.push({ x, guia: g });
+  }));
+  lineas.forEach(l => { l.saldo = f.recepcion === 'recibida' ? 0 : Math.max(0, Math.round((l.pedido - l.recibido) * 10000) / 10000); });
+  return { guias: gs, lineas, sinLinea };
+}
+function estadoRecepcionInv(f) {
+  if (!esFacturaDteInv(f)) return null;
+  if (f.recepcion === 'recibida') return { k: 'recibida', t: '✅ Recibida completa', bg: 'var(--verde-suave)', fg: 'var(--verde)' };
+  if (f.recepcion === 'despacho') {
+    const s = saldoFacturaInv(f), pend = s.lineas.filter(l => l.saldo > 0.0001);
+    if (s.lineas.length && !pend.length) return { k: 'completa', t: '✅ Despacho completo', bg: 'var(--verde-suave)', fg: 'var(--verde)', s };
+    return { k: s.guias.length ? 'parcial' : 'espera', t: s.guias.length ? `🚚 Despacho parcial (${s.guias.length} guía${s.guias.length > 1 ? 's' : ''})` : '🚚 Espera despacho', bg: '#FEF3C7', fg: '#B45309', s, pend };
+  }
+  return { k: '', t: '❔ Recepción sin definir', bg: '#F3F4F6', fg: '#6B7280' };
+}
+const textoSaldoInv = l => `${escA(l.x.nombre)} <strong>${nfInv(l.saldo)}${l.x.unidad ? ' ' + escA(l.x.unidad) : ''}</strong> <span style="color:var(--acero)">(de ${nfInv(l.pedido)})</span>`;
+window.dteRecepcionInv = async function(id, valor) {
+  try {
+    await updateDoc(doc(dbInv, 'dte_recibidos', id), { recepcion: valor, recepcionPor: currentUser || '', recepcionTs: Date.now() });
+    toast(valor === 'recibida' ? '✓ Marcada como recibida completa' : valor === 'despacho' ? '✓ Queda esperando despacho: asigna las guías cuando lleguen' : '✓ Recepción sin definir', true);
+  } catch (e) { toast('Error: ' + e.message, false); }
+}
+function modalElegirDteInv(titulo, sub, filas) {
+  const v = document.getElementById('dte-elegir'); if (v) v.remove();
+  const ov = document.createElement('div'); ov.id = 'dte-elegir';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.55);display:flex;align-items:flex-start;justify-content:center;padding:16px 10px;overflow-y:auto;box-sizing:border-box';
+  ov.onclick = e => { if (e.target === ov) ov.remove(); };
+  ov.innerHTML = `<div style="background:var(--blanco);border-radius:12px;max-width:560px;width:100%;padding:16px;box-sizing:border-box;min-width:0">
+    <div style="display:flex;justify-content:space-between;gap:8px"><strong>${titulo}</strong><span style="cursor:pointer;font-size:20px;line-height:1" onclick="document.getElementById('dte-elegir').remove()">✕</span></div>
+    ${sub ? `<div style="font-size:12px;color:var(--acero);margin:4px 0 8px">${sub}</div>` : ''}
+    ${filas.length ? filas.join('') : '<div class="empty">No hay opciones para elegir</div>'}</div>`;
+  document.body.appendChild(ov);
+}
+const resumenItemsDteInv = d => (d.items || []).filter(x => x.nombre).slice(0, 4).map(x => `${escA(x.nombre)}${x.cantidad ? ` (${nfInv(x.cantidad)}${x.unidad ? ' ' + escA(x.unidad) : ''})` : ''}`).join(' · ');
+window.dteAsignarGuiaInv = function(fid) {
+  const f = dteRecibidosInv.find(x => x.id === fid); if (!f) return;
+  const rut = normRutDte(f.rutEmisor);
+  const libres = dteRecibidosInv.filter(g => g.tipo === 52 && normRutDte(g.rutEmisor) === rut && !facturaDeGuiaInv(g));
+  const refs = guiasDeFacturaInv(f).filter(g => !g.doc).map(g => g.folio);
+  modalElegirDteInv(`Asignar guía a la factura N° ${f.folio}`, `Guías de ${escA(f.razonSocial || '')} que aún no están asignadas a una factura.${refs.length ? `<br>La factura cita las guías N° ${refs.join(', ')}, que todavía no importas.` : ''}`,
+    libres.map(g => `<div class="config-item" style="cursor:pointer;flex-direction:column;align-items:stretch;gap:2px" onclick="dteAsignarGuiaOkInv('${f.id}','${g.id}')"><div><strong>Guía N° ${g.folio}</strong> · ${fechaCortaDte(g.fecha)}</div><div style="font-size:12px;color:var(--acero);overflow-wrap:anywhere">${resumenItemsDteInv(g) || 'Sin detalle'}</div></div>`));
+}
+window.dteAsignarGuiaOkInv = async function(fid, gid) {
+  try {
+    await updateDoc(doc(dbInv, 'dte_recibidos', gid), { facturaId: fid, asignadaPor: currentUser || '', asignadaTs: Date.now() });
+    const f = dteRecibidosInv.find(x => x.id === fid);
+    if (f && !f.recepcion) await updateDoc(doc(dbInv, 'dte_recibidos', fid), { recepcion: 'despacho', recepcionPor: currentUser || '', recepcionTs: Date.now() });
+    const m = document.getElementById('dte-elegir'); if (m) m.remove();
+    toast('✓ Guía asignada a la factura', true);
+  } catch (e) { toast('Error: ' + e.message, false); }
+}
+window.dteAsignarFacturaInv = function(gid) {
+  const g = dteRecibidosInv.find(x => x.id === gid); if (!g) return;
+  const rut = normRutDte(g.rutEmisor);
+  const facs = dteRecibidosInv.filter(f => esFacturaDteInv(f) && normRutDte(f.rutEmisor) === rut && f.recepcion !== 'recibida').sort((a, b) => (a.recepcion === 'despacho' ? 0 : 1) - (b.recepcion === 'despacho' ? 0 : 1));
+  modalElegirDteInv(`¿A qué factura corresponde la guía N° ${g.folio}?`, `Facturas de ${escA(g.razonSocial || '')}. Primero las que esperan despacho.`,
+    facs.map(f => { const e = estadoRecepcionInv(f); return `<div class="config-item" style="cursor:pointer;flex-direction:column;align-items:stretch;gap:2px" onclick="dteAsignarGuiaOkInv('${f.id}','${g.id}')"><div><strong>Factura N° ${f.folio}</strong> · ${fechaCortaDte(f.fecha)} · ${pesoInv(f.total || 0)} <span style="font-size:11px;color:${e.fg}">${e.t}</span></div><div style="font-size:12px;color:var(--acero);overflow-wrap:anywhere">${resumenItemsDteInv(f) || 'Sin detalle'}</div></div>`; }));
+}
+window.dteQuitarGuiaInv = async function(gid) {
+  if (!confirm('¿Quitar esta guía de la factura? Vuelve a quedar sin asignar.')) return;
+  try { await updateDoc(doc(dbInv, 'dte_recibidos', gid), { facturaId: '' }); toast('✓ Guía quitada de la factura', true); } catch (e) { toast('Error: ' + e.message, false); }
+}
+// ── Forma de pago: de la cuenta, a crédito (por pagar) o con una caja chica ──
+const hoyIsoInv = () => { const t = new Date(); return t.getFullYear() + '-' + String(t.getMonth() + 1).padStart(2, '0') + '-' + String(t.getDate()).padStart(2, '0'); };
+function parseVenceInv(s) {
+  s = String(s || '').trim();
+  const m = /^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{4})$/.exec(s);
+  if (m) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : '';
+}
+const fmtFechaInv = iso => { if (!iso) return ''; const [y, m, d] = iso.split('-'); return `${d}-${m}-${y}`; };
+const fmtVenceInv = iso => iso ? new Date(iso + 'T00:00:00').toLocaleDateString('es-CL', { day: '2-digit', month: 'short' }) : '';
+const sumAbonosInv = d => (d.abonos || []).reduce((a, x) => a + (Number(x.monto) || 0), 0);
+const saldoPagarInv = d => d.pagada ? 0 : Math.max(0, (d.total || 0) - sumAbonosInv(d));
+const diasVenceInv = d => d.vence ? Math.round((new Date(d.vence + 'T00:00:00') - new Date(hoyIsoInv() + 'T00:00:00')) / 86400000) : null;
+const vencePorDefectoInv = d => { const v = parseVenceInv(d.fchVenc); if (v) return v; const b = new Date((d.fecha || hoyIsoInv()) + 'T00:00:00'); b.setDate(b.getDate() + 30); return b.getFullYear() + '-' + String(b.getMonth() + 1).padStart(2, '0') + '-' + String(b.getDate()).padStart(2, '0'); };
+const esPagableDteInv =d => ![52, 50, 56, 61].includes(d.tipo);
+function estadoPagoInv(d) {
+  if (!esPagableDteInv(d)) return null;
+  if (d.pago === 'cuenta') return { k: 'cuenta', t: '🏦 Pagada de la cuenta' + (d.pagoDetalle ? ' · ' + escA(d.pagoDetalle) : ''), bg: 'var(--verde-suave)', fg: 'var(--verde)' };
+  if (d.pago === 'caja') return { k: 'caja', t: '💵 Caja chica' + (d.pagoDetalle ? ': ' + escA(d.pagoDetalle) : ''), bg: 'var(--verde-suave)', fg: 'var(--verde)' };
+  if (d.pago === 'credito') {
+    if (d.pagada) return { k: 'cuenta', t: '✅ Crédito pagado', bg: 'var(--verde-suave)', fg: 'var(--verde)' };
+    const dv = diasVenceInv(d), s = saldoPagarInv(d), urg = dv !== null && dv <= 0;
+    const venc = dv === null ? 'sin vencimiento' : dv < 0 ? `vencida hace ${-dv} d` : dv === 0 ? 'vence hoy' : `vence ${fmtVenceInv(d.vence)} (${dv} d)`;
+    return { k: 'credito', t: `💳 Por pagar ${pesoInv(s)} · ${venc}`, bg: urg ? '#FEE2E2' : '#FEF3C7', fg: urg ? '#B91C1C' : '#B45309' };
+  }
+  return { k: '', t: '❔ Pago sin definir', bg: '#F3F4F6', fg: '#6B7280' };
+}
+window.dtePagoInv = async function(id, forma) {
+  const d = dteRecibidosInv.find(x => x.id === id); if (!d) return;
+  const c = { pago: forma, pagoPor: currentUser || '', pagoTs: Date.now() };
+  if (forma === 'caja') {
+    const ult = dteRecibidosInv.filter(x => x.pago === 'caja' && x.pagoDetalle).sort((a, b) => (b.pagoTs || 0) - (a.pagoTs || 0))[0];
+    const n = prompt('¿Qué caja chica? (nombre o responsable)', ult ? ult.pagoDetalle : ''); if (n === null) return;
+    c.pagoDetalle = n.trim(); c.pagada = true; c.fechaPago = Date.now();
+  } else if (forma === 'cuenta') { c.pagoDetalle = ''; c.pagada = true; c.fechaPago = Date.now(); }
+  else if (forma === 'credito') {
+    const v = prompt('¿Cuándo vence? (dd-mm-aaaa). Déjalo vacío si no tiene fecha.', fmtFechaInv(d.vence || vencePorDefectoInv(d))); if (v === null) return;
+    if (v.trim() && !parseVenceInv(v)) { toast('Fecha no válida: usa dd-mm-aaaa', false); return; }
+    c.vence = parseVenceInv(v); c.pagoDetalle = ''; c.pagada = false; c.fechaPago = 0;
+  }
+  else { c.pagoDetalle = ''; c.pagada = false; c.fechaPago = 0; }
+  try { await updateDoc(doc(dbInv, 'dte_recibidos', id), c); toast('✓ Forma de pago guardada', true); } catch (e) { toast('Error: ' + e.message, false); }
+}
+window.dteMarcarPagadaInv = function(id) { dteRegistrarPagoInv(id); };
+window.dteRegistrarPagoInv = function(id) {
+  const d = dteRecibidosInv.find(x => x.id === id); if (!d) return;
+  const s = saldoPagarInv(d);
+  const ult = dteRecibidosInv.flatMap(x => x.abonos || []).filter(a => a.medio === 'caja' && a.detalle).sort((a, b) => (b.ts || 0) - (a.ts || 0))[0];
+  const inp = 'width:100%;box-sizing:border-box;margin-bottom:8px';
+  modalElegirDteInv(`Registrar pago · ${escA(d.razonSocial || '')} N° ${d.folio}`, `Saldo por pagar: <strong>${pesoInv(s)}</strong>${sumAbonosInv(d) ? ` (ya abonado ${pesoInv(sumAbonosInv(d))})` : ''}`, [`
+    <label style="font-size:12px">Monto pagado ($)</label><input type="number" id="pg-monto" value="${s}" style="${inp}">
+    <label style="font-size:12px">Fecha del pago</label><input type="date" id="pg-fecha" value="${hoyIsoInv()}" style="${inp}">
+    <label style="font-size:12px">Se pagó con</label><select id="pg-medio" style="${inp}" onchange="document.getElementById('pg-det-w').style.display=this.value==='caja'?'':'none'"><option value="cuenta">🏦 Desde la cuenta</option><option value="caja">💵 Caja chica</option></select>
+    <div id="pg-det-w" style="display:none"><label style="font-size:12px">¿Qué caja chica?</label><input type="text" id="pg-det" value="${escA(ult ? ult.detalle : '')}" style="${inp}"></div>
+    <button class="btn btn-verde" style="width:100%;justify-content:center" onclick="dteGuardarPagoInv('${d.id}')">✓ Guardar pago</button>`]);
+}
+window.dteGuardarPagoInv = async function(id) {
+  const d = dteRecibidosInv.find(x => x.id === id); if (!d) return;
+  const monto = Math.round(Number(document.getElementById('pg-monto').value) || 0), medio = document.getElementById('pg-medio').value;
+  const fecha = document.getElementById('pg-fecha').value || hoyIsoInv(), det = (document.getElementById('pg-det') || {}).value || '';
+  if (!(monto > 0)) { toast('Indica el monto pagado', false); return; }
+  if (medio === 'caja' && !det.trim()) { toast('Indica qué caja chica', false); return; }
+  const abonos = [...(d.abonos || []), { fecha, monto, medio, detalle: medio === 'caja' ? det.trim() : '', por: currentUser || '', ts: Date.now() }];
+  const saldo = Math.max(0, (d.total || 0) - abonos.reduce((a, x) => a + x.monto, 0)), pagada = saldo <= 1;
+  try {
+    await updateDoc(doc(dbInv, 'dte_recibidos', id), { abonos, pagada, fechaPago: pagada ? Date.now() : 0 });
+    const m = document.getElementById('dte-elegir'); if (m) m.remove();
+    toast(pagada ? '✓ Pago registrado: factura pagada del todo' : `✓ Abono registrado. Quedan ${pesoInv(saldo)} por pagar`, true);
+  } catch (e) { toast('Error: ' + e.message, false); }
+}
+window.dteQuitarAbonoInv = async function(id, i) {
+  const d = dteRecibidosInv.find(x => x.id === id); if (!d || !confirm('¿Eliminar este pago?')) return;
+  const abonos = (d.abonos || []).filter((_, k) => k !== i);
+  try { await updateDoc(doc(dbInv, 'dte_recibidos', id), { abonos, pagada: false, fechaPago: 0 }); toast('✓ Pago eliminado', true); } catch (e) { toast('Error: ' + e.message, false); }
+}
+window.dteEditarVenceInv = async function(id) {
+  const d = dteRecibidosInv.find(x => x.id === id); if (!d) return;
+  const v = prompt('Vencimiento (dd-mm-aaaa). Vacío = sin fecha.', fmtFechaInv(d.vence || vencePorDefectoInv(d))); if (v === null) return;
+  if (v.trim() && !parseVenceInv(v)) { toast('Fecha no válida: usa dd-mm-aaaa', false); return; }
+  try { await updateDoc(doc(dbInv, 'dte_recibidos', id), { vence: parseVenceInv(v) }); toast('✓ Vencimiento guardado', true); } catch (e) { toast('Error: ' + e.message, false); }
+}
+// ── Plan de cuentas (el de la contadora) y codificación contable ──
+let planCuentasInv = null; // null = aún no cargado
+const GRUPOS_PLAN_INV = { gastos: 'Gastos (3000)', varios: 'Varios y activos (1000)', inversion: 'Inversión y pasivos (2000)', ventas: 'Ventas (4000)', clasif: 'Clasificación de costo (1 al 12)' };
+const PLAN_BASE_INV = [{"c":"1000","n":"CAJA","g":"varios"},{"c":"2000","n":"CAPITAL SOCIAL","g":"inversion"},{"c":"3000","n":"GTOS. GENERALES EXPLOTACION","g":"gastos"},{"c":"4000","n":"PRODUCTOS LACTEOS","g":"ventas"},{"c":"1001","n":"CTA.CTE. CORPBANCA","g":"varios"},{"c":"2001","n":"OTROS APORTES SOCIALES","g":"inversion"},{"c":"3001","n":"GTOS. ANIMALES EN GRAL.","g":"gastos"},{"c":"4001","n":"CULTIVO DE CERALES","g":"ventas"},{"c":"1002","n":"FACTURAS POR COBRAR","g":"varios"},{"c":"2002","n":"DEBITOS FISCALES","g":"inversion"},{"c":"3002","n":"GTOS. CULTIVOS","g":"gastos"},{"c":"4002","n":"VENTAS ANIMALES VARIOS","g":"ventas"},{"c":"1003","n":"PAGOS PROVISIONALES MENSUALES","g":"varios"},{"c":"2003","n":"IMPTO. UNICO TRABAJADORES","g":"inversion"},{"c":"3003","n":"GTOS.REPARACION DE MAQUINARIA","g":"gastos"},{"c":"4003","n":"CULTIVO REMOLACHA","g":"ventas"},{"c":"1004","n":"APORETS SOCIALES POR ENTERAR","g":"varios"},{"c":"2004","n":"IMPTO. RETENIDO A TERCEROS","g":"inversion"},{"c":"3004","n":"GTOS. MANT. VEHICULOS","g":"gastos"},{"c":"4004","n":"CULTIVO ACHICORIA","g":"ventas"},{"c":"1005","n":"CRED.FISC. IVA E IMPTO. ESP.","g":"varios"},{"c":"2005","n":"FACTURAS POR PAGAR","g":"inversion"},{"c":"3005","n":"GTOS. COMB. Y LUBRICANTES","g":"gastos"},{"c":"4005","n":"CULTIVO RAPS","g":"ventas"},{"c":"1006","n":"CAJA COMP. ARAUCANA","g":"varios"},{"c":"2006","n":"SRA. MARTA ZAÑARTU E.","g":"inversion"},{"c":"3006","n":"GTOS. TELEFONOS","g":"gastos"},{"c":"4006","n":"METROS RUMA","g":"ventas"},{"c":"1007","n":"CTAS.CTES. POR ACLARAR","g":"varios"},{"c":"2007","n":"AGRICOLA RUCAMALEN","g":"inversion"},{"c":"3007","n":"GTOS. ENERGIA ELECTRICA","g":"gastos"},{"c":"4007","n":"MAIZ GRANO","g":"ventas"},{"c":"1008","n":"COMPU. Y OTROS DE ESCRITORIO","g":"varios"},{"c":"2008","n":"ASOC. CHILENA SEGURIDAD","g":"inversion"},{"c":"3008","n":"GTOS. REPARAC. CONSTRUCCIONES","g":"gastos"},{"c":"4008","n":"POROTOS Y SOYA","g":"ventas"},{"c":"1009","n":"REMANENTE PPM","g":"varios"},{"c":"2009","n":"INST. NORM. PREVISIONAL","g":"inversion"},{"c":"3009","n":"GTOS. SEGUROS INCENDIO","g":"gastos"},{"c":"4009","n":"REAJUSTE CREDITO FISCAL","g":"ventas"},{"c":"1010","n":"BIENES RAICES AGRICOLAS","g":"varios"},{"c":"2010","n":"ADM. FONDOS Y PENSIONES","g":"inversion"},{"c":"3010","n":"GTOS. REMUNERACIONES","g":"gastos"},{"c":"4010","n":"ANIMALES NACIDOS","g":"ventas"},{"c":"1011","n":"DERECHOS DE AGUA","g":"varios"},{"c":"2011","n":"ISAPRES","g":"inversion"},{"c":"3011","n":"GTOS. GRATIFICACIONES","g":"gastos"},{"c":"4011","n":"SEMILLERO DE ZANAHORIA","g":"ventas"},{"c":"1012","n":"PLANTACIONES FORESTALES","g":"varios"},{"c":"2012","n":"FONDO CESANTIA TRAB.","g":"inversion"},{"c":"3012","n":"GTOS. LEYES SOCIALES","g":"gastos"},{"c":"4012","n":"UTILIDAD CRIANZA LECHERIA","g":"ventas"},{"c":"1013","n":"CONSTRUCCIONES","g":"varios"},{"c":"2013","n":"PRESTAMOS FONASA","g":"inversion"},{"c":"3013","n":"GTOS. MOVILIZ. TRABAJADORES","g":"gastos"},{"c":"4013","n":"VENTA TRIGO","g":"ventas"},{"c":"1014","n":"MAQUINARIAS AGRICOLAS","g":"varios"},{"c":"2014","n":"REMUNERACIONES POR PAGAR","g":"inversion"},{"c":"3014","n":"GTOS. SEGUROS CESANTIA","g":"gastos"},{"c":"4014","n":"VENTA AVENA","g":"ventas"},{"c":"1015","n":"VEHICULOS","g":"varios"},{"c":"2015","n":"IANSAGRO S.A.","g":"inversion"},{"c":"3015","n":"GTOS. IMPTOS. 1º A CATEGORIA","g":"gastos"},{"c":"4015","n":"UTILIDAD VENTA ACTIVOS","g":"ventas"},{"c":"1016","n":"ANIMALES DE LECHERIA","g":"varios"},{"c":"2016","n":"FACTURAS PENDIENTES 31.12.07","g":"inversion"},{"c":"3016","n":"GTOS. ANIMALES LECHERIA","g":"gastos"},{"c":"4016","n":"VENTA SEMILLERO MAIZ","g":"ventas"},{"c":"1017","n":"ANIMALES DE CRIANZA Y ENGORDA","g":"varios"},{"c":"2017","n":"CURIMAPU","g":"inversion"},{"c":"3017","n":"GTOS. PLANTACION FORESTAL","g":"gastos"},{"c":"4017","n":"PLANTACION FORESTAL","g":"ventas"},{"c":"1018","n":"CTA. CTE. PLANT. FORESTALES","g":"varios"},{"c":"2018","n":"SOC. AGROSUR LTDA.","g":"inversion"},{"c":"3018","n":"GTOS. REPRAC. CAMINOS, CANALES","g":"gastos"},{"c":"4020","n":"ARRIENDO BS. RS. AGRICOLA","g":"ventas"},{"c":"1019","n":"TUBERIA RIEGO AGRICOLA","g":"varios"},{"c":"2019","n":"FONDO REVAL. CAP. PROPIO","g":"inversion"},{"c":"3019","n":"RETIRO DE SOCIOS","g":"gastos"},{"c":"4021","n":"VENTA CEREZAS","g":"ventas"},{"c":"1020","n":"CULTIVOS AGRICOLAS","g":"varios"},{"c":"2020","n":"CREDITOS BCO. CORPBANCA","g":"inversion"},{"c":"3020","n":"GTOS. CONTRIBUCIONES","g":"gastos"},{"c":"4022","n":"VENTA AVELLANO","g":"ventas"},{"c":"1021","n":"EMPASTADAS ARTIFICIALES","g":"varios"},{"c":"2021","n":"SEGUROS C.C.A.F.","g":"inversion"},{"c":"3021","n":"GTOS. SEG. INVAL. Y SOBREV.","g":"gastos"},{"c":"4023","n":"VENTA VEHICULOS","g":"ventas"},{"c":"1022","n":"IANSAGRO S.A.","g":"varios"},{"c":"2022","n":"FACT. PENDIENTE PAGO 31.12.2012","g":"inversion"},{"c":"3022","n":"GTOS. TUBERIA AGRICOLA","g":"gastos"},{"c":"4024","n":"VENTA MERCADERIA","g":"ventas"},{"c":"1023","n":"CERCO Y ALAMBRADO","g":"varios"},{"c":"2023","n":"FACT. PENDIENTE AL 31.12.2010","g":"inversion"},{"c":"3025","n":"GTOS. CORREC. MONETARIA","g":"gastos"},{"c":"4025","n":"OTROS INGRESOS","g":"ventas"},{"c":"1024","n":"EQUIPOS CONTRA INCENDIO","g":"varios"},{"c":"2024","n":"CREDITO POR FACT. COMPRAS","g":"inversion"},{"c":"3026","n":"GTOS. AMORTIZACION","g":"gastos"},{"c":"4030","n":"VENTA ARVEJA","g":"ventas"},{"c":"1025","n":"UTILES Y HERRAMIENTAS","g":"varios"},{"c":"2025","n":"FACT. PENDIENTES AL 31.12.2011","g":"inversion"},{"c":"3030","n":"GTOS. INTERESES FINANCIEROS","g":"gastos"},{"c":"4035","n":"VENTA PAPAS","g":"ventas"},{"c":"1026","n":"CREDITO FISCAL POR RECUPERAR","g":"varios"},{"c":"2026","n":"HONORARIOS POR PAGAR","g":"inversion"},{"c":"3035","n":"PERDIDAS EN VENTA ACTIVOS","g":"gastos"},{"c":"1027","n":"SILOS PARA FORRAJE","g":"varios"},{"c":"2027","n":"INTERESES CREDITOS POR PAGAR","g":"inversion"},{"c":"3039","n":"CRIANZA ANIMALES LECHERIA","g":"gastos"},{"c":"1","n":"SIEMBRA - SEMILLA","g":"clasif"},{"c":"1028","n":"CRIANZA DE LECHERIA","g":"varios"},{"c":"2028","n":"IANSAGRO S.A.","g":"inversion"},{"c":"3040","n":"ANIMALES MUERTOS","g":"gastos"},{"c":"2","n":"FERTILIZANTES","g":"clasif"},{"c":"1029","n":"CREDITO FISCAL IMPTO. ESPECIFICO","g":"varios"},{"c":"2029","n":"BOLETA POR PAGAR","g":"inversion"},{"c":"3041","n":"GTOS. CULTIVOS TRIGO","g":"gastos"},{"c":"3","n":"AGROQUIMICOS","g":"clasif"},{"c":"1030","n":"CTA. CTE. CORPBANCA","g":"varios"},{"c":"2030","n":"PERDIDAS Y GANANCIAS","g":"inversion"},{"c":"3042","n":"GTOS. CULT. REMOLACHA","g":"gastos"},{"c":"4","n":"MAQUINARIA","g":"clasif"},{"c":"1031","n":"AGRORRIEGO","g":"varios"},{"c":"2035","n":"IMPTO. IVA RETENIDO","g":"inversion"},{"c":"3043","n":"GTOS. CULT. ACHICORIA","g":"gastos"},{"c":"5","n":"MANO DE OBRA","g":"clasif"},{"c":"1032","n":"CTA. CTE. INVERS. LOS MAITENES","g":"varios"},{"c":"2040","n":"LINEA SOBREGIRO CORPBANCA","g":"inversion"},{"c":"3044","n":"GTOS. CULT. SEMILLERO CANOLA","g":"gastos"},{"c":"6","n":"COSECHA","g":"clasif"},{"c":"1034","n":"CASA ADMINISTRACION","g":"varios"},{"c":"2070","n":"CREDITOS BCO. CHILE","g":"inversion"},{"c":"3045","n":"GTOS. CULT. MAIZ GRANO","g":"gastos"},{"c":"7","n":"FLETES","g":"clasif"},{"c":"1035","n":"PIVOTE CHEQUEN","g":"varios"},{"c":"3046","n":"GTOS. CULT. MAIZ CILO","g":"gastos"},{"c":"8","n":"GENERAL","g":"clasif"},{"c":"1040","n":"ARRIENDO POR COBRAR","g":"varios"},{"c":"3047","n":"GTOS. CULT. POROTOS","g":"gastos"},{"c":"9","n":"RIEGO","g":"clasif"},{"c":"1039","n":"AVELLANO","g":"varios"},{"c":"3048","n":"GTOS. CULT. SEMILLERO GIRASOL","g":"gastos"},{"c":"10","n":"ENERGIA ELECTRICA","g":"clasif"},{"c":"3049","n":"GTOS. SEMILLERO MAIZ","g":"gastos"},{"c":"11","n":"COMBUSTIBLE","g":"clasif"},{"c":"3050","n":"GTOS. INTER. MORA","g":"gastos"},{"c":"12","n":"CONSTRUCCIONES","g":"clasif"},{"c":"3051","n":"GTOS. CAJA CHICA","g":"gastos"},{"c":"3052","n":"PTMOS. J.C.A.R","g":"gastos"},{"c":"3053","n":"GTOS. CAJA CHICA JCAZ","g":"gastos"},{"c":"3054","n":"GTOS. CEREZOS","g":"gastos"},{"c":"3055","n":"PAPAS","g":"gastos"},{"c":"3056","n":"ARVEJAS","g":"gastos"},{"c":"3057","n":"COMPRA MERCADERIA","g":"gastos"},{"c":"3058","n":"GTOS. AVELLANO","g":"gastos"},{"c":"3070","n":"PRESTAMO JCAZ","g":"gastos"},{"c":"3071","n":"TRASPASOS INTERNOS CHILE-ITAU","g":"gastos"}];
+const cuentaPorCodInv = c => (planCuentasInv || []).find(x => String(x.c) === String(c)) || null;
+const esCodificableDteInv = d => d.tipo !== 52 && d.tipo !== 50;
+async function guardarPlanInv(arr) { await setDoc(doc(dbInv, 'dte_recibidos', '_plan_cuentas'), { cuentas: arr, actualizado: Date.now(), por: currentUser || '' }); }
+function sugerenciaCuentaInv(d) {
+  const u = dteRecibidosInv.filter(x => x.id !== d.id && x.cuenta && normRutDte(x.rutEmisor) === normRutDte(d.rutEmisor)).sort((a, b) => (b.codificadoTs || 0) - (a.codificadoTs || 0))[0];
+  return u ? { c: u.cuenta, n: u.cuentaNombre || (cuentaPorCodInv(u.cuenta) || {}).n || '', clasif: u.clasif || '' } : null;
+}
+function estadoCuentaInv(d) {
+  if (!esCodificableDteInv(d)) return null;
+  return d.cuenta ? { t: `📒 ${escA(d.cuenta)} · ${escA(d.cuentaNombre || '')}`, bg: '#EDE9FE', fg: '#5B21B6' } : { t: '📒 Sin cuenta contable', bg: '#F3F4F6', fg: '#6B7280' };
+}
+function listaPickerCuentasInv(id, q) {
+  const cont = document.getElementById('cta-lista'); if (!cont) return;
+  const d = dteRecibidosInv.find(x => x.id === id) || {};
+  const nq = normNom(q || '');
+  let cs = (planCuentasInv || []).filter(c => c.on !== false && c.g !== 'clasif');
+  if (nq) cs = cs.filter(c => normNom(c.c + ' ' + c.n).includes(nq));
+  else cs = cs.filter(c => c.g === 'gastos');
+  const orden = { gastos: 0, varios: 1, inversion: 2, ventas: 3 };
+  cs.sort((a, b) => (orden[a.g] - orden[b.g]) || String(a.c).localeCompare(String(b.c), 'es', { numeric: true }));
+  const sug = sugerenciaCuentaInv(d);
+  const fila = c => `<div class="config-item" style="cursor:pointer;padding:8px 10px" onclick="dteGuardarCuentaInv('${id}','${escA(c.c)}')"><span><strong>${escA(c.c)}</strong> · ${escA(c.n)}</span>${nq ? `<span style="font-size:10px;color:var(--acero)">${GRUPOS_PLAN_INV[c.g] || ''}</span>` : ''}</div>`;
+  cont.innerHTML = (sug && !nq ? `<div style="font-size:12px;color:var(--acero);margin-bottom:4px">Última de este proveedor</div><div class="config-item" style="cursor:pointer;background:#EDE9FE" onclick="dteGuardarCuentaInv('${id}','${escA(sug.c)}')"><span><strong>${escA(sug.c)}</strong> · ${escA(sug.n)}</span></div><div style="font-size:12px;color:var(--acero);margin:8px 0 4px">Gastos (busca arriba para ver el resto)</div>` : '')
+    + (cs.length ? cs.slice(0, 80).map(fila).join('') : '<div class="empty">No hay cuentas con ese texto</div>');
+}
+window.buscarCuentaInv = (id, v) => listaPickerCuentasInv(id, v);
+window.dteElegirCuentaInv = function(id) {
+  if (!(planCuentasInv || []).length) { toast('Primero carga el plan de cuentas (botón 📒 Plan de cuentas)', false); return; }
+  modalElegirDteInv('Elegir cuenta contable', 'Escribe el código o parte del nombre.', [`<input type="text" id="cta-q" placeholder="🔎 Código o nombre" oninput="buscarCuentaInv('${id}', this.value)" style="width:100%;box-sizing:border-box;margin-bottom:8px"><div id="cta-lista"></div>`]);
+  listaPickerCuentasInv(id, '');
+}
+window.dteGuardarCuentaInv = async function(id, cod) {
+  const c = cuentaPorCodInv(cod); if (!c) return;
+  try {
+    await updateDoc(doc(dbInv, 'dte_recibidos', id), { cuenta: String(c.c), cuentaNombre: c.n, codificadoPor: currentUser || '', codificadoTs: Date.now() });
+    const m = document.getElementById('dte-elegir'); if (m) m.remove();
+    toast(`✓ Codificada: ${c.c} ${c.n}`, true);
+  } catch (e) { toast('Error: ' + e.message, false); }
+}
+window.dteQuitarCuentaInv = async function(id) { try { await updateDoc(doc(dbInv, 'dte_recibidos', id), { cuenta: '', cuentaNombre: '', clasif: '', clasifNombre: '' }); toast('✓ Cuenta quitada', true); } catch (e) { toast('Error: ' + e.message, false); } }
+window.dteClasifInv = async function(id, v) {
+  const c = cuentaPorCodInv(v);
+  try { await updateDoc(doc(dbInv, 'dte_recibidos', id), { clasif: v || '', clasifNombre: c ? c.n : '' }); toast('✓ Guardado', true); } catch (e) { toast('Error: ' + e.message, false); }
+}
+function bloqueCuentaInv(d) {
+  if (!esCodificableDteInv(d)) return '';
+  const sug = !d.cuenta ? sugerenciaCuentaInv(d) : null;
+  const cl = (planCuentasInv || []).filter(c => c.g === 'clasif' && c.on !== false).sort((a, b) => Number(a.c) - Number(b.c));
+  return `<div style="border:1px solid var(--borde);border-radius:10px;padding:10px;margin:10px 0"><div style="font-weight:700;font-size:13px;margin-bottom:6px">📒 Cuenta contable: <span style="color:#5B21B6">${d.cuenta ? escA(d.cuenta) + ' · ' + escA(d.cuentaNombre || '') : 'sin codificar'}</span></div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn-add" style="padding:6px 10px" onclick="dteElegirCuentaInv('${d.id}')">${d.cuenta ? '✏️ Cambiar cuenta' : '📒 Elegir cuenta'}</button>${sug ? `<button class="btn-add" style="padding:6px 10px;background:#EDE9FE;color:#5B21B6" onclick="dteGuardarCuentaInv('${d.id}','${escA(sug.c)}')">Usar ${escA(sug.c)} (la última de este proveedor)</button>` : ''}${d.cuenta ? `<button class="btn-add" style="padding:6px 10px;background:var(--fondo);color:var(--negro)" onclick="dteQuitarCuentaInv('${d.id}')">↩ Quitar</button>` : ''}</div>
+    ${cl.length ? `<div style="margin-top:8px;font-size:12px">Clasificación de costo (opcional): <select onchange="dteClasifInv('${d.id}', this.value)" style="margin-left:4px"><option value="">—</option>${cl.map(c => `<option value="${escA(c.c)}"${String(d.clasif || '') === String(c.c) ? ' selected' : ''}>${escA(c.c)} · ${escA(c.n)}</option>`).join('')}</select></div>` : ''}</div>`;
+}
+// ── Editar el plan de cuentas ──
+window.abrirPlanCuentasInv = function(q) {
+  const arr = planCuentasInv || [];
+  const nq = normNom(q || '');
+  const lista = arr.filter(c => !nq || normNom(c.c + ' ' + c.n).includes(nq));
+  const orden = Object.keys(GRUPOS_PLAN_INV);
+  const bloques = orden.map(g => { const cs = lista.filter(c => c.g === g).sort((a, b) => String(a.c).localeCompare(String(b.c), 'es', { numeric: true })); if (!cs.length) return '';
+    return `<div style="font-weight:700;font-size:12px;margin:10px 0 4px;color:var(--acero)">${GRUPOS_PLAN_INV[g]} · ${cs.length}</div>` + cs.map(c => `<div class="config-item" style="padding:6px 10px;${c.on === false ? 'opacity:.5' : ''}"><span style="min-width:0;overflow-wrap:anywhere"><strong>${escA(c.c)}</strong> · ${escA(c.n)}${c.on === false ? ' (oculta)' : ''}</span><span style="white-space:nowrap"><a href="#" onclick="event.preventDefault();editarCuentaPlanInv('${escA(c.c)}')">✏️</a> <a href="#" onclick="event.preventDefault();ocultarCuentaPlanInv('${escA(c.c)}')">${c.on === false ? '👁' : '🚫'}</a></span></div>`).join(''); }).join('');
+  const inp = 'box-sizing:border-box;margin:0';
+  const form = `<div style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0"><input type="text" id="pl-c" placeholder="Código" style="${inp};width:80px"><input type="text" id="pl-n" placeholder="Nombre de la cuenta" style="${inp};flex:1;min-width:140px"><select id="pl-g" style="${inp}">${orden.map(g => `<option value="${g}">${GRUPOS_PLAN_INV[g]}</option>`).join('')}</select><button class="btn-add" style="padding:6px 10px" onclick="agregarCuentaPlanInv()">＋ Crear</button></div>`;
+  modalElegirDteInv('📒 Plan de cuentas', 'Las cuentas ocultas no aparecen al codificar, pero se conservan en los documentos ya codificados.', [
+    `<input type="text" id="pl-q" placeholder="🔎 Buscar código o nombre" value="${escA(q || '')}" oninput="abrirPlanCuentasInv(this.value);setTimeout(()=>{const i=document.getElementById('pl-q');if(i){i.focus();i.setSelectionRange(i.value.length,i.value.length)}},0)" style="width:100%;box-sizing:border-box">`,
+    form,
+    arr.length ? '' : `<button class="btn btn-verde" style="width:100%;justify-content:center;margin:8px 0" onclick="cargarPlanBaseInv()">📥 Cargar el plan de la contadora (nov-2026)</button>`,
+    bloques]);
+}
+window.cargarPlanBaseInv = async function() { try { await guardarPlanInv(PLAN_BASE_INV.map(c => ({ ...c, on: true }))); toast(`✓ Plan cargado: ${PLAN_BASE_INV.length} cuentas`, true); setTimeout(() => abrirPlanCuentasInv(), 500); } catch (e) { toast('Error: ' + e.message, false); } }
+window.agregarCuentaPlanInv = async function() {
+  const c = document.getElementById('pl-c').value.trim(), n = document.getElementById('pl-n').value.trim().toUpperCase(), g = document.getElementById('pl-g').value;
+  if (!c || !n) { toast('Indica código y nombre', false); return; }
+  if (cuentaPorCodInv(c)) { toast(`El código ${c} ya existe`, false); return; }
+  try { await guardarPlanInv([...(planCuentasInv || []), { c, n, g, on: true }]); toast('✓ Cuenta creada', true); setTimeout(() => abrirPlanCuentasInv(), 500); } catch (e) { toast('Error: ' + e.message, false); }
+}
+window.editarCuentaPlanInv = async function(cod) {
+  const c = cuentaPorCodInv(cod); if (!c) return;
+  const n = prompt(`Nombre de la cuenta ${c.c}`, c.n); if (n === null || !n.trim()) return;
+  try { await guardarPlanInv((planCuentasInv || []).map(x => String(x.c) === String(cod) ? { ...x, n: n.trim().toUpperCase() } : x)); toast('✓ Nombre actualizado (los documentos ya codificados conservan el que tenían)', true); setTimeout(() => abrirPlanCuentasInv(), 500); } catch (e) { toast('Error: ' + e.message, false); }
+}
+window.ocultarCuentaPlanInv = async function(cod) {
+  try { await guardarPlanInv((planCuentasInv || []).map(x => String(x.c) === String(cod) ? { ...x, on: x.on === false } : x)); setTimeout(() => abrirPlanCuentasInv(), 500); } catch (e) { toast('Error: ' + e.message, false); }
+}
+// ── Exportar el mes para la contadora ──
+window.exportarCodificacionInv = function() {
+  const hoy = hoyIsoInv().slice(0, 7);
+  const mes = prompt('¿Qué mes exportar? (aaaa-mm)', hoy); if (mes === null) return;
+  if (!/^\d{4}-\d{2}$/.test(mes.trim())) { toast('Usa el formato aaaa-mm, por ejemplo ' + hoy, false); return; }
+  const docs = dteRecibidosInv.filter(d => esCodificableDteInv(d) && String(d.fecha || '').startsWith(mes.trim())).sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)) || a.folio - b.folio);
+  if (!docs.length) { toast('No hay documentos en ' + mes, false); return; }
+  const esc = v => { const s = String(v == null ? '' : v); return /[;"\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+  const fp = d => d.pago === 'cuenta' ? 'Cuenta' : d.pago === 'caja' ? 'Caja chica ' + (d.pagoDetalle || '') : d.pago === 'credito' ? (d.pagada ? 'Crédito pagado' : 'Crédito por pagar') : '';
+  const rec = d => !esFacturaDteInv(d) ? '' : d.recepcion === 'recibida' ? 'Recibida' : d.recepcion === 'despacho' ? ((estadoRecepcionInv(d) || {}).t || '').replace(/^\S+\s/, '') : '';
+  const filas = [['Fecha', 'Tipo', 'N°', 'RUT proveedor', 'Proveedor', 'Neto', 'Exento', 'IVA', 'Total', 'Cód. cuenta', 'Cuenta', 'Clasif. costo', 'Forma de pago', 'Vence', 'Saldo por pagar', 'Recepción']]
+    .concat(docs.map(d => [d.fecha || '', abrevTipoDte(d.tipo), d.folio, rutFmtDte(d.rutEmisor), d.razonSocial || '', d.neto || 0, d.exento || 0, d.iva || 0, d.total || 0, d.cuenta || '', d.cuentaNombre || '', d.clasifNombre || '', fp(d), d.vence || '', d.pago === 'credito' ? saldoPagarInv(d) : 0, rec(d)]));
+  const csv = '﻿' + filas.map(r => r.map(esc).join(';')).join('\r\n');
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+  a.download = `facturas_codificadas_${mes.trim()}.csv`; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  const sin = docs.filter(d => !d.cuenta).length; toast(`✓ ${docs.length} documentos exportados${sin ? ` (${sin} sin cuenta contable)` : ''}`, true);
+}
+function bloquePagoInv(d) {
+  if (!esPagableDteInv(d)) return '';
+  const e = estadoPagoInv(d);
+  const btn = (v, t, sel) => `<button class="btn-add" style="padding:6px 10px;${sel ? '' : 'background:var(--fondo);color:var(--negro)'}" onclick="dtePagoInv('${d.id}','${v}')">${t}</button>`;
+  return `<div style="border:1px solid var(--borde);border-radius:10px;padding:10px;margin:10px 0"><div style="font-weight:700;font-size:13px;margin-bottom:6px">💰 Pago: <span style="color:${e.fg}">${e.t}</span></div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap">${btn('cuenta', '🏦 De la cuenta', d.pago === 'cuenta')}${btn('credito', '💳 A crédito', d.pago === 'credito')}${btn('caja', '💵 Caja chica', d.pago === 'caja')}${d.pago ? btn('', '↩ Sin definir', false) : ''}</div>
+    ${d.pago === 'credito' ? `<div style="font-size:12px;margin-top:8px;line-height:1.6">Total ${pesoInv(d.total || 0)}${(d.abonos || []).length ? ` · abonado ${pesoInv(sumAbonosInv(d))}` : ''} · <strong>saldo ${pesoInv(saldoPagarInv(d))}</strong><br>Vence: ${d.vence ? fmtFechaInv(d.vence) : 'sin fecha'} · <a href="#" onclick="event.preventDefault();dteEditarVenceInv('${d.id}')">cambiar</a>
+      ${(d.abonos || []).map((a, i) => `<br>• ${fmtFechaInv(a.fecha)} · ${pesoInv(a.monto)} · ${a.medio === 'caja' ? 'caja chica ' + escA(a.detalle || '') : 'desde la cuenta'} <a href="#" style="color:#B91C1C" onclick="event.preventDefault();dteQuitarAbonoInv('${d.id}',${i})">quitar</a>`).join('')}</div>
+      ${!d.pagada ? `<button class="btn-add" style="padding:6px 10px;margin-top:8px" onclick="dteRegistrarPagoInv('${d.id}')">💵 Registrar pago</button>` : ''}` : ''}
+    </div>`;
+}
+function bloqueRecepcionInv(d) {
+  const box =h => `<div style="border:1px solid var(--borde);border-radius:10px;padding:10px;margin:10px 0">${h}</div>`;
+  if (esFacturaDteInv(d)) {
+    const e = estadoRecepcionInv(d);
+    const btn = (v, t, sel) => `<button class="btn-add" style="padding:6px 10px;${sel ? '' : 'background:var(--fondo);color:var(--negro)'}" onclick="dteRecepcionInv('${d.id}','${v}')">${t}</button>`;
+    let h = `<div style="font-weight:700;font-size:13px;margin-bottom:6px">📦 Recepción: <span style="color:${e.fg}">${e.t}</span></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">${btn('recibida', '✅ Recibida completa', d.recepcion === 'recibida')}${btn('despacho', '🚚 Espera despacho', d.recepcion === 'despacho')}${d.recepcion ? btn('', '↩ Sin definir', false) : ''}</div>`;
+    if (d.recepcion === 'despacho') {
+      const s = saldoFacturaInv(d);
+      h += `<div style="margin-top:8px">${s.lineas.length ? s.lineas.map(l => `<div style="font-size:12px;padding:3px 0;border-bottom:1px solid var(--borde);display:flex;justify-content:space-between;gap:8px"><span style="overflow-wrap:anywhere">${escA(l.x.nombre)}</span><span style="white-space:nowrap;color:${l.saldo > 0.0001 ? '#B45309' : 'var(--verde)'}">${nfInv(l.recibido)} / ${nfInv(l.pedido)} ${escA(l.x.unidad || '')}${l.saldo > 0.0001 ? ` · falta <strong>${nfInv(l.saldo)}</strong>` : ' ✓'}</span></div>`).join('') : '<div style="font-size:12px;color:var(--acero)">Falta el detalle (XML) para calcular el saldo.</div>'}</div>`;
+      if (s.sinLinea.length) h += `<div style="font-size:12px;color:#B45309;margin-top:6px">⚠️ En las guías hay productos que no calzan con la factura: ${s.sinLinea.map(z => escA(z.x.nombre)).join(', ')}.</div>`;
+      h += `<div style="font-size:12px;margin-top:8px"><strong>Guías recibidas:</strong> ${s.guias.length ? s.guias.map(g => `N° ${g.folio} (${fechaCortaDte(g.fecha)}) <a href="#" onclick="event.preventDefault();dteVerInv('${g.id}')">ver</a>${g.facturaId === d.id ? ` · <a href="#" style="color:#B91C1C" onclick="event.preventDefault();dteQuitarGuiaInv('${g.id}')">quitar</a>` : ''}`).join('<br>') : 'Ninguna todavía'}</div>
+        <button class="btn-add" style="padding:6px 10px;margin-top:8px" onclick="dteAsignarGuiaInv('${d.id}')">＋ Asignar guía</button>`;
+    }
+    return box(h);
+  }
+  if (d.tipo === 52) {
+    const f = facturaDeGuiaInv(d);
+    return box(`<div style="font-size:13px">📦 ${f ? `Asignada a la factura N° <strong>${f.folio}</strong> <a href="#" onclick="event.preventDefault();dteVerInv('${f.id}')">ver</a>${d.facturaId ? ` · <a href="#" style="color:#B91C1C" onclick="event.preventDefault();dteQuitarGuiaInv('${d.id}')">quitar</a>` : ''}` : 'Sin factura asignada'}</div>${f ? '' : `<button class="btn-add" style="padding:6px 10px;margin-top:8px" onclick="dteAsignarFacturaInv('${d.id}')">🔗 Asignar a una factura</button>`}`);
+  }
+  return '';
+}
 function avisosDteInv(d) {
   const out = [], propio = rutPropioDteInv();
   if (propio && d.rutReceptor && d.rutReceptor !== propio) out.push(['#B91C1C', `⚠️ Viene a nombre de otro RUT (${rutFmtDte(d.rutReceptor)} ${escA(d.razonSocialReceptor || '')})`]);
@@ -16216,6 +16521,18 @@ function pendientesDteInv() { return dteRecibidosInv.filter(d => grupoDteInv(d) 
 window.dteVerMasDteInv = () => { dteVerMasInv = true; renderDteRecibidosInv(); };
 window.setFiltroDteInv = f => { filtroDteInv = f; dteVerMasInv = false; renderDteRecibidosInv(); };
 window.buscarDteInv = v => { dteBuscarInv = v; renderDteRecibidosInv(true); };
+function resumenPagarInv(lista) {
+  const suma = f => lista.filter(f).reduce((a, d) => a + saldoPagarInv(d), 0), dv = d => diasVenceInv(d);
+  const caja = (t, v, c) => `<div style="flex:1;min-width:120px;background:var(--fondo);border-radius:8px;padding:8px"><div style="font-size:11px;color:var(--acero)">${t}</div><div style="font-weight:800;color:${c || 'var(--negro)'}">${pesoInv(v)}</div></div>`;
+  return `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">${caja('Total por pagar', suma(() => true))}${caja('Vencido', suma(d => dv(d) !== null && dv(d) < 0), '#B91C1C')}${caja('Próximos 7 días', suma(d => dv(d) !== null && dv(d) >= 0 && dv(d) <= 7), '#B45309')}${caja('Después o sin fecha', suma(d => dv(d) === null || dv(d) > 7))}</div>`;
+}
+function insigniasEstadoDteInv(d) {
+  const er = estadoRecepcionInv(d), ep = estadoPagoInv(d), ec = estadoCuentaInv(d);
+  const ins = e => `<span class="badge" style="background:${e.bg};color:${e.fg}">${e.t}</span>`;
+  let h = [er, ep, ec].filter(Boolean).map(ins).join(' ');
+  if (er && er.pend && er.pend.length) h += `<div style="font-size:12px;margin-top:4px;overflow-wrap:anywhere">Saldo por despachar: ${er.pend.map(textoSaldoInv).join(' · ')}</div>`;
+  return h ? `<div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">${h}</div>` : '';
+}
 function tarjetaDteInv(d) {
   const [bg, fg] = colorTipoDte(d.tipo), e = estadoDte(d), g = grupoDteInv(d);
   const prods = (d.items || []).filter(x => x.nombre);
@@ -16224,7 +16541,11 @@ function tarjetaDteInv(d) {
   const acciones = [];
   if (g === 'pendientes') acciones.push(`<button class="btn-add" style="padding:6px 10px" onclick="dteAIngresoInv('${d.id}')">📥 Ingresar a bodega</button>`);
   if (g === 'pendientes' && sugierePreciosDteInv(d)) acciones.push(`<button class="btn-add" style="padding:6px 10px;background:#EFF6FF;color:#1D4ED8" onclick="dtePreciosInv('${d.id}')">💲 Solo actualizar precios</button>`);
-  acciones.push(`<button class="btn-add" style="padding:6px 10px;background:var(--fondo);color:var(--negro)" onclick="dteVerInv('${d.id}')">👁 Ver</button>`);
+  acciones.push(`<button class="btn-add" style="padding:6px 10px;background:var(--fondo);color:var(--negro)" onclick="dteVerInv('${d.id}')">👁 Ver${esFacturaDteInv(d) || d.tipo === 52 || esPagableDteInv(d) ? ' / Recepción y pago' : ''}</button>`);
+  if (esCodificableDteInv(d) && !d.cuenta) { const sg = sugerenciaCuentaInv(d); acciones.push(sg ? `<button class="btn-add" style="padding:6px 10px;background:#EDE9FE;color:#5B21B6" onclick="dteGuardarCuentaInv('${d.id}','${escA(sg.c)}')">📒 Usar ${escA(sg.c)}</button>` : `<button class="btn-add" style="padding:6px 10px;background:#EDE9FE;color:#5B21B6" onclick="dteElegirCuentaInv('${d.id}')">📒 Elegir cuenta</button>`); }
+  if (d.pago === 'credito' && !d.pagada) acciones.push(`<button class="btn-add" style="padding:6px 10px" onclick="dteRegistrarPagoInv('${d.id}')">💵 Registrar pago</button>`);
+  if (d.tipo === 52 && !facturaDeGuiaInv(d)) acciones.push(`<button class="btn-add" style="padding:6px 10px;background:#EFF6FF;color:#1D4ED8" onclick="dteAsignarFacturaInv('${d.id}')">🔗 Asignar a factura</button>`);
+  if (esFacturaDteInv(d) && d.recepcion === 'despacho') acciones.push(`<button class="btn-add" style="padding:6px 10px;background:#EFF6FF;color:#1D4ED8" onclick="dteAsignarGuiaInv('${d.id}')">＋ Asignar guía</button>`);
   if (g === 'pendientes' || g === 'notas') acciones.push(`<button class="btn-add" style="padding:6px 10px;background:var(--fondo);color:var(--acero)" onclick="dteMarcarInv('${d.id}','ignorado')">🚫 No va a bodega</button>`);
   if (e === 'ignorado' || e === 'ingresado') acciones.push(`<button class="btn-add" style="padding:6px 10px;background:var(--fondo);color:var(--acero)" onclick="dteMarcarInv('${d.id}','pendiente')">↩️ Volver a pendiente</button>`);
   return `<div class="config-item" style="flex-direction:column;align-items:stretch;gap:6px;min-width:0">
@@ -16234,6 +16555,7 @@ function tarjetaDteInv(d) {
     </div>
     ${resumen ? `<div style="font-size:12px;overflow-wrap:anywhere">${resumen}</div>` : ''}
     ${avisosDteInv(d).map(([c, t]) => `<div style="font-size:12px;color:${c};overflow-wrap:anywhere">${t}</div>`).join('')}
+    ${insigniasEstadoDteInv(d)}
     <div style="display:flex;gap:6px;flex-wrap:wrap">${acciones.join('')}</div>
   </div>`;
 }
@@ -16244,10 +16566,16 @@ function renderDteRecibidosInv(soloLista) {
   { const tb = document.getElementById('tab-inv-ingresos'); if (tb) tb.textContent = `📥 Ingresos${ingresosInv.length ? ` (${ingresosInv.length})` : ''}${pendientesDteInv() ? ` · 📨 ${pendientesDteInv()}` : ''}`; }
   const cuenta = g => dteRecibidosInv.filter(d => grupoDteInv(d) === g).length;
   const q = normNom(dteBuscarInv);
-  let lista = dteRecibidosInv.filter(d => filtroDteInv === 'todos' || grupoDteInv(d) === filtroDteInv);
+  const porDespachar = d => { const e = estadoRecepcionInv(d); return !!e && (e.k === 'espera' || e.k === 'parcial'); };
+  const porPagar = d => d.pago === 'credito' && !d.pagada;
+  const sinDefinir = d => (esFacturaDteInv(d) && !d.recepcion) || (esPagableDteInv(d) && !d.pago) || (esCodificableDteInv(d) && !d.cuenta);
+  const sinCuenta = d => esCodificableDteInv(d) && !d.cuenta;
+  const filtros = { despachar: porDespachar, pagar: porPagar, sindefinir: sinDefinir, sincuenta: sinCuenta };
+  let lista = dteRecibidosInv.filter(d => filtros[filtroDteInv] ? filtros[filtroDteInv](d) : (filtroDteInv === 'todos' || grupoDteInv(d) === filtroDteInv));
   if (q) lista = lista.filter(d => normNom(`${d.razonSocial} ${d.folio} ${abrevTipoDte(d.tipo)} ${(d.items || []).map(x => x.nombre).join(' ')}`).includes(q));
+  if (filtroDteInv === 'pagar') lista.sort((a, b) => { const x = diasVenceInv(a), y = diasVenceInv(b); return (x === null ? 1e9 : x) - (y === null ? 1e9 : y); });
   const tope = dteVerMasInv ? 300 : 15;
-  const htmlLista = (lista.length ? lista.slice(0, tope).map(tarjetaDteInv).join('') : `<div class="empty">${dteRecibidosInv.length ? 'No hay documentos en este grupo' : 'Todavía no hay documentos: importa el XML o tráelos del SII'}</div>`)
+  const htmlLista = (filtroDteInv === 'pagar' ? resumenPagarInv(lista) : '') + (lista.length ? lista.slice(0, tope).map(tarjetaDteInv).join('') : `<div class="empty">${dteRecibidosInv.length ? 'No hay documentos en este grupo' : 'Todavía no hay documentos: importa el XML o tráelos del SII'}</div>`)
     + (lista.length > tope ? `<button class="btn-add" style="width:100%;justify-content:center;margin-top:8px" onclick="dteVerMasDteInv()">Ver ${lista.length - tope} más</button>` : '');
   if (soloLista) { const l = document.getElementById('dte-lista'); if (l) { l.innerHTML = htmlLista; return; } }
   const chip = (f, t, n) => `<span class="cultivo-chip${filtroDteInv === f ? ' sel' : ''}" onclick="setFiltroDteInv('${f}')">${t}${n != null ? ` (${n})` : ''}</span>`;
@@ -16258,6 +16586,7 @@ function renderDteRecibidosInv(soloLista) {
       ${conSii ? `<button class="btn btn-verde" id="btn-dte-sii" style="flex:1;min-width:160px;justify-content:center" onclick="traerDteSiiInv()"${dteSyncEnCurso ? ' disabled' : ''}>${dteSyncEnCurso ? '⏳ Revisando el SII…' : '🔄 Traer del SII'}</button>` : ''}
       <label class="btn btn-secondary" id="btn-dte-importar" style="flex:1;min-width:160px;justify-content:center;cursor:pointer;text-transform:none;letter-spacing:normal;font-size:15px;margin:0">📂 Importar XML<input type="file" accept=".xml,.zip,text/xml,application/xml,application/zip" multiple style="display:none" onchange="importarXmlDteInv(this)"></label>
     </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px"><button class="btn btn-secondary" style="flex:1;min-width:160px;justify-content:center;text-transform:none;letter-spacing:normal;font-size:14px" onclick="abrirPlanCuentasInv()">📒 Plan de cuentas</button><button class="btn btn-secondary" style="flex:1;min-width:160px;justify-content:center;text-transform:none;letter-spacing:normal;font-size:14px" onclick="exportarCodificacionInv()">⬇️ Exportar mes (Excel)</button></div>
     <details style="font-size:12px;color:var(--acero);margin-bottom:8px"><summary style="cursor:pointer">¿De dónde saco el XML?</summary>
       <div style="margin-top:6px;line-height:1.5">
         • <strong>Del SII</strong> (todo lo que te facturan llega ahí): sii.cl → Servicios online → Factura electrónica → Sistema de facturación gratuito → Historial de DTE y respuesta a documentos recibidos → <em>Ver documentos recibidos</em> → filtra por fechas → <em>Archivo Respaldo</em> (hasta 20 por vez) y súbelo aquí.<br>
@@ -16267,6 +16596,9 @@ function renderDteRecibidosInv(soloLista) {
       </div></details>
     <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">
       ${chip('pendientes', '📥 Por ingresar', cuenta('pendientes'))}${chip('ingresado', '✓ Ingresados', cuenta('ingresado'))}${chip('ignorado', 'No van a bodega', cuenta('ignorado'))}${cuenta('notas') ? chip('notas', 'Notas de crédito/débito', cuenta('notas')) : ''}${chip('todos', 'Todos', dteRecibidosInv.length)}
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">
+      ${chip('sindefinir', '❔ Falta algo por definir', dteRecibidosInv.filter(sinDefinir).length)}${chip('sincuenta', '📒 Sin cuenta', dteRecibidosInv.filter(sinCuenta).length)}${chip('despachar', '🚚 Por despachar', dteRecibidosInv.filter(porDespachar).length)}${chip('pagar', '💳 Por pagar', dteRecibidosInv.filter(porPagar).length)}
     </div>
     <input type="text" placeholder="🔎 Buscar proveedor, N° o producto" value="${escA(dteBuscarInv)}" oninput="buscarDteInv(this.value)" style="width:100%;box-sizing:border-box;margin-bottom:8px">
     <div id="dte-lista">${htmlLista}</div>`;
@@ -16285,6 +16617,7 @@ window.dteVerInv = function(id) {
     <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start"><div style="font-weight:800;font-size:16px">${nombreTipoDte(d.tipo)} N° ${d.folio}</div><span style="cursor:pointer;font-size:20px;line-height:1" onclick="document.getElementById('dte-modal').remove()">✕</span></div>
     <div style="font-size:13px;margin:6px 0 10px;line-height:1.5"><strong>${escA(d.razonSocial || '')}</strong> · RUT ${rutFmtDte(d.rutEmisor)}${d.giro ? `<br><span style="color:var(--acero)">${escA(d.giro)}</span>` : ''}<br>Fecha ${fechaCortaDte(d.fecha)}${d.razonSocialReceptor ? ` · Para ${escA(d.razonSocialReceptor)} (${rutFmtDte(d.rutReceptor)})` : ''}</div>
     ${avisosDteInv(d).map(([c, t]) => `<div style="font-size:12px;color:${c};margin-bottom:4px">${t}</div>`).join('')}
+    ${bloqueRecepcionInv(d)}${bloquePagoInv(d)}${bloqueCuentaInv(d)}
     ${filas ? `<div style="border-top:1px solid var(--borde)">${filas}</div>` : '<div class="empty">Sin detalle de productos</div>'}
     <div style="font-size:13px;margin-top:8px;text-align:right;line-height:1.6">${d.neto ? `Neto ${pesoInv(d.neto)}<br>` : ''}${d.exento ? `Exento ${pesoInv(d.exento)}<br>` : ''}${d.iva ? `IVA ${pesoInv(d.iva)}<br>` : ''}${d.total ? `<strong>Total ${pesoInv(d.total)}</strong>` : ''}${d.ajusteGlobal ? `<div style="font-size:11px;color:var(--acero)">Incluye ${d.ajusteGlobal < 0 ? 'descuento' : 'recargo'} global de ${Math.abs(d.ajusteGlobal)}% repartido en los productos</div>` : ''}${d.bruto ? '<div style="font-size:11px;color:var(--acero)">Precios del documento con IVA incluido: aquí se muestran netos</div>' : ''}</div>
     ${(d.refs || []).length ? `<div style="font-size:12px;color:var(--acero);margin-top:6px">Referencias: ${(d.refs || []).map(r => `${escA(TIPOS_DTE_INV[Number(r.tipo)] || (r.tipo === '801' ? 'Orden de compra' : 'Doc ' + r.tipo))} N° ${escA(r.folio)}${r.fecha ? ' del ' + fechaCortaDte(r.fecha) : ''}${r.razon ? ' · ' + escA(r.razon) : ''}`).join('; ')}</div>` : ''}
@@ -16426,6 +16759,7 @@ function suscribirDteInv() {
     const c = document.getElementById('inv-panel-dte');
     if (c) { c.style.display = ''; c.innerHTML = `<div class="panel-title">📨 Facturas y guías recibidas</div><div style="font-size:12px;color:#B91C1C">No se pudieron leer los documentos recibidos${/permission/i.test(e.message) ? ': falta permitir la colección <code>dte_recibidos</code> en las reglas de Firestore del inventario' : ': ' + escA(e.message)}.</div>`; }
   });
+  onSnapshot(doc(dbInv, 'dte_recibidos', '_plan_cuentas'), sn => { planCuentasInv = sn.exists() ? (sn.data().cuentas || []) : []; renderDteRecibidosInv(); }, e => console.warn('plan_cuentas', e));
   consultarSiiDteInv();
 }
 
