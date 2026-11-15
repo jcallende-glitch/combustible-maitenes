@@ -16427,6 +16427,12 @@ window.renderConfigContInv = function() {
       <div class="panel-title">⏰ Horarios del robot</div>
       <div style="font-size:12px;color:var(--acero);margin-bottom:8px">A estas horas el robot revisa el SII todos los días. Si el computador estaba apagado, revisa apenas se encienda. Para algo urgente usa 🔄 Actualizar ahora.</div>
       <div style="display:flex;gap:6px;flex-wrap:wrap"><input type="text" id="robot-horarios" value="${escA(((robotSiiInv && robotSiiInv.horarios) || HORARIOS_ROBOT_DEF).split(',').join(', '))}" placeholder="08:00, 13:00, 18:00" style="flex:1;min-width:160px;box-sizing:border-box;margin:0"><button class="btn-add" style="padding:6px 12px" onclick="guardarHorariosRobotInv()">Guardar</button><button class="btn-add" style="padding:6px 12px;background:#EFF6FF;color:#1D4ED8" onclick="pedirActualizacionRobotInv()">🔄 Actualizar ahora</button></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:10px"><label style="font-size:12px;color:var(--acero)">Traer documentos desde</label><input type="date" id="robot-desde" value="${escA((robotSiiInv && robotSiiInv.desdeFecha) || '2026-11-01')}" style="box-sizing:border-box;margin:0"><button class="btn-add" style="padding:6px 12px" onclick="guardarDesdeRobotInv()">Guardar</button></div>
+    </div>
+    <div class="panel">
+      <div class="panel-title">🧹 Borrar documentos antiguos</div>
+      <div style="font-size:12px;color:var(--acero);margin-bottom:8px">Borra de la app las facturas, guías y notas con fecha anterior a la que elijas, con su XML. No toca el SII, ni el inventario o el combustible que ya hayan ingresado.</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"><label style="font-size:12px;color:var(--acero)">Borrar los anteriores al</label><input type="date" id="borrar-antes" value="2026-11-01" style="box-sizing:border-box;margin:0"><button class="btn-add" style="padding:6px 12px;background:#FEE2E2;color:#B91C1C" onclick="borrarDteAnterioresInv()">🧹 Revisar y borrar</button></div>
     </div>
     <div class="panel">
       <div class="panel-title">👤 Autorizados a pagar y rendir</div>
@@ -16816,6 +16822,41 @@ window.guardarHorariosRobotInv = async function() {
     const ref = doc(dbInv, 'dte_recibidos', '_robot');
     if (robotSiiInv) await updateDoc(ref, { horarios: txt }); else await setDoc(ref, { horarios: txt });
     toast('✓ Horarios guardados: el robot los usa desde su próxima revisión', true);
+  } catch (e) { toast('Error: ' + e.message, false); }
+}
+window.borrarDteAnterioresInv = async function() {
+  const v = (document.getElementById('borrar-antes') || {}).value || '';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) { toast('Elige una fecha', false); return; }
+  let lista = [];
+  try {
+    const sn = await getDocs(query(collection(dbInv, 'dte_recibidos'), where('fecha', '<', v)));
+    lista = sn.docs.filter(d => !d.id.startsWith('_')).map(d => ({ id: d.id, ...d.data() }));
+  } catch (e) { toast('Error: ' + e.message, false); return; }
+  if (!lista.length) { toast(`No hay documentos anteriores al ${fmtFechaInv(v)}`, true); return; }
+  const trabajados = lista.filter(d => d.estado === 'ingresado' || d.cuenta || d.pago || (d.abonos || []).length || d.combustibleCargaId || d.recepcion || d.revision);
+  const total = lista.reduce((a, d) => a + (Number(d.total) || 0), 0);
+  if (!confirm(`Hay ${lista.length} documento(s) anteriores al ${fmtFechaInv(v)} (total ${pesoInv(total)}).\n\n¿Borrarlos de la app? Esto no se puede deshacer.`)) return;
+  let borrar = lista;
+  if (trabajados.length && !confirm(`${trabajados.length} de ellos ya tienen algo hecho (cuenta, pago, recepción, ingreso a bodega o combustible).\n\nAceptar = borrarlos igual\nCancelar = borrar solo los ${lista.length - trabajados.length} sin nada hecho`)) {
+    const ids = new Set(trabajados.map(d => d.id));
+    borrar = lista.filter(d => !ids.has(d.id));
+  }
+  if (!borrar.length) { toast('No se borró nada', true); return; }
+  let n = 0;
+  for (let i = 0; i < borrar.length; i += 200) {
+    const b = writeBatch(dbInv);
+    borrar.slice(i, i + 200).forEach(d => { b.delete(doc(dbInv, 'dte_recibidos', d.id)); b.delete(doc(dbInv, 'docs_fotos', 'dte_' + d.id)); });
+    try { await b.commit(); n += Math.min(200, borrar.length - i); } catch (e) { toast('Error al borrar: ' + e.message, false); break; }
+  }
+  if (n) toast(`✓ ${n} documento(s) borrado(s)`, true);
+}
+window.guardarDesdeRobotInv = async function() {
+  const v = (document.getElementById('robot-desde') || {}).value || '';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) { toast('Elige una fecha', false); return; }
+  try {
+    const ref = doc(dbInv, 'dte_recibidos', '_robot');
+    if (robotSiiInv) await updateDoc(ref, { desdeFecha: v }); else await setDoc(ref, { desdeFecha: v });
+    toast(`✓ El robot no traerá documentos anteriores al ${fmtFechaInv(v)}`, true);
   } catch (e) { toast('Error: ' + e.message, false); }
 }
 window.reanudarRobotInv = async function() {
