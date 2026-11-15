@@ -16424,6 +16424,11 @@ window.renderConfigContInv = function() {
       ${robotSiiInv ? lineaRobotInv() + `<div style="font-size:12px;color:var(--acero)">Computador: ${escA(robotSiiInv.pc || '—')}${robotSiiInv.desde ? ` · revisa del ${fmtFechaInv(robotSiiInv.desde)} al ${fmtFechaInv(robotSiiInv.hasta)}` : ''}${robotSiiInv.version ? ` · versión ${escA(robotSiiInv.version)}` : ''}</div>` : '<div style="font-size:12px;color:var(--acero)">Todavía no se instala. Es un programa que corre en un computador del campo u oficina (en Chile), entra al SII con la clave cada algunas horas, baja las facturas, guías y notas recibidas y las deja aquí solas. La clave queda solo en ese computador.</div>'}
     </div>
     <div class="panel">
+      <div class="panel-title">⏰ Horarios del robot</div>
+      <div style="font-size:12px;color:var(--acero);margin-bottom:8px">A estas horas el robot revisa el SII todos los días. Si el computador estaba apagado, revisa apenas se encienda. Para algo urgente usa 🔄 Actualizar ahora.</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap"><input type="text" id="robot-horarios" value="${escA(((robotSiiInv && robotSiiInv.horarios) || HORARIOS_ROBOT_DEF).split(',').join(', '))}" placeholder="08:00, 13:00, 18:00" style="flex:1;min-width:160px;box-sizing:border-box;margin:0"><button class="btn-add" style="padding:6px 12px" onclick="guardarHorariosRobotInv()">Guardar</button><button class="btn-add" style="padding:6px 12px;background:#EFF6FF;color:#1D4ED8" onclick="pedirActualizacionRobotInv()">🔄 Actualizar ahora</button></div>
+    </div>
+    <div class="panel">
       <div class="panel-title">👤 Autorizados a pagar y rendir</div>
       <div style="font-size:12px;color:var(--acero);margin-bottom:8px">Al registrar un pago, la app pregunta quién pagó y lo elige de esta lista. Con esto después se rinde cada caja chica por persona. Si la lista está vacía, no se pregunta.</div>
       ${(personasPagoInv || []).length ? personasPagoInv.map((p, i) => `<div class="config-item" style="${p.on === false ? 'opacity:.5' : ''}"><span>👤 <strong>${escA(p.n)}</strong>${p.on === false ? ' (oculta)' : ''}</span><span style="white-space:nowrap"><a href="#" onclick="event.preventDefault();renombrarPersonaPagoInv(${i})">✏️</a> <a href="#" onclick="event.preventDefault();ocultarPersonaPagoInv(${i})">${p.on === false ? '👁' : '🚫'}</a></span></div>`).join('') : '<div class="empty">Todavía no hay personas autorizadas</div>'}
@@ -16779,15 +16784,39 @@ function haceTxtInv(ts) {
   return h < 36 ? `hace ${h} h` : `hace ${Math.round(h / 24)} días`;
 }
 function lineaRobotInv(conBoton) {
-  const r = robotSiiInv; if (!r || !r.ultimaEjecucion) return '';
+  const r = robotSiiInv; if (!r || !(r.ultimaEjecucion || r.solicitudTs)) return '';
+  const btnAct = conBoton !== false && !r.pausado ? ` <button class="btn-add" style="padding:4px 10px;margin-left:4px" onclick="pedirActualizacionRobotInv()">🔄 Actualizar ahora</button>` : '';
+  if (r.enCurso && r.inicioTs && Date.now() - r.inicioTs < 30 * 60000) return `<div style="font-size:12px;color:#1D4ED8;margin-bottom:8px;line-height:1.5">🔄 El robot está revisando el SII ahora (partió ${haceTxtInv(r.inicioTs)}). Los documentos nuevos aparecen solos.</div>`;
+  if (r.solicitudTs && r.solicitudTs > (r.solicitudAtendidaTs || 0) && Date.now() - r.solicitudTs < 60 * 60000) return `<div style="font-size:12px;color:#1D4ED8;margin-bottom:8px;line-height:1.5">⏳ Actualización pedida ${haceTxtInv(r.solicitudTs)}${r.solicitudPor ? ' por ' + escA(r.solicitudPor) : ''}. El robot la toma en máximo 5 minutos si el computador está encendido.</div>`;
+  if (!r.ultimaEjecucion) return '';
   const cuando = `${haceTxtInv(r.ultimaEjecucion)} (${new Date(r.ultimaEjecucion).toLocaleString('es-CL', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })})`;
   const atrasado = Date.now() - r.ultimaEjecucion > 30 * 3600000;
   let col = 'var(--verde)', txt;
-  if (r.pausado) { col = '#B91C1C'; txt = `🤖 Robot SII <strong>pausado</strong>: ${escA(r.error || '')}. No reintenta solo para que el SII no bloquee la clave.`; }
+  if (r.pausado) { col = '#B91C1C'; txt = `🤖 Robot SII <strong>pausado</strong>: ${escA(r.error || '')}. ${r.codigo === 'CLAVE' ? 'No reintenta solo para que el SII no bloquee la clave.' : 'Corrige config.txt en el computador del robot y luego reanuda.'}`; }
   else if (r.ok === false) { col = '#B45309'; txt = `🤖 Robot SII: la última revisión ${cuando} falló: ${escA(r.error || '')}. Reintenta en la próxima ejecución.`; }
   else { if (atrasado) col = '#B45309'; txt = `🤖 Robot SII: última revisión ${cuando}${r.nuevos ? ` · ${r.nuevos} nuevo(s)` : ' · sin documentos nuevos'}${atrasado ? ' · no ha vuelto a correr: revisa que el computador esté encendido' : ''}`; }
   const av = r.avisos ? `<div style="color:#B45309;margin-top:2px">⚠️ ${escA(r.avisos)}</div>` : '';
-  return `<div style="font-size:12px;color:${col};margin-bottom:8px;line-height:1.5">${txt}${av}${r.pausado && conBoton !== false ? ` <button class="btn-add" style="padding:4px 10px;margin-left:4px" onclick="reanudarRobotInv()">▶️ Reanudar</button>` : ''}</div>`;
+  return `<div style="font-size:12px;color:${col};margin-bottom:8px;line-height:1.5">${txt}${av}${btnAct}${r.pausado && conBoton !== false ? ` <button class="btn-add" style="padding:4px 10px;margin-left:4px" onclick="reanudarRobotInv()">▶️ Reanudar</button>` : ''}</div>`;
+}
+window.pedirActualizacionRobotInv = async function() {
+  try {
+    const ref = doc(dbInv, 'dte_recibidos', '_robot'), d = { solicitudTs: Date.now(), solicitudPor: currentUser || '' };
+    if (robotSiiInv) await updateDoc(ref, d); else await setDoc(ref, d);
+    toast('✓ Pedido enviado: el robot revisa el SII en máximo 5 minutos (si el computador está encendido)', true);
+  } catch (e) { toast('Error: ' + e.message, false); }
+}
+const HORARIOS_ROBOT_DEF = '08:00,13:00,18:00';
+window.guardarHorariosRobotInv = async function() {
+  const v = (document.getElementById('robot-horarios') || {}).value || '';
+  const hs = [...new Set(v.split(/[,;\s]+/).map(x => x.trim()).filter(Boolean))];
+  const malos = hs.filter(h => !/^([01]?\d|2[0-3]):[0-5]\d$/.test(h));
+  if (!hs.length || malos.length) { toast('Escribe las horas como 08:00, 13:00, 18:00' + (malos.length ? ` (revisa: ${malos.join(', ')})` : ''), false); return; }
+  const txt = hs.map(h => h.padStart(5, '0')).sort().join(',');
+  try {
+    const ref = doc(dbInv, 'dte_recibidos', '_robot');
+    if (robotSiiInv) await updateDoc(ref, { horarios: txt }); else await setDoc(ref, { horarios: txt });
+    toast('✓ Horarios guardados: el robot los usa desde su próxima revisión', true);
+  } catch (e) { toast('Error: ' + e.message, false); }
 }
 window.reanudarRobotInv = async function() {
   if (!confirm('¿Ya revisaste el RUT y la clave en config.txt del computador del robot?\nSi la clave sigue mal y el robot reintenta, el SII puede bloquearla.')) return;
