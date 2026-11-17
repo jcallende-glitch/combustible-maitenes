@@ -16554,6 +16554,7 @@ window.renderConfigContInv = function() {
       ${(personasPagoInv || []).length ? personasPagoInv.map((p, i) => `<div class="config-item" style="${p.on === false ? 'opacity:.5' : ''}"><span>👤 <strong>${escA(p.n)}</strong>${p.on === false ? ' (oculta)' : ''}</span><span style="white-space:nowrap"><a href="#" onclick="event.preventDefault();renombrarPersonaPagoInv(${i})">✏️</a> <a href="#" onclick="event.preventDefault();ocultarPersonaPagoInv(${i})">${p.on === false ? '👁' : '🚫'}</a></span></div>`).join('') : '<div class="empty">Todavía no hay personas autorizadas</div>'}
       <div style="display:flex;gap:6px;margin-top:10px"><input type="text" id="persona-nueva" list="lista-personas-pago" placeholder="Nombre de la persona" style="flex:1;min-width:0;box-sizing:border-box;margin:0"><datalist id="lista-personas-pago">${((typeof config !== 'undefined' && config.operadores) || []).map(n => `<option value="${escA(n)}">`).join('')}</datalist><button class="btn-add" style="padding:6px 12px" onclick="agregarPersonaPagoInv()">＋ Agregar</button></div>
     </div>
+    ${panelDudasInv()}
     <div class="panel">
       <div class="panel-title">📒 Plan de cuentas</div>
       <div style="font-size:12px;color:var(--acero);margin-bottom:8px">${(planCuentasInv || []).length ? `${(planCuentasInv || []).filter(c => c.on !== false).length} cuentas activas de ${(planCuentasInv || []).length}.` : 'Aún no se carga el plan de la contadora.'} Aquí creas cuentas nuevas, cambias nombres u ocultas las que no uses.</div>
@@ -16825,15 +16826,64 @@ window.dteEnviarAInv = function(id) {
 // ── Dejar un documento pendiente para revisarlo después (con Camila, por ejemplo) ──
 // Dudas típicas al revisar una factura o guía (se tocan para agregarlas a la nota)
 const DUDAS_DTE_INV = ['¿Quién compró el producto?', '¿Es a crédito o ya está pagada?', 'Si está pagada, ¿quién la pagó?', '¿Se recibió o no?', '¿Qué cuenta del plan va?', '¿A qué centro de costo va?', '¿Se pagó con caja chica?', 'No reconozco esta compra', 'Falta la guía de despacho', 'La cantidad no cuadra con la guía', 'El precio no es el cotizado', 'Posible duplicado', 'Pedir nota de crédito', 'Datos mal (RUT, razón social)', '¿Es gasto o inversión?', 'Consultar con el contador'];
+// Lista configurable en Contabilidad → Configuración (null = las de partida)
+let dudasCfgInv = null;
+const dudasActivasInv = () => dudasCfgInv && Array.isArray(dudasCfgInv.dudas) ? dudasCfgInv.dudas.slice() : DUDAS_DTE_INV.slice();
+const dudasQuitadasInv = () => new Set(((dudasCfgInv && dudasCfgInv.quitadas) || []).map(x => String(x).toLowerCase()));
+async function guardarDudasInv(dudas, quitadas) { await setDoc(doc(dbInv, 'dte_recibidos', '_dudas'), { dudas, quitadas: quitadas || [...dudasQuitadasInv()], actualizado: Date.now(), por: currentUser || '' }); }
+window.agregarDudaInv = async function() {
+  const el = document.getElementById('duda-nueva'), n = (el && el.value || '').trim().replace(/;/g, ',');
+  if (!n) { toast('Escribe la duda', false); return; }
+  const arr = dudasActivasInv(); if (arr.some(x => x.toLowerCase() === n.toLowerCase())) { toast('Esa duda ya está en la lista', false); return; }
+  const q = [...dudasQuitadasInv()].filter(x => x !== n.toLowerCase());
+  try { await guardarDudasInv([...arr, n], q); toast('✓ Duda agregada', true); } catch (e) { toast('Error: ' + e.message, false); }
+}
+window.subirDudaInv = async function(i) {
+  const arr = dudasActivasInv(); if (i <= 0 || !arr[i]) return;
+  [arr[i - 1], arr[i]] = [arr[i], arr[i - 1]];
+  try { await guardarDudasInv(arr); } catch (e) { toast('Error: ' + e.message, false); }
+}
+window.renombrarDudaInv = async function(i) {
+  const arr = dudasActivasInv(); if (!arr[i]) return;
+  const n = prompt('Texto de la duda', arr[i]); if (n === null || !n.trim()) return;
+  arr[i] = n.trim().replace(/;/g, ',');
+  try { await guardarDudasInv(arr); toast('✓ Duda actualizada', true); } catch (e) { toast('Error: ' + e.message, false); }
+}
+window.quitarDudaInv = async function(i) {
+  const arr = dudasActivasInv(); if (!arr[i]) return;
+  const q = dudasQuitadasInv(); q.add(arr[i].toLowerCase()); arr.splice(i, 1);
+  try { await guardarDudasInv(arr, [...q]); toast('✓ Duda eliminada de la lista', true); } catch (e) { toast('Error: ' + e.message, false); }
+}
+window.restaurarDudasInv = async function() {
+  if (!confirm('¿Volver a la lista de dudas de partida? Se pierden las que agregaste.')) return;
+  try { await guardarDudasInv(DUDAS_DTE_INV.slice(), []); toast('✓ Lista de partida', true); } catch (e) { toast('Error: ' + e.message, false); }
+}
+window.abrirConfigDudasInv = function() {
+  ['dte-duda', 'dte-modal'].forEach(i => { const m = document.getElementById(i); if (m) m.remove(); });
+  try { setTab('cont-config', document.getElementById('tab-cont-config')); } catch (e) {}
+  setTimeout(() => { const el = document.getElementById('panel-dudas'); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 200);
+}
+function panelDudasInv() {
+  const arr = dudasActivasInv(), a = 'event.preventDefault();';
+  return `<div class="panel" id="panel-dudas">
+      <div class="panel-title">❓ Dudas frecuentes</div>
+      <div style="font-size:12px;color:var(--acero);margin-bottom:8px">Aparecen para tocar al "Dejar pendiente" una factura o guía. La primera siempre sale primero; después, las que más se usan.</div>
+      ${arr.length ? arr.map((t, i) => `<div class="config-item"><span style="min-width:0;overflow-wrap:anywhere">${i === 0 ? '⭐ ' : ''}${escA(t)}</span><span style="white-space:nowrap">${i ? `<a href="#" title="Subir" onclick="${a}subirDudaInv(${i})">⬆️</a> ` : ''}<a href="#" title="Cambiar texto" onclick="${a}renombrarDudaInv(${i})">✏️</a> <a href="#" title="Eliminar" onclick="${a}quitarDudaInv(${i})">🗑</a></span></div>`).join('') : '<div class="empty">No hay dudas en la lista</div>'}
+      <div style="display:flex;gap:6px;margin-top:10px"><input type="text" id="duda-nueva" placeholder="Nueva duda, por ejemplo: ¿Va con orden de compra?" style="flex:1;min-width:0;box-sizing:border-box;margin:0" onkeydown="if(event.key==='Enter')agregarDudaInv()"><button class="btn-add" style="padding:6px 12px" onclick="agregarDudaInv()">＋ Agregar</button></div>
+      ${dudasCfgInv ? `<div style="font-size:12px;margin-top:8px"><a href="#" onclick="${a}restaurarDudasInv()">↺ Volver a la lista de partida</a></div>` : ''}
+    </div>`;
+}
 const separaDudasInv = t => String(t || '').split(/\s*[;\n]\s*/).map(x => x.trim()).filter(Boolean);
 window.dteRevisionInv = function(id) {
   const d = dteRecibidosInv.find(x => x.id === id); if (!d) return;
   // Las que más se han usado (primero las de este proveedor), además de las típicas
   const cuenta = {}, rut = normRutDte(d.rutEmisor);
   dteRecibidosInv.forEach(x => separaDudasInv(x.revisionNota).forEach(t => { const k = t.toLowerCase(); cuenta[k] = cuenta[k] || { t, n: 0 }; cuenta[k].n += normRutDte(x.rutEmisor) === rut ? 3 : 1; }));
-  const usadas = Object.values(cuenta).sort((a, b) => b.n - a.n).map(x => x.t);
+  // De la historia: las de la lista según uso, y las escritas a mano que se repiten (salvo las eliminadas en Configuración)
+  const lista = dudasActivasInv(), enLista = new Set(lista.map(x => x.toLowerCase())), quitadas = dudasQuitadasInv();
+  const usadas = Object.values(cuenta).filter(x => !quitadas.has(x.t.toLowerCase()) && (enLista.has(x.t.toLowerCase()) || x.n >= 2)).sort((a, b) => b.n - a.n).map(x => x.t);
   const vistas = new Set(), opciones = [];
-  [DUDAS_DTE_INV[0], ...usadas.slice(0, 8), ...DUDAS_DTE_INV.slice(1)].forEach(t => { const k = t.toLowerCase(); if (!vistas.has(k) && t.length <= 80) { vistas.add(k); opciones.push(t); } });
+  [...lista.slice(0, 1), ...usadas.slice(0, 8), ...lista.slice(1)].forEach(t => { const k = t.toLowerCase(); if (!vistas.has(k) && t.length <= 80) { vistas.add(k); opciones.push(t); } });
   const v = document.getElementById('dte-duda'); if (v) v.remove();
   const ov = document.createElement('div'); ov.id = 'dte-duda';
   ov.style.cssText = 'position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.55);display:flex;align-items:flex-start;justify-content:center;padding:16px 10px;overflow-y:auto;box-sizing:border-box';
@@ -16843,6 +16893,7 @@ window.dteRevisionInv = function(id) {
     <div style="font-size:12px;color:var(--acero);margin:4px 0 10px;overflow-wrap:anywhere">${escA(abrevTipoDte(d.tipo))} N° ${escA(d.folio)} · ${escA(d.razonSocial || '')}${d.total ? ' · ' + pesoInv(d.total) : ''}</div>
     <div style="font-size:12px;font-weight:700;margin-bottom:6px">Toca una o varias${usadas.length ? ' (después de la primera, las que más se usan)' : ''}:</div>
     <div id="dte-duda-chips" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">${opciones.map((t, i) => `<span class="cultivo-chip" data-i="${i}" style="font-size:13px;padding:5px 10px" onclick="dteDudaChipInv(this)">${escA(t)}</span>`).join('')}</div>
+    <div style="font-size:12px;margin:-4px 0 10px"><a href="#" onclick="event.preventDefault();abrirConfigDudasInv()">⚙️ Agregar o quitar dudas de esta lista</a></div>
     <textarea id="dte-duda-nota" rows="3" placeholder="O escribe la duda…" oninput="dteDudaMarcarInv()" style="width:100%;box-sizing:border-box;font-size:15px;font-family:inherit">${escA(d.revisionNota || '')}</textarea>
     <div style="display:flex;gap:8px;margin-top:10px"><button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="document.getElementById('dte-duda').remove()">Cancelar</button><button class="btn btn-verde" style="flex:1;justify-content:center" onclick="dteGuardarDudaInv('${d.id}')">Guardar</button></div>
   </div>`;
@@ -17474,8 +17525,18 @@ function itemsIngresoDesdeDteInv(d) {
   }
   return { items, omitidos };
 }
-window.dteAIngresoInv = function(id) {
+window.dteAIngresoInv = function(id, todoLlego) {
   const d = dteRecibidosInv.find(x => x.id === id); if (!d) return;
+  // Factura esperando despacho: preguntar si llegó todo, o si queda pendiente por recibir
+  if (esFacturaDteInv(d) && d.recepcion === 'despacho' && !todoLlego) {
+    const libres = dteRecibidosInv.filter(g => g.tipo === 52 && !g.sinFactura && normRutDte(g.rutEmisor) === normRutDte(d.rutEmisor) && !facturaDeGuiaInv(g)).length;
+    const op = (t, sub, fn, st) => `<div class="config-item" style="cursor:pointer;flex-direction:column;align-items:stretch;gap:2px${st ? ';' + st : ''}" onclick="document.getElementById('dte-elegir').remove();${fn}"><div><strong>${t}</strong></div><div style="font-size:12px;color:var(--acero)">${sub}</div></div>`;
+    modalElegirDteInv(`Factura N° ${escA(d.folio)} · ${escA(d.razonSocial || '')}`, 'Esta factura está esperando despacho. ¿Qué pasó con el producto?', [
+      op('📦 Aún no llega todo: queda pendiente por recibir', 'Sale de "Por ingresar" sin subir el stock. El stock sube con cada guía que ingreses.', `dteEnviarPorRecibirInv('${d.id}')`, 'background:#EFF6FF'),
+      ...(libres ? [op(`🔗 Llegó con guía: asignarla (${libres} sin factura)`, 'Enlaza la guía de despacho que ya está en la app.', `dteAsignarGuiaInv('${d.id}')`)] : []),
+      op('📥 Llegó todo: ingresar a bodega', 'El stock sube completo y la factura queda recibida.', `dteAIngresoInv('${d.id}', true)`)]);
+    return;
+  }
   if (d.sinXml || !(d.items || []).length) { toast('Falta el detalle de este documento: tráelo del SII o importa su XML', false); return; }
   const prev = ingresoPrevioDteInv(d);
   if (prev && !confirm(`Este documento parece ya ingresado (doc ${prev.nroDocumento || ''} del ${new Date(prev.ts).toLocaleDateString('es-CL')}).\n¿Ingresarlo de todas formas?`)) return;
@@ -17483,7 +17544,6 @@ window.dteAIngresoInv = function(id) {
     const ing = guiasAsignadasInv(d).filter(g => g.estado === 'ingresado');
     if (ing.length && !confirm(`Esta factura corresponde a la(s) guía(s) N° ${ing.map(g => g.folio).join(', ')}, que ya ingresaste a bodega.\nSi la ingresas, el stock se sumaría dos veces. ¿Ingresarla igual?`)) return;
   }
-  if (esFacturaDteInv(d) && d.recepcion === 'despacho' && !confirm('¿Llegó todo lo de esta factura?\n\nSi la ingresas ahora, el stock sube completo y la factura queda como recibida.\nSi el producto llega por partes con guías, mejor usa "📦 Enviar a bodega (por recibir)".')) return;
   if (itemsIngresoInv.some(it => it.nombre && it.nombre.trim()) && !confirm('El formulario de ingreso ya tiene productos. ¿Reemplazarlos por los del documento?')) return;
   const { items, omitidos } = itemsIngresoDesdeDteInv(d);
   if (!items.length) { toast('El documento no trae productos para la bodega', false); return; }
@@ -17526,6 +17586,7 @@ function suscribirDteInv() {
   onSnapshot(doc(dbInv, 'dte_recibidos', '_plan_cuentas'), sn => { planCuentasInv = sn.exists() ? (sn.data().cuentas || []) : []; renderDteRecibidosInv(); renderConfigContInv(); }, e => console.warn('plan_cuentas', e));
   onSnapshot(query(collection(dbInv, 'dte_recibidos'), where('buzon', '==', true)), snap => { if (snap.docs.length) procesarBuzonInv(snap); }, e => console.warn('buzón SII', e));
   onSnapshot(doc(dbInv, 'dte_recibidos', '_robot'), sn => { robotSiiInv = sn.exists() ? sn.data() : null; renderDteRecibidosInv(); renderConfigContInv(); }, e => console.warn('robot', e));
+  onSnapshot(doc(dbInv, 'dte_recibidos', '_dudas'), sn => { dudasCfgInv = sn.exists() ? sn.data() : null; renderConfigContInv(); }, e => console.warn('dudas', e));
   onSnapshot(doc(dbInv, 'dte_recibidos', '_compradores'), sn => { compradoresInv = sn.exists() ? (sn.data().personas || []) : null; renderDteRecibidosInv(); renderConfigContInv(); }, e => console.warn('compradores', e));
   onSnapshot(doc(dbInv, 'dte_recibidos', '_personas'), sn => { personasPagoInv = sn.exists() ? (sn.data().personas || []) : null; renderConfigContInv(); }, e => console.warn('personas', e));
   onSnapshot(doc(dbInv, 'dte_recibidos', '_cajas'), sn => { cajasCfgInv = sn.exists() ? (sn.data().cajas || []) : null; renderConfigContInv(); }, e => console.warn('cajas', e));
