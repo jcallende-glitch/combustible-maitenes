@@ -16446,8 +16446,11 @@ window.renderConfigContInv = function() {
       <div class="panel-title">⏰ Horarios del robot</div>
       <div style="font-size:12px;color:var(--acero);margin-bottom:8px">A estas horas (de Chile) el robot revisa el SII todos los días. ${robotEnNubeInv() ? 'En la nube parte hasta 15 minutos después de cada hora, aunque no haya ningún computador encendido.' : 'Si el computador estaba apagado, revisa apenas se encienda.'} Para algo urgente usa 🔄 Actualizar ahora.</div>
       <div style="display:flex;gap:6px;flex-wrap:wrap"><input type="text" id="robot-horarios" value="${escA(((robotSiiInv && robotSiiInv.horarios) || HORARIOS_ROBOT_DEF).split(',').join(', '))}" placeholder="08:00, 13:00, 18:00" style="flex:1;min-width:160px;box-sizing:border-box;margin:0"><button class="btn-add" style="padding:6px 12px" onclick="guardarHorariosRobotInv()">Guardar</button><button class="btn-add" style="padding:6px 12px;background:#EFF6FF;color:#1D4ED8" onclick="pedirActualizacionRobotInv()">🔄 Actualizar ahora</button></div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px"><label style="font-size:12px;color:var(--acero)">O cada</label><select id="robot-cada" style="box-sizing:border-box;margin:0;width:auto">${[1, 2, 3, 4].map(n => `<option value="${n}"${n === serieHorariosInv().cada ? ' selected' : ''}>${n === 1 ? '1 hora' : n + ' horas'}</option>`).join('')}</select><label style="font-size:12px;color:var(--acero)">de</label><input type="time" id="robot-cada-desde" value="${serieHorariosInv().desde}" style="box-sizing:border-box;margin:0;width:auto"><label style="font-size:12px;color:var(--acero)">a</label><input type="time" id="robot-cada-hasta" value="${serieHorariosInv().hasta}" style="box-sizing:border-box;margin:0;width:auto"><button class="btn-add" style="padding:6px 12px" onclick="horariosCadaRobotInv()">Aplicar</button></div>
-      <div style="font-size:11px;color:var(--acero);margin-top:4px">Revisar seguido no molesta al SII: después de la primera revisión del día, el robot solo mira ayer y hoy.</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px"><label style="font-size:12px;color:var(--acero)">O cada</label><select id="robot-cada" data-no-mejorar style="box-sizing:border-box;margin:0;width:auto">${[1, 2, 3, 4].map(n => `<option value="${n}"${n === serieHorariosInv().cada ? ' selected' : ''}>${n === 1 ? '1 hora' : n + ' horas'}</option>`).join('')}</select><label style="font-size:12px;color:var(--acero)">de</label><input type="time" id="robot-cada-desde" value="${serieHorariosInv().desde}" style="box-sizing:border-box;margin:0;width:auto"><label style="font-size:12px;color:var(--acero)">a</label><input type="time" id="robot-cada-hasta" value="${serieHorariosInv().hasta}" style="box-sizing:border-box;margin:0;width:auto"><button class="btn-add" style="padding:6px 12px" onclick="horariosCadaRobotInv()">Aplicar</button></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:10px"><label style="font-size:12px;color:var(--acero)">La primera revisión del día mira</label><select id="robot-margen" data-no-mejorar onchange="guardarMargenRobotInv()" style="box-sizing:border-box;margin:0;width:auto">${[2, 3, 5, 7].map(n => `<option value="${n}"${n === ((robotSiiInv && +robotSiiInv.margenDias) || 5) ? ' selected' : ''}>${n} días atrás</option>`).join('')}</select></div>
+      <div style="font-size:11px;color:var(--acero);margin-top:4px">Las siguientes revisiones del mismo día miran solo ayer y hoy. Los días de margen sirven por si un proveedor manda una factura con fecha atrasada.</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:10px"><label style="font-size:12px;color:var(--acero)">📅 Revisión mensual: el día</label><select id="robot-mensual-dia" data-no-mejorar onchange="guardarMensualRobotInv()" style="box-sizing:border-box;margin:0;width:auto">${(() => { const v = robotSiiInv && robotSiiInv.mensualDia != null && robotSiiInv.mensualDia !== '' ? +robotSiiInv.mensualDia : 11; return '<option value="0"' + (v === 0 ? ' selected' : '') + '>Desactivada</option>' + Array.from({ length: 28 }, (_, i) => i + 1).map(n => `<option value="${n}"${n === v ? ' selected' : ''}>${n}</option>`).join(''); })()}</select><label style="font-size:12px;color:var(--acero)">mira</label><select id="robot-mensual-dias" data-no-mejorar onchange="guardarMensualRobotInv()" style="box-sizing:border-box;margin:0;width:auto">${[30, 45, 60, 90, 120].map(n => `<option value="${n}"${n === ((robotSiiInv && +robotSiiInv.mensualDias) || 45) ? ' selected' : ''}>${n} días atrás</option>`).join('')}</select></div>
+      <div style="font-size:11px;color:var(--acero);margin-top:4px">La ley deja emitir la factura de las guías hasta el día 10 del mes siguiente, con fecha del mes anterior. Por eso conviene el día 11 y 45 días. Si ese día el robot no corre, la hace en la primera revisión siguiente.${robotSiiInv && robotSiiInv.profundaMes ? ` Última revisión mensual: ${['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'][+String(robotSiiInv.profundaMes).slice(5, 7) - 1] || ''} ${String(robotSiiInv.profundaMes).slice(0, 4)}.` : ''}${robotSiiInv && robotSiiInv.profundaEnCurso && robotSiiInv.profundaEnCurso !== robotSiiInv.profundaMes ? ' La de este mes quedó a medias y sigue en la próxima revisión.' : ''}</div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:10px"><label style="font-size:12px;color:var(--acero)">Traer documentos desde</label><input type="date" id="robot-desde" value="${escA((robotSiiInv && robotSiiInv.desdeFecha) || '2026-11-01')}" style="box-sizing:border-box;margin:0"><button class="btn-add" style="padding:6px 12px" onclick="guardarDesdeRobotInv()">Guardar</button></div>
     </div>
     <div class="panel">
@@ -16455,6 +16458,8 @@ window.renderConfigContInv = function() {
       <div style="font-size:12px;color:var(--acero);margin-bottom:8px">Llega al mismo WhatsApp de los avisos del combustible (${fmtTelWspInv(WA_PHONE)}). Un solo mensaje por revisión; si no hay nada nuevo, no avisa.</div>
       <label style="display:flex;gap:8px;align-items:center;font-size:13px;margin-bottom:6px;text-transform:none;letter-spacing:normal;font-weight:400;color:inherit"><input type="checkbox" id="wsp-nuevos" ${robotSiiInv && robotSiiInv.wspNuevos === true ? 'checked' : ''} onchange="guardarAvisoWspInv()" style="width:auto;margin:0"> Cuando el robot traiga facturas, guías o notas nuevas</label>
       <label style="display:flex;gap:8px;align-items:center;font-size:13px;margin-bottom:8px;text-transform:none;letter-spacing:normal;font-weight:400;color:inherit"><input type="checkbox" id="wsp-pausa" ${robotSiiInv && robotSiiInv.wspPausa === true ? 'checked' : ''} onchange="guardarAvisoWspInv()" style="width:auto;margin:0"> Si el robot se pausa por algo que hay que corregir (clave, certificado)</label>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:4px"><label style="font-size:13px;text-transform:none;letter-spacing:normal;font-weight:400;color:inherit">⚠️ Aviso especial si llega un documento con fecha atrasada de</label><select id="wsp-desfase" data-no-mejorar onchange="guardarAvisoWspInv()" style="box-sizing:border-box;margin:0;width:auto">${(() => { const v = robotSiiInv && robotSiiInv.wspDesfase != null && robotSiiInv.wspDesfase !== '' ? +robotSiiInv.wspDesfase : 7; return [[0, 'No avisar'], [3, '3 días o más'], [5, '5 días o más'], [7, '7 días o más'], [10, '10 días o más'], [15, '15 días o más'], [30, '30 días o más']].map(([n, t]) => `<option value="${n}"${n === v ? ' selected' : ''}>${t}</option>`).join(''); })()}</select></div>
+      <div style="font-size:11px;color:var(--acero);margin-bottom:8px">Cuenta como atrasado un documento con fecha anterior a la última revisión del robot, o sea, uno que no estaba cuando el robot ya había revisado ese día. Llega aunque no marques la primera casilla, y también se ve en la línea del robot.</div>
       <button class="btn-add" style="padding:6px 12px;background:#F0FDF4;color:#15803D" onclick="probarAvisoWspInv()">📨 Mandar un aviso de prueba</button>
     </div>
     <div class="panel">
@@ -16876,6 +16881,22 @@ function serieHorariosInv() {
   }
   return { cada: 1, desde: '08:00', hasta: '19:00' };
 }
+window.guardarMensualRobotInv = async function() {
+  const dia = +((document.getElementById('robot-mensual-dia') || {}).value ?? 11), dias = +((document.getElementById('robot-mensual-dias') || {}).value || 45);
+  try {
+    const ref = doc(dbInv, 'dte_recibidos', '_robot'), d = { mensualDia: dia, mensualDias: dias };
+    if (robotSiiInv) await updateDoc(ref, d); else await setDoc(ref, d);
+    toast(dia ? `✓ Revisión mensual: el día ${dia} mira ${dias} días atrás` : '✓ Revisión mensual desactivada', true);
+  } catch (e) { toast('Error: ' + e.message, false); }
+}
+window.guardarMargenRobotInv = async function() {
+  const n = +((document.getElementById('robot-margen') || {}).value || 5);
+  try {
+    const ref = doc(dbInv, 'dte_recibidos', '_robot');
+    if (robotSiiInv) await updateDoc(ref, { margenDias: n }); else await setDoc(ref, { margenDias: n });
+    toast(`✓ La primera revisión del día mirará ${n} días atrás`, true);
+  } catch (e) { toast('Error: ' + e.message, false); }
+}
 window.horariosCadaRobotInv = function() {
   const cada = +((document.getElementById('robot-cada') || {}).value || 1);
   const d = (document.getElementById('robot-cada-desde') || {}).value || '', h = (document.getElementById('robot-cada-hasta') || {}).value || '';
@@ -16891,12 +16912,13 @@ window.horariosCadaRobotInv = function() {
 const fmtTelWspInv = t => { const d = String(t || '').replace(/\D/g, ''); return /^569\d{8}$/.test(d) ? `+56 9 ${d.slice(3, 7)} ${d.slice(7)}` : '+' + d; };
 window.guardarAvisoWspInv = async function() {
   const nuevos = !!(document.getElementById('wsp-nuevos') || {}).checked, pausa = !!(document.getElementById('wsp-pausa') || {}).checked;
+  const desfase = +((document.getElementById('wsp-desfase') || {}).value ?? 7);
   // El robot usa el mismo teléfono y clave de CallMeBot que los avisos del combustible
-  const d = { wspNuevos: nuevos, wspPausa: pausa, wspTel: WA_PHONE, wspKey: WA_KEY };
+  const d = { wspNuevos: nuevos, wspPausa: pausa, wspDesfase: desfase, wspTel: WA_PHONE, wspKey: WA_KEY };
   try {
     const ref = doc(dbInv, 'dte_recibidos', '_robot');
     if (robotSiiInv) await updateDoc(ref, d); else await setDoc(ref, d);
-    toast(nuevos || pausa ? '✓ Aviso por WhatsApp activado' : '✓ Avisos por WhatsApp desactivados', true);
+    toast(nuevos || pausa || desfase ? '✓ Avisos por WhatsApp guardados' : '✓ Avisos por WhatsApp desactivados', true);
   } catch (e) { toast('Error: ' + e.message, false); }
 }
 window.probarAvisoWspInv = function() {
