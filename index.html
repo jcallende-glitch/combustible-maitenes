@@ -16304,7 +16304,7 @@ const sumNcInv = f => ncsDeFacturaInv(f).reduce((a, n) => a + (n.total || 0), 0)
 const saldoPagarInv = d => d.pagada ? 0 : Math.max(0, (d.total || 0) - sumAbonosInv(d) - sumNcInv(d));
 const diasVenceInv = d => d.vence ? Math.round((new Date(d.vence + 'T00:00:00') - new Date(hoyIsoInv() + 'T00:00:00')) / 86400000) : null;
 const vencePorDefectoInv = d => { const v = parseVenceInv(d.fchVenc); if (v) return v; const b = new Date((d.fecha || hoyIsoInv()) + 'T00:00:00'); b.setDate(b.getDate() + 30); return b.getFullYear() + '-' + String(b.getMonth() + 1).padStart(2, '0') + '-' + String(b.getDate()).padStart(2, '0'); };
-const esPagableDteInv =d => ![52, 50, 56, 61].includes(d.tipo);
+const esPagableDteInv = d => ![52, 50, 56, 61].includes(d.tipo) || (d.tipo === 56 && (d.manual || !!d.enlazadaDe));
 function estadoPagoInv(d) {
   if (!esPagableDteInv(d)) return null;
   if (d.pago === 'cuenta') return { k: 'cuenta', t: '🏦 Pagada de la cuenta' + (d.pagoDetalle ? ' · ' + escA(d.pagoDetalle) : ''), bg: 'var(--verde-suave)', fg: 'var(--verde)' };
@@ -17553,7 +17553,7 @@ function armarCxpManualInv(x) {
   if (x.vence && !fechaValidaInv(x.vence)) return { error: 'el vencimiento no se entiende como fecha' };
   const saldo = x.saldo === '' || x.saldo == null ? total : Math.max(0, Math.round(Number(x.saldo) || 0));
   const cta = String(x.cuenta || '').trim(), ctaObj = cta ? cuentaPorCodInv(cta) : null;
-  const abonos = saldo < total ? [{ fecha: x.fecha, monto: total - saldo, medio: 'cuenta', detalle: '', forma: 'otro', nro: '', chequeFecha: '', formaOtro: 'Abonado antes de la app', quien: '', por: currentUser || '', ts: Date.now() }] : [];
+  const abonos = saldo < total ? [{ fecha: x.fecha, monto: total - saldo, medio: 'cuenta', detalle: '', forma: 'otro', nro: '', chequeFecha: '', formaOtro: x.abonoNota || 'Abonado antes de la app', quien: '', por: currentUser || '', ts: Date.now() }] : [];
   const id = typeof tipo === 'number' ? idDteInv(rut, tipo, folio) : 'man_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
   return { id, saldo, data: { razonSocial: x.prov, rutEmisor: rut, fecha: x.fecha, total, vence: x.vence || '', glosa: x.glosa || '', cuenta: cta, cuentaNombre: ctaObj ? ctaObj.n || '' : '', compro: x.compro || '', anterior: x.fecha < INICIO_CONT_INV,
     items: Array.isArray(x.items) && x.items.length ? x.items : x.glosa ? [{ nombre: x.glosa, cantidad: 1, unidad: '', precio: total, montoItem: total }] : [], tipo, folio: /^\d+$/.test(folio) ? Number(folio) : folio, refs: [], manual: true, sinXml: true, estado: 'ignorado', ...([33, 34, 46].includes(tipo) ? { recepcion: 'recibida' } : {}),
@@ -17784,11 +17784,27 @@ function rutPorNombreInv(nombre) {
   for (const [rut, rz] of m) { const p = puntajeNombreInv(nombre, rz); if (p > pts + 1e-9) { mejor = rut; pts = p; empate = false; } else if (p > 0 && Math.abs(p - pts) < 1e-9 && rut !== mejor) empate = true; }
   return pts >= 0.5 && !empate ? mejor : '';
 }
-// Facturas (y notas de débito) del archivo de un proveedor que pueden explicar un saldo
+// Todos los documentos de un proveedor para enlazar: los del archivo (julio-octubre) y los que ya están en la app, cada uno con su estado
+function facturasProvInv(rut) {
+  const r = normRutDte(rut || ''); if (!r) return [];
+  const out = [], ya = new Set(), clave = (t, f) => `${t === 61 ? 'nc' : 'f'}|${sinCerosInv(f)}`;
+  dteRecibidosInv.forEach(d => {
+    if (normRutDte(d.rutEmisor) !== r || ![33, 34, 46, 56, 61].includes(d.tipo)) return;
+    ya.add(d.id); ya.add(clave(d.tipo, d.folio));
+    const pagada = d.pagada || d.pago === 'cuenta' || d.pago === 'caja' || (d.pago === 'credito' && saldoPagarInv(d) <= 0);
+    const estado = d.tipo === 61 ? 'ncapp' : pagada ? 'pagada' : d.enlazadaDe ? 'enlazada' : d.pago === 'credito' ? 'cxp' : 'sinpago';
+    out.push({ id: d.id, tipo: d.tipo, folio: d.folio, fecha: d.fecha || '', razonSocial: d.razonSocial || '', rutEmisor: d.rutEmisor, items: d.items || [], fchVenc: d.vence || parseVenceInv(d.fchVenc) || '', total: d.tipo === 61 ? Math.round(d.total || 0) : saldoPagarInv(d), totalDoc: Math.round(d.total || 0), src: 'app', estado, d });
+  });
+  (historicoInv || []).forEach(h => {
+    if (normRutDte(h.rutEmisor) !== r || ![33, 34, 46, 56, 61].includes(h.tipo) || ya.has(h.id) || ya.has(clave(h.tipo, h.folio))) return;
+    out.push({ ...h, totalDoc: h.total, src: 'hist', estado: h.tipo === 61 ? (h.usadaEn ? 'ncusada' : 'nc') : 'libre' });
+  });
+  return out.sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)));
+}
+// Las que el cruce automático puede usar: las del archivo y las de la app que todavía no tienen forma de pago
 function candidatosHistInv(rut, nombre) {
   const r = normRutDte(rut || '') || rutPorNombreInv(nombre); if (!r) return [];
-  return (historicoInv || []).filter(h => [33, 34, 46, 56].includes(h.tipo) && !enCxpInv(h) && normRutDte(h.rutEmisor) === r)
-    .sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)));
+  return facturasProvInv(r).filter(c => (c.estado === 'libre' || c.estado === 'sinpago') && c.total > 0);
 }
 // Busca qué facturas suman el saldo: primero las más recientes seguidas, después una sola, después combinaciones
 function combinacionSaldoInv(cands, saldo, mes, soloMes) {
@@ -17860,11 +17876,12 @@ function vistaAnterioresCxpInv(q) {
       <div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-verde" style="flex:1;min-width:150px;justify-content:center" onclick="cxpSubirYCruzarInv()">📄 Subir lista y cruzar</button>${saldos.length ? `<button class="btn-add" style="flex:1;min-width:150px;padding:9px" onclick="cruceAutoInv()">⚡ Cruzar los ${saldos.length} saldos ya cargados</button>` : ''}</div>
     </div>` : '';
   const bloqueSaldos = cruce + (saldos.length ? `<div style="font-size:13px;font-weight:800;margin:10px 2px 4px">🔗 Saldos anteriores por enlazar · ${saldos.length}</div>` + saldos.map(d => {
-    const c = candidatosHistInv(d.rutEmisor, d.razonSocial), comb = h.length ? combinacionSaldoInv(c, saldoPagarInv(d), String(d.vence || '').slice(0, 7)) : null;
+    const c = candidatosHistInv(d.rutEmisor, d.razonSocial), comb = h.length ? combinacionSaldoInv(c, metaSaldoInv(d), String(d.vence || '').slice(0, 7)) : null;
+    const conoce = !!(normRutDte(d.rutEmisor || '') || rutPorNombreInv(d.razonSocial));
     return `<div class="config-item" style="flex-direction:column;align-items:stretch;gap:4px">
       <div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><span style="display:flex;gap:8px;align-items:center;min-width:0;overflow-wrap:anywhere">${logoProvInv(d.rutEmisor, d.razonSocial, 24)}<strong>${escA(d.razonSocial)}</strong></span><strong style="white-space:nowrap">${pesoInv(saldoPagarInv(d))}</strong></div>
-      <div style="font-size:12px;color:${comb ? 'var(--verde)' : 'var(--acero)'}">${!h.length ? 'Sube el Registro de Compras para buscar sus facturas' : comb ? `✓ Coincide con ${comb.length === 1 ? 'la factura' : comb.length + ' facturas:'} ${comb.map(x => 'N° ' + escA(x.folio)).join(', ')}` : c.length ? `No encontré una suma exacta entre sus ${c.length} facturas: elige a mano` : 'No hay facturas de este proveedor en el archivo'}</div>
-      ${h.length && c.length ? `<div><button class="btn-add" style="padding:6px 10px" onclick="histEnlazarInv('${d.id}')">${comb ? '🔗 Revisar y enlazar' : '🔗 Elegir facturas'}</button></div>` : ''}
+      <div style="font-size:12px;color:${comb ? 'var(--verde)' : 'var(--acero)'}">${!h.length ? 'Sube el Registro de Compras para buscar sus facturas' : comb ? `✓ Coincide con ${comb.length === 1 ? 'la factura' : comb.length + ' facturas:'} ${comb.map(x => 'N° ' + escA(x.folio)).join(', ')}` : c.length ? `No encontré una suma exacta entre sus ${c.length} facturas: elige a mano` : conoce ? 'No hay facturas pendientes de este proveedor en el archivo' : 'No reconozco el proveedor en el archivo: búscalo a mano'}</div>
+      ${h.length ? `<div><button class="btn-add" style="padding:6px 10px" onclick="histEnlazarInv('${d.id}')">${comb ? '🔗 Revisar y enlazar' : '🔎 Ver sus facturas y elegir'}</button></div>` : ''}
     </div>`; }).join('') : '');
   let lista = h.filter(x => [33, 34, 46, 61, 56].includes(x.tipo));
   if (q) lista = lista.filter(x => normNom(`${x.razonSocial} ${x.folio} ${x.rutEmisor}`).includes(q));
@@ -17892,18 +17909,23 @@ window.cruceAutoInv = async function() {
     r.comb = combinacionSaldoInv(cands, metaSaldoInv(r.d), mes, pasada === 1);
     if (r.comb) r.comb.forEach(h => usados.add(h.id));
   }
-  for (const r of res) r.plazo = plazoProvInv(r.d.rutEmisor || (r.comb && r.comb[0] && r.comb[0].rutEmisor) || rutPorNombreInv(r.d.razonSocial) || '');
-  const sobran = (historicoInv || []).filter(h => !usados.has(h.id) && !enCxpInv(h));
+  for (const r of res) { r.rut = normRutDte(r.d.rutEmisor || '') || rutPorNombreInv(r.d.razonSocial); r.plazo = plazoProvInv(r.rut || (r.comb && r.comb[0] && r.comb[0].rutEmisor) || ''); r.nFact = r.rut ? candidatosHistInv(r.rut).length : 0; }
+  const per = (historicoInv || []).map(x => x.periodo).filter(Boolean).sort(), desde = per.length ? nomMesCxpInv(per[0]).toLowerCase() : '';
+  const motivo = r => !r.rut ? 'No reconozco este nombre entre los proveedores del archivo: búscalo a mano' : !r.nFact ? `No hay facturas pendientes de este proveedor en el archivo${desde ? ` (¿son anteriores a ${desde}?)` : ''}` : `Ninguna combinación de sus ${r.nFact} facturas suma exacto ese valor`;
+  // No se borran las facturas de proveedores con saldos sin calce: hacen falta para buscarlas a mano
+  const rutsSin = new Set(res.filter(r => !r.comb && r.rut).map(r => r.rut)), desconocidos = res.filter(r => !r.comb && !r.rut).length;
+  const sobran = (historicoInv || []).filter(h => !usados.has(h.id) && !enCxpInv(h) && !rutsSin.has(normRutDte(h.rutEmisor)));
   const ok = res.filter(r => r.comb), no = res.filter(r => !r.comb);
   cruceInv = { res, sobran };
   const linea = r => `<div class="config-item" style="flex-direction:column;align-items:stretch;gap:2px">
-    <div style="display:flex;justify-content:space-between;gap:8px"><span style="display:flex;gap:8px;align-items:center;min-width:0;overflow-wrap:anywhere">${logoProvInv(r.d.rutEmisor || (r.comb ? r.comb[0].rutEmisor : '') || rutPorNombreInv(r.d.razonSocial), r.d.razonSocial, 22)}<strong>${escA(r.d.razonSocial)}</strong></span><strong style="white-space:nowrap">${pesoInv(saldoPagarInv(r.d))}</strong></div>
+    <div style="display:flex;justify-content:space-between;gap:8px"><span style="display:flex;gap:8px;align-items:center;min-width:0;overflow-wrap:anywhere">${logoProvInv(r.rut || (r.comb ? r.comb[0].rutEmisor : ''), r.d.razonSocial, 22)}<strong>${escA(r.d.razonSocial)}</strong></span><strong style="white-space:nowrap">${pesoInv(saldoPagarInv(r.d))}</strong></div>
     ${sumAbonosInv(r.d) ? `<div style="font-size:12px;color:var(--acero)">Total ${pesoInv(r.d.total)}, ya pagado ${pesoInv(sumAbonosInv(r.d))}: se descuenta de la factura más antigua</div>` : ''}
-    ${r.comb ? r.comb.map(h => `<div style="font-size:12px;overflow-wrap:anywhere">✓ ${escA(abrevTipoDte(h.tipo))} N° ${escA(h.folio)} · ${fmtFechaInv(h.fecha)} · ${pesoInv(h.total)} · vence ${fmtFechaInv(h.fchVenc || r.d.vence || sumarDiasInv(h.fecha, r.plazo.dias))}${h.fchVenc ? '' : r.d.vence ? ' (de tu listado)' : ' (estimado)'}${(h.items || []).length ? `<br><span style="color:var(--acero)">· ${escA(glosaHistInv(h))}</span>` : ''}</div>`).join('') : '<div style="font-size:12px;color:#B45309">✗ No encontré facturas que sumen ese valor: queda como saldo anterior (puedes enlazarla a mano)</div>'}
+    ${r.comb ? r.comb.map(h => `<div style="font-size:12px;overflow-wrap:anywhere">✓ ${escA(abrevTipoDte(h.tipo))} N° ${escA(h.folio)} · ${fmtFechaInv(h.fecha)} · ${pesoInv(h.total)} · vence ${fmtFechaInv(h.fchVenc || r.d.vence || sumarDiasInv(h.fecha, r.plazo.dias))}${h.fchVenc ? '' : r.d.vence ? ' (de tu listado)' : ' (estimado)'}${h.src === 'app' ? ' · 📱 ya en la app' : ''}${(h.items || []).length ? `<br><span style="color:var(--acero)">· ${escA(glosaHistInv(h))}</span>` : ''}</div>`).join('') : `<div style="font-size:12px;color:#B45309">✗ ${motivo(r)}</div>`}
+    <div style="margin-top:4px"><button class="btn-add" style="padding:5px 10px;font-size:12px;${r.comb ? 'background:var(--fondo);color:var(--negro)' : ''}" onclick="histEnlazarInv('${r.d.id}','','',true)">${r.comb ? '✏️ Elegir otras' : '🔎 Ver sus facturas y elegir'}</button></div>
   </div>`;
   modalElegirDteInv('⚡ Cruce automático', `<strong>${ok.length}</strong> de ${res.length} saldo${res.length === 1 ? '' : 's'} calzan con facturas del archivo. Revisa y confirma.`, [`
     ${ok.map(linea).join('')}${no.length ? `<div style="font-size:13px;font-weight:800;margin:10px 2px 4px">Sin calce · ${no.length}</div>` + no.map(linea).join('') : ''}
-    <label style="display:flex;gap:8px;align-items:flex-start;margin:12px 0 4px;text-transform:none;letter-spacing:0;font-weight:400;font-size:13px;cursor:pointer"><input type="checkbox" id="cruce-borrar" ${sobran.length ? 'checked' : 'disabled'} style="width:auto;margin:2px 0 0;flex:none"><span>Eliminar del archivo las <strong>${sobran.length}</strong> facturas que no se deben (ya pagadas). No afecta Facturas y guías.</span></label>
+    <label style="display:flex;gap:8px;align-items:flex-start;margin:12px 0 4px;text-transform:none;letter-spacing:0;font-weight:400;font-size:13px;cursor:pointer"><input type="checkbox" id="cruce-borrar" ${!sobran.length ? 'disabled' : desconocidos ? '' : 'checked'} style="width:auto;margin:2px 0 0;flex:none"><span>Eliminar del archivo las <strong>${sobran.length}</strong> facturas que no se deben (ya pagadas). No afecta Facturas y guías.${rutsSin.size ? ` Las de los ${rutsSin.size === 1 ? 'proveedor' : rutsSin.size + ' proveedores'} sin calce se guardan para que las busques a mano.` : ''}${desconocidos ? `<br><span style="color:#B45309">Hay ${desconocidos} saldo${desconocidos === 1 ? '' : 's'} con proveedor sin reconocer: no lo marques hasta resolverlo${desconocidos === 1 ? '' : 's'} con 🔎, para no borrar sus facturas.</span>` : ''}</span></label>
     <button class="btn btn-verde" id="cruce-ok" style="width:100%;justify-content:center;margin-top:8px" onclick="aplicarCruceInv()" ${ok.length || sobran.length ? '' : 'disabled'}>✓ Aplicar cruce</button>`]);
 }
 window.aplicarCruceInv = async function() {
@@ -17917,10 +17939,8 @@ window.aplicarCruceInv = async function() {
       let resto = sumAbonosInv(r.d);
       for (const h of r.comb.slice().sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)))) {
         const abonado = Math.min(resto, h.total); resto -= abonado;
-        const x = armarCxpManualInv({ prov: h.razonSocial || r.d.razonSocial, rut: h.rutEmisor, tipo: h.tipo, folio: h.folio, fecha: h.fecha, total: h.total, saldo: h.total - abonado, vence: h.fchVenc || r.d.vence || sumarDiasInv(h.fecha, r.plazo.dias), glosa: glosaHistInv(h), items: h.items || [] });
-        if (x.error) continue;
-        if (await duplicadoCxpInv({ prov: h.razonSocial, rut: h.rutEmisor, folio: h.folio }, x.id)) continue;
-        await setDoc(doc(dbInv, 'dte_recibidos', x.id), { ...x.data, desdeRcv: true, enlazadaDe: r.d.id, venceEstimado: !h.fchVenc && !r.d.vence }); n++;
+        try { n += await pasarACxpInv({ ...h, razonSocial: h.razonSocial || r.d.razonSocial }, { vence: h.fchVenc || r.d.vence || sumarDiasInv(h.fecha, r.plazo.dias), abonado, saldoId: r.d.id, venceEstimado: !h.fchVenc && !r.d.vence }); }
+        catch (err) { console.warn('cruce', err); }
       }
       await deleteDoc(doc(dbInv, 'dte_recibidos', r.d.id)); s++;
     }
@@ -17932,54 +17952,152 @@ window.aplicarCruceInv = async function() {
     toast(`✓ ${s} saldo${s === 1 ? '' : 's'} cruzado${s === 1 ? '' : 's'}: ${n} factura${n === 1 ? '' : 's'} en Cuentas por pagar${b ? ` · ${b} eliminadas del archivo` : ''}`, true);
   } catch (e) { toast('Error: ' + e.message, false); if (bt) { bt.disabled = false; bt.textContent = '✓ Aplicar cruce'; } }
 }
-// Enlazar: el saldo anterior (o una factura suelta) pasa a ser sus facturas reales, con vencimiento confirmado
+// ── Enlazar a mano: todas las facturas del proveedor (archivo + app) para elegir las que forman el saldo ──
 let histEnlaceInv = null;
-window.histEnlazarInv = function(saldoId, histId) {
+function proveedoresConocidosInv() {
+  const m = new Map();
+  const add = d => { const r = normRutDte(d.rutEmisor || ''); if (!/^\d{6,8}-[\dK]$/.test(r) || !d.razonSocial || typeof d.tipo !== 'number' || d.tipo === 52) return; const x = m.get(r) || { rut: r, nombre: d.razonSocial, ids: new Set() }; x.ids.add(`${d.tipo}_${sinCerosInv(d.folio)}`); m.set(r, x); };
+  (historicoInv || []).forEach(add); dteRecibidosInv.forEach(add);
+  return [...m.values()].map(x => ({ rut: x.rut, nombre: x.nombre, n: x.ids.size }));
+}
+const abonoAntesInv = (fecha, monto, nota) => ({ fecha, monto, medio: 'cuenta', detalle: '', forma: 'otro', nro: '', chequeFecha: '', formaOtro: nota || 'Abonado antes de la app', quien: '', por: currentUser || '', ts: Date.now() });
+// Pasa una factura (del archivo o de la app) a Cuentas por pagar; devuelve 1 si escribió algo
+async function pasarACxpInv(c, o) {
+  const ab = Math.max(0, Math.round(o.abonado || 0));
+  if (c.src === 'app') {
+    const d = c.d, resta = saldoPagarInv(d) - ab;
+    if (c.estado !== 'sinpago' && !ab) return 0;
+    const upd = { abonos: [...(d.abonos || []), ...(ab ? [abonoAntesInv(d.fecha || hoyIsoInv(), ab, o.nota)] : [])], pagada: resta <= 0, fechaPago: resta <= 0 ? Date.now() : 0, editadoPor: currentUser || '', editadoTs: Date.now() };
+    if (c.estado === 'sinpago') Object.assign(upd, { pago: 'credito', pagoPor: currentUser || '', pagoTs: Date.now(), pagoDetalle: '', pagadoPor: '', rendida: false, vence: o.vence || d.vence || '', ...(o.saldoId ? { enlazadaDe: o.saldoId } : {}), ...(o.venceEstimado ? { venceEstimado: true } : {}) });
+    await updateDoc(doc(dbInv, 'dte_recibidos', d.id), upd); return 1;
+  }
+  const x = armarCxpManualInv({ prov: c.razonSocial, rut: c.rutEmisor, tipo: c.tipo, folio: c.folio, fecha: c.fecha, total: c.total, saldo: c.total - ab, vence: o.vence, glosa: glosaHistInv(c), items: c.items || [], abonoNota: o.nota });
+  if (x.error) throw new Error(`N° ${c.folio}: ${x.error}`);
+  if (await duplicadoCxpInv({ prov: c.razonSocial, rut: c.rutEmisor, folio: c.folio }, x.id)) return 0;
+  await setDoc(doc(dbInv, 'dte_recibidos', x.id), { ...x.data, desdeRcv: true, ...(o.saldoId ? { enlazadaDe: o.saldoId } : {}), ...(o.venceEstimado ? { venceEstimado: true } : {}) }); return 1;
+}
+const ESTADOS_ENLACE_INV = { libre: ['📚 Del archivo', 'var(--acero)'], sinpago: ['📱 En la app sin forma de pago: queda a crédito', '#1D4ED8'], cxp: ['✓ Ya está en Cuentas por pagar: si la marcas no se duplica, solo se descuenta del saldo', 'var(--verde)'], pagada: ['Pagada en la app', 'var(--acero)'], enlazada: ['Ya enlazada a otro saldo', 'var(--acero)'], nc: ['Nota de crédito: resta', '#B91C1C'], ncusada: ['Nota de crédito ya aplicada', 'var(--acero)'], ncapp: ['Nota de crédito en la app', 'var(--acero)'] };
+const elegibleEnlaceInv = c => ['libre', 'sinpago', 'cxp', 'nc'].includes(c.estado);
+// o = { agrupa: 'emision' | 'vence', marcados: [ids] } al volver a dibujar
+window.histEnlazarInv = function(saldoId, histId, rutForzado, volver, o) {
+  o = o || {};
   const sa = saldoId ? dteRecibidosInv.find(d => d.id === saldoId) : null, h0 = histId ? (historicoInv || []).find(x => x.id === histId) : null;
   if (!sa && !h0) return;
-  const cands = sa ? candidatosHistInv(sa.rutEmisor, sa.razonSocial) : [h0, ...candidatosHistInv(h0.rutEmisor, h0.razonSocial).filter(x => x.id !== h0.id)];
-  const saldo = sa ? metaSaldoInv(sa) : 0, pre = sa ? (combinacionSaldoInv(cands, saldo, String(sa.vence || '').slice(0, 7)) || []) : [h0];
-  const venceLista = sa && sa.vence ? sa.vence : '';
-  const plazo = plazoProvInv((sa && sa.rutEmisor) || (pre[0] || cands[0] || h0 || {}).rutEmisor || '');
-  histEnlaceInv = { saldoId: sa ? sa.id : '', saldo, cands, pagado: sa ? sumAbonosInv(sa) : 0 };
-  modalElegirDteInv(`🔗 ${escA((sa || h0).razonSocial)}`, `${sa ? (sumAbonosInv(sa) ? `Total <strong>${pesoInv(saldo)}</strong>, con ${pesoInv(sumAbonosInv(sa))} ya pagados (se descuentan de la más antigua). Marca las facturas que forman el total.` : `Saldo anterior: <strong>${pesoInv(saldo)}</strong>. Marca las facturas que lo forman.`) : 'Marca las facturas que se deben.'} Si la factura trae vencimiento se usa ese; si no, se estima con ${plazo.origen}. Confírmalo o cámbialo.`, [`
-    ${cands.map((x, i) => { const sel = pre.some(p => p.id === x.id); return `<div class="config-item" style="flex-direction:column;align-items:stretch;gap:4px">
-      <label style="display:flex;justify-content:space-between;gap:8px;cursor:pointer;text-transform:none;letter-spacing:0;font-weight:400;margin:0"><span style="display:flex;gap:8px;align-items:center;min-width:0"><input type="checkbox" class="hist-chk" data-i="${i}" ${sel ? 'checked' : ''} onchange="histSumaEnlaceInv()" style="width:auto;margin:0;flex:none"><span style="font-size:13px;overflow-wrap:anywhere">${escA(abrevTipoDte(x.tipo))} N° ${escA(x.folio)} · ${fmtFechaInv(x.fecha)}</span></span><strong style="white-space:nowrap">${pesoInv(x.total)}</strong></label>
-      ${(x.items || []).length ? `<div style="font-size:12px;color:var(--acero);margin-left:26px;overflow-wrap:anywhere">· ${escA(glosaHistInv(x))}</div>` : ''}
-      <div style="display:flex;gap:6px;align-items:center;font-size:12px;margin-left:26px;flex-wrap:wrap">Vence <input type="date" class="hist-vence" data-i="${i}" value="${x.fchVenc || venceLista || sumarDiasInv(x.fecha, plazo.dias)}" style="margin:0;padding:4px 6px;font-size:13px;width:auto"><span style="color:${x.fchVenc || venceLista ? 'var(--verde)' : 'var(--acero)'}">${x.fchVenc ? 'según la factura' : venceLista ? 'según tu listado' : 'estimado'}</span></div></div>`; }).join('')}
-    <div id="hist-suma" style="font-weight:800;margin:8px 0;font-size:13px"></div>
-    <button class="btn btn-verde" id="hist-ok" style="width:100%;justify-content:center" onclick="histGuardarEnlaceInv()">✓ Pasar a Cuentas por pagar</button>`]);
+  const rut = normRutDte(rutForzado || (sa ? sa.rutEmisor : h0.rutEmisor) || '') || (sa ? rutPorNombreInv(sa.razonSocial) : '');
+  const todas = facturasProvInv(rut), saldo = sa ? metaSaldoInv(sa) : 0, venceLista = sa && sa.vence ? sa.vence : '', mesLista = venceLista.slice(0, 7);
+  const auto = sa && !o.marcados ? combinacionSaldoInv(todas.filter(c => (c.estado === 'libre' || c.estado === 'sinpago') && c.total > 0), saldo, mesLista) : null;
+  const pre = new Set(o.marcados || (auto ? auto.map(c => c.id) : h0 ? [h0.id] : []));
+  const plazo = plazoProvInv(rut), nombre = (sa || h0).razonSocial || '';
+  const agrupa = o.agrupa || (mesLista && todas.some(c => c.fchVenc) ? 'vence' : 'emision');
+  histEnlaceInv = { saldoId: sa ? sa.id : '', histId: h0 ? h0.id : '', saldo, cands: todas, pagado: sa ? sumAbonosInv(sa) : 0, volver: !!volver, rut, nombre, agrupa };
+  const prov = rut ? (proveedoresConocidosInv().find(p => p.rut === rut) || { rut, nombre: (todas[0] || {}).razonSocial || nombre, n: todas.length }) : null;
+  const per = (historicoInv || []).map(x => x.periodo).filter(Boolean).sort(), rango = per.length ? `${nomMesCxpInv(per[0]).toLowerCase()} a ${nomMesCxpInv(per[per.length - 1]).toLowerCase()}` : '';
+  const fila = (c, i) => {
+    const ok = elegibleEnlaceInv(c), nc = c.tipo === 61, [et, col] = ESTADOS_ENLACE_INV[c.estado] || ['', 'var(--acero)'];
+    const q = normNom(`${c.folio} ${c.total} ${c.totalDoc} ${glosaHistInv(c)} ${fmtFechaInv(c.fecha)}`);
+    const venceTxt = ok && !nc && c.estado !== 'cxp' ? `<div style="display:flex;gap:6px;align-items:center;font-size:12px;margin-left:26px;flex-wrap:wrap">Vence <input type="date" class="hist-vence" data-i="${i}" value="${c.fchVenc || venceLista || sumarDiasInv(c.fecha, plazo.dias)}" style="margin:0;padding:4px 6px;font-size:13px;width:auto"><span style="color:${c.fchVenc || venceLista ? 'var(--verde)' : 'var(--acero)'}">${c.fchVenc ? 'según la factura' : venceLista ? 'según tu listado' : 'estimado'}</span></div>`
+      : c.fchVenc && !nc ? `<div style="font-size:12px;margin-left:26px;color:var(--acero)">Vence ${fmtFechaInv(c.fchVenc)}</div>` : '';
+    return `<div class="config-item hist-fila" data-q="${escA(q)}" data-g="${escA(grupoEnlaceInv(c, agrupa))}" style="flex-direction:column;align-items:stretch;gap:3px;${ok ? '' : 'opacity:.55'}">
+      <label style="display:flex;justify-content:space-between;gap:8px;cursor:${ok ? 'pointer' : 'default'};text-transform:none;letter-spacing:0;font-weight:400;margin:0"><span style="display:flex;gap:8px;align-items:center;min-width:0"><input type="checkbox" class="hist-chk" data-i="${i}" ${ok ? '' : 'disabled'} ${ok && pre.has(c.id) ? 'checked' : ''} onchange="histSumaEnlaceInv()" style="width:auto;margin:0;flex:none"><span style="font-size:13px;overflow-wrap:anywhere">${escA(abrevTipoDte(c.tipo))} N° ${escA(c.folio)} · emitida ${fmtFechaInv(c.fecha)}</span></span><strong style="white-space:nowrap;${nc ? 'color:#B91C1C' : ''}">${nc ? '−' : ''}${pesoInv(c.total)}</strong></label>
+      ${c.src === 'app' && !nc && c.totalDoc !== c.total ? `<div style="font-size:12px;color:var(--acero);margin-left:26px">Lo que falta de una factura de ${pesoInv(c.totalDoc)}</div>` : ''}
+      ${(c.items || []).length ? `<div style="font-size:12px;color:var(--acero);margin-left:26px;overflow-wrap:anywhere">· ${escA(glosaHistInv(c))}</div>` : ''}
+      ${venceTxt}
+      <div style="font-size:12px;margin-left:26px;color:${col}">${et}</div>
+    </div>`;
+  };
+  const grupos = []; todas.forEach((c, i) => { const k = grupoEnlaceInv(c, agrupa); let g = grupos.find(x => x.k === k); if (!g) grupos.push(g = { k, idx: [] }); g.idx.push(i); });
+  grupos.sort((a, b) => (a.k ? 0 : 1) - (b.k ? 0 : 1) || b.k.localeCompare(a.k));
+  const listaHtml = grupos.map(g => {
+    const el = g.idx.filter(i => elegibleEnlaceInv(todas[i])), t = el.reduce((a, i) => a + (todas[i].tipo === 61 ? -1 : 1) * todas[i].total, 0);
+    const titulo = g.k ? (agrupa === 'vence' ? 'Vencen en ' + nomMesCxpInv(g.k).toLowerCase() : 'Emitidas en ' + nomMesCxpInv(g.k).toLowerCase()) : (agrupa === 'vence' ? 'La factura no trae vencimiento' : 'Sin fecha');
+    return `<div class="hist-mes" data-g="${escA(g.k)}" style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap;margin:12px 2px 4px;font-size:12px"><strong style="font-size:13px">${titulo}${agrupa === 'vence' && g.k && g.k === mesLista ? ' <span style="color:var(--verde)">← mes de tu listado</span>' : ''}</strong><span style="color:var(--acero)">${el.length ? `${el.length} · ${t < 0 ? '−' : ''}${pesoInv(Math.abs(t))} · <a href="#" onclick="histMarcarGrupoInv('${escA(g.k)}');return false" style="color:var(--verde);font-weight:700">marcar todas</a>` : 'nada por elegir'}</span></div>` + g.idx.map(i => fila(todas[i], i)).join('');
+  }).join('');
+  const cajaProv = `<div style="border:1px solid var(--borde);border-radius:10px;padding:8px 10px;margin-bottom:8px">
+    ${prov ? `<div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><span style="display:flex;gap:8px;align-items:center;min-width:0;overflow-wrap:anywhere">${logoProvInv(prov.rut, prov.nombre, 26)}<span><strong>${escA(prov.nombre)}</strong><br><span style="font-size:12px;color:var(--acero)">${rutFmtDte(prov.rut)} · ${prov.n} documento${prov.n === 1 ? '' : 's'} en el archivo y la app</span></span></span>${sa ? `<button class="btn-add" style="padding:5px 10px;font-size:12px;background:var(--fondo);color:var(--negro);flex:none" onclick="histBuscaProvToggleInv()">Cambiar</button>` : ''}</div>`
+      : `<div style="font-size:13px;color:#B45309">No reconozco «${escA(nombre)}» entre los proveedores del archivo ni de la app. Búscalo por otro nombre, la sigla o el RUT:</div>`}
+    ${sa ? `<div id="hist-prov-busca" style="display:${prov ? 'none' : 'block'};margin-top:8px"><input type="text" id="hist-prov-q" placeholder="🔎 Nombre o RUT del proveedor" oninput="histBuscarProvInv(this.value)" style="width:100%;box-sizing:border-box;margin:0 0 6px"><div id="hist-prov-res"></div></div>` : ''}
+  </div>`;
+  const vacio = rut && !todas.length ? `<div class="empty" style="font-size:13px;line-height:1.5">No hay facturas de este proveedor en el archivo${rango ? ` (${rango})` : ''} ni en la app.<br>Si son más antiguas, pide al robot ese período en 📚 Anteriores → "Glosas y vencimientos" (cambia la fecha desde). Si no, el saldo sigue como saldo anterior.</div>` : '';
+  const chipG = (v, t) => `<span class="cultivo-chip${agrupa === v ? ' sel' : ''}" onclick="histAgruparInv('${v}')">${t}</span>`;
+  const herramientas = todas.length ? `<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:2px 0 6px"><span style="font-size:12px;color:var(--acero)">Agrupar por</span>${chipG('vence', '📅 Vencimiento')}${chipG('emision', '🧾 Emisión')}</div>${todas.length > 6 ? `<input type="text" placeholder="🔎 Filtrar por N°, monto o producto" oninput="histFiltrarInv(this.value)" style="width:100%;box-sizing:border-box;margin:0 0 4px">` : ''}` : '';
+  const pie = `<div style="position:sticky;bottom:-16px;background:var(--blanco);padding:8px 0 4px;margin-top:8px;border-top:1px solid var(--borde)"><div id="hist-suma" style="font-weight:800;margin-bottom:8px;font-size:13px"></div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap">${volver ? `<button class="btn-add" style="flex:1;min-width:120px;padding:9px;background:var(--fondo);color:var(--negro)" onclick="cruceAutoInv()">← Volver al cruce</button>` : ''}<button class="btn btn-verde" id="hist-ok" style="flex:2;min-width:170px;justify-content:center" onclick="histGuardarEnlaceInv()" ${todas.some(elegibleEnlaceInv) ? '' : 'disabled'}>✓ Pasar a Cuentas por pagar</button></div></div>`;
+  const sub = sa ? `${sumAbonosInv(sa) ? `Total <strong>${pesoInv(saldo)}</strong>, con ${pesoInv(sumAbonosInv(sa))} ya pagados (se descuentan de la más antigua).` : `Saldo de tu listado: <strong>${pesoInv(saldo)}</strong>${venceLista ? ` · vence ${fmtFechaInv(venceLista)}` : ''}.`} Marca las facturas que lo forman${auto ? ' (dejé marcadas las que calzan)' : ''}. Si la factura trae vencimiento se usa ese; si no, ${venceLista ? 'el de tu listado' : 'se estima con ' + plazo.origen}.` : 'Marca las facturas que se deben.';
+  modalElegirDteInv(`🔗 ${escA(nombre)}`, sub, [cajaProv + vacio + herramientas + listaHtml + pie]);
   histSumaEnlaceInv();
+  if (sa && !prov) histBuscarProvInv('');
+}
+const grupoEnlaceInv = (c, agrupa) => String((agrupa === 'vence' ? c.fchVenc : c.fecha) || '').slice(0, 7);
+window.histAgruparInv = function(modo) {
+  const e = histEnlaceInv; if (!e) return;
+  const marcados = [...document.querySelectorAll('.hist-chk:checked')].map(c => e.cands[+c.dataset.i].id);
+  histEnlazarInv(e.saldoId, e.histId, e.rut, e.volver, { agrupa: modo, marcados });
+}
+window.histBuscaProvToggleInv = function() {
+  const b = document.getElementById('hist-prov-busca'); if (!b) return;
+  const abrir = b.style.display === 'none'; b.style.display = abrir ? 'block' : 'none';
+  if (abrir) { histBuscarProvInv(''); const i = document.getElementById('hist-prov-q'); if (i) i.focus(); }
+}
+window.histBuscarProvInv = function(q) {
+  const e = histEnlaceInv, el = document.getElementById('hist-prov-res'); if (!e || !el) return;
+  const t = normNom(q || '').trim(), dig = t.replace(/[^0-9k]/g, '');
+  let lista = proveedoresConocidosInv().filter(p => p.rut !== e.rut);
+  if (t) lista = lista.filter(p => normNom(p.nombre).includes(t) || (dig.length >= 4 && p.rut.replace(/[^0-9K]/g, '').toLowerCase().includes(dig)) || puntajeNombreInv(t, p.nombre) >= 0.5).sort((a, b) => puntajeNombreInv(t, b.nombre) - puntajeNombreInv(t, a.nombre) || b.n - a.n);
+  else lista = lista.map(p => ({ ...p, pts: puntajeNombreInv(e.nombre, p.nombre) })).filter(p => p.pts > 0).sort((a, b) => b.pts - a.pts || b.n - a.n);
+  el.innerHTML = lista.length ? (t ? '' : '<div style="font-size:12px;color:var(--acero);margin-bottom:4px">Parecidos:</div>') + lista.slice(0, 10).map(p => `<div class="config-item" style="cursor:pointer;gap:8px" onclick="histElegirProvInv('${p.rut}')"><span style="display:flex;gap:8px;align-items:center;min-width:0;overflow-wrap:anywhere">${logoProvInv(p.rut, p.nombre, 22)}<span><strong style="font-size:13px">${escA(p.nombre)}</strong><br><span style="font-size:12px;color:var(--acero)">${rutFmtDte(p.rut)} · ${p.n} doc${p.n === 1 ? '' : 's'}</span></span></span></div>`).join('')
+    : `<div style="font-size:12px;color:var(--acero)">${t ? 'Ningún proveedor con ese nombre o RUT en el archivo ni en la app' : 'Escribe parte del nombre (la sigla, la razón social) o el RUT'}</div>`;
+}
+// Al elegir el proveedor de un saldo, los demás saldos con el mismo nombre quedan con el mismo RUT (así el cruce los encuentra)
+window.histElegirProvInv = async function(rut) {
+  const e = histEnlaceInv; if (!e) return;
+  const sa = e.saldoId ? dteRecibidosInv.find(d => d.id === e.saldoId) : null;
+  if (sa) {
+    const viejo = normRutDte(sa.rutEmisor || ''), mismos = saldosPorEnlazarInv().filter(s => s.id === sa.id || (normNom(s.razonSocial || '') === normNom(sa.razonSocial || '') && normRutDte(s.rutEmisor || '') === viejo));
+    try { await Promise.all(mismos.map(s => updateDoc(doc(dbInv, 'dte_recibidos', s.id), { rutEmisor: rut }))); if (mismos.length > 1) toast(`✓ Los ${mismos.length} saldos de ${sa.razonSocial} quedan con este proveedor`, true); }
+    catch (err) { console.warn('rut saldo', err); }
+  }
+  histEnlazarInv(e.saldoId, e.histId, rut, e.volver, { agrupa: e.agrupa });
+}
+window.histMarcarGrupoInv = function(k) {
+  const chks = [...document.querySelectorAll('.hist-fila')].filter(f => f.dataset.g === k && f.style.display !== 'none').map(f => f.querySelector('.hist-chk')).filter(c => c && !c.disabled);
+  const todas = chks.length && chks.every(c => c.checked); chks.forEach(c => { c.checked = !todas; }); histSumaEnlaceInv();
+}
+window.histFiltrarInv = function(q) {
+  const t = normNom(String(q || '').replace(/\./g, '')), filas = [...document.querySelectorAll('.hist-fila')];
+  filas.forEach(f => { f.style.display = !t || f.dataset.q.includes(t) ? '' : 'none'; });
+  document.querySelectorAll('.hist-mes').forEach(m => { m.style.display = filas.some(f => f.dataset.g === m.dataset.g && f.style.display !== 'none') ? '' : 'none'; });
 }
 window.histSumaEnlaceInv = function() {
   const e = histEnlaceInv; if (!e) return;
-  const sel = [...document.querySelectorAll('.hist-chk:checked')].map(c => e.cands[+c.dataset.i]), s = sel.reduce((a, x) => a + x.total, 0), el = document.getElementById('hist-suma'); if (!el) return;
-  if (!e.saldoId) { el.innerHTML = `Total: ${pesoInv(s)} (${sel.length})`; return; }
+  const sel = [...document.querySelectorAll('.hist-chk:checked')].map(c => e.cands[+c.dataset.i]), s = sel.reduce((a, x) => a + (x.tipo === 61 ? -x.total : x.total), 0), el = document.getElementById('hist-suma'); if (!el) return;
+  const n = sel.filter(x => x.tipo !== 61).length, txt = `${n} factura${n === 1 ? '' : 's'}`;
+  if (!e.saldoId) { el.innerHTML = `Marcadas: ${txt} · ${pesoInv(s)}`; return; }
   const dif = s - e.saldo;
-  el.innerHTML = `Seleccionado ${pesoInv(s)} de ${pesoInv(e.saldo)} · ` + (Math.abs(dif) <= 2 ? '<span style="color:var(--verde)">✓ cuadra exacto</span>' : dif > 0 ? `<span style="color:#B45309">sobran ${pesoInv(dif)}: se anotan como abonado antes de la app en la más antigua</span>` : `<span style="color:#B45309">faltan ${pesoInv(-dif)}: quedan como saldo anterior</span>`);
+  el.innerHTML = `Marcado ${s < 0 ? '−' : ''}${pesoInv(Math.abs(s))} de ${pesoInv(e.saldo)} (${txt}) · ` + (!sel.length ? '<span style="color:var(--acero);font-weight:400">marca las que forman el saldo</span>' : Math.abs(dif) <= 2 ? '<span style="color:var(--verde)">✓ cuadra exacto</span>' : dif > 0 ? `<span style="color:#B45309">sobran ${pesoInv(dif)}: se anotan como abonado antes de la app en la más antigua</span>` : `<span style="color:#B45309">faltan ${pesoInv(-dif)}: quedan como saldo anterior</span>`);
 }
 window.histGuardarEnlaceInv = async function() {
   const e = histEnlaceInv; if (!e) return;
-  const chks = [...document.querySelectorAll('.hist-chk:checked')]; if (!chks.length) { toast('Marca al menos una factura', false); return; }
-  const sel = chks.map(c => ({ h: e.cands[+c.dataset.i], vence: (document.querySelector(`.hist-vence[data-i="${c.dataset.i}"]`) || {}).value || '' })).sort((a, b) => String(a.h.fecha).localeCompare(String(b.h.fecha)));
-  const suma = sel.reduce((a, x) => a + x.h.total, 0), sobra = e.saldoId ? Math.max(0, suma - e.saldo) : 0, falta = e.saldoId ? Math.max(0, e.saldo - suma) : 0;
+  const sel = [...document.querySelectorAll('.hist-chk:checked')].map(c => ({ c: e.cands[+c.dataset.i], vence: (document.querySelector(`.hist-vence[data-i="${c.dataset.i}"]`) || {}).value || '' }));
+  const facts = sel.filter(x => x.c.tipo !== 61).sort((a, b) => String(a.c.fecha).localeCompare(String(b.c.fecha))), ncs = sel.filter(x => x.c.tipo === 61);
+  if (!facts.length) { toast('Marca al menos una factura', false); return; }
+  const totNc = ncs.reduce((a, x) => a + x.c.total, 0), suma = facts.reduce((a, x) => a + x.c.total, 0) - totNc;
+  const sobra = e.saldoId ? Math.max(0, suma - e.saldo) : 0, falta = e.saldoId ? Math.max(0, e.saldo - suma) : 0;
+  const nota = [sobra + (e.pagado || 0) > 0 ? 'Abonado antes de la app' : '', ncs.length ? 'Nota de crédito N° ' + ncs.map(x => x.c.folio).join(', ') : ''].filter(Boolean).join(' + ');
   const bt = document.getElementById('hist-ok'); if (bt) { bt.disabled = true; bt.textContent = 'Guardando…'; }
   try {
-    let n = 0, resto = sobra + (e.pagado || 0);
-    for (const { h, vence } of sel) {
-      const abonado = Math.min(resto, h.total); resto -= abonado;
-      const r = armarCxpManualInv({ prov: h.razonSocial, rut: h.rutEmisor, tipo: h.tipo, folio: h.folio, fecha: h.fecha, total: h.total, saldo: h.total - abonado, vence, glosa: glosaHistInv(h), items: h.items || [] });
-      if (r.error) throw new Error(`N° ${h.folio}: ${r.error}`);
-      if (await duplicadoCxpInv({ prov: h.razonSocial, rut: h.rutEmisor, folio: h.folio }, r.id)) continue;
-      await setDoc(doc(dbInv, 'dte_recibidos', r.id), { ...r.data, desdeRcv: true, ...(e.saldoId ? { enlazadaDe: e.saldoId } : {}) }); n++;
-    }
+    let n = 0, resto = sobra + (e.pagado || 0) + totNc;
+    for (const { c, vence } of facts) { const ab = Math.min(resto, c.total); resto -= ab; n += await pasarACxpInv(c, { vence, abonado: ab, nota, saldoId: e.saldoId }); }
+    for (const { c } of ncs) if (c.src === 'hist') await setDoc(doc(dbInv, 'dte_historico', c.id), { usadaEn: e.saldoId || 'manual', usadaTs: Date.now() }, { merge: true });
+    const queda = Math.max(0, falta - resto), ya = facts.filter(x => x.c.estado === 'cxp').length;
     if (e.saldoId) {
-      if (falta > 2) await updateDoc(doc(dbInv, 'dte_recibidos', e.saldoId), { total: falta, abonos: [], glosa: 'Resto del saldo anterior sin factura identificada', editadoPor: currentUser || '', editadoTs: Date.now() });
+      if (queda > 2) await updateDoc(doc(dbInv, 'dte_recibidos', e.saldoId), { total: queda, abonos: [], glosa: 'Resto del saldo anterior sin factura identificada', editadoPor: currentUser || '', editadoTs: Date.now() });
       else await deleteDoc(doc(dbInv, 'dte_recibidos', e.saldoId));
     }
+    if (ncs.length) await cargarHistoricoInv(true);
     const m = document.getElementById('dte-elegir'); if (m) m.remove();
     histEnlaceInv = null;
-    toast(`✓ ${n} factura${n === 1 ? '' : 's'} en Cuentas por pagar${falta > 2 ? ` · quedan ${pesoInv(falta)} como saldo anterior` : ''}`, true);
+    toast(`✓ ${n} factura${n === 1 ? '' : 's'} en Cuentas por pagar${ya ? ` · ${ya} ya estaba${ya === 1 ? '' : 'n'}` : ''}${queda > 2 ? ` · quedan ${pesoInv(queda)} como saldo anterior` : ''}`, true);
+    if (e.volver) setTimeout(() => cruceAutoInv(), 600);
   } catch (err) { toast('Error: ' + err.message, false); if (bt) { bt.disabled = false; bt.textContent = '✓ Pasar a Cuentas por pagar'; } }
 }
 window.cxpBorrarManualInv = async function(id) {
