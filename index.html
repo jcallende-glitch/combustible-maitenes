@@ -17556,7 +17556,7 @@ function armarCxpManualInv(x) {
   const abonos = saldo < total ? [{ fecha: x.fecha, monto: total - saldo, medio: 'cuenta', detalle: '', forma: 'otro', nro: '', chequeFecha: '', formaOtro: 'Abonado antes de la app', quien: '', por: currentUser || '', ts: Date.now() }] : [];
   const id = typeof tipo === 'number' ? idDteInv(rut, tipo, folio) : 'man_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
   return { id, saldo, data: { razonSocial: x.prov, rutEmisor: rut, fecha: x.fecha, total, vence: x.vence || '', glosa: x.glosa || '', cuenta: cta, cuentaNombre: ctaObj ? ctaObj.n || '' : '', compro: x.compro || '', anterior: x.fecha < INICIO_CONT_INV,
-    items: x.glosa ? [{ nombre: x.glosa, cantidad: 1, unidad: '', precio: total, montoItem: total }] : [], tipo, folio: /^\d+$/.test(folio) ? Number(folio) : folio, refs: [], manual: true, sinXml: true, estado: 'ignorado', ...([33, 34, 46].includes(tipo) ? { recepcion: 'recibida' } : {}),
+    items: Array.isArray(x.items) && x.items.length ? x.items : x.glosa ? [{ nombre: x.glosa, cantidad: 1, unidad: '', precio: total, montoItem: total }] : [], tipo, folio: /^\d+$/.test(folio) ? Number(folio) : folio, refs: [], manual: true, sinXml: true, estado: 'ignorado', ...([33, 34, 46].includes(tipo) ? { recepcion: 'recibida' } : {}),
     pago: 'credito', pagoPor: currentUser || '', pagoTs: Date.now(), abonos, pagada: saldo <= 0, fechaPago: saldo <= 0 ? Date.now() : 0, creado: Date.now(), por: currentUser || '' } };
 }
 // Busca si ya existe: mismo id; mismo proveedor y N° (aunque sea otro tipo de documento);
@@ -17623,7 +17623,7 @@ const fechaCeldaBrutaInv = v => {
   if (typeof v === 'number' && v > 20000 && v < 80000) { const t = new Date(Math.round((v - 25569) * 86400000)); return `${t.getUTCFullYear()}-${String(t.getUTCMonth() + 1).padStart(2, '0')}-${String(t.getUTCDate()).padStart(2, '0')}`; }
   const s = String(v).trim(); let m;
   if ((m = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(s))) return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
-  if ((m = /^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{2,4})$/.exec(s))) { const y = m[3].length === 2 ? '20' + m[3] : m[3]; return `${y}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`; }
+  if ((m = /^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{2,4})(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?$/.exec(s))) { const y = m[3].length === 2 ? '20' + m[3] : m[3]; return `${y}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`; }
   return 'x';
 };
 const montoCeldaInv = v => { if (v == null || v === '') return ''; if (typeof v === 'number') return Math.round(v); const t = String(v).replace(/[$\s]/g, '').replace(/\./g, '').replace(',', '.'); return t === '' ? '' : Math.round(Number(t)); };
@@ -17636,23 +17636,27 @@ const tipoCeldaInv = (v, rut, folio) => {
   if (/otra|otro|deuda|credito|prestamo|acuerdo/.test(t)) return 'OT';
   return rut && folio ? 33 : 'OT';
 };
-let cxpCargaInv = [];
-window.cxpSubirExcelInv = function() {
-  if (typeof XLSX === 'undefined') { toast('Todavía está cargando la herramienta de Excel; intenta en unos segundos', false); return; }
+let cxpCargaInv = [], cxpCruzarDespuesInv = false;
+window.cxpSubirYCruzarInv = function() { cxpSubirExcelInv(true); };
+window.cxpSubirExcelInv = function(cruzar) {
+  cxpCruzarDespuesInv = cruzar === true;
   const fi = document.createElement('input'); fi.type = 'file'; fi.accept = '.xlsx,.xls,.csv';
   fi.onchange = async () => {
     const f = fi.files && fi.files[0]; if (!f) return;
     try {
-      const wb = XLSX.read(await f.arrayBuffer(), { cellDates: true }), ws = wb.Sheets[wb.SheetNames[0]];
-      const filas = XLSX.utils.sheet_to_json(ws, { defval: '', raw: true });
-      const lim = h => normNom(String(h)).replace(/[^a-z0-9]/g, '');
-      const col = (fila, ...claves) => { const k = Object.keys(fila).find(h => claves.some(c => typeof c === 'function' ? c(lim(h)) : lim(h).includes(c))); return k ? fila[k] : ''; };
+      const filas = await leerFilasArchivoInv(f);
+      if (esRcvInv(filas)) {
+        toast('Este archivo es el Registro de Compras del SII: lo guardo en 📚 Anteriores (no pasa directo a Cuentas por pagar)', true);
+        await importarRcvInv([f], filas); return;
+      }
+      const lim = limColInv;
+      const col = (fila, ...claves) => { for (const c of claves) { const k = Object.keys(fila).find(h => typeof c === 'function' ? c(lim(h)) : lim(h) === c) || (typeof c === 'string' ? Object.keys(fila).find(h => lim(h).startsWith(c)) || Object.keys(fila).find(h => lim(h).includes(c)) : null); if (k) return fila[k]; } return ''; };
       const esNro = h => ['n', 'no', 'nro', 'num', 'numero', 'folio', 'ndoc', 'ndocumento', 'nrodocumento', 'numerodocumento', 'nfactura', 'numerofactura'].includes(h) || h.startsWith('folio');
       const vistos = new Set();
       toast('Revisando el archivo y buscando duplicados…', true);
       cxpCargaInv = filas.map((r, i) => {
-        const prov = String(col(r, 'proveedor', 'razon', 'nombre') || '').trim(), rut = normRutDte(col(r, 'rut')), folio = String(col(r, esNro) || '').trim();
-        const x = { fila: i + 2, prov, rut, folio, tipo: tipoCeldaInv(col(r, h => (h.includes('documento') || h.includes('tipo')) && !esNro(h)), rut, folio), fecha: fechaCeldaInv(col(r, 'emision', 'fechaemi', 'fechadoc') || col(r, h => h.includes('fecha') && !h.includes('venc'))), total: montoCeldaInv(col(r, 'monto', 'total', 'valor', 'importe', 'deuda')), saldo: montoCeldaInv(col(r, 'saldo', 'pendiente', 'debe', 'adeudado')), vence: fechaCeldaInv(col(r, 'venc', 'vence')), glosa: String(col(r, 'detalle', 'glosa', 'descripcion') || '').trim(), cuenta: String(col(r, 'cuenta', 'codigo') || '').trim() };
+        const prov = String(col(r, 'proveedor', 'razonsocial', 'razon', 'nombre') || '').trim(), rut = normRutDte(col(r, 'rut')), folio = String(col(r, esNro) || '').trim();
+        const x = { fila: i + 2, prov, rut, folio, tipo: tipoCeldaInv(col(r, h => (h.includes('documento') || h.includes('tipo')) && !esNro(h)), rut, folio), fecha: fechaCeldaInv(col(r, 'emision', 'fechaemi', 'fechadoc') || col(r, h => h.includes('fecha') && !h.includes('venc'))), total: montoCeldaInv(col(r, 'montototal', 'total', 'valor', 'importe', 'deuda', 'monto')), saldo: montoCeldaInv(col(r, 'saldo', 'pendiente', 'debe', 'adeudado')), vence: fechaCeldaInv(col(r, 'venc', 'vence')), glosa: String(col(r, 'detalle', 'glosa', 'descripcion') || '').trim(), cuenta: String(col(r, 'cuenta', 'codigo') || '').trim() };
         if (!x.prov && !x.total && !x.folio) return null;
         x.notas = [];
         if ((x.total === '' || x.total == null) && x.saldo !== '' && x.saldo != null) x.total = x.saldo;
@@ -17692,6 +17696,7 @@ window.cxpImportarCargaInv = async function() {
     for (const x of sel) { const r = armarCxpManualInv(x); if (r.error) continue; if (x.folio && await duplicadoCxpInv(x, typeof x.tipo === 'number' ? r.id : '')) continue; await setDoc(doc(dbInv, 'dte_recibidos', r.id), r.data); n++; }
     const m = document.getElementById('dte-elegir'); if (m) m.remove();
     toast(`✓ ${n} cuenta${n === 1 ? '' : 's'} por pagar importada${n === 1 ? '' : 's'}`, true);
+    if (cxpCruzarDespuesInv) { cxpCruzarDespuesInv = false; setTimeout(() => cruceAutoInv(), 600); }
   } catch (e) { toast(`Error después de importar ${n}: ` + e.message, false); if (bt) { bt.disabled = false; bt.textContent = '✓ Importar'; } }
 }
 // ── Facturas anteriores (julio-octubre) desde el Registro de Compras del SII ──
@@ -17707,6 +17712,27 @@ async function cargarHistoricoInv(forzar) {
   finally { histCargandoInv = false; }
   return historicoInv;
 }
+async function leerFilasArchivoInv(f) {
+  if (/\.csv$/i.test(f.name || '') || f.type === 'text/csv') { const buf = await f.arrayBuffer(); let txt = new TextDecoder('utf-8').decode(buf); if (txt.includes('\uFFFD')) txt = new TextDecoder('iso-8859-1').decode(buf); return filasCsvInv(txt); }
+  if (typeof XLSX === 'undefined') throw new Error('todavía está cargando la herramienta de Excel; intenta en unos segundos');
+  const wb = XLSX.read(await f.arrayBuffer(), { cellDates: true }); return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '', raw: true });
+}
+const limColInv = h => normNom(String(h)).replace(/[^a-z0-9]/g, '');
+// Busca la columna por prioridad: primero nombre exacto, después que empiece igual
+const colPrioInv = (r, ...ks) => { for (const c of ks) { const k = Object.keys(r).find(h => limColInv(h) === c) || Object.keys(r).find(h => limColInv(h).startsWith(c)); if (k) return r[k]; } return ''; };
+const esRcvInv = filas => { const hs = new Set(Object.keys(filas[0] || {}).map(limColInv)); return hs.has('folio') && hs.has('montototal') && [...hs].some(h => h.startsWith('rutproveedor') || h === 'rutemisor') && [...hs].some(h => h.startsWith('tipodoc')); };
+// Guarda filas del Registro de Compras en el archivo aparte (dte_historico)
+async function guardarFilasRcvInv(filas, archivo, actuales, acc) {
+  const tipoTxt = v => { const n = parseInt(v, 10); if (n) return n; const t = normNom(String(v || '')); return /credito/.test(t) ? 61 : /debito/.test(t) ? 56 : /guia/.test(t) ? 52 : /compra/.test(t) ? 46 : /exent/.test(t) ? 34 : /factura/.test(t) ? 33 : 0; };
+  for (const r of filas) {
+    const tipo = tipoTxt(colPrioInv(r, 'tipodoc', 'tipodocumento', 'tipo')), folio = String(colPrioInv(r, 'folio')).trim().replace(/^0+/, ''), rut = normRutDte(colPrioInv(r, 'rutproveedor', 'rutemisor', 'rut'));
+    const fecha = fechaCeldaInv(colPrioInv(r, 'fechadocto', 'fechadocumento', 'fechaemision', 'fechaemis', 'fecha')), total = montoCeldaInv(colPrioInv(r, 'montototal', 'total'));
+    if (!tipo || !folio || !/^\d{6,8}-[\dK]$/.test(rut) || !fechaValidaInv(fecha)) continue;
+    const id = idDteInv(rut, tipo, folio);
+    await setDoc(doc(dbInv, 'dte_historico', id), { tipo, folio: Number(folio) || folio, rutEmisor: rut, razonSocial: String(colPrioInv(r, 'razonsocial', 'proveedor', 'nombre') || '').trim(), fecha, fechaRecepcion: fechaCeldaInv(colPrioInv(r, 'fecharecepcion')) || '', exento: montoCeldaInv(colPrioInv(r, 'montoexento')) || 0, neto: montoCeldaInv(colPrioInv(r, 'montoneto')) || 0, iva: montoCeldaInv(colPrioInv(r, 'montoivarecuperable', 'montoiva')) || 0, total: Number(total) || 0, periodo: fecha.slice(0, 7), fuente: 'rcv', archivo, ts: Date.now(), por: currentUser || '' }, { merge: true });
+    acc.n++; if (!actuales.has(id)) acc.nuevos++; acc.periodos.add(fecha.slice(0, 7));
+  }
+}
 function filasCsvInv(txt) {
   const lineas = txt.replace(/\r/g, '').split('\n').filter(l => l.trim()); if (!lineas.length) return [];
   const sep = (lineas[0].match(/;/g) || []).length >= (lineas[0].match(/,/g) || []).length ? ';' : ',';
@@ -17716,32 +17742,20 @@ function filasCsvInv(txt) {
 }
 window.histSubirRcvInv = function() {
   const fi = document.createElement('input'); fi.type = 'file'; fi.accept = '.csv,.xlsx,.xls'; fi.multiple = true;
-  fi.onchange = async () => {
-    const fs = [...(fi.files || [])]; if (!fs.length) return;
-    let n = 0, nuevos = 0; const periodos = new Set();
-    try {
-      const actuales = new Set((await cargarHistoricoInv()).map(x => x.id));
-      for (const f of fs) {
-        let filas;
-        if (/\.csv$/i.test(f.name)) { const buf = await f.arrayBuffer(); let txt = new TextDecoder('utf-8').decode(buf); if (txt.includes('\uFFFD')) txt = new TextDecoder('iso-8859-1').decode(buf); filas = filasCsvInv(txt); }
-        else { if (typeof XLSX === 'undefined') throw new Error('todavía está cargando la herramienta de Excel'); const wb = XLSX.read(await f.arrayBuffer(), { cellDates: true }); filas = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '', raw: true }); }
-        const lim = h => normNom(String(h)).replace(/[^a-z0-9]/g, '');
-        const col = (r, ...ks) => { const k = Object.keys(r).find(h => ks.some(c => typeof c === 'function' ? c(lim(h)) : lim(h) === c || lim(h).startsWith(c))); return k ? r[k] : ''; };
-        for (const r of filas) {
-          const tipo = parseInt(col(r, 'tipodoc', 'tipodocumento', 'tipo'), 10), folio = String(col(r, 'folio')).trim().replace(/^0+/, ''), rut = normRutDte(col(r, 'rutproveedor', 'rut'));
-          const fecha = fechaCeldaInv(col(r, 'fechadocto', 'fechadocumento', 'fechaemision', 'fecha')), total = montoCeldaInv(col(r, 'montototal', 'total'));
-          if (!tipo || !folio || !/^\d{6,8}-[\dK]$/.test(rut) || !fechaValidaInv(fecha)) continue;
-          const id = idDteInv(rut, tipo, folio);
-          await setDoc(doc(dbInv, 'dte_historico', id), { tipo, folio: Number(folio) || folio, rutEmisor: rut, razonSocial: String(col(r, 'razonsocial', 'proveedor', 'nombre') || '').trim(), fecha, fechaRecepcion: fechaCeldaInv(col(r, 'fecharecepcion')) || '', exento: montoCeldaInv(col(r, 'montoexento')) || 0, neto: montoCeldaInv(col(r, 'montoneto')) || 0, iva: montoCeldaInv(col(r, 'montoivarecuperable', 'montoiva')) || 0, total: Number(total) || 0, periodo: fecha.slice(0, 7), fuente: 'rcv', archivo: f.name, ts: Date.now(), por: currentUser || '' }, { merge: true });
-          n++; if (!actuales.has(id)) nuevos++; periodos.add(fecha.slice(0, 7));
-        }
-      }
-      await cargarHistoricoInv(true);
-      toast(n ? `✓ ${n} documentos leídos (${nuevos} nuevos) · ${[...periodos].sort().map(p => nomMesCxpInv(p)).join(', ')}` : 'No encontré documentos en el archivo: ¿es el detalle del Registro de Compras?', !!n);
-      renderCxpInv();
-    } catch (e) { toast('No pude leer el archivo: ' + e.message, false); }
-  };
+  fi.onchange = () => importarRcvInv([...(fi.files || [])]);
   fi.click();
+}
+async function importarRcvInv(fs, filasYa) {
+  if (!fs.length) return;
+  const acc = { n: 0, nuevos: 0, periodos: new Set() };
+  try {
+    toast('Leyendo el Registro de Compras…', true);
+    const actuales = new Set((await cargarHistoricoInv()).map(x => x.id));
+    for (const f of fs) await guardarFilasRcvInv(filasYa && fs.length === 1 ? filasYa : await leerFilasArchivoInv(f), f.name, actuales, acc);
+    await cargarHistoricoInv(true);
+    toast(acc.n ? `✓ ${acc.n} documentos leídos (${acc.nuevos} nuevos) · ${[...acc.periodos].sort().map(p => nomMesCxpInv(p)).join(', ')}` : 'No encontré documentos en el archivo: ¿es el detalle del Registro de Compras?', !!acc.n);
+    cxpVistaInv = 'anteriores'; renderCxpInv();
+  } catch (e) { toast('No pude leer el archivo: ' + e.message, false); }
 }
 // Plazo habitual de pago de un proveedor (días entre emisión y vencimiento en sus facturas)
 function plazoProvInv(rut) {
@@ -17749,8 +17763,8 @@ function plazoProvInv(rut) {
   const med = arr => { const a = arr.filter(x => x > 0 && x < 400).sort((x, y) => x - y); return a.length ? a[Math.floor(a.length / 2)] : null; };
   const conV = dteRecibidosInv.filter(d => d.vence && d.fecha && !d.manual && esPagableDteInv(d));
   const propio = med(conV.filter(d => normRutDte(d.rutEmisor) === normRutDte(rut)).map(dias));
-  if (propio) return { dias: propio, origen: 'el plazo habitual de este proveedor' };
-  const gen = med(conV.map(dias)); return gen ? { dias: gen, origen: 'el plazo habitual de tus proveedores' } : { dias: 30, origen: '30 días' };
+  if (propio) return { dias: propio, origen: `el plazo habitual de este proveedor (${propio} días)` };
+  const gen = med(conV.map(dias)); return gen ? { dias: gen, origen: `el plazo habitual de tus proveedores (${gen} días)` } : { dias: 30, origen: 'un plazo de 30 días' };
 }
 const sumarDiasInv = (f, n) => { const t = new Date(f + 'T12:00:00'); t.setDate(t.getDate() + n); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`; };
 const enCxpInv = h => dteRecibidosInv.find(d => d.id === h.id || (normRutDte(d.rutEmisor) === normRutDte(h.rutEmisor) && sinCerosInv(d.folio) === sinCerosInv(h.folio) && ![52, 61, 56].includes(d.tipo)));
@@ -17770,30 +17784,121 @@ function combinacionSaldoInv(cands, saldo) {
   dfs(0, 0, []); return mejor;
 }
 const saldosPorEnlazarInv = () => dteRecibidosInv.filter(d => d.manual && d.tipo === 'SA' && saldoPagarInv(d) > 0);
+let histMarcaInv = '';
+const glosaHistInv = h => (h.items || []).slice(0, 2).map(i => i.nombre).join(' · ') + ((h.items || []).length > 2 ? ` · +${h.items.length - 2}` : '');
+function bloqueRobotHistInv(h) {
+  const r = robotSiiInv || {}, per = h.map(x => x.periodo).filter(Boolean).sort();
+  const d1 = r.histDesde || (per[0] ? per[0] + '-01' : '2026-07-01'), d2 = r.histHasta || '2026-10-31';
+  const pendiente = r.histPedidoTs && r.histPedidoTs > (r.histAtendido || 0);
+  const viejo = r.version && parseFloat(r.version) < 2.6;
+  let est = '';
+  if (r.histEstado === 'en curso' && pendiente) est = `⏳ Trabajando: va en el ${r.histAvance ? fmtFechaInv(r.histAvance) : 'inicio'} · ${r.histDocs || 0} documentos con detalle`;
+  else if (pendiente && r.histEstado === 'cortado') est = `⚠️ ${escA(r.histError || 'Quedó a medias')} (lleva ${r.histDocs || 0} documentos)`;
+  else if (pendiente && r.histEstado === 'error') est = `❌ ${escA(r.histError || 'Error')}`;
+  else if (pendiente) est = '🕐 Pedido: el robot lo toma en los próximos 5 minutos (el computador del robot tiene que estar encendido)';
+  else if (r.histEstado === 'listo') est = `✓ Listo el ${new Date(r.histFinTs || r.histTs || Date.now()).toLocaleString('es-CL', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}: ${r.histDocs || 0} documentos con detalle (${fmtFechaInv(r.histDesde)} al ${fmtFechaInv(r.histHasta)})${r.histAvisos ? `<br><span style="color:#B45309">${escA(r.histAvisos)}</span>` : ''}`;
+  const conXml = h.filter(x => x.conXml).length;
+  return `<div style="border:1px solid var(--borde);border-radius:10px;padding:10px;margin:4px 0 10px">
+    <div style="font-weight:800;font-size:13px">🤖 Glosas y vencimientos desde los XML</div>
+    <div style="font-size:12px;color:var(--acero);margin:4px 0 8px">El Registro de Compras no trae el detalle. El robot del computador puede bajar una sola vez los XML de esos meses (unos 10 a 20 minutos) y completar cada factura con sus ítems y su vencimiento.${conXml ? ` Ya hay <strong>${conXml}</strong> con detalle.` : ''}</div>
+    ${r.motor === 'nube' ? '<div style="font-size:12px;color:#B45309;margin-bottom:6px">El robot está en modo nube: la carga histórica la hace el del computador (cámbialo a "Computador" en Configuración mientras tanto).</div>' : ''}
+    ${viejo ? `<div style="font-size:12px;color:#B45309;margin-bottom:6px">El robot instalado es la versión ${escA(r.version)}: para esto necesita la 2.6.</div>` : ''}
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"><input type="date" id="hist-d1" value="${d1}" style="flex:1;min-width:130px;margin:0"><span style="font-size:12px">al</span><input type="date" id="hist-d2" value="${d2}" style="flex:1;min-width:130px;margin:0"></div>
+    <button class="btn-add" style="width:100%;margin-top:8px;padding:8px" onclick="histPedirRobotInv()" ${pendiente && r.histEstado === 'en curso' ? 'disabled' : ''}>🤖 Pedir al robot que traiga los XML</button>
+    ${est ? `<div style="font-size:12px;margin-top:8px">${est}</div>` : ''}
+  </div>`;
+}
+window.histPedirRobotInv = async function() {
+  const d1 = (document.getElementById('hist-d1') || {}).value, d2 = (document.getElementById('hist-d2') || {}).value;
+  if (!fechaValidaInv(d1) || !fechaValidaInv(d2) || d1 > d2) { toast('Revisa las fechas', false); return; }
+  if (d2 >= INICIO_CONT_INV) { toast('Hasta el 31-10-2026: lo de noviembre en adelante ya lo trae el robot normal', false); return; }
+  try {
+    await setDoc(doc(dbInv, 'dte_recibidos', '_robot'), { histPedidoTs: Date.now(), histDesde: d1, histHasta: d2, histPor: currentUser || '', histEstado: 'pedido', histError: '', histDocs: 0, histAvance: '', histAvisos: '' }, { merge: true });
+    toast('✓ Pedido al robot: lo hace en los próximos minutos (con el computador encendido)', true);
+  } catch (e) { toast('Error: ' + e.message, false); }
+}
 function vistaAnterioresCxpInv(q) {
+  const rr = robotSiiInv || {}, marca = `${rr.histAvance || ''}|${rr.histDocs || ''}|${rr.histFinTs || ''}`;
+  if (marca !== histMarcaInv) { if (histMarcaInv && historicoInv) historicoInv = null; histMarcaInv = marca; }
   if (!historicoInv) { cargarHistoricoInv().then(() => renderCxpInv()); return '<div class="empty">Cargando facturas anteriores…</div>'; }
   const h = historicoInv, saldos = saldosPorEnlazarInv();
   const ayuda = `<details style="margin:4px 0 10px;font-size:12px;color:var(--acero)"><summary style="cursor:pointer;font-weight:700">¿Cómo descargo el Registro de Compras del SII?</summary><div style="margin-top:6px;line-height:1.5">1. En sii.cl entra a <strong>Servicios online → Factura electrónica → Registro de compras y ventas</strong> y elige Agrícola La Reserva.<br>2. Elige el <strong>mes</strong> (julio, agosto, septiembre, octubre) y consulta.<br>3. En <strong>Compras</strong>, toca <strong>"Descargar detalles"</strong>: baja un archivo CSV.<br>4. Repite con cada mes y súbelos aquí (puedes elegir varios a la vez).</div></details>`;
   const porMes = {}; h.forEach(x => { porMes[x.periodo] = (porMes[x.periodo] || 0) + 1; });
   const cab = `<div style="font-size:12px;color:var(--acero);margin:4px 0 8px">Archivo aparte con las facturas anteriores a la app: <strong>no se mezclan</strong> con Facturas y guías. Sirven para enlazar los saldos anteriores con sus N° de factura y confirmar los vencimientos.</div>
     <button class="btn-add" style="width:100%;padding:9px;margin-bottom:6px" onclick="histSubirRcvInv()">📥 Subir Registro de Compras (CSV del SII)</button>${ayuda}
+    ${bloqueRobotHistInv(h)}
     ${h.length ? `<div style="font-size:12px;margin-bottom:10px">En el archivo: ${Object.keys(porMes).sort().map(p => `<strong>${nomMesCxpInv(p)}</strong> (${porMes[p]})`).join(' · ')}</div>` : '<div class="empty">Todavía no hay facturas anteriores cargadas</div>'}`;
-  const bloqueSaldos = saldos.length ? `<div style="font-size:13px;font-weight:800;margin:10px 2px 4px">🔗 Saldos anteriores por enlazar · ${saldos.length}</div>` + saldos.map(d => {
+  const cruce = h.length ? `<div style="border:1px solid var(--verde);border-radius:10px;padding:10px;margin:4px 0 10px">
+      <div style="font-weight:800;font-size:13px">⚡ Cruce automático</div>
+      <div style="font-size:12px;color:var(--acero);margin:4px 0 8px">Sube tu lista de lo que realmente se debe (proveedor y valor). La app busca las facturas que forman cada valor, las pasa a Cuentas por pagar con su vencimiento y, si quieres, borra del archivo las que no se deben.</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-verde" style="flex:1;min-width:150px;justify-content:center" onclick="cxpSubirYCruzarInv()">📄 Subir lista y cruzar</button>${saldos.length ? `<button class="btn-add" style="flex:1;min-width:150px;padding:9px" onclick="cruceAutoInv()">⚡ Cruzar los ${saldos.length} saldos ya cargados</button>` : ''}</div>
+    </div>` : '';
+  const bloqueSaldos = cruce + (saldos.length ? `<div style="font-size:13px;font-weight:800;margin:10px 2px 4px">🔗 Saldos anteriores por enlazar · ${saldos.length}</div>` + saldos.map(d => {
     const c = candidatosHistInv(d.rutEmisor, d.razonSocial), comb = h.length ? combinacionSaldoInv(c, saldoPagarInv(d)) : null;
     return `<div class="config-item" style="flex-direction:column;align-items:stretch;gap:4px">
       <div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><span style="display:flex;gap:8px;align-items:center;min-width:0;overflow-wrap:anywhere">${logoProvInv(d.rutEmisor, d.razonSocial, 24)}<strong>${escA(d.razonSocial)}</strong></span><strong style="white-space:nowrap">${pesoInv(saldoPagarInv(d))}</strong></div>
       <div style="font-size:12px;color:${comb ? 'var(--verde)' : 'var(--acero)'}">${!h.length ? 'Sube el Registro de Compras para buscar sus facturas' : comb ? `✓ Coincide con ${comb.length === 1 ? 'la factura' : comb.length + ' facturas:'} ${comb.map(x => 'N° ' + escA(x.folio)).join(', ')}` : c.length ? `No encontré una suma exacta entre sus ${c.length} facturas: elige a mano` : 'No hay facturas de este proveedor en el archivo'}</div>
       ${h.length && c.length ? `<div><button class="btn-add" style="padding:6px 10px" onclick="histEnlazarInv('${d.id}')">${comb ? '🔗 Revisar y enlazar' : '🔗 Elegir facturas'}</button></div>` : ''}
-    </div>`; }).join('') : '';
+    </div>`; }).join('') : '');
   let lista = h.filter(x => [33, 34, 46, 61, 56].includes(x.tipo));
   if (q) lista = lista.filter(x => normNom(`${x.razonSocial} ${x.folio} ${x.rutEmisor}`).includes(q));
   lista.sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)));
   const tope = cxpVerMasInv ? 600 : 40;
   const filas = h.length ? `<div style="font-size:13px;font-weight:800;margin:14px 2px 4px">📚 Facturas del archivo · ${lista.length}</div>` + lista.slice(0, tope).map(x => { const e = enCxpInv(x); return `<div class="config-item" style="flex-direction:column;align-items:stretch;gap:3px">
       <div style="display:flex;justify-content:space-between;gap:8px"><span style="display:flex;gap:8px;align-items:center;min-width:0;overflow-wrap:anywhere">${logoProvInv(x.rutEmisor, x.razonSocial, 22)}<span><strong>${escA(x.razonSocial)}</strong> · ${escA(abrevTipoDte(x.tipo))} N° ${escA(x.folio)}</span></span><strong style="white-space:nowrap;${x.tipo === 61 ? 'color:#B91C1C' : ''}">${x.tipo === 61 ? '−' : ''}${pesoInv(x.total)}</strong></div>
-      <div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><span style="font-size:12px;color:var(--acero)">Emitida ${fmtFechaInv(x.fecha)}</span>${e ? `<span style="font-size:12px;color:var(--verde);font-weight:700">✓ ${e.pago === 'credito' && !e.pagada ? 'en Cuentas por pagar' : 'ya está en la app'}</span>` : [33, 34, 46].includes(x.tipo) ? `<button class="btn-add" style="padding:4px 10px;font-size:12px" onclick="histEnlazarInv('', '${x.id}')">💳 La debo</button>` : ''}</div></div>`; }).join('')
+      ${x.conXml && (x.items || []).length ? `<div style="font-size:12px;overflow-wrap:anywhere">· ${escA(glosaHistInv(x))}</div>` : ''}
+      <div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><span style="font-size:12px;color:var(--acero)">Emitida ${fmtFechaInv(x.fecha)}${x.fchVenc ? ` · vence ${fmtFechaInv(x.fchVenc)}` : ''}${x.conXml ? ' · 📄 con detalle' : ''}</span>${e ? `<span style="font-size:12px;color:var(--verde);font-weight:700">✓ ${e.pago === 'credito' && !e.pagada ? 'en Cuentas por pagar' : 'ya está en la app'}</span>` : [33, 34, 46].includes(x.tipo) ? `<button class="btn-add" style="padding:4px 10px;font-size:12px" onclick="histEnlazarInv('', '${x.id}')">💳 La debo</button>` : ''}</div></div>`; }).join('')
     + (lista.length > tope ? `<button class="btn-add" style="width:100%;margin-top:6px;background:var(--fondo);color:var(--negro)" onclick="cxpVerMasSetInv()">Ver las ${lista.length - tope} restantes</button>` : '') : '';
   return cab + bloqueSaldos + filas;
+}
+// ── Cruce automático: cada saldo anterior (proveedor + valor) con sus facturas del archivo;
+//    lo que calza pasa a Cuentas por pagar y, si se elige, lo demás se borra del archivo ──
+let cruceInv = null;
+window.cruceAutoInv = async function() {
+  await cargarHistoricoInv(true);
+  const saldos = saldosPorEnlazarInv().filter(d => !(d.abonos || []).length).sort((a, b) => String(a.razonSocial).localeCompare(String(b.razonSocial), 'es') || saldoPagarInv(b) - saldoPagarInv(a));
+  if (!saldos.length) { toast('No hay saldos anteriores para cruzar: primero sube tu lista de lo que se debe', false); return; }
+  const usados = new Set(), res = [];
+  for (const d of saldos) {
+    const cands = candidatosHistInv(d.rutEmisor, d.razonSocial).filter(h => !usados.has(h.id)), comb = combinacionSaldoInv(cands, saldoPagarInv(d));
+    if (comb) comb.forEach(h => usados.add(h.id));
+    res.push({ d, comb, plazo: plazoProvInv(d.rutEmisor || (comb && comb[0] && comb[0].rutEmisor) || (cands[0] || {}).rutEmisor || '') });
+  }
+  const sobran = (historicoInv || []).filter(h => !usados.has(h.id) && !enCxpInv(h));
+  const ok = res.filter(r => r.comb), no = res.filter(r => !r.comb);
+  cruceInv = { res, sobran };
+  const linea = r => `<div class="config-item" style="flex-direction:column;align-items:stretch;gap:2px">
+    <div style="display:flex;justify-content:space-between;gap:8px"><span style="display:flex;gap:8px;align-items:center;min-width:0;overflow-wrap:anywhere">${logoProvInv(r.d.rutEmisor || (r.comb ? r.comb[0].rutEmisor : ''), r.d.razonSocial, 22)}<strong>${escA(r.d.razonSocial)}</strong></span><strong style="white-space:nowrap">${pesoInv(saldoPagarInv(r.d))}</strong></div>
+    ${r.comb ? r.comb.map(h => `<div style="font-size:12px;overflow-wrap:anywhere">✓ ${escA(abrevTipoDte(h.tipo))} N° ${escA(h.folio)} · ${fmtFechaInv(h.fecha)} · ${pesoInv(h.total)} · vence ${fmtFechaInv(h.fchVenc || sumarDiasInv(h.fecha, r.plazo.dias))}${h.fchVenc ? '' : ' (estimado)'}${(h.items || []).length ? `<br><span style="color:var(--acero)">· ${escA(glosaHistInv(h))}</span>` : ''}</div>`).join('') : '<div style="font-size:12px;color:#B45309">✗ No encontré facturas que sumen ese valor: queda como saldo anterior (puedes enlazarla a mano)</div>'}
+  </div>`;
+  modalElegirDteInv('⚡ Cruce automático', `<strong>${ok.length}</strong> de ${res.length} saldo${res.length === 1 ? '' : 's'} calzan con facturas del archivo. Revisa y confirma.`, [`
+    ${ok.map(linea).join('')}${no.length ? `<div style="font-size:13px;font-weight:800;margin:10px 2px 4px">Sin calce · ${no.length}</div>` + no.map(linea).join('') : ''}
+    <label style="display:flex;gap:8px;align-items:flex-start;margin:12px 0 4px;text-transform:none;letter-spacing:0;font-weight:400;font-size:13px;cursor:pointer"><input type="checkbox" id="cruce-borrar" ${sobran.length ? 'checked' : 'disabled'} style="width:auto;margin:2px 0 0;flex:none"><span>Eliminar del archivo las <strong>${sobran.length}</strong> facturas que no se deben (ya pagadas). No afecta Facturas y guías.</span></label>
+    <button class="btn btn-verde" id="cruce-ok" style="width:100%;justify-content:center;margin-top:8px" onclick="aplicarCruceInv()" ${ok.length || sobran.length ? '' : 'disabled'}>✓ Aplicar cruce</button>`]);
+}
+window.aplicarCruceInv = async function() {
+  const c = cruceInv; if (!c) return;
+  const borrar = (document.getElementById('cruce-borrar') || {}).checked, bt = document.getElementById('cruce-ok');
+  if (bt) { bt.disabled = true; bt.textContent = 'Aplicando…'; }
+  let n = 0, s = 0, b = 0;
+  try {
+    for (const r of c.res) {
+      if (!r.comb) continue;
+      for (const h of r.comb) {
+        const x = armarCxpManualInv({ prov: h.razonSocial || r.d.razonSocial, rut: h.rutEmisor, tipo: h.tipo, folio: h.folio, fecha: h.fecha, total: h.total, vence: h.fchVenc || sumarDiasInv(h.fecha, r.plazo.dias), glosa: glosaHistInv(h), items: h.items || [] });
+        if (x.error) continue;
+        if (await duplicadoCxpInv({ prov: h.razonSocial, rut: h.rutEmisor, folio: h.folio }, x.id)) continue;
+        await setDoc(doc(dbInv, 'dte_recibidos', x.id), { ...x.data, desdeRcv: true, enlazadaDe: r.d.id, venceEstimado: !h.fchVenc }); n++;
+      }
+      await deleteDoc(doc(dbInv, 'dte_recibidos', r.d.id)); s++;
+    }
+    if (borrar && c.sobran.length) {
+      for (let i = 0; i < c.sobran.length; i += 400) { const wb = writeBatch(dbInv); c.sobran.slice(i, i + 400).forEach(h => wb.delete(doc(dbInv, 'dte_historico', h.id))); await wb.commit(); b += Math.min(400, c.sobran.length - i); }
+    }
+    const m = document.getElementById('dte-elegir'); if (m) m.remove();
+    cruceInv = null; await cargarHistoricoInv(true); renderCxpInv();
+    toast(`✓ ${s} saldo${s === 1 ? '' : 's'} cruzado${s === 1 ? '' : 's'}: ${n} factura${n === 1 ? '' : 's'} en Cuentas por pagar${b ? ` · ${b} eliminadas del archivo` : ''}`, true);
+  } catch (e) { toast('Error: ' + e.message, false); if (bt) { bt.disabled = false; bt.textContent = '✓ Aplicar cruce'; } }
 }
 // Enlazar: el saldo anterior (o una factura suelta) pasa a ser sus facturas reales, con vencimiento confirmado
 let histEnlaceInv = null;
@@ -17805,10 +17910,11 @@ window.histEnlazarInv = function(saldoId, histId) {
   const saldo = sa ? saldoPagarInv(sa) : 0, pre = sa ? (combinacionSaldoInv(cands, saldo) || []) : [h0];
   const plazo = plazoProvInv((sa && sa.rutEmisor) || (pre[0] || cands[0] || h0 || {}).rutEmisor || '');
   histEnlaceInv = { saldoId: sa ? sa.id : '', saldo, cands };
-  modalElegirDteInv(`🔗 ${escA((sa || h0).razonSocial)}`, `${sa ? `Saldo anterior: <strong>${pesoInv(saldo)}</strong>. Marca las facturas que lo forman.` : 'Marca las facturas que se deben.'} El vencimiento se propone con ${plazo.origen} (${plazo.dias} días): confírmalo o cámbialo.`, [`
+  modalElegirDteInv(`🔗 ${escA((sa || h0).razonSocial)}`, `${sa ? `Saldo anterior: <strong>${pesoInv(saldo)}</strong>. Marca las facturas que lo forman.` : 'Marca las facturas que se deben.'} Si la factura trae vencimiento se usa ese; si no, se estima con ${plazo.origen}. Confírmalo o cámbialo.`, [`
     ${cands.map((x, i) => { const sel = pre.some(p => p.id === x.id); return `<div class="config-item" style="flex-direction:column;align-items:stretch;gap:4px">
       <label style="display:flex;justify-content:space-between;gap:8px;cursor:pointer;text-transform:none;letter-spacing:0;font-weight:400;margin:0"><span style="display:flex;gap:8px;align-items:center;min-width:0"><input type="checkbox" class="hist-chk" data-i="${i}" ${sel ? 'checked' : ''} onchange="histSumaEnlaceInv()" style="width:auto;margin:0;flex:none"><span style="font-size:13px;overflow-wrap:anywhere">${escA(abrevTipoDte(x.tipo))} N° ${escA(x.folio)} · ${fmtFechaInv(x.fecha)}</span></span><strong style="white-space:nowrap">${pesoInv(x.total)}</strong></label>
-      <div style="display:flex;gap:6px;align-items:center;font-size:12px;margin-left:26px">Vence <input type="date" class="hist-vence" data-i="${i}" value="${sumarDiasInv(x.fecha, plazo.dias)}" style="margin:0;padding:4px 6px;font-size:13px;width:auto"></div></div>`; }).join('')}
+      ${(x.items || []).length ? `<div style="font-size:12px;color:var(--acero);margin-left:26px;overflow-wrap:anywhere">· ${escA(glosaHistInv(x))}</div>` : ''}
+      <div style="display:flex;gap:6px;align-items:center;font-size:12px;margin-left:26px;flex-wrap:wrap">Vence <input type="date" class="hist-vence" data-i="${i}" value="${x.fchVenc || sumarDiasInv(x.fecha, plazo.dias)}" style="margin:0;padding:4px 6px;font-size:13px;width:auto"><span style="color:${x.fchVenc ? 'var(--verde)' : 'var(--acero)'}">${x.fchVenc ? 'según la factura' : 'estimado'}</span></div></div>`; }).join('')}
     <div id="hist-suma" style="font-weight:800;margin:8px 0;font-size:13px"></div>
     <button class="btn btn-verde" id="hist-ok" style="width:100%;justify-content:center" onclick="histGuardarEnlaceInv()">✓ Pasar a Cuentas por pagar</button>`]);
   histSumaEnlaceInv();
@@ -17830,7 +17936,7 @@ window.histGuardarEnlaceInv = async function() {
     let n = 0, resto = sobra;
     for (const { h, vence } of sel) {
       const abonado = Math.min(resto, h.total); resto -= abonado;
-      const r = armarCxpManualInv({ prov: h.razonSocial, rut: h.rutEmisor, tipo: h.tipo, folio: h.folio, fecha: h.fecha, total: h.total, saldo: h.total - abonado, vence });
+      const r = armarCxpManualInv({ prov: h.razonSocial, rut: h.rutEmisor, tipo: h.tipo, folio: h.folio, fecha: h.fecha, total: h.total, saldo: h.total - abonado, vence, glosa: glosaHistInv(h), items: h.items || [] });
       if (r.error) throw new Error(`N° ${h.folio}: ${r.error}`);
       if (await duplicadoCxpInv({ prov: h.razonSocial, rut: h.rutEmisor, folio: h.folio }, r.id)) continue;
       await setDoc(doc(dbInv, 'dte_recibidos', r.id), { ...r.data, desdeRcv: true, ...(e.saldoId ? { enlazadaDe: e.saldoId } : {}) }); n++;
