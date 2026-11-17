@@ -17350,12 +17350,32 @@ window.webProvInv = async function(rut, v) {
   provCfgInv = { ...provCfgInv, [k]: { ...(provCfgInv[k] || {}), web: w } };
   try { await guardarProvCfgInv(); toast(w ? '✓ Sitio guardado: se usa su ícono' : '✓ Sitio quitado', true); } catch (e) { toast('Error: ' + e.message, false); }
 }
+// Logos en SVG: se les da tamaño (muchos solo traen viewBox) y se pasan a imagen chica
+async function svgAImagenInv(file, lado) {
+  const txt = await file.text(), dom = new DOMParser().parseFromString(txt, 'image/svg+xml'), svg = dom.documentElement;
+  if (!svg || svg.nodeName.toLowerCase() !== 'svg') throw new Error('El SVG no se pudo leer');
+  const vb = (svg.getAttribute('viewBox') || '').trim().split(/[\s,]+/).map(Number);
+  let w = parseFloat(svg.getAttribute('width')) || (vb.length === 4 ? vb[2] : 0), h = parseFloat(svg.getAttribute('height')) || (vb.length === 4 ? vb[3] : 0);
+  if (!(w > 0 && h > 0)) { w = lado; h = lado; }
+  const k = lado * 2 / Math.max(w, h); w = Math.round(w * k); h = Math.round(h * k);
+  svg.setAttribute('width', w); svg.setAttribute('height', h);
+  if (!svg.getAttribute('viewBox')) svg.setAttribute('viewBox', `0 0 ${parseFloat(svg.getAttribute('width'))} ${parseFloat(svg.getAttribute('height'))}`);
+  const url = URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(svg)], { type: 'image/svg+xml' }));
+  try {
+    const img = await new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => no(new Error('El SVG no se pudo dibujar')); i.src = url; });
+    const m = lado / Math.max(w, h), c = document.createElement('canvas'); c.width = Math.max(1, Math.round(w * m)); c.height = Math.max(1, Math.round(h * m));
+    const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height); ctx.drawImage(img, 0, 0, c.width, c.height);
+    return c.toDataURL('image/png');
+  } finally { URL.revokeObjectURL(url); }
+}
 window.subirLogoProvInv = function(rut) {
-  const fi = document.createElement('input'); fi.type = 'file'; fi.accept = 'image/*';
+  const fi = document.createElement('input'); fi.type = 'file'; fi.accept = 'image/*,.svg';
   fi.onchange = async () => {
     const f = fi.files && fi.files[0]; if (!f) return;
     try {
-      const logo = await comprimirFotoInv(f, 128, 0.8), k = claveProvInv(rut);
+      const esSvg = f.type === 'image/svg+xml' || /\.svg$/i.test(f.name || '');
+      const logo = esSvg ? await svgAImagenInv(f, 128) : await comprimirFotoInv(f, 128, 0.8), k = claveProvInv(rut);
+      if (logo.length > 200000) throw new Error('El logo quedó muy pesado; prueba con otra imagen');
       provCfgInv = { ...provCfgInv, [k]: { ...(provCfgInv[k] || {}), logo } };
       await guardarProvCfgInv(); toast('✓ Logo guardado', true);
     } catch (e) { toast('Error: ' + e.message, false); }
