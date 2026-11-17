@@ -16572,10 +16572,19 @@ const PLAN_BASE_INV = [{"c":"1000","n":"CAJA","g":"varios"},{"c":"2000","n":"CAP
 const cuentaPorCodInv = c => (planCuentasInv || []).find(x => String(x.c) === String(c)) || null;
 const esCodificableDteInv = d => d.tipo !== 52 && d.tipo !== 50;
 async function guardarPlanInv(arr) { await setDoc(doc(dbInv, 'dte_recibidos', '_plan_cuentas'), { cuentas: arr, actualizado: Date.now(), por: currentUser || '' }); }
-function sugerenciaCuentaInv(d) {
-  const u = dteRecibidosInv.filter(x => x.id !== d.id && x.cuenta && normRutDte(x.rutEmisor) === normRutDte(d.rutEmisor)).sort((a, b) => (b.codificadoTs || 0) - (a.codificadoTs || 0))[0];
-  return u ? { c: u.cuenta, n: u.cuentaNombre || (cuentaPorCodInv(u.cuenta) || {}).n || '', clasif: u.clasif || '' } : null;
+// Cuentas más usadas con este proveedor (RUT), de más a menos veces; en empate, la más reciente primero
+function sugerenciasCuentaInv(d, max = 3) {
+  const cuenta = {};
+  for (const x of dteRecibidosInv) {
+    if (x.id === d.id || !x.cuenta || normRutDte(x.rutEmisor) !== normRutDte(d.rutEmisor)) continue;
+    const k = String(x.cuenta), e = cuenta[k] || (cuenta[k] = { c: k, n: '', veces: 0, ts: 0, clasif: '' });
+    e.veces++;
+    if ((x.codificadoTs || 0) >= e.ts) { e.ts = x.codificadoTs || 0; e.n = x.cuentaNombre || e.n; e.clasif = x.clasif || ''; }
+  }
+  return Object.values(cuenta).map(e => ({ ...e, n: (cuentaPorCodInv(e.c) || {}).n || e.n || '' }))
+    .sort((a, b) => (b.veces - a.veces) || (b.ts - a.ts)).slice(0, max);
 }
+function sugerenciaCuentaInv(d) { return sugerenciasCuentaInv(d, 1)[0] || null; }
 function estadoCuentaInv(d) {
   if (!esCodificableDteInv(d)) return null;
   return d.cuenta ? { t: `📒 ${escA(d.cuenta)} · ${escA(d.cuentaNombre || '')}`, bg: '#EDE9FE', fg: '#5B21B6' } : { t: '📒 Sin cuenta contable', bg: '#F3F4F6', fg: '#6B7280' };
@@ -16586,13 +16595,14 @@ function listaPickerCuentasInv(id, q) {
   const nq = normNom(q || '');
   let cs = (planCuentasInv || []).filter(c => c.on !== false && c.g !== 'clasif');
   if (nq) cs = cs.filter(c => normNom(c.c + ' ' + c.n).includes(nq));
-  else cs = cs.filter(c => c.g === 'gastos');
   const orden = { gastos: 0, varios: 1, inversion: 2, ventas: 3 };
   cs.sort((a, b) => (orden[a.g] - orden[b.g]) || String(a.c).localeCompare(String(b.c), 'es', { numeric: true }));
-  const sug = sugerenciaCuentaInv(d);
+  const sugs = sugerenciasCuentaInv(d, 99);
   const fila = c => `<div class="config-item" style="cursor:pointer;padding:8px 10px" onclick="dteGuardarCuentaInv('${id}','${escA(c.c)}')"><span><strong>${escA(c.c)}</strong> · ${escA(c.n)}</span>${nq ? `<span style="font-size:10px;color:var(--acero)">${GRUPOS_PLAN_INV[c.g] || ''}</span>` : ''}</div>`;
-  cont.innerHTML = (sug && !nq ? `<div style="font-size:12px;color:var(--acero);margin-bottom:4px">Última de este proveedor</div><div class="config-item" style="cursor:pointer;background:#EDE9FE" onclick="dteGuardarCuentaInv('${id}','${escA(sug.c)}')"><span><strong>${escA(sug.c)}</strong> · ${escA(sug.n)}</span></div><div style="font-size:12px;color:var(--acero);margin:8px 0 4px">Gastos (busca arriba para ver el resto)</div>` : '')
-    + (cs.length ? cs.slice(0, 80).map(fila).join('') : '<div class="empty">No hay cuentas con ese texto</div>');
+  // Sin búsqueda: primero las más usadas con este proveedor y después el plan completo, por grupo
+  const porGrupo = () => ['gastos', 'varios', 'inversion', 'ventas'].map(g => { const gs = cs.filter(c => c.g === g); return gs.length ? `<div style="font-size:12px;font-weight:700;color:var(--acero);margin:10px 0 4px">${GRUPOS_PLAN_INV[g] || g} · ${gs.length}</div>` + gs.map(fila).join('') : ''; }).join('');
+  cont.innerHTML = (sugs.length && !nq ? `<div style="font-size:12px;color:var(--acero);margin-bottom:4px">Más usadas con este proveedor</div>${sugs.map(s => `<div class="config-item" style="cursor:pointer;background:#EDE9FE;padding:8px 10px" onclick="dteGuardarCuentaInv('${id}','${escA(s.c)}')"><span><strong>${escA(s.c)}</strong> · ${escA(s.n || 'sin descripción')}</span><span style="font-size:11px;color:#5B21B6;white-space:nowrap">${s.veces === 1 ? '1 vez' : s.veces + ' veces'}</span></div>`).join('')}<div style="font-size:12px;color:var(--acero);margin:10px 0 0">Plan de cuentas completo (o escribe arriba para buscar)</div>` : '')
+    + (!cs.length ? '<div class="empty">No hay cuentas con ese texto</div>' : nq ? cs.map(fila).join('') : porGrupo());
 }
 window.buscarCuentaInv = (id, v) => listaPickerCuentasInv(id, v);
 window.dteElegirCuentaInv = function(id) {
@@ -16615,10 +16625,12 @@ window.dteClasifInv = async function(id, v) {
 }
 function bloqueCuentaInv(d) {
   if (!esCodificableDteInv(d)) return '';
-  const sug = !d.cuenta ? sugerenciaCuentaInv(d) : null;
+  const sugs = !d.cuenta ? sugerenciasCuentaInv(d, 99) : [], VISIBLES = 10;
   const cl = (planCuentasInv || []).filter(c => c.g === 'clasif' && c.on !== false).sort((a, b) => Number(a.c) - Number(b.c));
+  const btnSug = (s, i) => `<button class="btn-add${i >= VISIBLES ? ' cta-extra' : ''}" style="padding:6px 10px;background:#EDE9FE;color:#5B21B6;white-space:normal;text-align:left;max-width:100%${i >= VISIBLES ? ';display:none' : ''}" onclick="dteGuardarCuentaInv('${d.id}','${escA(s.c)}')"><strong>${escA(s.c)}</strong> · ${escA(s.n || 'sin descripción')} <span style="font-weight:400;opacity:.75">(${s.veces === 1 ? '1 vez' : s.veces + ' veces'})</span></button>`;
   return `<div style="border:1px solid var(--borde);border-radius:10px;padding:10px;margin:10px 0"><div style="font-weight:700;font-size:13px;margin-bottom:6px">📒 Cuenta contable: <span style="color:#5B21B6">${d.cuenta ? escA(d.cuenta) + ' · ' + escA(d.cuentaNombre || '') : 'sin codificar'}</span></div>
-    <div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn-add" style="padding:6px 10px" onclick="dteElegirCuentaInv('${d.id}')">${d.cuenta ? '✏️ Cambiar cuenta' : '📒 Elegir cuenta'}</button>${sug ? `<button class="btn-add" style="padding:6px 10px;background:#EDE9FE;color:#5B21B6" onclick="dteGuardarCuentaInv('${d.id}','${escA(sug.c)}')">Usar ${escA(sug.c)} (la última de este proveedor)</button>` : ''}${d.cuenta ? `<button class="btn-add" style="padding:6px 10px;background:var(--fondo);color:var(--negro)" onclick="dteQuitarCuentaInv('${d.id}')">↩ Quitar</button>` : ''}</div>
+    ${sugs.length ? `<div style="font-size:12px;color:var(--acero);margin-bottom:4px">Más usadas con este proveedor:</div><div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px">${sugs.map(btnSug).join('')}${sugs.length > VISIBLES ? `<button class="btn-add" style="padding:6px 10px;background:#F5F3FF;color:#5B21B6" onclick="this.parentNode.querySelectorAll('.cta-extra').forEach(e => e.style.display = '');this.remove()">＋ ${sugs.length - VISIBLES} más</button>` : ''}</div>` : ''}
+    <div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn-add" style="padding:6px 10px" onclick="dteElegirCuentaInv('${d.id}')">${d.cuenta ? '✏️ Cambiar cuenta' : sugs.length ? '📒 Otra cuenta del plan' : '📒 Elegir cuenta'}</button>${d.cuenta ? `<button class="btn-add" style="padding:6px 10px;background:var(--fondo);color:var(--negro)" onclick="dteQuitarCuentaInv('${d.id}')">↩ Quitar</button>` : ''}</div>
     ${cl.length ? `<div style="margin-top:8px;font-size:12px">Clasificación de costo (opcional): <select onchange="dteClasifInv('${d.id}', this.value)" style="margin-left:4px"><option value="">—</option>${cl.map(c => `<option value="${escA(c.c)}"${String(d.clasif || '') === String(c.c) ? ' selected' : ''}>${escA(c.c)} · ${escA(c.n)}</option>`).join('')}</select></div>` : ''}</div>`;
 }
 // ── Editar el plan de cuentas ──
@@ -17076,7 +17088,7 @@ function tarjetaDteInv(d) {
   if (g === 'pendientes') acciones.push(`<button class="btn-add" style="padding:6px 10px" onclick="dteAIngresoInv('${d.id}')">📥 Ingresar a bodega</button>`);
   if (g === 'pendientes' && sugierePreciosDteInv(d)) acciones.push(`<button class="btn-add" style="padding:6px 10px;background:#EFF6FF;color:#1D4ED8" onclick="dtePreciosInv('${d.id}')">💲 Solo actualizar precios</button>`);
   acciones.push(`<button class="btn-add" style="padding:6px 10px;background:var(--fondo);color:var(--negro)" onclick="dteVerInv('${d.id}')">👁 Ver${esFacturaDteInv(d) || d.tipo === 52 || esPagableDteInv(d) ? ' / Recepción y pago' : ''}</button>`);
-  if (esCodificableDteInv(d) && !d.cuenta) { const sg = sugerenciaCuentaInv(d); acciones.push(sg ? `<button class="btn-add" style="padding:6px 10px;background:#EDE9FE;color:#5B21B6" onclick="dteGuardarCuentaInv('${d.id}','${escA(sg.c)}')">📒 Usar ${escA(sg.c)}</button>` : `<button class="btn-add" style="padding:6px 10px;background:#EDE9FE;color:#5B21B6" onclick="dteElegirCuentaInv('${d.id}')">📒 Elegir cuenta</button>`); }
+  if (esCodificableDteInv(d) && !d.cuenta) { const sg = sugerenciaCuentaInv(d); acciones.push(sg ? `<button class="btn-add" style="padding:6px 10px;background:#EDE9FE;color:#5B21B6;white-space:normal;text-align:left" title="${escA(sg.c + ' · ' + (sg.n || ''))}" onclick="dteGuardarCuentaInv('${d.id}','${escA(sg.c)}')">📒 Usar ${escA(sg.c)}${sg.n ? ' · ' + escA(sg.n.length > 32 ? sg.n.slice(0, 31) + '…' : sg.n) : ''}</button>` : `<button class="btn-add" style="padding:6px 10px;background:#EDE9FE;color:#5B21B6" onclick="dteElegirCuentaInv('${d.id}')">📒 Elegir cuenta</button>`); }
   acciones.push(d.revision ? `<button class="btn-add" style="padding:6px 10px;background:#FCE7F3;color:#9D174D" onclick="dteRevisadaInv('${d.id}')">✅ Revisada</button>` : `<button class="btn-add" style="padding:6px 10px;background:var(--fondo);color:#9D174D" onclick="dteRevisionInv('${d.id}')">❓ Dejar pendiente</button>`);
   if (d.pago === 'credito' && !d.pagada) acciones.push(`<button class="btn-add" style="padding:6px 10px" onclick="dteRegistrarPagoInv('${d.id}')">💵 Registrar pago</button>`);
   if (d.tipo === 52 && !facturaDeGuiaInv(d)) acciones.push(`<button class="btn-add" style="padding:6px 10px;background:#EFF6FF;color:#1D4ED8" onclick="dteAsignarFacturaInv('${d.id}')">🔗 Asignar a factura</button>`);
