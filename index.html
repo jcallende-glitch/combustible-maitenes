@@ -15898,7 +15898,7 @@ window.confirmarIngresoInv = async function() {
       proveedor, nroDocumento, bodega: [...new Set(items.map(it => it.bodega))].length === 1 ? items[0].bodega : 'Varias', items: items.map(({ _pid, ...r }) => r), itemsPendientes: nuevos, fotoIds, recibe: (document.getElementById('inv-ingreso-recibe') || {}).value || '',
       fecha: new Date().toISOString(), ts: Date.now(), por: currentUser || "",
     });
-    if (dteLig) { try { await updateDoc(doc(dbInv, 'dte_recibidos', dteLig), { estado: 'ingresado', ingresoId: refIngreso.id, ingresadoPor: currentUser || '', ingresadoTs: Date.now() }); } catch (e) { console.warn('dte', e); } }
+    if (dteLig) { try { const dl = dteRecibidosInv.find(x => x.id === dteLig); await updateDoc(doc(dbInv, 'dte_recibidos', dteLig), { estado: 'ingresado', ingresoId: refIngreso.id, ingresadoPor: currentUser || '', ingresadoTs: Date.now(), ...(dl && esFacturaDteInv(dl) ? { recepcion: 'recibida', recepcionPor: currentUser || '', recepcionTs: Date.now() } : {}) }); } catch (e) { console.warn('dte', e); } }
     dteIngresoActualId = null;
     fotosIngresoInv = []; renderFotosIngresoInv(); cerrarModalInv('modal-inv-ingreso-confirm');
     { const av = document.getElementById('inv-ingreso-ia-aviso'); if (av) av.innerHTML = ''; }
@@ -16052,7 +16052,7 @@ function parsearDtesXmlInv(txt) {
   return out;
 }
 // Guarda en Firestore sin pisar el estado (ingresado / no va a bodega) de los que ya estaban
-async function guardarDtesInv(docs, origen) {
+async function guardarDtesInv(docs, origen, llegada) {
   let nuevos = 0, completados = 0, repetidos = 0;
   for (const d of docs) {
     const { xml, id, ...datos } = d;
@@ -16064,7 +16064,7 @@ async function guardarDtesInv(docs, origen) {
       try { await setDoc(doc(dbInv, 'docs_fotos', 'dte_' + id), { tipo: 'dte_xml', data: xml, ts: Date.now(), por: currentUser || '' }); base.xmlId = 'dte_' + id; } catch (e) { console.warn('xml', e); }
     }
     if (actual) { await setDoc(doc(dbInv, 'dte_recibidos', id), base, { merge: true }); completados++; }
-    else { await setDoc(doc(dbInv, 'dte_recibidos', id), { ...base, estado: 'pendiente', creado: Date.now(), por: currentUser || '' }); nuevos++; }
+    else { await setDoc(doc(dbInv, 'dte_recibidos', id), { ...base, estado: 'pendiente', creado: Math.min(Date.now(), Number(llegada) || Date.now()), por: currentUser || '' }); nuevos++; }
   }
   return { nuevos, completados, repetidos };
 }
@@ -16226,7 +16226,8 @@ function saldoFacturaInv(f) {
 function estadoRecepcionInv(f) {
   if (!esFacturaDteInv(f)) return null;
   if (f.recepcion === 'recibida') return { k: 'recibida', t: '✅ Recibida completa', bg: 'var(--verde-suave)', fg: 'var(--verde)' };
-  if (f.recepcion === 'despacho') {
+  if (!f.recepcion && f.estado === 'ingresado' && !f.soloPrecios) return { k: 'recibida', t: '✅ Recibida con la factura', bg: 'var(--verde-suave)', fg: 'var(--verde)' };
+  if (f.recepcion === 'despacho' || (!f.recepcion && guiasAsignadasInv(f).length)) {
     const s = saldoFacturaInv(f), pend = s.lineas.filter(l => l.saldo > 0.0001);
     if (s.lineas.length && !pend.length) return { k: 'completa', t: '✅ Despacho completo', bg: 'var(--verde-suave)', fg: 'var(--verde)', s };
     return { k: s.guias.length ? 'parcial' : 'espera', t: s.guias.length ? `🚚 Despacho parcial (${s.guias.length} guía${s.guias.length > 1 ? 's' : ''})` : '🚚 Espera despacho', bg: '#FEF3C7', fg: '#B45309', s, pend };
@@ -16255,7 +16256,7 @@ const resumenItemsDteInv = d => (d.items || []).filter(x => x.nombre).slice(0, 4
 window.dteAsignarGuiaInv = function(fid) {
   const f = dteRecibidosInv.find(x => x.id === fid); if (!f) return;
   const rut = normRutDte(f.rutEmisor);
-  const libres = dteRecibidosInv.filter(g => g.tipo === 52 && normRutDte(g.rutEmisor) === rut && !facturaDeGuiaInv(g));
+  const libres = dteRecibidosInv.filter(g => g.tipo === 52 && !g.sinFactura && normRutDte(g.rutEmisor) === rut && !facturaDeGuiaInv(g));
   const refs = guiasDeFacturaInv(f).filter(g => !g.doc).map(g => g.folio);
   modalElegirDteInv(`Asignar guía a la factura N° ${f.folio}`, `Guías de ${escA(f.razonSocial || '')} que aún no están asignadas a una factura.${refs.length ? `<br>La factura cita las guías N° ${refs.join(', ')}, que todavía no importas.` : ''}`,
     libres.map(g => `<div class="config-item" style="cursor:pointer;flex-direction:column;align-items:stretch;gap:2px" onclick="dteAsignarGuiaOkInv('${f.id}','${g.id}')"><div><strong>Guía N° ${g.folio}</strong> · ${fechaCortaDte(g.fecha)}</div><div style="font-size:12px;color:var(--acero);overflow-wrap:anywhere">${resumenItemsDteInv(g) || 'Sin detalle'}</div></div>`));
@@ -16332,14 +16333,88 @@ window.ocultarPersonaPagoInv = async function(i) {
   arr[i].on = arr[i].on === false;
   try { await guardarPersonasPagoInv(arr); } catch (e) { toast('Error: ' + e.message, false); }
 }
+// ── Autorizados a comprar (quién hizo la compra; puede ser distinto de quien pagó) ──
+let compradoresInv = null;
+async function guardarCompradoresInv(arr) { await setDoc(doc(dbInv, 'dte_recibidos', '_compradores'), { personas: arr, actualizado: Date.now(), por: currentUser || '' }); }
+const compradoresActivosInv = () => (compradoresInv || []).filter(p => p.on !== false).map(p => p.n);
+window.agregarCompradorInv = async function() {
+  const n = (document.getElementById('comprador-nuevo').value || '').trim();
+  if (!n) { toast('Escribe el nombre', false); return; }
+  const arr = (compradoresInv || []).map(p => ({ ...p })), ex = arr.find(p => normNom(p.n) === normNom(n));
+  if (ex && ex.on !== false) { toast('Esa persona ya está en la lista', false); return; }
+  if (ex) ex.on = true; else arr.push({ n, on: true });
+  try { await guardarCompradoresInv(arr); toast('✓ Autorizado a comprar', true); } catch (e) { toast('Error: ' + e.message, false); }
+}
+window.renombrarCompradorInv = async function(i) {
+  const arr = (compradoresInv || []).map(p => ({ ...p })); if (!arr[i]) return;
+  const n = prompt('Nombre', arr[i].n); if (n === null || !n.trim()) return;
+  arr[i].n = n.trim();
+  try { await guardarCompradoresInv(arr); toast('✓ Nombre actualizado (las compras ya anotadas conservan el anterior)', true); } catch (e) { toast('Error: ' + e.message, false); }
+}
+window.ocultarCompradorInv = async function(i) {
+  const arr = (compradoresInv || []).map(p => ({ ...p })); if (!arr[i]) return;
+  arr[i].on = arr[i].on === false;
+  try { await guardarCompradoresInv(arr); } catch (e) { toast('Error: ' + e.message, false); }
+}
+window.copiarPagadoresACompradoresInv = async function() {
+  const arr = (compradoresInv || []).map(p => ({ ...p }));
+  personasActivasInv().forEach(n => { if (!arr.some(p => normNom(p.n) === normNom(n))) arr.push({ n, on: true }); });
+  try { await guardarCompradoresInv(arr); toast('✓ Lista copiada', true); } catch (e) { toast('Error: ' + e.message, false); }
+}
+function cajaDeCompradorInv(nombre) {
+  if (!nombre) return '';
+  const cs = cajasChicasInv(), k = normNom(nombre);
+  const p = (compradoresInv || []).find(x => normNom(x.n) === k);
+  if (p && p.caja && cs.includes(p.caja)) return p.caja;
+  const uso = {};
+  dteRecibidosInv.forEach(d => { if (d.compro && normNom(d.compro) === k) { if (d.pago === 'caja' && d.pagoDetalle) uso[d.pagoDetalle] = (uso[d.pagoDetalle] || 0) + 1; (d.abonos || []).forEach(a => { if (a.medio === 'caja' && a.detalle) uso[a.detalle] = (uso[a.detalle] || 0) + 1; }); } });
+  const top = Object.entries(uso).filter(([c]) => cs.includes(c)).sort((a, b) => b[1] - a[1])[0];
+  if (top) return top[0];
+  const pal = k.split(' ').filter(w => w.length >= 3);
+  return cs.find(c => normNom(c).includes(k)) || cs.find(c => pal.some(w => normNom(c).split(' ').includes(w))) || '';
+}
+// Pone primero a quien compró (y su caja), sin quitar a los demás
+const primeroInv = (lista, x) => x && lista.includes(x) ? [x, ...lista.filter(y => y !== x)] : lista.slice();
+const personaEnListaInv = (lista, n) => n ? lista.find(x => normNom(x) === normNom(n)) || '' : '';
+window.elegirCajaCompradorInv = function(i) {
+  const p = (compradoresInv || [])[i]; if (!p) return;
+  const cs = cajasChicasInv();
+  modalElegirDteInv(`💵 Caja chica de ${escA(p.n)}`, 'Cuando pague con caja chica algo que compró, esta caja aparece primero. Las demás siguen disponibles.',
+    cs.map((c, k) => `<div class="config-item" style="cursor:pointer${p.caja === c ? ';background:var(--verde-suave)' : ''}" onclick="guardarCajaCompradorInv(${i},${k})">💵 ${escA(c)}</div>`).concat([`<div class="config-item" style="cursor:pointer;color:var(--acero)" onclick="guardarCajaCompradorInv(${i},-1)">— Sin caja propia (la app la deduce)</div>`]));
+}
+window.guardarCajaCompradorInv = async function(i, k) {
+  const arr = (compradoresInv || []).map(p => ({ ...p })); if (!arr[i]) return;
+  arr[i].caja = k >= 0 ? (cajasChicasInv()[k] || '') : '';
+  try { await guardarCompradoresInv(arr); const m = document.getElementById('dte-elegir'); if (m) m.remove(); toast('✓ Caja chica guardada', true); } catch (e) { toast('Error: ' + e.message, false); }
+}
+const estadoCompraInv = d => esPagableDteInv(d) && d.compro ? { t: '🛒 Compró: ' + escA(d.compro), bg: '#ECFDF5', fg: '#047857' } : null;
+let compraPendInv = null;
+window.dteQuienComproInv = function(id) {
+  const d = dteRecibidosInv.find(x => x.id === id); if (!d) return;
+  const ps = compradoresActivosInv(); compraPendInv = id;
+  modalElegirDteInv('🛒 ¿Quién compró?', `${escA(abrevTipoDte(d.tipo))} N° ${escA(d.folio)} · ${escA(d.razonSocial || '')}. Puede ser otra persona que la que pagó.${ps.length ? '' : '<br>Agrega a los autorizados en Contabilidad → Configuración.'}`,
+    ps.map((n, i) => `<div class="config-item" style="cursor:pointer${normNom(n) === normNom(d.compro || '') ? ';background:var(--verde-suave)' : ''}" onclick="dteCompradorIdxInv(${i})">🛒 ${escA(n)}</div>`)
+      .concat([`<div class="config-item" style="cursor:pointer;color:var(--acero)" onclick="dteCompradorOtroInv()">✏️ Otra persona…</div>`], d.compro ? [`<div class="config-item" style="cursor:pointer;color:#B91C1C" onclick="dteGuardarCompradorInv('')">↩ Quitar (sin definir)</div>`] : []));
+}
+window.dteCompradorIdxInv = i => { const n = compradoresActivosInv()[i]; if (n) dteGuardarCompradorInv(n); };
+window.dteCompradorOtroInv = function() { const n = prompt('¿Quién compró?', ''); if (n && n.trim()) dteGuardarCompradorInv(n.trim()); };
+window.dteGuardarCompradorInv = async function(n) {
+  const id = compraPendInv; if (!id) return;
+  try {
+    await updateDoc(doc(dbInv, 'dte_recibidos', id), { compro: n, comproPor: currentUser || '', comproTs: Date.now() });
+    const m = document.getElementById('dte-elegir'); if (m) m.remove();
+    toast(n ? '✓ Compró: ' + n : '✓ Comprador sin definir', true);
+  } catch (e) { toast('Error: ' + e.message, false); }
+}
 // Pregunta quién pagó (solo si hay personas configuradas) y sigue con el pago
 function pedirPagadorInv(id, forma, caja) {
   const ps = personasActivasInv();
   if (!ps.length) { dtePagoInv(id, forma, caja, ''); return; }
-  pagoPendInv = { id, forma, caja };
-  modalElegirDteInv('👤 ¿Quién pagó?', 'Solo las personas autorizadas a pagar y rendir.', ps.map((n, i) => `<div class="config-item" style="cursor:pointer" onclick="dtePagadorIdxInv(${i})">👤 ${escA(n)}</div>`));
+  const d = dteRecibidosInv.find(x => x.id === id) || {}, comp = forma === 'caja' ? personaEnListaInv(ps, d.compro) : '';
+  pagoPendInv = { id, forma, caja, orden: primeroInv(ps, comp) };
+  modalElegirDteInv('👤 ¿Quién pagó?', 'Solo las personas autorizadas a pagar y rendir.', pagoPendInv.orden.map((n, i) => `<div class="config-item" style="cursor:pointer${n === comp ? ';background:var(--verde-suave)' : ''}" onclick="dtePagadorIdxInv(${i})">👤 ${escA(n)}${n === comp ? ' <span style="font-size:11px;color:var(--verde)">· compró</span>' : ''}</div>`));
 }
-window.dtePagadorIdxInv = function(i) { const n = personasActivasInv()[i], p = pagoPendInv; const m = document.getElementById('dte-elegir'); if (m) m.remove(); if (p && n) dtePagoInv(p.id, p.forma, p.caja, n); }
+window.dtePagadorIdxInv = function(i) { const p = pagoPendInv, n = p && p.orden[i]; const m = document.getElementById('dte-elegir'); if (m) m.remove(); if (p && n) dtePagoInv(p.id, p.forma, p.caja, n); }
 let cajasCfgInv = null; // null = aún sin configurar: se usan las de partida y las ya usadas
 async function guardarCajasInv(arr) { await setDoc(doc(dbInv, 'dte_recibidos', '_cajas'), { cajas: arr, actualizado: Date.now(), por: currentUser || '' }); }
 function cajasEfectivasInv() { return cajasCfgInv ? cajasCfgInv.map(c => ({ ...c })) : cajasChicasPorUsoInv().map(n => ({ n, on: true })); }
@@ -16468,6 +16543,12 @@ window.renderConfigContInv = function() {
       <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"><label style="font-size:12px;color:var(--acero)">Borrar los anteriores al</label><input type="date" id="borrar-antes" value="2026-11-01" style="box-sizing:border-box;margin:0"><button class="btn-add" style="padding:6px 12px;background:#FEE2E2;color:#B91C1C" onclick="borrarDteAnterioresInv()">🧹 Revisar y borrar</button></div>
     </div>
     <div class="panel">
+      <div class="panel-title">🛒 Autorizados a comprar</div>
+      <div style="font-size:12px;color:var(--acero);margin-bottom:8px">En cada factura o boleta se anota quién hizo la compra, aparte de quién la pagó. Si la lista está vacía, no se pregunta.</div>
+      ${(compradoresInv || []).length ? compradoresInv.map((p, i) => `<div class="config-item" style="${p.on === false ? 'opacity:.5' : ''}"><span style="min-width:0;overflow-wrap:anywhere">🛒 <strong>${escA(p.n)}</strong>${p.on === false ? ' (oculta)' : ''}<br><a href="#" style="font-size:12px" onclick="event.preventDefault();elegirCajaCompradorInv(${i})">💵 ${(() => { const c = cajaDeCompradorInv(p.n); return c ? escA(c) + (p.caja === c ? '' : ' (deducida)') : 'Elegir su caja chica'; })()}</a></span><span style="white-space:nowrap"><a href="#" onclick="event.preventDefault();renombrarCompradorInv(${i})">✏️</a> <a href="#" onclick="event.preventDefault();ocultarCompradorInv(${i})">${p.on === false ? '👁' : '🚫'}</a></span></div>`).join('') : `<div class="empty">Todavía no hay autorizados a comprar</div>${personasActivasInv().length ? `<button class="btn-add" style="padding:6px 12px;margin-top:6px;background:var(--fondo);color:var(--negro)" onclick="copiarPagadoresACompradoresInv()">Copiar los autorizados a pagar (${personasActivasInv().length})</button>` : ''}`}
+      <div style="display:flex;gap:6px;margin-top:10px"><input type="text" id="comprador-nuevo" list="lista-compradores" placeholder="Nombre de la persona" style="flex:1;min-width:0;box-sizing:border-box;margin:0"><datalist id="lista-compradores">${[...new Set([...personasActivasInv(), ...((typeof config !== 'undefined' && config.operadores) || [])])].map(n => `<option value="${escA(n)}">`).join('')}</datalist><button class="btn-add" style="padding:6px 12px" onclick="agregarCompradorInv()">＋ Agregar</button></div>
+    </div>
+    <div class="panel">
       <div class="panel-title">👤 Autorizados a pagar y rendir</div>
       <div style="font-size:12px;color:var(--acero);margin-bottom:8px">Al registrar un pago, la app pregunta quién pagó y lo elige de esta lista. Con esto después se rinde cada caja chica por persona. Si la lista está vacía, no se pregunta.</div>
       ${(personasPagoInv || []).length ? personasPagoInv.map((p, i) => `<div class="config-item" style="${p.on === false ? 'opacity:.5' : ''}"><span>👤 <strong>${escA(p.n)}</strong>${p.on === false ? ' (oculta)' : ''}</span><span style="white-space:nowrap"><a href="#" onclick="event.preventDefault();renombrarPersonaPagoInv(${i})">✏️</a> <a href="#" onclick="event.preventDefault();ocultarPersonaPagoInv(${i})">${p.on === false ? '👁' : '🚫'}</a></span></div>`).join('') : '<div class="empty">Todavía no hay personas autorizadas</div>'}
@@ -16500,13 +16581,15 @@ window.ocultarCajaInv = async function(i) {
   cajas[i].on = cajas[i].on === false;
   try { await guardarCajasInv(cajas); } catch (e) { toast('Error: ' + e.message, false); }
 }
+let cajasOrdenInv = [];
 window.modalCajaInv = function(id) {
-  const cs = cajasChicasInv();
-  modalElegirDteInv('💵 ¿Con qué caja chica se pagó?', 'Elige una o crea otra: queda guardada para la próxima vez.', [
-    ...cs.map((n, i) => `<div class="config-item" style="cursor:pointer" onclick="dtePagoCajaIdxInv('${id}', ${i})">💵 ${escA(n)}</div>`),
+  const d = dteRecibidosInv.find(x => x.id === id) || {}, propia = cajaDeCompradorInv(d.compro);
+  const cs = cajasOrdenInv = primeroInv(cajasChicasInv(), propia);
+  modalElegirDteInv('💵 ¿Con qué caja chica se pagó?', `${propia ? `Primero la de <strong>${escA(d.compro)}</strong>, que hizo la compra. ` : ''}Elige una o crea otra: queda guardada para la próxima vez.`, [
+    ...cs.map((n, i) => `<div class="config-item" style="cursor:pointer${n === propia ? ';background:var(--verde-suave)' : ''}" onclick="dtePagoCajaIdxInv('${id}', ${i})">💵 ${escA(n)}${n === propia ? ' <span style="font-size:11px;color:var(--verde)">· de quien compró</span>' : ''}</div>`),
     `<div class="config-item" style="cursor:pointer;color:#1D4ED8" onclick="dtePagoCajaOtraInv('${id}')">＋ Otra caja…</div>`]);
 }
-window.dtePagoCajaIdxInv = function(id, i) { const n = cajasChicasInv()[i]; const m = document.getElementById('dte-elegir'); if (m) m.remove(); dtePagoInv(id, 'caja', n); }
+window.dtePagoCajaIdxInv = function(id, i) { const n = cajasOrdenInv[i]; const m = document.getElementById('dte-elegir'); if (m) m.remove(); dtePagoInv(id, 'caja', n); }
 window.dtePagoCajaOtraInv = function(id) { const n = prompt('Nombre de la caja chica (por ejemplo, el responsable)', ''); if (n === null || !n.trim()) return; const m = document.getElementById('dte-elegir'); if (m) m.remove(); dtePagoInv(id, 'caja', n.trim()); }
 window.dtePagoInv = async function(id, forma, caja, quien) {
   const d = dteRecibidosInv.find(x => x.id === id); if (!d) return;
@@ -16529,14 +16612,16 @@ window.dteMarcarPagadaInv = function(id) { dteRegistrarPagoInv(id); };
 window.dteRegistrarPagoInv = function(id) {
   const d = dteRecibidosInv.find(x => x.id === id); if (!d) return;
   const s = saldoPagarInv(d);
-  const ult = dteRecibidosInv.flatMap(x => x.abonos || []).filter(a => a.medio === 'caja' && a.detalle).sort((a, b) => (b.ts || 0) - (a.ts || 0))[0];
+  const propia = cajaDeCompradorInv(d.compro), comp = personaEnListaInv(personasActivasInv(), d.compro);
+  const ultAb = dteRecibidosInv.flatMap(x => x.abonos || []).filter(a => a.medio === 'caja' && a.detalle).sort((a, b) => (b.ts || 0) - (a.ts || 0))[0];
+  const ult = propia ? { detalle: propia } : ultAb;
   const inp = 'width:100%;box-sizing:border-box;margin-bottom:8px';
   modalElegirDteInv(`Registrar pago · ${escA(d.razonSocial || '')} N° ${d.folio}`, `Saldo por pagar: <strong>${pesoInv(s)}</strong>${sumAbonosInv(d) ? ` (ya abonado ${pesoInv(sumAbonosInv(d))})` : ''}`, [`
     <label style="font-size:12px">Monto pagado ($)</label><input type="number" id="pg-monto" value="${s}" style="${inp}">
     <label style="font-size:12px">Fecha del pago</label><input type="date" id="pg-fecha" value="${hoyIsoInv()}" style="${inp}">
-    <label style="font-size:12px">Se pagó con</label><select id="pg-medio" style="${inp}" onchange="document.getElementById('pg-det-w').style.display=this.value==='caja'?'':'none'"><option value="cuenta">🏦 Desde la cuenta</option><option value="caja">💵 Caja chica</option></select>
-    <div id="pg-det-w" style="display:none"><label style="font-size:12px">¿Qué caja chica?</label><select id="pg-det-sel" style="${inp};width:100%;margin-bottom:8px" onchange="document.getElementById('pg-det').style.display=this.value==='__otra'?'':'none'">${cajasChicasInv().map(n => `<option value="${escA(n)}"${ult && ult.detalle === n ? ' selected' : ''}>${escA(n)}</option>`).join('')}<option value="__otra">＋ Otra…</option></select><input type="text" id="pg-det" placeholder="Nombre de la caja chica" style="${inp};display:none;width:100%;margin-bottom:8px"></div>
-    ${personasActivasInv().length ? `<label style="font-size:12px">¿Quién pagó?</label><select id="pg-quien" style="${inp}">${personasActivasInv().map(n => `<option>${escA(n)}</option>`).join('')}</select>` : ''}
+    <label style="font-size:12px">Se pagó con</label><select id="pg-medio" style="${inp}" onchange="document.getElementById('pg-det-w').style.display=this.value==='caja'?'':'none';const q=document.getElementById('pg-quien');if(q&&this.value==='caja'&&q.dataset.compro)q.value=q.dataset.compro"><option value="cuenta">🏦 Desde la cuenta</option><option value="caja">💵 Caja chica</option></select>
+    <div id="pg-det-w" style="display:none"><label style="font-size:12px">¿Qué caja chica?</label><select id="pg-det-sel" style="${inp};width:100%;margin-bottom:8px" onchange="document.getElementById('pg-det').style.display=this.value==='__otra'?'':'none'">${primeroInv(cajasChicasInv(), propia).map(n => `<option value="${escA(n)}"${ult && ult.detalle === n ? ' selected' : ''}>${escA(n)}${n === propia ? ' (de quien compró)' : ''}</option>`).join('')}<option value="__otra">＋ Otra…</option></select><input type="text" id="pg-det" placeholder="Nombre de la caja chica" style="${inp};display:none;width:100%;margin-bottom:8px"></div>
+    ${personasActivasInv().length ? `<label style="font-size:12px">¿Quién pagó?</label><select id="pg-quien" data-compro="${escA(comp)}" style="${inp}">${personasActivasInv().map(n => `<option value="${escA(n)}">${escA(n)}${n === comp ? ' (compró)' : ''}</option>`).join('')}</select>` : ''}
     <button class="btn btn-verde" style="width:100%;justify-content:center" onclick="dteGuardarPagoInv('${d.id}')">✓ Guardar pago</button>`]);
 }
 window.dteGuardarPagoInv = async function(id) {
@@ -16674,8 +16759,8 @@ window.exportarCodificacionInv = function() {
   const esc = v => { const s = String(v == null ? '' : v); return /[;"\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
   const fp = d => d.pago === 'cuenta' ? 'Cuenta' : d.pago === 'caja' ? 'Caja chica ' + (d.pagoDetalle || '') : d.pago === 'credito' ? (d.pagada ? 'Crédito pagado' : 'Crédito por pagar') : '';
   const rec = d => !esFacturaDteInv(d) ? '' : d.recepcion === 'recibida' ? 'Recibida' : d.recepcion === 'despacho' ? ((estadoRecepcionInv(d) || {}).t || '').replace(/^\S+\s/, '') : '';
-  const filas = [['Fecha', 'Tipo', 'N°', 'RUT proveedor', 'Proveedor', 'Neto', 'Exento', 'IVA', 'Total', 'Cód. cuenta', 'Cuenta', 'Clasif. costo', 'Forma de pago', 'Vence', 'Saldo por pagar', 'Recepción', 'Pendiente de revisión']]
-    .concat(docs.map(d => [d.fecha || '', abrevTipoDte(d.tipo), d.folio, rutFmtDte(d.rutEmisor), d.razonSocial || '', d.neto || 0, d.exento || 0, d.iva || 0, d.total || 0, d.cuenta || '', d.cuentaNombre || '', d.clasifNombre || '', fp(d), d.vence || '', d.pago === 'credito' ? saldoPagarInv(d) : 0, rec(d), d.revision ? (d.revisionNota || 'Sí') : '']));
+  const filas = [['Fecha', 'Tipo', 'N°', 'RUT proveedor', 'Proveedor', 'Neto', 'Exento', 'IVA', 'Total', 'Compró', 'Cód. cuenta', 'Cuenta', 'Clasif. costo', 'Forma de pago', 'Pagó', 'Vence', 'Saldo por pagar', 'Recepción', 'Pendiente de revisión']]
+    .concat(docs.map(d => [d.fecha || '', abrevTipoDte(d.tipo), d.folio, rutFmtDte(d.rutEmisor), d.razonSocial || '', d.neto || 0, d.exento || 0, d.iva || 0, d.total || 0, d.compro || '', d.cuenta || '', d.cuentaNombre || '', d.clasifNombre || '', fp(d), d.pagadoPor || [...new Set((d.abonos || []).map(x => x.quien).filter(Boolean))].join(', '), d.vence || '', d.pago === 'credito' ? saldoPagarInv(d) : 0, rec(d), d.revision ? (d.revisionNota || 'Sí') : '']));
   const csv = '﻿' + filas.map(r => r.map(esc).join(';')).join('\r\n');
   const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
   a.download = `facturas_codificadas_${mes.trim()}.csv`; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
@@ -16738,15 +16823,63 @@ window.dteEnviarAInv = function(id) {
       : `<div class="config-item" style="opacity:.55"><span>${x.t}</span><span style="font-size:11px">próximamente</span></div>`));
 }
 // ── Dejar un documento pendiente para revisarlo después (con Camila, por ejemplo) ──
-window.dteRevisionInv = async function(id) {
+// Dudas típicas al revisar una factura o guía (se tocan para agregarlas a la nota)
+const DUDAS_DTE_INV = ['¿Quién compró el producto?', '¿Es a crédito o ya está pagada?', 'Si está pagada, ¿quién la pagó?', '¿Se recibió o no?', '¿Qué cuenta del plan va?', '¿A qué centro de costo va?', '¿Se pagó con caja chica?', 'No reconozco esta compra', 'Falta la guía de despacho', 'La cantidad no cuadra con la guía', 'El precio no es el cotizado', 'Posible duplicado', 'Pedir nota de crédito', 'Datos mal (RUT, razón social)', '¿Es gasto o inversión?', 'Consultar con el contador'];
+const separaDudasInv = t => String(t || '').split(/\s*[;\n]\s*/).map(x => x.trim()).filter(Boolean);
+window.dteRevisionInv = function(id) {
   const d = dteRecibidosInv.find(x => x.id === id); if (!d) return;
-  const n = prompt('¿Qué duda tienes? (queda anotada para revisarla después)', d.revisionNota || ''); if (n === null) return;
-  try { await updateDoc(doc(dbInv, 'dte_recibidos', id), { revision: true, revisionNota: n.trim(), revisionPor: currentUser || '', revisionTs: Date.now() }); toast('✓ Queda pendiente de revisión', true); } catch (e) { toast('Error: ' + e.message, false); }
+  // Las que más se han usado (primero las de este proveedor), además de las típicas
+  const cuenta = {}, rut = normRutDte(d.rutEmisor);
+  dteRecibidosInv.forEach(x => separaDudasInv(x.revisionNota).forEach(t => { const k = t.toLowerCase(); cuenta[k] = cuenta[k] || { t, n: 0 }; cuenta[k].n += normRutDte(x.rutEmisor) === rut ? 3 : 1; }));
+  const usadas = Object.values(cuenta).sort((a, b) => b.n - a.n).map(x => x.t);
+  const vistas = new Set(), opciones = [];
+  [DUDAS_DTE_INV[0], ...usadas.slice(0, 8), ...DUDAS_DTE_INV.slice(1)].forEach(t => { const k = t.toLowerCase(); if (!vistas.has(k) && t.length <= 80) { vistas.add(k); opciones.push(t); } });
+  const v = document.getElementById('dte-duda'); if (v) v.remove();
+  const ov = document.createElement('div'); ov.id = 'dte-duda';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.55);display:flex;align-items:flex-start;justify-content:center;padding:16px 10px;overflow-y:auto;box-sizing:border-box';
+  ov.onclick = e => { if (e.target === ov) ov.remove(); };
+  ov.innerHTML = `<div style="background:var(--blanco);border-radius:12px;max-width:560px;width:100%;padding:16px;box-sizing:border-box;min-width:0">
+    <div style="display:flex;justify-content:space-between;gap:8px"><strong>❓ Dejar pendiente para revisar</strong><span style="cursor:pointer;font-size:20px;line-height:1" onclick="document.getElementById('dte-duda').remove()">✕</span></div>
+    <div style="font-size:12px;color:var(--acero);margin:4px 0 10px;overflow-wrap:anywhere">${escA(abrevTipoDte(d.tipo))} N° ${escA(d.folio)} · ${escA(d.razonSocial || '')}${d.total ? ' · ' + pesoInv(d.total) : ''}</div>
+    <div style="font-size:12px;font-weight:700;margin-bottom:6px">Toca una o varias${usadas.length ? ' (después de la primera, las que más se usan)' : ''}:</div>
+    <div id="dte-duda-chips" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">${opciones.map((t, i) => `<span class="cultivo-chip" data-i="${i}" style="font-size:13px;padding:5px 10px" onclick="dteDudaChipInv(this)">${escA(t)}</span>`).join('')}</div>
+    <textarea id="dte-duda-nota" rows="3" placeholder="O escribe la duda…" oninput="dteDudaMarcarInv()" style="width:100%;box-sizing:border-box;font-size:15px;font-family:inherit">${escA(d.revisionNota || '')}</textarea>
+    <div style="display:flex;gap:8px;margin-top:10px"><button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="document.getElementById('dte-duda').remove()">Cancelar</button><button class="btn btn-verde" style="flex:1;justify-content:center" onclick="dteGuardarDudaInv('${d.id}')">Guardar</button></div>
+  </div>`;
+  ov._opciones = opciones;
+  document.body.appendChild(ov);
+  dteDudaMarcarInv();
+}
+// Marca las dudas que ya están en el texto
+window.dteDudaMarcarInv = function() {
+  const ov = document.getElementById('dte-duda'), ta = document.getElementById('dte-duda-nota'); if (!ov || !ta) return;
+  const en = new Set(separaDudasInv(ta.value).map(x => x.toLowerCase()));
+  ov.querySelectorAll('#dte-duda-chips .cultivo-chip').forEach(c => c.classList.toggle('sel', en.has(ov._opciones[+c.dataset.i].toLowerCase())));
+}
+// Toca una duda: la agrega al texto, o la quita si ya estaba
+window.dteDudaChipInv = function(el) {
+  const ov = document.getElementById('dte-duda'), ta = document.getElementById('dte-duda-nota'); if (!ov || !ta) return;
+  const t = ov._opciones[+el.dataset.i], partes = separaDudasInv(ta.value), i = partes.findIndex(x => x.toLowerCase() === t.toLowerCase());
+  if (i >= 0) partes.splice(i, 1); else partes.push(t);
+  ta.value = partes.join('; ');
+  dteDudaMarcarInv();
+}
+window.dteGuardarDudaInv = async function(id) {
+  const ta = document.getElementById('dte-duda-nota'); const n = ta ? ta.value.trim() : '';
+  try {
+    await updateDoc(doc(dbInv, 'dte_recibidos', id), { revision: true, revisionNota: n, revisionPor: currentUser || '', revisionTs: Date.now() });
+    const ov = document.getElementById('dte-duda'); if (ov) ov.remove();
+    toast('✓ Queda pendiente de revisión', true);
+  } catch (e) { toast('Error: ' + e.message, false); }
 }
 window.dteRevisadaInv = async function(id) {
   const d = dteRecibidosInv.find(x => x.id === id); if (!d) return;
   const r = prompt('Resolución (opcional): ¿qué se decidió?', ''); if (r === null) return;
   try { await updateDoc(doc(dbInv, 'dte_recibidos', id), { revision: false, revisionResuelta: r.trim(), revisionResueltaPor: currentUser || '', revisionResueltaTs: Date.now() }); toast('✓ Revisión resuelta', true); } catch (e) { toast('Error: ' + e.message, false); }
+}
+function bloqueCompraInv(d) {
+  if (!esPagableDteInv(d) || (!d.compro && !compradoresActivosInv().length)) return '';
+  return `<div style="border:1px solid var(--borde);border-radius:10px;padding:10px;margin:10px 0;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap"><div style="font-weight:700;font-size:13px">🛒 Compró: ${d.compro ? `<span style="color:#047857">${escA(d.compro)}</span>` : '<span style="color:var(--acero)">sin definir</span>'}</div><button class="btn-add" style="padding:6px 10px;${d.compro ? 'background:var(--fondo);color:var(--negro)' : 'background:#ECFDF5;color:#047857'}" onclick="dteQuienComproInv('${d.id}')">${d.compro ? '✏️ Cambiar' : '🛒 ¿Quién compró?'}</button></div>`;
 }
 function bloqueRevisionInv(d) {
   if (d.revision) return `<div style="border:1px solid #F9A8D4;background:#FDF2F8;border-radius:10px;padding:10px;margin:10px 0"><div style="font-weight:700;font-size:13px;color:#9D174D">❓ Pendiente de revisión</div>${d.revisionNota ? `<div style="font-size:13px;margin-top:4px;overflow-wrap:anywhere">${escA(d.revisionNota)}</div>` : ''}<div style="font-size:11px;color:var(--acero);margin-top:2px">${escA(d.revisionPor || '')}${d.revisionTs ? ' · ' + new Date(d.revisionTs).toLocaleDateString('es-CL') : ''}</div>
@@ -16772,7 +16905,7 @@ function bloqueRecepcionInv(d) {
     const btn = (v, t, sel) => `<button class="btn-add" style="padding:6px 10px;${sel ? '' : 'background:var(--fondo);color:var(--negro)'}" onclick="dteRecepcionInv('${d.id}','${v}')">${t}</button>`;
     let h = `<div style="font-weight:700;font-size:13px;margin-bottom:6px">📦 Recepción: <span style="color:${e.fg}">${e.t}</span></div>
       <div style="display:flex;gap:6px;flex-wrap:wrap">${btn('recibida', '✅ Recibida completa', d.recepcion === 'recibida')}${btn('despacho', '🚚 Espera despacho', d.recepcion === 'despacho')}${d.recepcion ? btn('', '↩ Sin definir', false) : ''}</div>`;
-    if (d.recepcion === 'despacho') {
+    if (d.recepcion === 'despacho' || (!d.recepcion && guiasAsignadasInv(d).length)) {
       const s = saldoFacturaInv(d);
       h += `<div style="margin-top:8px">${s.lineas.length ? s.lineas.map(l => `<div style="font-size:12px;padding:3px 0;border-bottom:1px solid var(--borde);display:flex;justify-content:space-between;gap:8px"><span style="overflow-wrap:anywhere">${escA(l.x.nombre)}</span><span style="white-space:nowrap;color:${l.saldo > 0.0001 ? '#B45309' : 'var(--verde)'}">${nfInv(l.recibido)} / ${nfInv(l.pedido)} ${escA(l.x.unidad || '')}${l.saldo > 0.0001 ? ` · falta <strong>${nfInv(l.saldo)}</strong>` : ' ✓'}</span></div>`).join('') : '<div style="font-size:12px;color:var(--acero)">Falta el detalle (XML) para calcular el saldo.</div>'}</div>`;
       if (s.sinLinea.length) h += `<div style="font-size:12px;color:#B45309;margin-top:6px">⚠️ En las guías hay productos que no calzan con la factura: ${s.sinLinea.map(z => escA(z.x.nombre)).join(', ')}.</div>`;
@@ -16783,6 +16916,8 @@ function bloqueRecepcionInv(d) {
   }
   if (d.tipo === 52) {
     const f = facturaDeGuiaInv(d);
+    if (!f) return box(`<div style="font-size:13px">📦 ${d.sinFactura ? '🚫 Marcada como que <strong>no se factura</strong> (traslado, devolución, préstamo…)' : '🧾 <strong>Pendiente de facturar</strong>: la mercadería llegó y la factura todavía no.'}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">${d.sinFactura ? `<button class="btn-add" style="padding:6px 10px;background:var(--fondo);color:var(--negro)" onclick="dteSinFacturaInv('${d.id}',false)">↩ Sí se factura</button>` : `<button class="btn-add" style="padding:6px 10px" onclick="dteAsignarFacturaInv('${d.id}')">🔗 Asignar a una factura</button><button class="btn-add" style="padding:6px 10px;background:var(--fondo);color:var(--acero)" onclick="dteSinFacturaInv('${d.id}',true)">🚫 No se factura</button>`}</div>`);
     return box(`<div style="font-size:13px">📦 ${f ? `Asignada a la factura N° <strong>${f.folio}</strong> <a href="#" onclick="event.preventDefault();dteVerInv('${f.id}')">ver</a>${d.facturaId ? ` · <a href="#" style="color:#B91C1C" onclick="event.preventDefault();dteQuitarGuiaInv('${d.id}')">quitar</a>` : ''}` : 'Sin factura asignada'}</div>${f ? '' : `<button class="btn-add" style="padding:6px 10px;margin-top:8px" onclick="dteAsignarFacturaInv('${d.id}')">🔗 Asignar a una factura</button>`}`);
   }
   return '';
@@ -16819,7 +16954,7 @@ async function procesarBuzonInv(snap) {
     buzonEnCursoInv.add(id);
     try {
       const docs = parsearDtesXmlInv(b.xml || '');
-      if (docs.length) { const r = await guardarDtesInv(docs, 'sii-auto'); nuevos += r.nuevos; completos += r.completados; }
+      if (docs.length) { const r = await guardarDtesInv(docs, 'sii-auto', b.ts); nuevos += r.nuevos; completos += r.completados; }
       else malos++;
       await deleteDoc(doc(dbInv, 'dte_recibidos', id));
     } catch (e) { console.warn('buzón SII', e); buzonEnCursoInv.delete(id); }
@@ -16991,9 +17126,31 @@ window.reanudarRobotInv = async function() {
 }
 // ── Panel ──
 const estadoDte = d => d.estado || 'pendiente';
+// Cuándo llegó el documento a la app (lo bajó el robot o se importó); los antiguos sin dato usan la fecha de emisión
+const llegadaDteInv = d => d.creado || d.actualizado || Date.parse((d.fecha || '1970-01-01') + 'T12:00:00') || 0;
+const diaLocalInv = ts => { const t = new Date(ts); return Date.UTC(t.getFullYear(), t.getMonth(), t.getDate()); };
+// Días entre la emisión y la llegada. No cuenta la primera carga masiva (los primeros 2 días del módulo)
+function desfaseDteInv(d) {
+  if (!d.creado || !d.fecha) return 0;
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(d.fecha); if (!m) return 0;
+  let min = Infinity; for (const x of dteRecibidosInv) if (x.creado && x.creado < min) min = x.creado;
+  if (d.creado < min + 2 * 86400000) return 0;
+  return Math.round((diaLocalInv(d.creado) - Date.UTC(+m[1], +m[2] - 1, +m[3])) / 86400000);
+}
+function marcaAtrasoDteInv(d) {
+  const n = desfaseDteInv(d); if (n < 2) return '';
+  const lim = (robotSiiInv && robotSiiInv.wspDesfase) || 7, fuerte = n >= lim;
+  const llego = new Date(d.creado).toLocaleDateString('es-CL', { day: '2-digit', month: 'short' });
+  return ` <span class="badge" title="Emitida el ${fechaCortaDte(d.fecha)} y llegó el ${llego}" style="background:${fuerte ? '#FEE2E2' : '#FEF3C7'};color:${fuerte ? '#B91C1C' : '#92400E'}">${fuerte ? '⚠️' : '🕓'} Llegó ${n} días después de emitida</span>`;
+}
+function tituloDiaLlegadaInv(ts, n) {
+  const hoy = diaLocalInv(Date.now()), dia = diaLocalInv(ts), dif = Math.round((hoy - dia) / 86400000);
+  const t = dif === 0 ? 'Llegaron hoy' : dif === 1 ? 'Llegaron ayer' : 'Llegaron el ' + new Date(ts).toLocaleDateString('es-CL', { weekday: 'short', day: '2-digit', month: 'short' });
+  return `<div style="font-size:12px;font-weight:700;color:var(--acero);margin:10px 2px 4px">${t} · ${n}</div>`;
+}
 function grupoDteInv(d) {
   const e = estadoDte(d);
-  if (e === 'ingresado') return 'ingresado';
+  if (e === 'ingresado' || e === 'porrecibir') return 'ingresado';
   if (d.combustibleLitros && e === 'pendiente') return 'ingresado';
   if (e === 'ignorado') return 'ignorado';
   if (DTE_NOTAS.includes(d.tipo)) return 'notas';
@@ -17012,7 +17169,7 @@ function resumenPagarInv(lista) {
 // ── Pestaña de Inventario: mercadería facturada que todavía no llega (aparte del stock real) ──
 function lineasPendRecInv() {
   const out = [];
-  dteRecibidosInv.filter(f => esFacturaDteInv(f) && f.recepcion === 'despacho' && (f.items || []).length).forEach(f => {
+  dteRecibidosInv.filter(f => esFacturaDteInv(f) && (f.items || []).length && (f.recepcion === 'despacho' || (!f.recepcion && estadoDte(f) !== 'ignorado' && guiasAsignadasInv(f).length))).forEach(f => {
     const e = estadoRecepcionInv(f); if (!e || !e.pend || !e.pend.length) return;
     const { items } = itemsIngresoDesdeDteInv(f);
     const lineas = e.pend.map(l => {
@@ -17072,10 +17229,32 @@ window.verPendRecProductoInv = function(pid) {
       <div style="font-size:12px;color:var(--acero)">${x.guias.length ? 'Guías recibidas: ' + x.guias.map(g => 'N° ' + g.folio).join(', ') : 'Aún no llega ninguna guía'}</div>
       <div><button class="btn-add" style="padding:6px 10px;background:var(--fondo);color:var(--negro)" onclick="document.getElementById('dte-elegir').remove();dteVerInv('${x.f.id}')">👁 Ver factura</button></div></div>`));
 }
+// Guía de despacho que ya llegó pero todavía no tiene su factura
+const pendienteFacturaGuiaInv = g => g.tipo === 52 && !g.sinFactura && estadoDte(g) !== 'ignorado' && !facturaDeGuiaInv(g);
+function estadoFacturaGuiaInv(g) {
+  if (g.tipo !== 52) return null;
+  if (g.sinFactura) return { t: '🚫 No se factura', bg: '#F3F4F6', fg: '#6B7280' };
+  const f = facturaDeGuiaInv(g);
+  if (f) return null; // ya lo dice el aviso "Facturada en la factura N° …"
+  return estadoDte(g) === 'ignorado' ? null : { t: '🧾 Pendiente de facturar', bg: '#FEF3C7', fg: '#B45309' };
+}
+window.dteSinFacturaInv = async function(id, v) {
+  try { await updateDoc(doc(dbInv, 'dte_recibidos', id), { sinFactura: !!v, sinFacturaPor: currentUser || '', sinFacturaTs: Date.now() }); toast(v ? '✓ Guía marcada como que no se factura (traslado, devolución, etc.)' : '✓ La guía vuelve a esperar su factura', true); }
+  catch (e) { toast('Error: ' + e.message, false); }
+}
+// Factura que llegó antes que el producto: va a bodega como "por recibir", sin subir el stock;
+// el stock sube cuando se ingresa cada guía de despacho
+window.dteEnviarPorRecibirInv = async function(id) {
+  const d = dteRecibidosInv.find(x => x.id === id); if (!d) return;
+  try {
+    await updateDoc(doc(dbInv, 'dte_recibidos', id), { estado: 'porrecibir', recepcion: 'despacho', marcadoPor: currentUser || '', marcadoTs: Date.now(), ...(d.recepcion !== 'despacho' ? { recepcionPor: currentUser || '', recepcionTs: Date.now() } : {}) });
+    toast('✓ En bodega como "por recibir": el stock sube cuando ingreses cada guía de despacho', true);
+  } catch (e) { toast('Error: ' + e.message, false); }
+}
 function insigniasEstadoDteInv(d) {
-  const er = estadoRecepcionInv(d), ep = estadoPagoInv(d), ec = estadoCuentaInv(d);
+  const er = estadoRecepcionInv(d), ep = estadoPagoInv(d), ec = estadoCuentaInv(d), ef = estadoFacturaGuiaInv(d);
   const ins = e => `<span class="badge" style="background:${e.bg};color:${e.fg}">${e.t}</span>`;
-  let h = [d.revision ? { t: `❓ Por revisar${d.revisionNota ? ': ' + escA(d.revisionNota.slice(0, 60)) : ''}`, bg: '#FCE7F3', fg: '#9D174D' } : null, er, ep, ec, d.combustibleLitros ? { t: `⛽ En cisterna: ${nfInv(d.combustibleLitros)} L`, bg: '#DBEAFE', fg: '#1D4ED8' } : null].filter(Boolean).map(ins).join(' ');
+  let h = [d.revision ? { t: `❓ Por revisar${d.revisionNota ? ': ' + escA(d.revisionNota.slice(0, 60)) : ''}`, bg: '#FCE7F3', fg: '#9D174D' } : null, estadoCompraInv(d), er, ef, ep, ec, d.combustibleLitros ? { t: `⛽ En cisterna: ${nfInv(d.combustibleLitros)} L`, bg: '#DBEAFE', fg: '#1D4ED8' } : null].filter(Boolean).map(ins).join(' ');
   if (er && er.pend && er.pend.length) h += `<div style="font-size:12px;margin-top:4px;overflow-wrap:anywhere">Saldo por despachar: ${er.pend.map(textoSaldoInv).join(' · ')}</div>`;
   return h ? `<div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">${h}</div>` : '';
 }
@@ -17083,21 +17262,43 @@ function tarjetaDteInv(d) {
   const [bg, fg] = colorTipoDte(d.tipo), e = estadoDte(d), g = grupoDteInv(d);
   const prods = (d.items || []).filter(x => x.nombre);
   const resumen = prods.slice(0, 3).map(x => `${escA(x.nombre)}${x.cantidad ? ` <span style="color:var(--acero)">(${nfInv(x.cantidad)}${x.unidad ? ' ' + escA(x.unidad) : ''})</span>` : ''}`).join(' · ') + (prods.length > 3 ? ` · +${prods.length - 3} más` : '');
-  const est = e === 'ingresado' ? `<span class="badge" style="background:var(--verde-suave);color:var(--verde)">${d.soloPrecios ? '💲 Precios actualizados' : '✓ Ingresado'}</span>` : e === 'ignorado' ? '<span class="badge" style="background:#F3F4F6;color:#6B7280">🧾 Solo contabilidad</span>' : '';
-  const acciones = [];
-  if (g === 'pendientes') acciones.push(`<button class="btn-add" style="padding:6px 10px" onclick="dteAIngresoInv('${d.id}')">📥 Ingresar a bodega</button>`);
-  if (g === 'pendientes' && sugierePreciosDteInv(d)) acciones.push(`<button class="btn-add" style="padding:6px 10px;background:#EFF6FF;color:#1D4ED8" onclick="dtePreciosInv('${d.id}')">💲 Solo actualizar precios</button>`);
+  const fac = esFacturaDteInv(d), er = fac ? estadoRecepcionInv(d) : null, llegoTodo = er && ['completa', 'recibida'].includes(er.k);
+  const est = e === 'ingresado' ? `<span class="badge" style="background:var(--verde-suave);color:var(--verde)">${d.soloPrecios ? '💲 Precios actualizados' : '✓ Ingresado'}</span>` : e === 'ignorado' ? '<span class="badge" style="background:#F3F4F6;color:#6B7280">🧾 Solo contabilidad</span>'
+    : e === 'porrecibir' ? (llegoTodo ? '<span class="badge" style="background:var(--verde-suave);color:var(--verde)">✓ Recibida por guías</span>' : '<span class="badge" style="background:#DBEAFE;color:#1D4ED8">📦 En bodega · por recibir</span>') : '';
+  const acciones = [], B = (t, fn, st) => `<button class="btn-add" style="padding:6px 10px${st ? ';' + st : ''}" onclick="${fn}('${d.id}')">${t}</button>`;
+  const ST_AZUL = 'background:#EFF6FF;color:#1D4ED8', ST_GRIS = 'background:var(--fondo);color:var(--negro)';
+  if (esPagableDteInv(d) && !d.compro && compradoresActivosInv().length) acciones.push(B('🛒 ¿Quién compró?', 'dteQuienComproInv', 'background:#ECFDF5;color:#047857'));
+  if (g === 'pendientes') {
+    const sp = sugierePreciosDteInv(d), falta = er && (er.k === 'espera' || er.k === 'parcial');
+    if (fac && d.recepcion === 'despacho') {
+      // Facturada pero el producto llega después con guías
+      acciones.push(B('📦 Enviar a bodega (por recibir)', 'dteEnviarPorRecibirInv'));
+      if (sp) acciones.push(B('💲 Solo actualizar precios', 'dtePreciosInv', ST_AZUL));
+      acciones.push(B('📥 Llegó todo: ingresar ya', 'dteAIngresoInv', ST_GRIS));
+    } else if (sp) {
+      // Ya entró por sus guías: la factura solo trae los precios
+      acciones.push(B('💲 Solo actualizar precios', 'dtePreciosInv', ST_AZUL));
+      if (falta) acciones.push(B('📦 Falta parte: por recibir', 'dteEnviarPorRecibirInv', ST_GRIS));
+      acciones.push(B('📥 Ingresar a bodega', 'dteAIngresoInv', ST_GRIS));
+    } else if (fac && d.recepcion !== 'recibida') {
+      // Sin definir: el producto llegó con la factura (sin guía) o llega después
+      acciones.push(B('📥 Llegó con la factura: ingresar', 'dteAIngresoInv'));
+      acciones.push(B('🚚 Aún no llega (por recibir)', 'dteEnviarPorRecibirInv', ST_AZUL));
+    } else acciones.push(B('📥 Ingresar a bodega', 'dteAIngresoInv'));
+  }
+  if (e === 'porrecibir' && !d.preciosActualizados && sugierePreciosDteInv(d)) acciones.push(B('💲 Actualizar precios', 'dtePreciosInv', ST_AZUL));
   acciones.push(`<button class="btn-add" style="padding:6px 10px;background:var(--fondo);color:var(--negro)" onclick="dteVerInv('${d.id}')">👁 Ver${esFacturaDteInv(d) || d.tipo === 52 || esPagableDteInv(d) ? ' / Recepción y pago' : ''}</button>`);
   if (esCodificableDteInv(d) && !d.cuenta) { const sg = sugerenciaCuentaInv(d); acciones.push(sg ? `<button class="btn-add" style="padding:6px 10px;background:#EDE9FE;color:#5B21B6;white-space:normal;text-align:left" title="${escA(sg.c + ' · ' + (sg.n || ''))}" onclick="dteGuardarCuentaInv('${d.id}','${escA(sg.c)}')">📒 Usar ${escA(sg.c)}${sg.n ? ' · ' + escA(sg.n.length > 32 ? sg.n.slice(0, 31) + '…' : sg.n) : ''}</button>` : `<button class="btn-add" style="padding:6px 10px;background:#EDE9FE;color:#5B21B6" onclick="dteElegirCuentaInv('${d.id}')">📒 Elegir cuenta</button>`); }
   acciones.push(d.revision ? `<button class="btn-add" style="padding:6px 10px;background:#FCE7F3;color:#9D174D" onclick="dteRevisadaInv('${d.id}')">✅ Revisada</button>` : `<button class="btn-add" style="padding:6px 10px;background:var(--fondo);color:#9D174D" onclick="dteRevisionInv('${d.id}')">❓ Dejar pendiente</button>`);
   if (d.pago === 'credito' && !d.pagada) acciones.push(`<button class="btn-add" style="padding:6px 10px" onclick="dteRegistrarPagoInv('${d.id}')">💵 Registrar pago</button>`);
-  if (d.tipo === 52 && !facturaDeGuiaInv(d)) acciones.push(`<button class="btn-add" style="padding:6px 10px;background:#EFF6FF;color:#1D4ED8" onclick="dteAsignarFacturaInv('${d.id}')">🔗 Asignar a factura</button>`);
-  if (esFacturaDteInv(d) && d.recepcion === 'despacho') acciones.push(`<button class="btn-add" style="padding:6px 10px;background:#EFF6FF;color:#1D4ED8" onclick="dteAsignarGuiaInv('${d.id}')">＋ Asignar guía</button>`);
+  if (d.tipo === 52 && !d.sinFactura && !facturaDeGuiaInv(d)) { acciones.push(B('🔗 Asignar a factura', 'dteAsignarFacturaInv', ST_AZUL)); if (e !== 'ignorado') acciones.push(`<button class="btn-add" style="padding:6px 10px;background:var(--fondo);color:var(--acero)" onclick="dteSinFacturaInv('${d.id}',true)">🚫 No se factura</button>`); }
+  if (d.tipo === 52 && d.sinFactura) acciones.push(`<button class="btn-add" style="padding:6px 10px;background:var(--fondo);color:var(--acero)" onclick="dteSinFacturaInv('${d.id}',false)">↩ Sí se factura</button>`);
+  if (fac && d.recepcion !== 'recibida' && !llegoTodo && (d.recepcion === 'despacho' || e === 'porrecibir' || guiasAsignadasInv(d).length || dteRecibidosInv.some(x => x.tipo === 52 && !x.sinFactura && normRutDte(x.rutEmisor) === normRutDte(d.rutEmisor) && !facturaDeGuiaInv(x)))) acciones.push(B('＋ Asignar guía', 'dteAsignarGuiaInv', ST_AZUL));
   if (g === 'pendientes' || g === 'notas') acciones.push(`<button class="btn-add" style="padding:6px 10px;background:var(--fondo);color:var(--acero)" onclick="dteMarcarInv('${d.id}','ignorado')">🧾 Solo contabilidad</button>`);
-  if (e === 'ignorado' || e === 'ingresado') acciones.push(`<button class="btn-add" style="padding:6px 10px;background:var(--fondo);color:var(--acero)" onclick="dteMarcarInv('${d.id}','pendiente')">↩️ Volver a pendiente</button>`);
+  if (e === 'ignorado' || e === 'ingresado' || e === 'porrecibir') acciones.push(`<button class="btn-add" style="padding:6px 10px;background:var(--fondo);color:var(--acero)" onclick="dteMarcarInv('${d.id}','pendiente')">↩️ Volver a pendiente</button>`);
   return `<div class="config-item" style="flex-direction:column;align-items:stretch;gap:6px;min-width:0">
     <div style="display:flex;justify-content:space-between;gap:6px;flex-wrap:wrap;min-width:0">
-      <div style="min-width:0;overflow-wrap:anywhere"><span class="badge" style="background:${bg};color:${fg}">${abrevTipoDte(d.tipo)}</span> <strong>N° ${d.folio}</strong> · ${escA(d.razonSocial || rutFmtDte(d.rutEmisor))} ${est}</div>
+      <div style="min-width:0;overflow-wrap:anywhere"><span class="badge" style="background:${bg};color:${fg}">${abrevTipoDte(d.tipo)}</span> <strong>N° ${d.folio}</strong> · ${escA(d.razonSocial || rutFmtDte(d.rutEmisor))} ${est}${marcaAtrasoDteInv(d)}</div>
       <div style="font-size:12px;color:var(--acero);white-space:nowrap">${fechaCortaDte(d.fecha)}${d.total ? ' · ' + pesoInv(d.total) : ''}</div>
     </div>
     ${resumen ? `<div style="font-size:12px;overflow-wrap:anywhere">${resumen}</div>` : ''}
@@ -17116,14 +17317,19 @@ function renderDteRecibidosInv(soloLista) {
   const q = normNom(dteBuscarInv);
   const porDespachar = d => { const e = estadoRecepcionInv(d); return !!e && (e.k === 'espera' || e.k === 'parcial'); };
   const porPagar = d => d.pago === 'credito' && !d.pagada;
-  const sinDefinir = d => (esFacturaDteInv(d) && !d.recepcion) || (esPagableDteInv(d) && !d.pago) || (esCodificableDteInv(d) && !d.cuenta);
+  const hayCompradores = compradoresActivosInv().length > 0;
+  const sinDefinir = d => (hayCompradores && esPagableDteInv(d) && !d.compro) || (esFacturaDteInv(d) && (estadoRecepcionInv(d) || {}).k === '') || (esPagableDteInv(d) && !d.pago) || (esCodificableDteInv(d) && !d.cuenta);
   const sinCuenta = d => esCodificableDteInv(d) && !d.cuenta;
-  const filtros = { despachar: porDespachar, pagar: porPagar, sindefinir: sinDefinir, sincuenta: sinCuenta, revisar: d => !!d.revision };
+  const filtros = { despachar: porDespachar, sinfactura: pendienteFacturaGuiaInv, pagar: porPagar, sindefinir: sinDefinir, sincuenta: sinCuenta, revisar: d => !!d.revision };
   let lista = dteRecibidosInv.filter(d => filtros[filtroDteInv] ? filtros[filtroDteInv](d) : (filtroDteInv === 'todos' || grupoDteInv(d) === filtroDteInv));
-  if (q) lista = lista.filter(d => normNom(`${d.razonSocial} ${d.folio} ${abrevTipoDte(d.tipo)} ${(d.items || []).map(x => x.nombre).join(' ')}`).includes(q));
-  if (filtroDteInv === 'pagar') lista.sort((a, b) => { const x = diasVenceInv(a), y = diasVenceInv(b); return (x === null ? 1e9 : x) - (y === null ? 1e9 : y); });
+  if (q) lista = lista.filter(d => normNom(`${d.razonSocial} ${d.folio} ${abrevTipoDte(d.tipo)} ${d.compro || ''} ${(d.items || []).map(x => x.nombre).join(' ')}`).includes(q));
+  const porLlegada = filtroDteInv !== 'pagar';
+  if (porLlegada) lista.sort((a, b) => llegadaDteInv(b) - llegadaDteInv(a) || String(b.fecha || '').localeCompare(String(a.fecha || '')) || (Number(b.folio) || 0) - (Number(a.folio) || 0));
+  else lista.sort((a, b) => { const x = diasVenceInv(a), y = diasVenceInv(b); return (x === null ? 1e9 : x) - (y === null ? 1e9 : y); });
   const tope = dteVerMasInv ? 300 : 15;
-  const htmlLista = (filtroDteInv === 'pagar' ? resumenPagarInv(lista) : '') + (lista.length ? lista.slice(0, tope).map(tarjetaDteInv).join('') : `<div class="empty">${dteRecibidosInv.length ? 'No hay documentos en este grupo' : 'Todavía no hay documentos: importa el XML o tráelos del SII'}</div>`)
+  // Los más nuevos arriba, agrupados por el día en que llegaron
+  const tarjetas = l => { if (!porLlegada) return l.map(tarjetaDteInv).join(''); const cuenta = {}; lista.forEach(d => { if (d.creado) { const k = diaLocalInv(d.creado); cuenta[k] = (cuenta[k] || 0) + 1; } }); let dia = null; return l.map(d => { const k = d.creado ? diaLocalInv(d.creado) : 'antes'; const t = k !== dia ? (k === 'antes' ? (dia !== null ? '<div style="font-size:12px;font-weight:700;color:var(--acero);margin:10px 2px 4px">Antes</div>' : '') : tituloDiaLlegadaInv(d.creado, cuenta[k])) : ''; dia = k; return t + tarjetaDteInv(d); }).join(''); };
+  const htmlLista = (filtroDteInv === 'pagar' ? resumenPagarInv(lista) : '') + (lista.length ? tarjetas(lista.slice(0, tope)) : `<div class="empty">${dteRecibidosInv.length ? 'No hay documentos en este grupo' : 'Todavía no hay documentos: importa el XML o tráelos del SII'}</div>`)
     + (lista.length > tope ? `<button class="btn-add" style="width:100%;justify-content:center;margin-top:8px" onclick="dteVerMasDteInv()">Ver ${lista.length - tope} más</button>` : '');
   if (soloLista) { const l = document.getElementById('dte-lista'); if (l) { l.innerHTML = htmlLista; return; } }
   const chip = (f, t, n) => `<span class="cultivo-chip${filtroDteInv === f ? ' sel' : ''}" onclick="setFiltroDteInv('${f}')">${t}${n != null ? ` (${n})` : ''}</span>`;
@@ -17147,7 +17353,7 @@ function renderDteRecibidosInv(soloLista) {
       ${chip('pendientes', '📥 Por ingresar', cuenta('pendientes'))}${chip('ingresado', '✓ Ya enviados', cuenta('ingresado'))}${chip('ignorado', '🧾 Solo contabilidad', cuenta('ignorado'))}${cuenta('notas') ? chip('notas', 'Notas de crédito/débito', cuenta('notas')) : ''}${chip('todos', 'Todos', dteRecibidosInv.length)}
     </div>
     <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">
-      ${chip('sindefinir', '❔ Falta algo por definir', dteRecibidosInv.filter(sinDefinir).length)}${chip('revisar', '❓ Por revisar', dteRecibidosInv.filter(d => d.revision).length)}${chip('sincuenta', '📒 Sin cuenta', dteRecibidosInv.filter(sinCuenta).length)}${chip('despachar', '🚚 Por despachar', dteRecibidosInv.filter(porDespachar).length)}${chip('pagar', '💳 Por pagar', dteRecibidosInv.filter(porPagar).length)}
+      ${chip('sindefinir', '❔ Falta algo por definir', dteRecibidosInv.filter(sinDefinir).length)}${chip('revisar', '❓ Por revisar', dteRecibidosInv.filter(d => d.revision).length)}${chip('sincuenta', '📒 Sin cuenta', dteRecibidosInv.filter(sinCuenta).length)}${chip('despachar', '🚚 Por recibir', dteRecibidosInv.filter(porDespachar).length)}${chip('sinfactura', '🧾 Guías sin factura', dteRecibidosInv.filter(pendienteFacturaGuiaInv).length)}${chip('pagar', '💳 Por pagar', dteRecibidosInv.filter(porPagar).length)}
     </div>
     <input type="text" placeholder="🔎 Buscar proveedor, N° o producto" value="${escA(dteBuscarInv)}" oninput="buscarDteInv(this.value)" style="width:100%;box-sizing:border-box;margin-bottom:8px">
     <div id="dte-lista">${htmlLista}</div>`;
@@ -17166,7 +17372,7 @@ window.dteVerInv = function(id) {
     <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start"><div style="font-weight:800;font-size:16px">${nombreTipoDte(d.tipo)} N° ${d.folio}</div><span style="cursor:pointer;font-size:20px;line-height:1" onclick="document.getElementById('dte-modal').remove()">✕</span></div>
     <div style="font-size:13px;margin:6px 0 10px;line-height:1.5"><strong>${escA(d.razonSocial || '')}</strong> · RUT ${rutFmtDte(d.rutEmisor)}${d.giro ? `<br><span style="color:var(--acero)">${escA(d.giro)}</span>` : ''}<br>Fecha ${fechaCortaDte(d.fecha)}${d.razonSocialReceptor ? ` · Para ${escA(d.razonSocialReceptor)} (${rutFmtDte(d.rutReceptor)})` : ''}</div>
     ${avisosDteInv(d).map(([c, t]) => `<div style="font-size:12px;color:${c};margin-bottom:4px">${t}</div>`).join('')}
-    ${bloqueRevisionInv(d)}${bloqueRecepcionInv(d)}${bloquePagoInv(d)}${bloqueCuentaInv(d)}
+    ${bloqueCompraInv(d)}${bloqueRevisionInv(d)}${bloqueRecepcionInv(d)}${bloquePagoInv(d)}${bloqueCuentaInv(d)}
     ${filas ? `<div style="border-top:1px solid var(--borde)">${filas}</div>` : '<div class="empty">Sin detalle de productos</div>'}
     <div style="font-size:13px;margin-top:8px;text-align:right;line-height:1.6">${d.neto ? `Neto ${pesoInv(d.neto)}<br>` : ''}${d.exento ? `Exento ${pesoInv(d.exento)}<br>` : ''}${d.iva ? `IVA ${pesoInv(d.iva)}<br>` : ''}${d.total ? `<strong>Total ${pesoInv(d.total)}</strong>` : ''}${d.ajusteGlobal ? `<div style="font-size:11px;color:var(--acero)">Incluye ${d.ajusteGlobal < 0 ? 'descuento' : 'recargo'} global de ${Math.abs(d.ajusteGlobal)}% repartido en los productos</div>` : ''}${d.bruto ? '<div style="font-size:11px;color:var(--acero)">Precios del documento con IVA incluido: aquí se muestran netos</div>' : ''}</div>
     ${(d.refs || []).length ? `<div style="font-size:12px;color:var(--acero);margin-top:6px">Referencias: ${(d.refs || []).map(r => `${escA(TIPOS_DTE_INV[Number(r.tipo)] || (r.tipo === '801' ? 'Orden de compra' : 'Doc ' + r.tipo))} N° ${escA(r.folio)}${r.fecha ? ' del ' + fechaCortaDte(r.fecha) : ''}${r.razon ? ' · ' + escA(r.razon) : ''}`).join('; ')}</div>` : ''}
@@ -17204,7 +17410,7 @@ window.dteMarcarInv = async function(id, estado, ingresoId) {
 // Factura de mercadería que ya entró (por su guía o a mano): solo se actualiza el precio, sin sumar stock
 function sugierePreciosDteInv(d) {
   if (d.sinXml || !(d.items || []).length || ![33, 34, 46].includes(d.tipo)) return false;
-  return guiasDeFacturaInv(d).some(g => g.doc && g.doc.estado === 'ingresado') || !!ingresoPrevioDteInv(d);
+  return guiasAsignadasInv(d).some(g => g.estado === 'ingresado') || !!ingresoPrevioDteInv(d);
 }
 window.dtePreciosInv = async function(id) {
   const d = dteRecibidosInv.find(x => x.id === id); if (!d || !(d.items || []).length) return;
@@ -17274,10 +17480,10 @@ window.dteAIngresoInv = function(id) {
   const prev = ingresoPrevioDteInv(d);
   if (prev && !confirm(`Este documento parece ya ingresado (doc ${prev.nroDocumento || ''} del ${new Date(prev.ts).toLocaleDateString('es-CL')}).\n¿Ingresarlo de todas formas?`)) return;
   if ([33, 34, 46].includes(d.tipo)) {
-    const ing = guiasDeFacturaInv(d).filter(g => g.doc && g.doc.estado === 'ingresado');
+    const ing = guiasAsignadasInv(d).filter(g => g.estado === 'ingresado');
     if (ing.length && !confirm(`Esta factura corresponde a la(s) guía(s) N° ${ing.map(g => g.folio).join(', ')}, que ya ingresaste a bodega.\nSi la ingresas, el stock se sumaría dos veces. ¿Ingresarla igual?`)) return;
   }
-  if (esFacturaDteInv(d) && d.recepcion === 'despacho' && !confirm('Esta factura está esperando despacho: si la ingresas ahora, el stock sube completo antes de que llegue el producto.\n\nLo habitual es ingresar cada guía de despacho cuando llega y dejar la factura solo para actualizar precios.\n\n¿Ingresarla igual?')) return;
+  if (esFacturaDteInv(d) && d.recepcion === 'despacho' && !confirm('¿Llegó todo lo de esta factura?\n\nSi la ingresas ahora, el stock sube completo y la factura queda como recibida.\nSi el producto llega por partes con guías, mejor usa "📦 Enviar a bodega (por recibir)".')) return;
   if (itemsIngresoInv.some(it => it.nombre && it.nombre.trim()) && !confirm('El formulario de ingreso ya tiene productos. ¿Reemplazarlos por los del documento?')) return;
   const { items, omitidos } = itemsIngresoDesdeDteInv(d);
   if (!items.length) { toast('El documento no trae productos para la bodega', false); return; }
@@ -17301,14 +17507,18 @@ window.dteAIngresoInv = function(id) {
 function suscribirDteInv() {
   if (dteSubscrito || !verValoresInv()) return;
   dteSubscrito = true;
-  onSnapshot(query(collection(dbInv, 'dte_recibidos'), orderBy('fecha', 'desc'), limit(400)), snap => {
-    dteRecibidosInv = snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(d => !d.id.startsWith('_'));
+  let porFecha = [], porLlegada = [];
+  const alCambiar = () => {
+    const m = new Map(); [...porFecha, ...porLlegada].forEach(d => m.set(d.id, d));
+    dteRecibidosInv = [...m.values()].filter(d => !d.id.startsWith('_'));
     const ab = document.getElementById('dte-modal');
     renderDteRecibidosInv();
     try { renderInventarioTabla(); } catch (e) {}
     try { renderRendCajaInv(); } catch (e) {}
     if (ab && ab.dataset.id) dteVerInv(ab.dataset.id);
-  }, e => {
+  };
+  onSnapshot(query(collection(dbInv, 'dte_recibidos'), orderBy('creado', 'desc'), limit(200)), snap => { porLlegada = snap.docs.map(d => ({ id: d.id, ...d.data() })); alCambiar(); }, e => console.warn('dte por llegada', e));
+  onSnapshot(query(collection(dbInv, 'dte_recibidos'), orderBy('fecha', 'desc'), limit(400)), snap => { porFecha = snap.docs.map(d => ({ id: d.id, ...d.data() })); alCambiar(); }, e => {
     console.warn('dte_recibidos', e);
     const c = document.getElementById('inv-panel-dte');
     if (c) { c.style.display = ''; c.innerHTML = `<div class="panel-title">📨 Facturas y guías recibidas</div><div style="font-size:12px;color:#B91C1C">No se pudieron leer los documentos recibidos${/permission/i.test(e.message) ? ': falta permitir la colección <code>dte_recibidos</code> en las reglas de Firestore del inventario' : ': ' + escA(e.message)}.</div>`; }
@@ -17316,6 +17526,7 @@ function suscribirDteInv() {
   onSnapshot(doc(dbInv, 'dte_recibidos', '_plan_cuentas'), sn => { planCuentasInv = sn.exists() ? (sn.data().cuentas || []) : []; renderDteRecibidosInv(); renderConfigContInv(); }, e => console.warn('plan_cuentas', e));
   onSnapshot(query(collection(dbInv, 'dte_recibidos'), where('buzon', '==', true)), snap => { if (snap.docs.length) procesarBuzonInv(snap); }, e => console.warn('buzón SII', e));
   onSnapshot(doc(dbInv, 'dte_recibidos', '_robot'), sn => { robotSiiInv = sn.exists() ? sn.data() : null; renderDteRecibidosInv(); renderConfigContInv(); }, e => console.warn('robot', e));
+  onSnapshot(doc(dbInv, 'dte_recibidos', '_compradores'), sn => { compradoresInv = sn.exists() ? (sn.data().personas || []) : null; renderDteRecibidosInv(); renderConfigContInv(); }, e => console.warn('compradores', e));
   onSnapshot(doc(dbInv, 'dte_recibidos', '_personas'), sn => { personasPagoInv = sn.exists() ? (sn.data().personas || []) : null; renderConfigContInv(); }, e => console.warn('personas', e));
   onSnapshot(doc(dbInv, 'dte_recibidos', '_cajas'), sn => { cajasCfgInv = sn.exists() ? (sn.data().cajas || []) : null; renderConfigContInv(); }, e => console.warn('cajas', e));
   consultarSiiDteInv();
