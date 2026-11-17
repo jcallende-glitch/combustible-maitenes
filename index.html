@@ -3524,7 +3524,7 @@ const SECCIONES_TABS = {
   asistencia: ['tab-asistencia','tab-config-trabajadores'],
   campo: ['tab-campo','tab-config-potreros','tab-config-gps'],
   inventario: ['tab-inv-inventario','tab-inv-ingresos','tab-inv-pendrec','tab-inv-movimientos','tab-inv-alertas'],
-  contabilidad: ['tab-cont-docs','tab-cont-rend','tab-cont-config'],
+  contabilidad: ['tab-cont-docs','tab-cont-pagar','tab-cont-rend','tab-cont-config'],
   autorizaciones: ['tab-autorizaciones']
 };
 
@@ -13972,6 +13972,7 @@ window.setTab = function(id,el) {
   if(id==='cont-docs') { renderDteRecibidosInv(); }
   if(id==='cont-config') { renderConfigContInv(); }
   if(id==='cont-rend') { renderRendCajaInv(); }
+  if(id==='cont-pagar') { renderCxpInv(); }
   if(id==='inv-pendrec') { renderPendRecInv(); }
   if(id==='inv-movimientos') { initMovimientosInv(); }
   if(id==='cisterna') { initControlCisterna(); }
@@ -16292,7 +16293,15 @@ function parseVenceInv(s) {
 const fmtFechaInv = iso => { if (!iso) return ''; const [y, m, d] = iso.split('-'); return `${d}-${m}-${y}`; };
 const fmtVenceInv = iso => iso ? new Date(iso + 'T00:00:00').toLocaleDateString('es-CL', { day: '2-digit', month: 'short' }) : '';
 const sumAbonosInv = d => (d.abonos || []).reduce((a, x) => a + (Number(x.monto) || 0), 0);
-const saldoPagarInv = d => d.pagada ? 0 : Math.max(0, (d.total || 0) - sumAbonosInv(d));
+// Notas de crédito del mismo proveedor que citan la factura: rebajan lo que se debe
+const sinCerosInv = x => String(x == null ? '' : x).trim().replace(/^0+/, '');
+function ncsDeFacturaInv(f) {
+  if (!f || !esPagableDteInv(f) || !f.folio) return [];
+  const rut = normRutDte(f.rutEmisor), fol = sinCerosInv(f.folio);
+  return dteRecibidosInv.filter(n => n.tipo === 61 && (n.total || 0) > 0 && normRutDte(n.rutEmisor) === rut && (n.refs || []).some(r => sinCerosInv(r.folio) === fol && (!r.tipo || String(r.tipo) === String(f.tipo))));
+}
+const sumNcInv = f => ncsDeFacturaInv(f).reduce((a, n) => a + (n.total || 0), 0);
+const saldoPagarInv = d => d.pagada ? 0 : Math.max(0, (d.total || 0) - sumAbonosInv(d) - sumNcInv(d));
 const diasVenceInv = d => d.vence ? Math.round((new Date(d.vence + 'T00:00:00') - new Date(hoyIsoInv() + 'T00:00:00')) / 86400000) : null;
 const vencePorDefectoInv = d => { const v = parseVenceInv(d.fchVenc); if (v) return v; const b = new Date((d.fecha || hoyIsoInv()) + 'T00:00:00'); b.setDate(b.getDate() + 30); return b.getFullYear() + '-' + String(b.getMonth() + 1).padStart(2, '0') + '-' + String(b.getDate()).padStart(2, '0'); };
 const esPagableDteInv =d => ![52, 50, 56, 61].includes(d.tipo);
@@ -16303,6 +16312,7 @@ function estadoPagoInv(d) {
   if (d.pago === 'credito') {
     if (d.pagada) return { k: 'cuenta', t: '✅ Crédito pagado', bg: 'var(--verde-suave)', fg: 'var(--verde)' };
     const dv = diasVenceInv(d), s = saldoPagarInv(d), urg = dv !== null && dv <= 0;
+    if (s <= 0 && sumNcInv(d) > 0) return { k: 'cuenta', t: '🧾 Saldada con nota de crédito', bg: 'var(--verde-suave)', fg: 'var(--verde)' };
     const venc = dv === null ? 'sin vencimiento' : dv < 0 ? `vencida hace ${-dv} d` : dv === 0 ? 'vence hoy' : `vence ${fmtVenceInv(d.vence)} (${dv} d)`;
     return { k: 'credito', t: `💳 Por pagar ${pesoInv(s)} · ${venc}`, bg: urg ? '#FEE2E2' : '#FEF3C7', fg: urg ? '#B91C1C' : '#B45309' };
   }
@@ -16554,6 +16564,7 @@ window.renderConfigContInv = function() {
       ${(personasPagoInv || []).length ? personasPagoInv.map((p, i) => `<div class="config-item" style="${p.on === false ? 'opacity:.5' : ''}"><span>👤 <strong>${escA(p.n)}</strong>${p.on === false ? ' (oculta)' : ''}</span><span style="white-space:nowrap"><a href="#" onclick="event.preventDefault();renombrarPersonaPagoInv(${i})">✏️</a> <a href="#" onclick="event.preventDefault();ocultarPersonaPagoInv(${i})">${p.on === false ? '👁' : '🚫'}</a></span></div>`).join('') : '<div class="empty">Todavía no hay personas autorizadas</div>'}
       <div style="display:flex;gap:6px;margin-top:10px"><input type="text" id="persona-nueva" list="lista-personas-pago" placeholder="Nombre de la persona" style="flex:1;min-width:0;box-sizing:border-box;margin:0"><datalist id="lista-personas-pago">${((typeof config !== 'undefined' && config.operadores) || []).map(n => `<option value="${escA(n)}">`).join('')}</datalist><button class="btn-add" style="padding:6px 12px" onclick="agregarPersonaPagoInv()">＋ Agregar</button></div>
     </div>
+    ${panelProveedoresInv()}
     ${panelDudasInv()}
     <div class="panel">
       <div class="panel-title">📒 Plan de cuentas</div>
@@ -16599,7 +16610,7 @@ window.dtePagoInv = async function(id, forma, caja, quien) {
     if (caja === undefined) { modalCajaInv(id); return; }
     if (quien === undefined) { pedirPagadorInv(id, forma, caja); return; }
     c.pagoDetalle = String(caja).trim(); c.pagada = true; c.fechaPago = Date.now(); c.pagadoPor = quien; c.rendida = false;
-  } else if (forma === 'cuenta') { if (quien === undefined) { pedirPagadorInv(id, forma); return; } c.pagoDetalle = ''; c.pagada = true; c.fechaPago = Date.now(); c.pagadoPor = quien; }
+  } else if (forma === 'cuenta') { if (quien === undefined) { dtePagoContadoFormInv(id); return; } c.pagoDetalle = ''; c.pagada = true; c.fechaPago = Date.now(); c.pagadoPor = quien; }
   else if (forma === 'credito') {
     const v = prompt('¿Cuándo vence? (dd-mm-aaaa). Déjalo vacío si no tiene fecha.', fmtFechaInv(d.vence || vencePorDefectoInv(d))); if (v === null) return;
     if (v.trim() && !parseVenceInv(v)) { toast('Fecha no válida: usa dd-mm-aaaa', false); return; }
@@ -16610,35 +16621,131 @@ window.dtePagoInv = async function(id, forma, caja, quien) {
   try { await updateDoc(doc(dbInv, 'dte_recibidos', id), c); toast('✓ Forma de pago guardada', true); } catch (e) { toast('Error: ' + e.message, false); }
 }
 window.dteMarcarPagadaInv = function(id) { dteRegistrarPagoInv(id); };
+// ── Datos de un pago: forma (transferencia, cheque…), N°, fecha y comprobante adjunto ──
+const FORMAS_PAGO_INV = [['transferencia', '🏦 Transferencia'], ['cheque', '🧾 Cheque'], ['tarjeta', '💳 Tarjeta'], ['caja', '💵 Caja chica'], ['otro', '✏️ Otra']];
+function formPagoHtmlInv(pre, o = {}) {
+  const inp = 'width:100%;box-sizing:border-box;margin-bottom:8px', L = t => `<label style="font-size:12px;text-transform:none;letter-spacing:0;font-weight:600">${t}</label>`;
+  const ps = personasActivasInv(), cajas = primeroInv(cajasChicasInv(), o.cajaPropia || ''), forma = o.forma || 'transferencia';
+  return `${L('Fecha del pago')}<input type="date" id="${pre}-fecha" value="${o.fecha || hoyIsoInv()}" style="${inp}">
+    ${L('Forma de pago')}<select id="${pre}-forma" data-no-mejorar style="${inp}" onchange="formaPagoCambioInv('${pre}')">${FORMAS_PAGO_INV.map(([k, t]) => `<option value="${k}"${k === forma ? ' selected' : ''}>${t}</option>`).join('')}</select>
+    <div id="${pre}-nro-w">${L(`<span id="${pre}-nro-l">N° de transferencia</span> (opcional)`)}<input type="text" id="${pre}-nro" autocomplete="off" style="${inp}"></div>
+    <div id="${pre}-cheq-w" style="display:none">${L('Fecha de cobro del cheque (si es a fecha)')}<input type="date" id="${pre}-cheqf" style="${inp}"></div>
+    <div id="${pre}-otro-w" style="display:none">${L('¿Cuál?')}<input type="text" id="${pre}-otro" placeholder="Ej: vale vista, depósito, compensación" style="${inp}"></div>
+    <div id="${pre}-caja-w" style="display:none">${L('¿Qué caja chica?')}<select id="${pre}-caja" data-no-mejorar style="${inp}" onchange="document.getElementById('${pre}-caja-otra').style.display=this.value==='__otra'?'':'none'">${cajas.map(n => `<option value="${escA(n)}">${escA(n)}${n === o.cajaPropia ? ' (de quien compró)' : ''}</option>`).join('')}<option value="__otra">＋ Otra…</option></select><input type="text" id="${pre}-caja-otra" placeholder="Nombre de la caja" style="${inp};display:none"></div>
+    ${ps.length ? `${L('¿Quién pagó?')}<select id="${pre}-quien" data-no-mejorar data-compro="${escA(o.comp || '')}" style="${inp}">${ps.map(n => `<option value="${escA(n)}">${escA(n)}${n === o.comp ? ' (compró)' : ''}</option>`).join('')}</select>` : ''}
+    ${L('📎 Comprobante: foto o PDF (opcional)')}<input type="file" id="${pre}-file" accept="image/*,application/pdf" style="${inp}">`;
+}
+window.formaPagoCambioInv = function(pre) {
+  const g = id => document.getElementById(pre + id), f = (g('-forma') || {}).value;
+  const vis = (id, v) => { const e = g(id); if (e) e.style.display = v ? '' : 'none'; };
+  vis('-nro-w', f !== 'caja'); vis('-cheq-w', f === 'cheque'); vis('-otro-w', f === 'otro'); vis('-caja-w', f === 'caja');
+  const l = g('-nro-l'); if (l) l.textContent = f === 'cheque' ? 'N° de cheque' : f === 'tarjeta' ? 'N° de operación' : f === 'otro' ? 'N° o referencia' : 'N° de transferencia';
+  const q = g('-quien'); if (q && f === 'caja' && q.dataset.compro) q.value = q.dataset.compro;
+}
+function leerFormPagoInv(pre) {
+  const v = id => ((document.getElementById(pre + id) || {}).value || '').trim();
+  const forma = v('-forma') || 'transferencia', medio = forma === 'caja' ? 'caja' : 'cuenta';
+  const caja = v('-caja') === '__otra' ? v('-caja-otra') : v('-caja');
+  if (forma === 'caja' && !caja) { toast('Indica qué caja chica', false); return null; }
+  if (forma === 'otro' && !v('-otro')) { toast('Indica cuál fue la forma de pago', false); return null; }
+  const fi = document.getElementById(pre + '-file');
+  return { fecha: v('-fecha') || hoyIsoInv(), forma, medio, detalle: forma === 'caja' ? caja : '', nro: forma === 'caja' ? '' : v('-nro'), chequeFecha: forma === 'cheque' ? v('-cheqf') : '', formaOtro: forma === 'otro' ? v('-otro') : '', quien: v('-quien'), file: fi && fi.files && fi.files[0] || null };
+}
+const datosPagoInv = f => ({ forma: f.forma, nro: f.nro, chequeFecha: f.chequeFecha, formaOtro: f.formaOtro });
+async function guardarComprobanteInv(file, dteIds) {
+  if (!file) return null;
+  let data, tipo = file.type || '';
+  if (tipo.startsWith('image/')) { data = await comprimirFotoInv(file, 1800, 0.72); if (data.length > 900000) data = await comprimirFotoInv(file, 1300, 0.6); tipo = 'image/jpeg'; }
+  else if (tipo === 'application/pdf' || /\.pdf$/i.test(file.name || '')) {
+    if (file.size > 700000) throw new Error('El PDF pesa más de 700 KB: súbelo como foto o captura de pantalla');
+    data = await new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = () => no(new Error('No se pudo leer el archivo')); r.readAsDataURL(file); }); tipo = 'application/pdf';
+  } else throw new Error('El comprobante debe ser una foto o un PDF');
+  if (data.length > 980000) throw new Error('El comprobante es muy pesado');
+  const ref = await addDoc(collection(dbInv, 'comprobantes_pago'), { data, tipo, nombre: file.name || '', dteIds, ts: Date.now(), por: currentUser || '' });
+  return { comprobanteId: ref.id, comprobanteNombre: file.name || (tipo === 'application/pdf' ? 'comprobante.pdf' : 'comprobante.jpg') };
+}
+window.verComprobanteInv = async function(id) {
+  if (!id) return;
+  try {
+    const sn = await getDoc(doc(dbInv, 'comprobantes_pago', id)); if (!sn.exists()) { toast('No se encontró el comprobante', false); return; }
+    const c = sn.data(), url = URL.createObjectURL(await (await fetch(c.data)).blob());
+    const v = document.getElementById('cmp-visor'); if (v) v.remove();
+    const ov = document.createElement('div'); ov.id = 'cmp-visor';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:10002;background:rgba(0,0,0,.7);display:flex;align-items:flex-start;justify-content:center;padding:16px 10px;overflow-y:auto;box-sizing:border-box';
+    ov.onclick = e => { if (e.target === ov) ov.remove(); };
+    ov.innerHTML = `<div style="background:var(--blanco);border-radius:12px;max-width:760px;width:100%;padding:12px;box-sizing:border-box;min-width:0">
+      <div style="display:flex;justify-content:space-between;gap:8px;margin-bottom:8px"><strong style="overflow-wrap:anywhere">📎 ${escA(c.nombre || 'Comprobante')}</strong><span style="cursor:pointer;font-size:20px;line-height:1" onclick="document.getElementById('cmp-visor').remove()">✕</span></div>
+      ${c.tipo === 'application/pdf' ? `<iframe src="${url}" style="width:100%;height:70vh;border:1px solid var(--borde);border-radius:8px"></iframe>` : `<img src="${url}" style="max-width:100%;display:block;margin:auto;border-radius:8px">`}
+      <a href="${url}" download="${escA(c.nombre || (c.tipo === 'application/pdf' ? 'comprobante.pdf' : 'comprobante.jpg'))}" class="btn-add" style="display:block;text-align:center;margin-top:8px;padding:8px;text-decoration:none">⬇️ Descargar</a></div>`;
+    document.body.appendChild(ov);
+  } catch (e) { toast('Error: ' + e.message, false); }
+}
+// Adjuntar el comprobante después (i = N° del abono; -1 = pago al contado)
+window.adjuntarComprobanteInv = function(id, i) {
+  const fi = document.createElement('input'); fi.type = 'file'; fi.accept = 'image/*,application/pdf';
+  fi.onchange = async () => {
+    const f = fi.files && fi.files[0]; if (!f) return;
+    const d = dteRecibidosInv.find(x => x.id === id); if (!d) return;
+    try {
+      const c = await guardarComprobanteInv(f, [id]);
+      if (i < 0) await updateDoc(doc(dbInv, 'dte_recibidos', id), c);
+      else { const abonos = (d.abonos || []).map((a, k) => k === i ? { ...a, ...c } : a); await updateDoc(doc(dbInv, 'dte_recibidos', id), { abonos }); }
+      toast('✓ Comprobante adjuntado', true);
+    } catch (e) { toast('Error: ' + e.message, false); }
+  };
+  fi.click();
+}
+function textoFormaPagoInv(x) {
+  const f = x.forma || (x.medio === 'caja' ? 'caja' : '');
+  const t = f === 'transferencia' ? '🏦 Transferencia' : f === 'cheque' ? '🧾 Cheque' : f === 'tarjeta' ? '💳 Tarjeta' : f === 'caja' ? '💵 ' + escA(x.detalle || 'Caja chica') : f === 'otro' ? '✏️ ' + escA(x.formaOtro || 'Otra') : '🏦 Desde la cuenta';
+  return t + (x.nro ? ' N° ' + escA(x.nro) : '') + (x.chequeFecha ? ' · se cobra el ' + fmtFechaInv(x.chequeFecha) : '');
+}
+const linkComprobanteInv = (x, id, i) => x.comprobanteId ? ` <a href="#" onclick="event.preventDefault();event.stopPropagation();verComprobanteInv('${x.comprobanteId}')">📎 comprobante</a>` : (id ? ` <a href="#" style="color:var(--acero)" onclick="event.preventDefault();event.stopPropagation();adjuntarComprobanteInv('${id}',${i})">📎 adjuntar</a>` : '');
 window.dteRegistrarPagoInv = function(id) {
   const d = dteRecibidosInv.find(x => x.id === id); if (!d) return;
-  const s = saldoPagarInv(d);
+  const s = saldoPagarInv(d), ab = sumAbonosInv(d), nc = sumNcInv(d);
   const propia = cajaDeCompradorInv(d.compro), comp = personaEnListaInv(personasActivasInv(), d.compro);
-  const ultAb = dteRecibidosInv.flatMap(x => x.abonos || []).filter(a => a.medio === 'caja' && a.detalle).sort((a, b) => (b.ts || 0) - (a.ts || 0))[0];
-  const ult = propia ? { detalle: propia } : ultAb;
-  const inp = 'width:100%;box-sizing:border-box;margin-bottom:8px';
-  modalElegirDteInv(`Registrar pago · ${escA(d.razonSocial || '')} N° ${d.folio}`, `Saldo por pagar: <strong>${pesoInv(s)}</strong>${sumAbonosInv(d) ? ` (ya abonado ${pesoInv(sumAbonosInv(d))})` : ''}`, [`
-    <label style="font-size:12px">Monto pagado ($)</label><input type="number" id="pg-monto" value="${s}" style="${inp}">
-    <label style="font-size:12px">Fecha del pago</label><input type="date" id="pg-fecha" value="${hoyIsoInv()}" style="${inp}">
-    <label style="font-size:12px">Se pagó con</label><select id="pg-medio" style="${inp}" onchange="document.getElementById('pg-det-w').style.display=this.value==='caja'?'':'none';const q=document.getElementById('pg-quien');if(q&&this.value==='caja'&&q.dataset.compro)q.value=q.dataset.compro"><option value="cuenta">🏦 Desde la cuenta</option><option value="caja">💵 Caja chica</option></select>
-    <div id="pg-det-w" style="display:none"><label style="font-size:12px">¿Qué caja chica?</label><select id="pg-det-sel" style="${inp};width:100%;margin-bottom:8px" onchange="document.getElementById('pg-det').style.display=this.value==='__otra'?'':'none'">${primeroInv(cajasChicasInv(), propia).map(n => `<option value="${escA(n)}"${ult && ult.detalle === n ? ' selected' : ''}>${escA(n)}${n === propia ? ' (de quien compró)' : ''}</option>`).join('')}<option value="__otra">＋ Otra…</option></select><input type="text" id="pg-det" placeholder="Nombre de la caja chica" style="${inp};display:none;width:100%;margin-bottom:8px"></div>
-    ${personasActivasInv().length ? `<label style="font-size:12px">¿Quién pagó?</label><select id="pg-quien" data-compro="${escA(comp)}" style="${inp}">${personasActivasInv().map(n => `<option value="${escA(n)}">${escA(n)}${n === comp ? ' (compró)' : ''}</option>`).join('')}</select>` : ''}
-    <button class="btn btn-verde" style="width:100%;justify-content:center" onclick="dteGuardarPagoInv('${d.id}')">✓ Guardar pago</button>`]);
+  const ult = (d.abonos || []).slice(-1)[0];
+  modalElegirDteInv(`💵 Registrar pago · ${escA(d.razonSocial || '')} N° ${escA(d.folio)}`, `Saldo por pagar: <strong>${pesoInv(s)}</strong>${ab ? ` (ya abonado ${pesoInv(ab)})` : ''}${nc ? ` · nota de crédito −${pesoInv(nc)}` : ''}`, [`
+    <label style="font-size:12px;text-transform:none;letter-spacing:0;font-weight:600">Monto pagado ($)</label><input type="number" id="pg-monto" value="${s}" style="width:100%;box-sizing:border-box;margin-bottom:8px">
+    ${formPagoHtmlInv('pg', { cajaPropia: propia, comp, forma: ult && ult.forma || 'transferencia' })}
+    <button class="btn btn-verde" id="pg-guardar" style="width:100%;justify-content:center" onclick="dteGuardarPagoInv('${d.id}')">✓ Guardar pago</button>`]);
+  formaPagoCambioInv('pg');
 }
 window.dteGuardarPagoInv = async function(id) {
   const d = dteRecibidosInv.find(x => x.id === id); if (!d) return;
-  const monto = Math.round(Number(document.getElementById('pg-monto').value) || 0), medio = document.getElementById('pg-medio').value;
-  const fecha = document.getElementById('pg-fecha').value || hoyIsoInv(), det = (() => { const sel = document.getElementById('pg-det-sel'); if (!sel) return ''; return sel.value === '__otra' ? (document.getElementById('pg-det').value || '') : sel.value; })();
+  const monto = Math.round(Number(document.getElementById('pg-monto').value) || 0);
   if (!(monto > 0)) { toast('Indica el monto pagado', false); return; }
-  if (medio === 'caja' && !det.trim()) { toast('Indica qué caja chica', false); return; }
-  const quien = (document.getElementById('pg-quien') || {}).value || '';
-  const abonos = [...(d.abonos || []), { fecha, monto, medio, detalle: medio === 'caja' ? det.trim() : '', quien, por: currentUser || '', ts: Date.now() }];
-  const saldo = Math.max(0, (d.total || 0) - abonos.reduce((a, x) => a + x.monto, 0)), pagada = saldo <= 1;
+  const f = leerFormPagoInv('pg'); if (!f) return;
+  const bt = document.getElementById('pg-guardar'); if (bt) { bt.disabled = true; bt.textContent = 'Guardando…'; }
   try {
+    const c = await guardarComprobanteInv(f.file, [id]);
+    const abonos = [...(d.abonos || []), { fecha: f.fecha, monto, medio: f.medio, detalle: f.detalle, ...datosPagoInv(f), quien: f.quien, por: currentUser || '', ts: Date.now(), ...(c || {}) }];
+    const saldo = Math.max(0, (d.total || 0) - sumNcInv(d) - abonos.reduce((a, x) => a + (Number(x.monto) || 0), 0)), pagada = saldo <= 1;
     await updateDoc(doc(dbInv, 'dte_recibidos', id), { abonos, pagada, fechaPago: pagada ? Date.now() : 0 });
     const m = document.getElementById('dte-elegir'); if (m) m.remove();
     toast(pagada ? '✓ Pago registrado: factura pagada del todo' : `✓ Abono registrado. Quedan ${pesoInv(saldo)} por pagar`, true);
-  } catch (e) { toast('Error: ' + e.message, false); }
+  } catch (e) { toast('Error: ' + e.message, false); if (bt) { bt.disabled = false; bt.textContent = '✓ Guardar pago'; } }
+}
+// Factura pagada al contado (no a crédito): mismos datos del pago
+window.dtePagoContadoFormInv = function(id) {
+  const d = dteRecibidosInv.find(x => x.id === id); if (!d) return;
+  const comp = personaEnListaInv(personasActivasInv(), d.compro);
+  modalElegirDteInv(`🏦 Pagada al contado · ${escA(d.razonSocial || '')} N° ${escA(d.folio)}`, `Total ${pesoInv(Math.max(0, (d.total || 0) - sumNcInv(d)))}. Si se paga después, mejor déjala <strong>A crédito</strong>.`, [`
+    ${formPagoHtmlInv('pc', { fecha: d.pagoFecha || d.fecha || hoyIsoInv(), forma: d.pagoForma || 'transferencia', cajaPropia: cajaDeCompradorInv(d.compro), comp })}
+    <button class="btn btn-verde" id="pc-guardar" style="width:100%;justify-content:center" onclick="dteGuardarPagoContadoInv('${d.id}')">✓ Guardar pago</button>`]);
+  formaPagoCambioInv('pc');
+}
+window.dteGuardarPagoContadoInv = async function(id) {
+  const d = dteRecibidosInv.find(x => x.id === id); if (!d) return;
+  const f = leerFormPagoInv('pc'); if (!f) return;
+  const bt = document.getElementById('pc-guardar'); if (bt) { bt.disabled = true; bt.textContent = 'Guardando…'; }
+  try {
+    const c = await guardarComprobanteInv(f.file, [id]);
+    await updateDoc(doc(dbInv, 'dte_recibidos', id), { pago: f.medio, pagoPor: currentUser || '', pagoTs: Date.now(), pagoDetalle: f.detalle, pagada: true, fechaPago: Date.now(), pagadoPor: f.quien, pagoFecha: f.fecha, pagoForma: f.forma, pagoNro: f.nro, chequeFecha: f.chequeFecha, formaOtro: f.formaOtro, rendida: false, ...(c || {}) });
+    const m = document.getElementById('dte-elegir'); if (m) m.remove();
+    toast('✓ Pago guardado', true);
+  } catch (e) { toast('Error: ' + e.message, false); if (bt) { bt.disabled = false; bt.textContent = '✓ Guardar pago'; } }
 }
 window.dteQuitarAbonoInv = async function(id, i) {
   const d = dteRecibidosInv.find(x => x.id === id); if (!d || !confirm('¿Eliminar este pago?')) return;
@@ -16942,10 +17049,10 @@ function bloquePagoInv(d) {
   const e = estadoPagoInv(d);
   const btn = (v, t, sel) => `<button class="btn-add" style="padding:6px 10px;${sel ? '' : 'background:var(--fondo);color:var(--negro)'}" onclick="dtePagoInv('${d.id}','${v}')">${t}</button>`;
   return `<div style="border:1px solid var(--borde);border-radius:10px;padding:10px;margin:10px 0"><div style="font-weight:700;font-size:13px;margin-bottom:6px">💰 Pago: <span style="color:${e.fg}">${e.t}</span></div>
-    ${(d.pago === 'cuenta' || d.pago === 'caja') && d.pagadoPor ? `<div style="font-size:12px;color:var(--acero);margin-bottom:6px">Pagó: ${escA(d.pagadoPor)}${d.pago === 'caja' ? (d.rendida ? ' · ✅ rendida' : ' · pendiente de rendir') : ''}</div>` : ''}
+    ${(d.pago === 'cuenta' || d.pago === 'caja') && d.pagada ? `<div style="font-size:12px;color:var(--acero);margin-bottom:6px;overflow-wrap:anywhere">${d.pagoFecha ? fmtFechaInv(d.pagoFecha) + ' · ' : ''}${textoFormaPagoInv({ forma: d.pagoForma, medio: d.pago, detalle: d.pagoDetalle, nro: d.pagoNro, chequeFecha: d.chequeFecha, formaOtro: d.formaOtro })}${d.pagadoPor ? ' · pagó ' + escA(d.pagadoPor) : ''}${d.pago === 'caja' ? (d.rendida ? ' · ✅ rendida' : ' · pendiente de rendir') : ''}${linkComprobanteInv(d, d.id, -1)}</div>` : ''}
     <div style="display:flex;gap:6px;flex-wrap:wrap">${btn('cuenta', '🏦 De la cuenta', d.pago === 'cuenta')}${btn('credito', '💳 A crédito', d.pago === 'credito')}${btn('caja', '💵 Caja chica', d.pago === 'caja')}${d.pago ? btn('', '↩ Sin definir', false) : ''}</div>
-    ${d.pago === 'credito' ? `<div style="font-size:12px;margin-top:8px;line-height:1.6">Total ${pesoInv(d.total || 0)}${(d.abonos || []).length ? ` · abonado ${pesoInv(sumAbonosInv(d))}` : ''} · <strong>saldo ${pesoInv(saldoPagarInv(d))}</strong><br>Vence: ${d.vence ? fmtFechaInv(d.vence) : 'sin fecha'} · <a href="#" onclick="event.preventDefault();dteEditarVenceInv('${d.id}')">cambiar</a>
-      ${(d.abonos || []).map((a, i) => `<br>• ${fmtFechaInv(a.fecha)} · ${pesoInv(a.monto)} · ${a.medio === 'caja' ? 'caja chica ' + escA(a.detalle || '') : 'desde la cuenta'}${a.quien ? ' · pagó ' + escA(a.quien) : ''}${a.rendida ? ' · rendida' : ''} <a href="#" style="color:#B91C1C" onclick="event.preventDefault();dteQuitarAbonoInv('${d.id}',${i})">quitar</a>`).join('')}</div>
+    ${d.pago === 'credito' ? `<div style="font-size:12px;margin-top:8px;line-height:1.6">Total ${pesoInv(d.total || 0)}${ncsDeFacturaInv(d).map(n => ` · nota de crédito N° ${escA(n.folio)} −${pesoInv(n.total)}`).join('')}${(d.abonos || []).length ? ` · abonado ${pesoInv(sumAbonosInv(d))}` : ''} · <strong>saldo ${pesoInv(saldoPagarInv(d))}</strong><br>Vence: ${d.vence ? fmtFechaInv(d.vence) : 'sin fecha'} · <a href="#" onclick="event.preventDefault();dteEditarVenceInv('${d.id}')">cambiar</a>
+      ${(d.abonos || []).map((a, i) => `<br>• ${fmtFechaInv(a.fecha)} · ${pesoInv(a.monto)} · ${textoFormaPagoInv(a)}${a.quien ? ' · pagó ' + escA(a.quien) : ''}${a.rendida ? ' · rendida' : ''}${linkComprobanteInv(a, d.id, i)} <a href="#" style="color:#B91C1C" onclick="event.preventDefault();dteQuitarAbonoInv('${d.id}',${i})">quitar</a>`).join('')}</div>
       ${!d.pagada ? `<button class="btn-add" style="padding:6px 10px;margin-top:8px" onclick="dteRegistrarPagoInv('${d.id}')">💵 Registrar pago</button>` : ''}` : ''}
     </div>`;
 }
@@ -17217,6 +17324,278 @@ function resumenPagarInv(lista) {
   const caja = (t, v, c) => `<div style="flex:1;min-width:120px;background:var(--fondo);border-radius:8px;padding:8px"><div style="font-size:11px;color:var(--acero)">${t}</div><div style="font-weight:800;color:${c || 'var(--negro)'}">${pesoInv(v)}</div></div>`;
   return `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">${caja('Total por pagar', suma(() => true))}${caja('Vencido', suma(d => dv(d) !== null && dv(d) < 0), '#B91C1C')}${caja('Próximos 7 días', suma(d => dv(d) !== null && dv(d) >= 0 && dv(d) <= 7), '#B45309')}${caja('Después o sin fecha', suma(d => dv(d) === null || dv(d) > 7))}</div>`;
 }
+// ── Logos de proveedores ──
+let provCfgInv = {}; // { rutSinGuion: { web, logo } }
+const claveProvInv = r => normRutDte(r).replace(/[^0-9K]/g, '');
+const DOMINIOS_PROV_INV = [[/\bcoagra\b/, 'coagra.cl'], [/\bcopec\b/, 'copec.cl'], [/\bimplementos\b/, 'implementos.cl'], [/\bsodimac\b/, 'sodimac.cl'], [/\beasy\b/, 'easy.cl'], [/\bconstrumart\b/, 'construmart.cl'], [/\banasac\b/, 'anasac.cl'], [/\bcopeval\b/, 'copeval.cl'], [/\bsalfa\b/, 'salfa.cl'], [/\bcopelec\b/, 'copelec.cl'], [/\bentel\b/, 'entel.cl'], [/\bchilemat\b/, 'chilemat.cl'], [/\bimperial\b/, 'imperial.cl'], [/\benex\b/, 'enex.cl'], [/\bkaufmann\b/, 'kaufmann.cl'], [/\bcovepa\b/, 'covepa.cl'], [/\bmercadolibre\b|\bmercado libre\b/, 'mercadolibre.cl'], [/\bfalabella\b/, 'falabella.com'], [/\bwalmart\b|\blider\b/, 'lider.cl'], [/\bmovistar\b|\btelefonica\b/, 'movistar.cl'], [/\bclaro\b/, 'clarochile.cl'], [/\bwom\b/, 'wom.cl']];
+function dominioProvInv(rut, nombre) {
+  const c = provCfgInv[claveProvInv(rut)]; if (c && c.web) return c.web;
+  const n = normNom(nombre || ''); const m = DOMINIOS_PROV_INV.find(([re]) => re.test(n)); return m ? m[1] : '';
+}
+const limpiarDominioInv = w => String(w || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/.*$/, '');
+function logoProvInv(rut, nombre, px = 26) {
+  const c = provCfgInv[claveProvInv(rut)] || {}, dom = dominioProvInv(rut, nombre);
+  const pal = String(nombre || rut || '?').replace(/\b(s\.?a\.?|spa|ltda\.?|limitada|sociedad|comercial|empresa|cia\.?|y)\b/gi, ' ').trim().split(/\s+/).filter(w => /[a-z0-9ñ]/i.test(w));
+  const ini = escA((pal.length > 1 ? pal[0][0] + pal[1][0] : (pal[0] || '?').slice(0, 2)).toUpperCase());
+  let h = 0; for (const ch of String(rut || nombre || '')) h = (h * 31 + ch.charCodeAt(0)) % 360;
+  const caja = `width:${px}px;height:${px}px;border-radius:7px;flex:none;display:inline-flex;align-items:center;justify-content:center;vertical-align:middle`;
+  const iniHtml = `<span style="${caja};background:hsl(${h},45%,88%);color:hsl(${h},45%,28%);font-size:${Math.round(px * 0.42)}px;font-weight:800;letter-spacing:0">${ini}</span>`;
+  const src = c.logo || (dom ? `https://www.google.com/s2/favicons?domain=${encodeURIComponent(dom)}&sz=64` : '');
+  if (!src) return iniHtml;
+  return `<span style="${caja};background:#fff;border:1px solid var(--borde);overflow:hidden"><img src="${src}" alt="" loading="lazy" style="width:100%;height:100%;object-fit:contain" onerror="this.parentNode.outerHTML=this.parentNode.dataset.ini" ></span>`.replace('<span style', `<span data-ini="${iniHtml.replace(/"/g, '&quot;')}" style`);
+}
+async function guardarProvCfgInv() { await setDoc(doc(dbInv, 'dte_recibidos', '_proveedores'), { p: provCfgInv, actualizado: Date.now(), por: currentUser || '' }); }
+window.webProvInv = async function(rut, v) {
+  const k = claveProvInv(rut), w = limpiarDominioInv(v);
+  provCfgInv = { ...provCfgInv, [k]: { ...(provCfgInv[k] || {}), web: w } };
+  try { await guardarProvCfgInv(); toast(w ? '✓ Sitio guardado: se usa su ícono' : '✓ Sitio quitado', true); } catch (e) { toast('Error: ' + e.message, false); }
+}
+window.subirLogoProvInv = function(rut) {
+  const fi = document.createElement('input'); fi.type = 'file'; fi.accept = 'image/*';
+  fi.onchange = async () => {
+    const f = fi.files && fi.files[0]; if (!f) return;
+    try {
+      const logo = await comprimirFotoInv(f, 128, 0.8), k = claveProvInv(rut);
+      provCfgInv = { ...provCfgInv, [k]: { ...(provCfgInv[k] || {}), logo } };
+      await guardarProvCfgInv(); toast('✓ Logo guardado', true);
+    } catch (e) { toast('Error: ' + e.message, false); }
+  };
+  fi.click();
+}
+window.quitarLogoProvInv = async function(rut) {
+  const k = claveProvInv(rut); if (!provCfgInv[k]) return;
+  const c = { ...provCfgInv[k] }; delete c.logo; provCfgInv = { ...provCfgInv, [k]: c };
+  try { await guardarProvCfgInv(); toast('✓ Logo quitado', true); } catch (e) { toast('Error: ' + e.message, false); }
+}
+let provVerTodosInv = false;
+window.provVerTodosSetInv = () => { provVerTodosInv = true; renderConfigContInv(); };
+function panelProveedoresInv() {
+  const m = new Map();
+  dteRecibidosInv.forEach(d => { if (!d.rutEmisor) return; const k = claveProvInv(d.rutEmisor); if (!m.has(k)) m.set(k, { rut: d.rutEmisor, n: d.razonSocial || rutFmtDte(d.rutEmisor), docs: 0, monto: 0 }); const x = m.get(k); x.docs++; x.monto += d.total || 0; });
+  const ps = [...m.values()].sort((a, b) => b.monto - a.monto), tope = provVerTodosInv ? 500 : 15;
+  return `<div class="panel">
+      <div class="panel-title">🏢 Logos de proveedores</div>
+      <div style="font-size:12px;color:var(--acero);margin-bottom:8px">Los proveedores con más compras. Se usa el ícono del sitio web del proveedor; los conocidos se reconocen solos. Si no aparece, escribe su página web (ej: coagra.cl) o sube una foto del logo.</div>
+      ${ps.length ? ps.slice(0, tope).map(p => { const c = provCfgInv[claveProvInv(p.rut)] || {}, auto = !c.web ? dominioProvInv(p.rut, p.n) : ''; return `<div class="config-item" style="flex-direction:column;align-items:stretch;gap:6px">
+        <div style="display:flex;gap:8px;align-items:center;min-width:0">${logoProvInv(p.rut, p.n, 32)}<div style="min-width:0;overflow-wrap:anywhere"><strong>${escA(p.n)}</strong><div style="font-size:11px;color:var(--acero)">${rutFmtDte(p.rut)} · ${p.docs} doc. · ${pesoInv(p.monto)}</div></div></div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"><input type="text" value="${escA(c.web || '')}" placeholder="${auto ? escA(auto) + ' (automático)' : 'Página web, ej: proveedor.cl'}" onchange="webProvInv('${escA(p.rut)}', this.value)" style="flex:1;min-width:150px;margin:0;box-sizing:border-box"><button class="btn-add" style="padding:6px 10px;background:var(--fondo);color:var(--negro)" onclick="subirLogoProvInv('${escA(p.rut)}')">📷 Subir logo</button>${c.logo ? `<button class="btn-add" style="padding:6px 10px;background:var(--fondo);color:#B91C1C" onclick="quitarLogoProvInv('${escA(p.rut)}')">✕</button>` : ''}</div></div>`; }).join('')
+        + (ps.length > tope ? `<button class="btn-add" style="width:100%;margin-top:6px;background:var(--fondo);color:var(--negro)" onclick="provVerTodosSetInv()">Ver los ${ps.length - tope} restantes</button>` : '') : '<div class="empty">Todavía no hay facturas</div>'}
+    </div>`;
+}
+// ── Cuentas por pagar: hoja propia de Contabilidad. No guarda nada aparte: muestra las mismas
+//    facturas marcadas "A crédito" y los pagos que se registran quedan en esa misma factura ──
+let cxpVistaInv = 'pagar', cxpOrdenInv = 'mes', cxpBuscaInv = '', cxpMesInv = '', cxpAbiertosInv = new Set(), cxpVerMasInv = false;
+const porPagarCxpInv = () => dteRecibidosInv.filter(d => esPagableDteInv(d) && d.pago === 'credito' && !d.pagada && saldoPagarInv(d) > 0);
+const sinFormaPagoCxpInv = () => dteRecibidosInv.filter(d => esPagableDteInv(d) && !d.pago);
+const RANGOS_CXP_INV = [['vencidas', '🔴 Vencidas', '#B91C1C'], ['semana', '🟠 Próximos 7 días', '#B45309'], ['mes', '🟡 De 8 a 30 días', '#A16207'], ['despues', '⚪ Más adelante', 'var(--negro)'], ['sinfecha', '❔ Sin fecha de vencimiento', 'var(--acero)']];
+const rangoVenceCxpInv = d => { const v = diasVenceInv(d); return v === null ? 'sinfecha' : v < 0 ? 'vencidas' : v <= 7 ? 'semana' : v <= 30 ? 'mes' : 'despues'; };
+const ORDENES_CXP_INV = { mes: '📆 Por mes · detalle', mesprov: '📊 Por mes · resumen por proveedor', proveedor: '🏢 Proveedor', vence: '📅 Plazo (vencidas, 7 días, 30 días…)', monto: '💲 Monto (mayor primero)', emisionNueva: '🆕 Emisión (más nuevas)', emisionVieja: '⏳ Emisión (más antiguas)', compro: '🛒 Quién compró', cuenta: '📒 Cuenta contable' };
+function etiquetaCxpInv() {
+  const tb = document.getElementById('tab-cont-pagar'); if (!tb) return;
+  const venc = porPagarCxpInv().filter(d => rangoVenceCxpInv(d) === 'vencidas').length;
+  tb.textContent = `💳 Cuentas por pagar${venc ? ` (${venc} vencida${venc === 1 ? '' : 's'})` : ''}`;
+}
+function textoVenceCxpInv(d) {
+  const dv = diasVenceInv(d);
+  return dv === null ? 'sin fecha de vencimiento' : dv < 0 ? `venció el ${fmtVenceInv(d.vence)} (hace ${-dv} d)` : dv === 0 ? 'vence hoy' : `vence el ${fmtVenceInv(d.vence)} (en ${dv} d)`;
+}
+function filaCxpInv(d, sinProv) {
+  const dv = diasVenceInv(d), ab = sumAbonosInv(d), nc = sumNcInv(d);
+  const col = dv !== null && dv < 0 ? '#B91C1C' : dv !== null && dv <= 7 ? '#B45309' : 'var(--acero)';
+  const det = [`Emitida ${fechaCortaDte(d.fecha)}`, `total ${pesoInv(d.total)}`, ab ? `abonado ${pesoInv(ab)}` : '', nc ? `nota de crédito −${pesoInv(nc)}` : '', d.compro ? `compró ${escA(d.compro)}` : '', d.cuenta ? `cta. ${escA(d.cuenta)}` : ''].filter(Boolean).join(' · ');
+  const B = (t, fn, st) => `<button class="btn-add" style="padding:6px 10px${st ? ';' + st : ''}" onclick="${fn}('${d.id}')">${t}</button>`, G = 'background:var(--fondo);color:var(--negro)';
+  return `<div class="config-item" style="flex-direction:column;align-items:stretch;gap:3px">
+    <div style="display:flex;justify-content:space-between;gap:8px"><div style="min-width:0;overflow-wrap:anywhere;display:flex;gap:8px;align-items:center">${sinProv ? '' : logoProvInv(d.rutEmisor, d.razonSocial, 24)}<span>${sinProv ? '' : `<strong>${escA(d.razonSocial || rutFmtDte(d.rutEmisor))}</strong> · `}${escA(abrevTipoDte(d.tipo))} N° ${escA(d.folio)}</span></div><div style="font-weight:800;white-space:nowrap">${pesoInv(saldoPagarInv(d))}</div></div>
+    <div style="font-size:12px;font-weight:700;color:${col}">${textoVenceCxpInv(d)}</div>
+    <div style="font-size:12px;color:var(--acero);overflow-wrap:anywhere">${det}</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:3px">${B('💵 Registrar pago', 'dteRegistrarPagoInv')}${B('📅 Vencimiento', 'dteEditarVenceInv', G)}${B('👁 Ver', 'dteVerInv', G)}</div>
+  </div>`;
+}
+const tituloGrupoCxpInv = (t, docs, col, extra) => `<div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline;margin:12px 2px 4px;font-size:13px;font-weight:800;color:${col || 'var(--negro)'}"><span style="min-width:0;overflow-wrap:anywhere">${t} · ${docs.length}</span><span style="white-space:nowrap">${pesoInv(docs.reduce((a, d) => a + saldoPagarInv(d), 0))}${extra || ''}</span></div>`;
+function agruparCxpInv(lista, clave, nombre) {
+  const m = new Map();
+  lista.forEach(d => { const k = clave(d); if (!m.has(k)) m.set(k, { k, n: nombre(d, k), docs: [] }); m.get(k).docs.push(d); });
+  return [...m.values()];
+}
+const porVenceCxpInv = (a, b) => (a.vence || '9999') .localeCompare(b.vence || '9999') || String(a.fecha).localeCompare(String(b.fecha));
+const nomMesCxpInv = m => { const [y, mm] = m.split('-'); const t = new Date(+y, +mm - 1, 1).toLocaleDateString('es-CL', { month: 'long', year: 'numeric' }); return t.charAt(0).toUpperCase() + t.slice(1); };
+function itemsCxpInv(d) {
+  const its = (d.items || []).filter(x => x && x.nombre);
+  if (!its.length) return '';
+  const val = x => Number(x.montoItem) || Math.round((Number(x.cantidad) || 0) * (Number(x.precio) || 0));
+  return its.slice(0, 3).map(x => `<div style="font-size:12px;display:flex;justify-content:space-between;gap:8px"><span style="min-width:0;overflow-wrap:anywhere">· ${escA(x.nombre)}${x.cantidad ? ` <span style="color:var(--acero)">(${nfInv(x.cantidad)} ${escA(x.unidad || '')})</span>` : ''}</span><span style="white-space:nowrap;color:var(--acero)">${val(x) ? pesoInv(val(x)) : ''}</span></div>`).join('')
+    + (its.length > 3 ? `<div style="font-size:12px;color:var(--acero)">+ ${its.length - 3} ítem${its.length - 3 === 1 ? '' : 's'} más</div>` : '');
+}
+function filaMesCxpInv(d) {
+  const dv = diasVenceInv(d), s = saldoPagarInv(d), col = dv !== null && dv < 0 ? '#B91C1C' : dv !== null && dv <= 7 ? '#B45309' : 'var(--acero)';
+  const otros = [s < (d.total || 0) - 1 ? `total ${pesoInv(d.total)}` : '', sumAbonosInv(d) ? `abonado ${pesoInv(sumAbonosInv(d))}` : '', sumNcInv(d) ? `NC −${pesoInv(sumNcInv(d))}` : '', d.compro ? `compró ${escA(d.compro)}` : ''].filter(Boolean).join(' · ');
+  return `<div class="config-item" style="flex-direction:column;align-items:stretch;gap:3px;cursor:pointer" onclick="dteVerInv('${d.id}')">
+    <div style="display:flex;justify-content:space-between;gap:8px"><div style="min-width:0;overflow-wrap:anywhere;display:flex;gap:8px;align-items:center">${logoProvInv(d.rutEmisor, d.razonSocial, 24)}<span><strong>${escA(d.razonSocial || rutFmtDte(d.rutEmisor))}</strong> · ${escA(abrevTipoDte(d.tipo))} N° ${escA(d.folio)}</span></div><div style="font-weight:800;white-space:nowrap">${pesoInv(s)}</div></div>
+    <div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><span style="font-size:12px;font-weight:700;color:${col}">${d.vence ? 'Vence ' + fmtFechaInv(d.vence) + (dv < 0 ? ` · vencida hace ${-dv} d` : dv === 0 ? ' · hoy' : dv <= 7 ? ` · en ${dv} d` : '') : 'Sin fecha de vencimiento'}</span><button class="btn-add" style="padding:4px 10px;font-size:12px;flex:none" onclick="event.stopPropagation();dteRegistrarPagoInv('${d.id}')">💵 Pagar</button></div>
+    ${itemsCxpInv(d)}
+    ${otros ? `<div style="font-size:11px;color:var(--acero);overflow-wrap:anywhere">${otros}</div>` : ''}
+  </div>`;
+}
+function vistaMesCxpInv(lista, porProv) {
+  const mesHoy = hoyIsoInv().slice(0, 7);
+  const gs = agruparCxpInv(lista, d => d.vence ? d.vence.slice(0, 7) : 'sinfecha', (d, k) => k).sort((a, b) => (a.k === 'sinfecha') - (b.k === 'sinfecha') || a.k.localeCompare(b.k));
+  const tot = g => g.docs.reduce((a, d) => a + saldoPagarInv(d), 0), venc = g => g.docs.filter(d => rangoVenceCxpInv(d) === 'vencidas').reduce((a, d) => a + saldoPagarInv(d), 0);
+  const nombre = g => g.k === 'sinfecha' ? '❔ Sin fecha de vencimiento' : nomMesCxpInv(g.k) + (g.k < mesHoy ? ' · vencido' : g.k === mesHoy ? ' · este mes' : '');
+  const color = g => g.k !== 'sinfecha' && g.k < mesHoy ? '#B91C1C' : g.k === mesHoy ? '#B45309' : 'var(--negro)';
+  const resumen = `<div style="border:1px solid var(--borde);border-radius:10px;padding:6px 10px;margin:4px 0 10px">
+    <div style="font-size:12px;font-weight:800;color:var(--acero);margin:2px 0 4px">RESUMEN POR MES</div>
+    ${gs.map(g => `<div style="display:flex;justify-content:space-between;gap:8px;padding:5px 0;border-top:1px solid var(--borde);cursor:pointer;font-size:13px" onclick="document.getElementById('cxp-mes-${g.k}').scrollIntoView({behavior:'smooth',block:'start'})"><span style="color:${color(g)};font-weight:700;min-width:0;overflow-wrap:anywhere">${nombre(g)} <span style="font-weight:400;color:var(--acero)">· ${g.docs.length}</span></span><strong style="white-space:nowrap">${pesoInv(tot(g))}</strong></div>`).join('')}
+    <div style="display:flex;justify-content:space-between;gap:8px;padding:6px 0 2px;border-top:2px solid var(--borde);font-size:13px"><strong>Total</strong><strong>${pesoInv(lista.reduce((a, d) => a + saldoPagarInv(d), 0))}</strong></div></div>`;
+  const cuerpo = g => !porProv ? g.docs.sort(porVenceCxpInv).map(filaMesCxpInv).join('') : agruparCxpInv(g.docs, d => normRutDte(d.rutEmisor), d => d.razonSocial || rutFmtDte(d.rutEmisor)).sort((a, b) => tot(b) - tot(a)).map(p => {
+    const k = g.k + '|' + p.k, ab = cxpAbiertosInv.has(k), v = venc(p), ds = p.docs.sort(porVenceCxpInv);
+    return `<div class="config-item" style="flex-direction:column;align-items:stretch;gap:2px;cursor:pointer" onclick="cxpAbrirProvInv('${k}')">
+      <div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><span style="min-width:0;overflow-wrap:anywhere;display:flex;gap:8px;align-items:center">${logoProvInv(ds[0].rutEmisor, p.n, 26)}<strong>${ab ? '▾' : '▸'} ${escA(p.n)}</strong></span><strong style="white-space:nowrap">${pesoInv(tot(p))}</strong></div>
+      <div style="font-size:12px;color:var(--acero)">${ds.length} factura${ds.length === 1 ? '' : 's'}${v ? ` · <span style="color:#B91C1C;font-weight:700">vencido ${pesoInv(v)}</span>` : ''}${ds[0].vence ? ` · ${ds.length > 1 ? 'vencen del ' + fmtVenceInv(ds[0].vence) + ' al ' + fmtVenceInv(ds[ds.length - 1].vence || ds[0].vence) : 'vence el ' + fmtVenceInv(ds[0].vence)}` : ''}</div>
+      ${ab ? `<div style="margin-top:4px"><button class="btn-add" style="padding:5px 10px;font-size:12px" onclick="event.stopPropagation();cxpPagarVariasInv('${p.k}','${g.k}')">💵 Pagar ${ds.length > 1 ? `las ${ds.length} juntas` : 'esta factura'} (${pesoInv(tot(p))})</button></div>` : ''}
+    </div>${ab ? `<div style="margin-left:10px">${ds.map(filaMesCxpInv).join('')}</div>` : ''}`;
+  }).join('');
+  return resumen + gs.map(g => `<div id="cxp-mes-${g.k}" style="scroll-margin-top:70px">${tituloGrupoCxpInv(nombre(g), g.docs, color(g), g.k === mesHoy && venc(g) ? ` <span style="font-size:11px;color:#B91C1C">(vencido ${pesoInv(venc(g))})</span>` : '')}</div>` + cuerpo(g)).join('');
+}
+function listaPorPagarCxpInv(lista) {
+  const o = cxpOrdenInv;
+  if (o === 'mes' || o === 'mesprov') return vistaMesCxpInv(lista, o === 'mesprov');
+  if (o === 'vence') return RANGOS_CXP_INV.map(([k, t, c]) => { const ds = lista.filter(d => rangoVenceCxpInv(d) === k).sort(porVenceCxpInv); return ds.length ? tituloGrupoCxpInv(t, ds, c) + ds.map(d => filaCxpInv(d)).join('') : ''; }).join('');
+  if (o === 'monto') return lista.slice().sort((a, b) => saldoPagarInv(b) - saldoPagarInv(a)).map(d => filaCxpInv(d)).join('');
+  if (o === 'emisionNueva' || o === 'emisionVieja') { const f = o === 'emisionNueva' ? -1 : 1; return lista.slice().sort((a, b) => f * String(a.fecha).localeCompare(String(b.fecha)) || porVenceCxpInv(a, b)).map(d => filaCxpInv(d)).join(''); }
+  if (o === 'proveedor') {
+    const gs = agruparCxpInv(lista, d => normRutDte(d.rutEmisor), d => d.razonSocial || rutFmtDte(d.rutEmisor)).sort((a, b) => b.docs.reduce((x, d) => x + saldoPagarInv(d), 0) - a.docs.reduce((x, d) => x + saldoPagarInv(d), 0));
+    return gs.map(g => {
+      const ds = g.docs.sort(porVenceCxpInv), tot = ds.reduce((a, d) => a + saldoPagarInv(d), 0), venc = ds.filter(d => rangoVenceCxpInv(d) === 'vencidas').reduce((a, d) => a + saldoPagarInv(d), 0), abierto = cxpAbiertosInv.has(g.k) || !!cxpBuscaInv;
+      return `<div class="config-item" style="flex-direction:column;align-items:stretch;gap:4px;cursor:pointer;margin-top:6px" onclick="cxpAbrirProvInv('${g.k}')">
+        <div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><span style="min-width:0;overflow-wrap:anywhere;display:flex;gap:8px;align-items:center">${logoProvInv(ds[0].rutEmisor, g.n, 26)}<strong>${abierto ? '▾' : '▸'} ${escA(g.n)}</strong></span><strong style="white-space:nowrap">${pesoInv(tot)}</strong></div>
+        <div style="font-size:12px;color:var(--acero)">${ds.length} factura${ds.length === 1 ? '' : 's'}${venc ? ` · <span style="color:#B91C1C;font-weight:700">vencido ${pesoInv(venc)}</span>` : ''} · la próxima ${textoVenceCxpInv(ds[0])}</div>
+        ${abierto && ds.length > 1 ? `<div><button class="btn-add" style="padding:6px 10px" onclick="event.stopPropagation();cxpPagarVariasInv('${g.k}')">💵 Pagar varias juntas (${ds.length})</button></div>` : ''}
+      </div>${abierto ? `<div style="margin-left:10px">${ds.map(d => filaCxpInv(d, true)).join('')}</div>` : ''}`;
+    }).join('');
+  }
+  const [clave, nombre] = o === 'compro' ? [d => normNom(d.compro || ''), d => d.compro ? '🛒 ' + escA(d.compro) : '🛒 Sin definir quién compró'] : [d => String(d.cuenta || ''), d => d.cuenta ? `📒 ${escA(d.cuenta)} · ${escA(d.cuentaNombre || (cuentaPorCodInv(d.cuenta) || {}).n || '')}` : '📒 Sin cuenta contable'];
+  return agruparCxpInv(lista, clave, nombre).sort((a, b) => (a.k ? 0 : 1) - (b.k ? 0 : 1) || b.docs.reduce((x, d) => x + saldoPagarInv(d), 0) - a.docs.reduce((x, d) => x + saldoPagarInv(d), 0))
+    .map(g => tituloGrupoCxpInv(g.n, g.docs) + g.docs.sort(porVenceCxpInv).map(d => filaCxpInv(d)).join('')).join('');
+}
+window.cxpAbrirProvInv = function(k) { if (cxpAbiertosInv.has(k)) cxpAbiertosInv.delete(k); else cxpAbiertosInv.add(k); renderCxpInv(); };
+window.cxpVistaSetInv = function(v) { cxpVistaInv = v; cxpVerMasInv = false; if (v === 'pagar') cxpOrdenInv = 'mes'; else if (cxpOrdenInv === 'mes' || !['vence', 'proveedor', 'monto', 'emisionVieja'].includes(cxpOrdenInv)) cxpOrdenInv = 'vence'; renderCxpInv(); };
+window.cxpOrdenSetInv = function(v) { cxpOrdenInv = v; renderCxpInv(); };
+window.cxpMesSetInv = function(v) { cxpMesInv = v; renderCxpInv(); };
+window.cxpBuscarInv = function(v) { cxpBuscaInv = v; clearTimeout(window._cxpT); window._cxpT = setTimeout(() => { renderCxpInv(); const i = document.getElementById('cxp-busca'); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } }, 250); };
+window.cxpVerMasSetInv = function() { cxpVerMasInv = true; renderCxpInv(); };
+// Pagos hechos (abonos de créditos + facturas pagadas al contado de la cuenta o con caja chica)
+function pagosHechosCxpInv() {
+  const out = [];
+  dteRecibidosInv.forEach(d => {
+    if (!esPagableDteInv(d)) return;
+    (d.abonos || []).forEach((a, i) => out.push({ ...a, d, i, fecha: a.fecha || '', monto: Number(a.monto) || 0, detalle: a.detalle || '', quien: a.quien || '', tipo: 'credito' }));
+    if ((d.pago === 'cuenta' || d.pago === 'caja') && d.pagada) out.push({ d, i: -1, fecha: d.pagoFecha || d.fecha || '', monto: Math.max(0, (d.total || 0) - sumNcInv(d)), medio: d.pago, detalle: d.pagoDetalle || '', quien: d.pagadoPor || '', forma: d.pagoForma, nro: d.pagoNro, chequeFecha: d.chequeFecha, formaOtro: d.formaOtro, comprobanteId: d.comprobanteId, tipo: 'contado' });
+  });
+  return out;
+}
+function vistaPagosCxpInv(q) {
+  const todos = pagosHechosCxpInv(), meses = [...new Set(todos.map(p => String(p.fecha).slice(0, 7)).filter(Boolean))].sort().reverse();
+  const mesHoy = hoyIsoInv().slice(0, 7); if (!meses.includes(mesHoy)) meses.unshift(mesHoy);
+  if (!cxpMesInv || !meses.includes(cxpMesInv)) cxpMesInv = meses[0];
+  let lista = todos.filter(p => String(p.fecha).startsWith(cxpMesInv));
+  if (q) lista = lista.filter(p => normNom(`${p.d.razonSocial} ${p.d.folio} ${p.quien} ${p.detalle} ${p.nro || ''}`).includes(q));
+  const o = cxpOrdenInv;
+  if (o === 'monto') lista.sort((a, b) => b.monto - a.monto); else if (o === 'proveedor') lista.sort((a, b) => String(a.d.razonSocial).localeCompare(String(b.d.razonSocial), 'es') || String(b.fecha).localeCompare(String(a.fecha)));
+  else if (o === 'emisionVieja') lista.sort((a, b) => String(a.fecha).localeCompare(String(b.fecha))); else lista.sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)) || b.monto - a.monto);
+  const suma = f => lista.filter(f).reduce((a, p) => a + p.monto, 0);
+  const nomMes = m => { const [y, mm] = m.split('-'); return new Date(+y, +mm - 1, 1).toLocaleDateString('es-CL', { month: 'long', year: 'numeric' }); };
+  const caja = (t, v, c) => `<div style="flex:1;min-width:110px;background:var(--fondo);border-radius:8px;padding:8px"><div style="font-size:11px;color:var(--acero)">${t}</div><div style="font-weight:800;color:${c || 'var(--negro)'}">${pesoInv(v)}</div></div>`;
+  return `<div style="display:flex;gap:6px;align-items:center;margin:4px 0 8px"><label style="font-size:12px;text-transform:none;letter-spacing:0;margin:0">Mes</label><select data-no-mejorar onchange="cxpMesSetInv(this.value)" style="flex:1;margin:0">${meses.map(m => `<option value="${m}"${m === cxpMesInv ? ' selected' : ''}>${nomMes(m)}</option>`).join('')}</select></div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">${caja('Pagado en el mes', suma(() => true))}${caja('🏦 Transferencias', suma(p => p.medio !== 'caja' && (p.forma || 'transferencia') === 'transferencia'))}${caja('🧾 Cheques', suma(p => p.forma === 'cheque'))}${caja('💵 Caja chica', suma(p => p.medio === 'caja'))}${caja('💳 De créditos', suma(p => p.tipo === 'credito'), '#1D4ED8')}</div>
+    ${lista.length ? lista.map(p => `<div class="config-item" style="flex-direction:column;align-items:stretch;gap:2px;cursor:pointer" onclick="dteVerInv('${p.d.id}')">
+      <div style="display:flex;justify-content:space-between;gap:8px"><div style="min-width:0;overflow-wrap:anywhere;display:flex;gap:8px;align-items:center">${logoProvInv(p.d.rutEmisor, p.d.razonSocial, 24)}<span><strong>${escA(p.d.razonSocial || rutFmtDte(p.d.rutEmisor))}</strong> · ${escA(abrevTipoDte(p.d.tipo))} N° ${escA(p.d.folio)}</span></div><div style="font-weight:800;white-space:nowrap">${pesoInv(p.monto)}</div></div>
+      <div style="font-size:12px;color:var(--acero);overflow-wrap:anywhere">${fechaCortaDte(p.fecha)} · ${textoFormaPagoInv(p)}${p.quien ? ' · pagó ' + escA(p.quien) : ''} · ${p.tipo === 'credito' ? (p.monto < (p.d.total || 0) - 1 ? 'abono de crédito' : 'pago de crédito') : 'al contado'}${linkComprobanteInv(p, p.d.id, p.i)}</div></div>`).join('') : '<div class="empty">No hay pagos registrados en este mes</div>'}`;
+}
+function vistaSinFormaCxpInv(q) {
+  let lista = sinFormaPagoCxpInv();
+  if (q) lista = lista.filter(d => normNom(`${d.razonSocial} ${d.folio} ${d.rutEmisor}`).includes(q));
+  lista.sort((a, b) => cxpOrdenInv === 'monto' ? (b.total || 0) - (a.total || 0) : cxpOrdenInv === 'emisionVieja' ? String(a.fecha).localeCompare(String(b.fecha)) : cxpOrdenInv === 'proveedor' ? String(a.razonSocial).localeCompare(String(b.razonSocial), 'es') : String(b.fecha).localeCompare(String(a.fecha)));
+  const tope = cxpVerMasInv ? 500 : 30, G = 'background:var(--fondo);color:var(--negro)';
+  return `<div style="font-size:12px;color:var(--acero);margin:4px 0 8px">Facturas y boletas que todavía no dicen cómo se pagan. Las que dejes <strong>A crédito</strong> pasan a "Por pagar".</div>
+    ${lista.length ? lista.slice(0, tope).map(d => `<div class="config-item" style="flex-direction:column;align-items:stretch;gap:3px">
+      <div style="display:flex;justify-content:space-between;gap:8px"><div style="min-width:0;overflow-wrap:anywhere"><strong>${escA(d.razonSocial || rutFmtDte(d.rutEmisor))}</strong> · ${escA(abrevTipoDte(d.tipo))} N° ${escA(d.folio)}</div><div style="font-weight:800;white-space:nowrap">${pesoInv(d.total)}</div></div>
+      <div style="font-size:12px;color:var(--acero)">Emitida ${fechaCortaDte(d.fecha)}${d.fchVenc ? ' · el XML trae vencimiento ' + escA(fmtFechaInv(parseVenceInv(d.fchVenc) || '')) : ''}${d.compro ? ' · compró ' + escA(d.compro) : ''}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:3px"><button class="btn-add" style="padding:6px 10px" onclick="dtePagoInv('${d.id}','credito')">💳 A crédito</button><button class="btn-add" style="padding:6px 10px;${G}" onclick="dtePagoInv('${d.id}','cuenta')">🏦 De la cuenta</button><button class="btn-add" style="padding:6px 10px;${G}" onclick="dtePagoInv('${d.id}','caja')">💵 Caja chica</button><button class="btn-add" style="padding:6px 10px;${G}" onclick="dteVerInv('${d.id}')">👁 Ver</button></div></div>`).join('')
+      + (lista.length > tope ? `<button class="btn-add" style="width:100%;margin-top:6px;${G}" onclick="cxpVerMasSetInv()">Ver las ${lista.length - tope} restantes</button>` : '') : '<div class="empty">Todas las facturas tienen forma de pago 👍</div>'}`;
+}
+window.renderCxpInv = function() {
+  const cont = document.getElementById('cont-pagar-panel'); if (!cont) return;
+  etiquetaCxpInv();
+  const q = normNom(cxpBuscaInv || ''), todas = porPagarCxpInv(), sinForma = sinFormaPagoCxpInv().length;
+  const suma = f => todas.filter(f).reduce((a, d) => a + saldoPagarInv(d), 0), R = rangoVenceCxpInv;
+  const caja = (t, v, c, n) => `<div style="flex:1;min-width:110px;background:var(--fondo);border-radius:8px;padding:8px"><div style="font-size:11px;color:var(--acero)">${t}</div><div style="font-weight:800;color:${c || 'var(--negro)'}">${pesoInv(v)}</div>${n !== undefined ? `<div style="font-size:11px;color:var(--acero)">${n} factura${n === 1 ? '' : 's'}</div>` : ''}</div>`;
+  const cuantas = f => todas.filter(f).length;
+  const chip = (v, t) => `<span class="cultivo-chip${cxpVistaInv === v ? ' sel' : ''}" onclick="cxpVistaSetInv('${v}')">${t}</span>`;
+  const ordenes = cxpVistaInv === 'pagar' ? Object.keys(ORDENES_CXP_INV) : ['vence', 'proveedor', 'monto', 'emisionVieja'];
+  const nomOrden = k => cxpVistaInv !== 'pagar' && k === 'vence' ? '🆕 Más nuevas primero' : ORDENES_CXP_INV[k];
+  if (!ordenes.includes(cxpOrdenInv)) cxpOrdenInv = cxpVistaInv === 'pagar' ? 'mes' : 'vence';
+  let cuerpo;
+  if (cxpVistaInv === 'pagos') cuerpo = vistaPagosCxpInv(q);
+  else if (cxpVistaInv === 'sinforma') cuerpo = vistaSinFormaCxpInv(q);
+  else {
+    const lista = q ? todas.filter(d => normNom(`${d.razonSocial} ${d.folio} ${d.rutEmisor} ${d.compro || ''} ${d.cuenta || ''} ${d.cuentaNombre || ''}`).includes(q)) : todas;
+    cuerpo = lista.length ? listaPorPagarCxpInv(lista) : `<div class="empty">${q ? 'No hay facturas por pagar que coincidan' : 'No hay facturas a crédito por pagar 👍'}</div>`;
+  }
+  cont.innerHTML = `<div class="panel-title">💳 Cuentas por pagar</div>
+    <div style="font-size:12px;color:var(--acero);margin-bottom:8px">Son las mismas facturas de "Facturas y guías" que quedaron <strong>A crédito</strong>. Lo que pagues aquí queda anotado en la factura, y al revés.</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">${caja('Total por pagar', suma(() => true), '', todas.length)}${caja('🔴 Vencido', suma(d => R(d) === 'vencidas'), '#B91C1C', cuantas(d => R(d) === 'vencidas'))}${caja('🟠 Próximos 7 días', suma(d => R(d) === 'semana'), '#B45309', cuantas(d => R(d) === 'semana'))}${caja('Después o sin fecha', suma(d => ['mes', 'despues', 'sinfecha'].includes(R(d))), '', cuantas(d => ['mes', 'despues', 'sinfecha'].includes(R(d))))}</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">${chip('pagar', `💳 Por pagar (${todas.length})`)}${chip('pagos', '✅ Pagos hechos')}${chip('sinforma', `❔ Sin forma de pago (${sinForma})`)}</div>
+    ${cxpVistaInv === 'pagar' ? `<div style="display:flex;gap:0;margin-bottom:8px;border:1px solid var(--borde);border-radius:10px;overflow:hidden">${[['mes', '📆 Detalle por mes'], ['mesprov', '📊 Resumen por proveedor']].map(([k, t], i) => `<button onclick="cxpOrdenSetInv('${k}')" style="flex:1;padding:9px 6px;border:0;${i ? 'border-left:1px solid var(--borde);' : ''}font-weight:700;font-size:13px;cursor:pointer;background:${cxpOrdenInv === k ? 'var(--verde)' : 'var(--blanco)'};color:${cxpOrdenInv === k ? '#fff' : 'var(--negro)'}">${t}</button>`).join('')}</div>` : ''}
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
+      <input type="text" id="cxp-busca" placeholder="🔎 Buscar proveedor, N°, quién compró…" value="${escA(cxpBuscaInv)}" oninput="cxpBuscarInv(this.value)" style="flex:2;min-width:180px;margin:0;box-sizing:border-box">
+      <select data-no-mejorar onchange="cxpOrdenSetInv(this.value)" style="flex:1;min-width:160px;margin:0" title="Ordenar por">${ordenes.map(k => `<option value="${k}"${k === cxpOrdenInv ? ' selected' : ''}>Ordenar: ${nomOrden(k)}</option>`).join('')}</select>
+    </div>
+    ${cuerpo}
+    <button class="btn-add" style="width:100%;margin-top:12px;background:var(--fondo);color:var(--negro)" onclick="exportarCxpInv()">⬇️ Descargar Excel (por pagar y pagos del mes)</button>`;
+}
+// Pagar varias facturas del mismo proveedor con un solo pago (por ejemplo, una transferencia)
+window.cxpPagarVariasInv = function(rut, mes) {
+  const ds = porPagarCxpInv().filter(d => normRutDte(d.rutEmisor) === rut).sort(porVenceCxpInv); if (!ds.length) return;
+  const ps = personasActivasInv();
+  modalElegirDteInv(`💵 Pagar varias · ${escA(ds[0].razonSocial || rutFmtDte(ds[0].rutEmisor))}`, 'Marca las que se pagaron juntas. A cada una se le anota el pago por su saldo.', [`
+    ${ds.map(d => `<label class="config-item" style="cursor:pointer;gap:8px;text-transform:none;letter-spacing:0;font-weight:400"><span style="display:flex;gap:8px;align-items:center;min-width:0"><input type="checkbox" class="cxp-chk" value="${d.id}" data-s="${saldoPagarInv(d)}"${!mes || (d.vence ? d.vence.slice(0, 7) : 'sinfecha') === mes ? ' checked' : ''} onchange="cxpTotalVariasInv()" style="width:auto;margin:0;flex:none"><span style="overflow-wrap:anywhere;font-size:13px">N° ${escA(d.folio)} · ${textoVenceCxpInv(d)}</span></span><strong style="white-space:nowrap">${pesoInv(saldoPagarInv(d))}</strong></label>`).join('')}
+    <div id="cxp-total" style="font-weight:800;text-align:right;margin:8px 0"></div>
+    ${formPagoHtmlInv('cxp', { comp: personaEnListaInv(ps, ds[0].compro), cajaPropia: cajaDeCompradorInv(ds[0].compro) })}
+    <button class="btn btn-verde" id="cxp-guardar" style="width:100%;justify-content:center" onclick="cxpGuardarVariasInv()">✓ Guardar pago</button>`]);
+  formaPagoCambioInv('cxp'); cxpTotalVariasInv();
+}
+window.cxpTotalVariasInv = function() {
+  const ch = [...document.querySelectorAll('.cxp-chk:checked')], t = ch.reduce((a, c) => a + (Number(c.dataset.s) || 0), 0), el = document.getElementById('cxp-total');
+  if (el) el.textContent = `Total: ${pesoInv(t)} (${ch.length} factura${ch.length === 1 ? '' : 's'})`;
+}
+window.cxpGuardarVariasInv = async function() {
+  const ids = [...document.querySelectorAll('.cxp-chk:checked')].map(c => c.value);
+  if (!ids.length) { toast('Marca al menos una factura', false); return; }
+  const f = leerFormPagoInv('cxp'); if (!f) return;
+  const bt = document.getElementById('cxp-guardar'); if (bt) { bt.disabled = true; bt.textContent = 'Guardando…'; }
+  const grupo = 'pg' + Date.now(); let n = 0, tot = 0;
+  try {
+    const c = await guardarComprobanteInv(f.file, ids);
+    for (const id of ids) {
+      const d = dteRecibidosInv.find(x => x.id === id); if (!d) continue;
+      const monto = saldoPagarInv(d); if (!(monto > 0)) continue;
+      const abonos = [...(d.abonos || []), { fecha: f.fecha, monto, medio: f.medio, detalle: f.detalle, ...datosPagoInv(f), quien: f.quien, por: currentUser || '', ts: Date.now(), grupo, ...(c || {}) }];
+      await updateDoc(doc(dbInv, 'dte_recibidos', id), { abonos, pagada: true, fechaPago: Date.now() }); n++; tot += monto;
+    }
+    const m = document.getElementById('dte-elegir'); if (m) m.remove();
+    toast(`✓ ${n} factura${n === 1 ? '' : 's'} pagada${n === 1 ? '' : 's'} · ${pesoInv(tot)}`, true);
+  } catch (e) { toast('Error: ' + e.message, false); if (bt) { bt.disabled = false; bt.textContent = '✓ Guardar pago'; } }
+}
+window.exportarCxpInv = function() {
+  if (typeof XLSX === 'undefined') { toast('Todavía está cargando la herramienta de Excel; intenta en unos segundos', false); return; }
+  const filas = porPagarCxpInv().sort(porVenceCxpInv).map(d => ({ 'Mes vencimiento': d.vence ? nomMesCxpInv(d.vence.slice(0, 7)) : 'Sin fecha', Proveedor: d.razonSocial || '', RUT: rutFmtDte(d.rutEmisor), Documento: abrevTipoDte(d.tipo), 'N°': Number(d.folio) || d.folio, 'Emisión': fmtFechaInv(d.fecha), Vence: d.vence ? fmtFechaInv(d.vence) : '', 'Días': diasVenceInv(d) === null ? '' : diasVenceInv(d), Total: d.total || 0, Abonado: sumAbonosInv(d), 'Nota de crédito': sumNcInv(d), Saldo: saldoPagarInv(d), 'Compró': d.compro || '', 'Cuenta': d.cuenta || '', 'Nombre cuenta': d.cuentaNombre || '', 'Ítems': (d.items || []).map(x => `${x.nombre}${x.cantidad ? ` (${x.cantidad} ${x.unidad || ''})` : ''}`).join(' | ') }));
+  const mes = cxpMesInv || hoyIsoInv().slice(0, 7);
+  const pagos = pagosHechosCxpInv().filter(p => String(p.fecha).startsWith(mes)).sort((a, b) => String(a.fecha).localeCompare(String(b.fecha))).map(p => ({ Fecha: fmtFechaInv(p.fecha), Proveedor: p.d.razonSocial || '', RUT: rutFmtDte(p.d.rutEmisor), Documento: abrevTipoDte(p.d.tipo), 'N°': Number(p.d.folio) || p.d.folio, Monto: p.monto, 'Forma de pago': ({ transferencia: 'Transferencia', cheque: 'Cheque', tarjeta: 'Tarjeta', caja: 'Caja chica', otro: p.formaOtro || 'Otra' })[p.forma || (p.medio === 'caja' ? 'caja' : '')] || 'Cuenta', 'Caja chica': p.medio === 'caja' ? p.detalle || '' : '', 'N° transferencia / cheque': p.nro || '', 'Cobro cheque': p.chequeFecha ? fmtFechaInv(p.chequeFecha) : '', 'Pagó': p.quien, Tipo: p.tipo === 'credito' ? 'Crédito' : 'Contado', Comprobante: p.comprobanteId ? 'Sí' : '' }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(filas.length ? filas : [{ Proveedor: 'No hay facturas por pagar' }]), 'Por pagar');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(pagos.length ? pagos : [{ Fecha: 'Sin pagos en el mes' }]), 'Pagos ' + mes);
+  XLSX.writeFile(wb, `cuentas_por_pagar_${hoyIsoInv()}.xlsx`);
+}
 // ── Pestaña de Inventario: mercadería facturada que todavía no llega (aparte del stock real) ──
 function lineasPendRecInv() {
   const out = [];
@@ -17349,7 +17728,7 @@ function tarjetaDteInv(d) {
   if (e === 'ignorado' || e === 'ingresado' || e === 'porrecibir') acciones.push(`<button class="btn-add" style="padding:6px 10px;background:var(--fondo);color:var(--acero)" onclick="dteMarcarInv('${d.id}','pendiente')">↩️ Volver a pendiente</button>`);
   return `<div class="config-item" style="flex-direction:column;align-items:stretch;gap:6px;min-width:0">
     <div style="display:flex;justify-content:space-between;gap:6px;flex-wrap:wrap;min-width:0">
-      <div style="min-width:0;overflow-wrap:anywhere"><span class="badge" style="background:${bg};color:${fg}">${abrevTipoDte(d.tipo)}</span> <strong>N° ${d.folio}</strong> · ${escA(d.razonSocial || rutFmtDte(d.rutEmisor))} ${est}${marcaAtrasoDteInv(d)}</div>
+      <div style="min-width:0;overflow-wrap:anywhere;display:flex;gap:8px;align-items:flex-start">${logoProvInv(d.rutEmisor, d.razonSocial, 26)}<div style="min-width:0"><span class="badge" style="background:${bg};color:${fg}">${abrevTipoDte(d.tipo)}</span> <strong>N° ${d.folio}</strong> · ${escA(d.razonSocial || rutFmtDte(d.rutEmisor))} ${est}${marcaAtrasoDteInv(d)}</div></div>
       <div style="font-size:12px;color:var(--acero);white-space:nowrap">${fechaCortaDte(d.fecha)}${d.total ? ' · ' + pesoInv(d.total) : ''}</div>
     </div>
     ${resumen ? `<div style="font-size:12px;overflow-wrap:anywhere">${resumen}</div>` : ''}
@@ -17364,10 +17743,11 @@ function renderDteRecibidosInv(soloLista) {
   if (!verValoresInv()) { cont.style.display = 'none'; return; }
   cont.style.display = '';
   { const tb = document.getElementById('tab-cont-docs'); if (tb) tb.textContent = `📨 Facturas y guías${pendientesDteInv() ? ` (${pendientesDteInv()} por ingresar)` : ''}`; }
+  try { etiquetaCxpInv(); const tc = document.getElementById('tc-cont-pagar'); if (tc && tc.classList.contains('active')) renderCxpInv(); } catch (e) { console.warn('cxp', e); }
   const cuenta = g => dteRecibidosInv.filter(d => grupoDteInv(d) === g).length;
   const q = normNom(dteBuscarInv);
   const porDespachar = d => { const e = estadoRecepcionInv(d); return !!e && (e.k === 'espera' || e.k === 'parcial'); };
-  const porPagar = d => d.pago === 'credito' && !d.pagada;
+  const porPagar = d => d.pago === 'credito' && !d.pagada && saldoPagarInv(d) > 0;
   const hayCompradores = compradoresActivosInv().length > 0;
   const sinDefinir = d => (hayCompradores && esPagableDteInv(d) && !d.compro) || (esFacturaDteInv(d) && (estadoRecepcionInv(d) || {}).k === '') || (esPagableDteInv(d) && !d.pago) || (esCodificableDteInv(d) && !d.cuenta);
   const sinCuenta = d => esCodificableDteInv(d) && !d.cuenta;
@@ -17586,6 +17966,7 @@ function suscribirDteInv() {
   onSnapshot(doc(dbInv, 'dte_recibidos', '_plan_cuentas'), sn => { planCuentasInv = sn.exists() ? (sn.data().cuentas || []) : []; renderDteRecibidosInv(); renderConfigContInv(); }, e => console.warn('plan_cuentas', e));
   onSnapshot(query(collection(dbInv, 'dte_recibidos'), where('buzon', '==', true)), snap => { if (snap.docs.length) procesarBuzonInv(snap); }, e => console.warn('buzón SII', e));
   onSnapshot(doc(dbInv, 'dte_recibidos', '_robot'), sn => { robotSiiInv = sn.exists() ? sn.data() : null; renderDteRecibidosInv(); renderConfigContInv(); }, e => console.warn('robot', e));
+  onSnapshot(doc(dbInv, 'dte_recibidos', '_proveedores'), sn => { provCfgInv = sn.exists() ? (sn.data().p || {}) : {}; renderDteRecibidosInv(); renderConfigContInv(); }, e => console.warn('proveedores', e));
   onSnapshot(doc(dbInv, 'dte_recibidos', '_dudas'), sn => { dudasCfgInv = sn.exists() ? sn.data() : null; renderConfigContInv(); }, e => console.warn('dudas', e));
   onSnapshot(doc(dbInv, 'dte_recibidos', '_compradores'), sn => { compradoresInv = sn.exists() ? (sn.data().personas || []) : null; renderDteRecibidosInv(); renderConfigContInv(); }, e => console.warn('compradores', e));
   onSnapshot(doc(dbInv, 'dte_recibidos', '_personas'), sn => { personasPagoInv = sn.exists() ? (sn.data().personas || []) : null; renderConfigContInv(); }, e => console.warn('personas', e));
@@ -18438,6 +18819,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     <button class="tab" id="tab-config-potreros" style="display:none" onclick="setTab('config-potreros',this)">⚙️ Config. Potreros</button>
     <button class="tab" id="tab-config-gps" style="display:none" onclick="setTab('config-gps',this)">📡 Config. GPS</button>
     <button class="tab" id="tab-cont-docs" style="display:none" onclick="setTab('cont-docs',this)">📨 Facturas y guías</button>
+    <button class="tab" id="tab-cont-pagar" style="display:none" onclick="setTab('cont-pagar',this)">💳 Cuentas por pagar</button>
     <button class="tab" id="tab-cont-rend" style="display:none" onclick="setTab('cont-rend',this)">💵 Rendición de cajas</button>
     <button class="tab" id="tab-cont-config" style="display:none" onclick="setTab('cont-config',this)">⚙️ Configuración</button>
     <button class="tab" id="tab-inv-inventario" style="display:none" onclick="setTab('inv-inventario',this)">📦 Inventario</button>
@@ -19578,6 +19960,10 @@ tbody td{padding:10px 12px;vertical-align:middle;}
 
     <div id="tc-cont-docs" class="tab-content">
       <div id="inv-panel-dte" class="panel" style="display:none"></div>
+    </div>
+
+    <div id="tc-cont-pagar" class="tab-content">
+      <div id="cont-pagar-panel" class="panel"></div>
     </div>
 
     <div id="tc-cont-rend" class="tab-content">
