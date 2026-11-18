@@ -18227,7 +18227,7 @@ window.renderCxpInv = function() {
       <select data-no-mejorar onchange="cxpOrdenSetInv(this.value)" style="flex:1;min-width:160px;margin:0;${cxpVistaInv === 'anteriores' ? 'display:none' : ''}" title="Ordenar por">${ordenes.map(k => `<option value="${k}"${k === cxpOrdenInv ? ' selected' : ''}>Ordenar: ${nomOrden(k)}</option>`).join('')}</select>
     </div>
     ${cuerpo}
-    <button class="btn-add" style="width:100%;margin-top:12px;background:var(--fondo);color:var(--negro)" onclick="exportarCxpInv()">⬇️ Descargar Excel (por pagar y pagos del mes)</button>`;
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px"><button class="btn-add" style="flex:1;min-width:200px;justify-content:center;padding:10px" onclick="cxpPdfInv()">📄 PDF por pagar (por proveedor y mes)</button><button class="btn-add" style="flex:1;min-width:200px;justify-content:center;padding:10px;background:var(--fondo);color:var(--negro)" onclick="exportarCxpInv()">⬇️ Excel (por pagar y pagos del mes)</button></div>`;
 }
 // Pagar varias facturas del mismo proveedor con un solo pago (por ejemplo, una transferencia)
 window.cxpPagarVariasInv = function(rut, mes) {
@@ -18271,6 +18271,117 @@ window.exportarCxpInv = function() {
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(filas.length ? filas : [{ Proveedor: 'No hay facturas por pagar' }]), 'Por pagar');
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(pagos.length ? pagos : [{ Fecha: 'Sin pagos en el mes' }]), 'Pagos ' + mes);
   XLSX.writeFile(wb, `cuentas_por_pagar_${hoyIsoInv()}.xlsx`);
+}
+// ── PDF de Cuentas por pagar: filtro por proveedor y por mes de vencimiento; resumen mes → proveedor y detalle mes → proveedor → factura ──
+const claveProvPdfInv = d => normRutDte(d.rutEmisor || '') || 'n:' + normNom(d.razonSocial || '');
+window.cxpPdfInv = function() {
+  const lista = porPagarCxpInv();
+  if (!lista.length) { toast('No hay facturas por pagar', false); return; }
+  const provs = new Map(), meses = new Map();
+  lista.forEach(d => {
+    const kp = claveProvPdfInv(d), p = provs.get(kp) || { k: kp, nombre: d.razonSocial || 'Sin nombre', total: 0 }; p.total += saldoPagarInv(d); provs.set(kp, p);
+    const km = d.vence ? d.vence.slice(0, 7) : '_', m = meses.get(km) || { k: km, total: 0, n: 0 }; m.total += saldoPagarInv(d); m.n++; meses.set(km, m);
+  });
+  const vencido = lista.filter(d => (diasVenceInv(d) ?? 1) < 0).reduce((a, d) => a + saldoPagarInv(d), 0);
+  const optP = [...provs.values()].sort((a, b) => a.nombre.localeCompare(b.nombre, 'es')).map(p => `<option value="${escA(p.k)}">${escA(p.nombre)} · ${pesoInv(p.total)}</option>`).join('');
+  const optM = [...meses.values()].sort((a, b) => (a.k === '_' ? '9999' : a.k).localeCompare(b.k === '_' ? '9999' : b.k)).map(m => `<option value="${m.k}">${m.k === '_' ? 'Sin fecha de vencimiento' : nomMesCxpInv(m.k)} · ${m.n} doc. · ${pesoInv(m.total)}</option>`).join('');
+  const chk = (id, t, on) => `<label style="display:flex;gap:8px;align-items:center;font-size:13px;text-transform:none;letter-spacing:0;font-weight:400;margin:0;cursor:pointer"><input type="checkbox" id="${id}" ${on ? 'checked' : ''} style="width:auto;margin:0">${t}</label>`;
+  modalElegirDteInv('📄 PDF de cuentas por pagar', `${lista.length} documentos por pagar · ${pesoInv(lista.reduce((a, d) => a + saldoPagarInv(d), 0))}${vencido ? ` · vencido ${pesoInv(vencido)}` : ''}`, [`
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <label style="font-size:12px;margin:0">Proveedor<select data-no-mejorar id="pdf-prov" style="width:100%;margin:4px 0 0"><option value="">Todos los proveedores</option>${optP}</select></label>
+      <label style="font-size:12px;margin:0">Mes de vencimiento<select data-no-mejorar id="pdf-mes" style="width:100%;margin:4px 0 0"><option value="">Todos los meses</option><option value="vencidas">Solo lo vencido</option>${optM}</select></label>
+      ${chk('pdf-resumen', '<span><strong>Resumen</strong>: por mes, el total de cada proveedor</span>', true)}
+      ${chk('pdf-detalle', '<span><strong>Detalle</strong>: por mes y proveedor, cada factura</span>', true)}
+      ${chk('pdf-items', 'Incluir los productos de cada factura', true)}
+      <button class="btn btn-verde" id="pdf-ok" style="justify-content:center" onclick="cxpGenerarPdfInv()">📄 Generar PDF</button>
+    </div>`]);
+}
+window.cxpGenerarPdfInv = async function() {
+  const v = id => document.getElementById(id), fp = v('pdf-prov').value, fm = v('pdf-mes').value;
+  const conRes = v('pdf-resumen').checked, conDet = v('pdf-detalle').checked, conItems = v('pdf-items').checked;
+  if (!conRes && !conDet) { toast('Marca el resumen, el detalle o ambos', false); return; }
+  let lista = porPagarCxpInv();
+  if (fp) lista = lista.filter(d => claveProvPdfInv(d) === fp);
+  if (fm === 'vencidas') lista = lista.filter(d => (diasVenceInv(d) ?? 1) < 0);
+  else if (fm === '_') lista = lista.filter(d => !d.vence);
+  else if (fm) lista = lista.filter(d => String(d.vence || '').startsWith(fm));
+  if (!lista.length) { toast('No hay facturas por pagar con ese filtro', false); return; }
+  lista.sort(porVenceCxpInv);
+  const bt = v('pdf-ok'); if (bt) { bt.disabled = true; bt.textContent = 'Generando…'; }
+  try {
+    if (!(window.jspdf && window.jspdf.jsPDF)) await cargarScriptUna('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js');
+    if (!(window.jspdf.jsPDF.API && window.jspdf.jsPDF.API.autoTable)) await cargarScriptUna('https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js');
+    const L = t => String(t ?? '').replace(/[^\x20-\x7E -ÿ]/g, '').replace(/\s+/g, ' ').trim();
+    const P = n => '$' + Math.round(n || 0).toLocaleString('es-CL');
+    const VERDE = [31, 61, 43], CLARO = [236, 241, 232], ROJO = [185, 28, 28];
+    const total = lista.reduce((a, d) => a + saldoPagarInv(d), 0), venc = lista.filter(d => (diasVenceInv(d) ?? 1) < 0).reduce((a, d) => a + saldoPagarInv(d), 0);
+    const nomMes = k => k === '_' ? 'Sin fecha de vencimiento' : nomMesCxpInv(k);
+    // Agrupar: mes → proveedor → facturas
+    const meses = [];
+    lista.forEach(d => {
+      const km = d.vence ? d.vence.slice(0, 7) : '_'; let m = meses.find(x => x.k === km); if (!m) meses.push(m = { k: km, provs: [], total: 0 });
+      const kp = claveProvPdfInv(d); let p = m.provs.find(x => x.k === kp); if (!p) m.provs.push(p = { k: kp, nombre: d.razonSocial || 'Sin nombre', rut: d.rutEmisor, docs: [], total: 0 });
+      p.docs.push(d); p.total += saldoPagarInv(d); m.total += saldoPagarInv(d);
+    });
+    meses.sort((a, b) => (a.k === '_' ? '9999' : a.k).localeCompare(b.k === '_' ? '9999' : b.k));
+    meses.forEach(m => m.provs.sort((a, b) => b.total - a.total));
+    const pdf = new window.jspdf.jsPDF({ unit: 'mm', format: 'a4', orientation: 'landscape' });
+    const nomProv = fp ? (lista[0].razonSocial || '') : 'Todos';
+    const nomFiltroMes = !fm ? 'Todos los meses' : fm === 'vencidas' ? 'Solo lo vencido' : nomMes(fm);
+    pdf.setFontSize(16); pdf.setTextColor(...VERDE); pdf.text('Cuentas por pagar', 12, 14);
+    pdf.setFontSize(9); pdf.setTextColor(80);
+    pdf.text(L(`Al ${fmtFechaInv(hoyIsoInv())} · Proveedor: ${nomProv} · Vencimiento: ${nomFiltroMes}`), 12, 20);
+    pdf.setFontSize(11); pdf.setTextColor(20);
+    pdf.text(L(`${lista.length} documento${lista.length === 1 ? '' : 's'} · Total por pagar ${P(total)}${venc ? ` · Vencido ${P(venc)}` : ''}`), 12, 26);
+    let y = 34;
+    const filaMes = (m, cols) => [{ content: L(`${nomMes(m.k)}  ·  ${(n => n + (n === 1 ? ' documento' : ' documentos'))(m.provs.reduce((a, p) => a + p.docs.length, 0))}`), colSpan: cols - 1, styles: { fillColor: VERDE, textColor: 255, fontStyle: 'bold', fontSize: 9.5 } }, { content: P(m.total), styles: { fillColor: VERDE, textColor: 255, fontStyle: 'bold', halign: 'right', fontSize: 9.5 } }];
+    if (conRes) {
+      pdf.setFontSize(12); pdf.setTextColor(...VERDE); pdf.text('Resumen por mes y proveedor', 12, y); y += 3;
+      const body = [];
+      meses.forEach(m => { body.push(filaMes(m, 4)); m.provs.forEach(p => body.push([L(p.nombre), L(rutFmtDte(p.rut || '')), String(p.docs.length), { content: P(p.total), styles: { halign: 'right' } }])); });
+      body.push([{ content: 'TOTAL', colSpan: 3, styles: { fontStyle: 'bold', fillColor: CLARO } }, { content: P(total), styles: { fontStyle: 'bold', halign: 'right', fillColor: CLARO } }]);
+      pdf.autoTable({ startY: y, head: [['Proveedor', 'RUT', 'Docs.', 'Total del mes']], body, margin: { left: 12, right: 12 }, theme: 'grid',
+        styles: { fontSize: 8.5, cellPadding: 1.6, lineColor: [215, 215, 210], lineWidth: 0.1 }, headStyles: { fillColor: [235, 235, 230], textColor: 20 },
+        columnStyles: { 1: { cellWidth: 32 }, 2: { cellWidth: 18, halign: 'center' }, 3: { cellWidth: 40, halign: 'right' } } });
+      y = pdf.lastAutoTable.finalY + 10;
+    }
+    if (conDet) {
+      if (conRes) { pdf.addPage(); y = 14; }
+      pdf.setFontSize(12); pdf.setTextColor(...VERDE); pdf.text('Detalle por mes, proveedor y factura', 12, y); y += 3;
+      const cols = conItems ? 7 : 6, body = [];
+      meses.forEach(m => {
+        body.push(filaMes(m, cols));
+        m.provs.forEach(p => {
+          body.push([{ content: L(`${p.nombre}${p.rut ? '  ·  ' + rutFmtDte(p.rut) : ''}  ·  ${p.docs.length} doc.`), colSpan: cols - 1, styles: { fillColor: CLARO, fontStyle: 'bold' } }, { content: P(p.total), styles: { fillColor: CLARO, fontStyle: 'bold', halign: 'right' } }]);
+          p.docs.forEach(d => {
+            const dias = diasVenceInv(d), vencida = dias !== null && dias < 0, menos = sumAbonosInv(d) + sumNcInv(d);
+            const its = (d.items || []).filter(x => x && x.nombre).map(x => `${x.nombre}${x.cantidad ? ` (${(Number(x.cantidad) || 0).toLocaleString('es-CL')}${x.unidad ? ' ' + x.unidad : ''})` : ''}`).join(' · ') || d.glosa || '';
+            const fila = [L(`${abrevTipoDte(d.tipo)}${d.folio ? ' N° ' + d.folio : ''}`), d.fecha ? fmtFechaInv(d.fecha) : '', { content: d.vence ? fmtFechaInv(d.vence) + (vencida ? ` (-${-dias} d)` : '') : '-', styles: vencida ? { textColor: ROJO, fontStyle: 'bold' } : {} }];
+            if (conItems) fila.push(L(its).slice(0, 260));
+            fila.push({ content: P(d.total), styles: { halign: 'right' } }, { content: menos ? '-' + P(menos) : '', styles: { halign: 'right' } }, { content: P(saldoPagarInv(d)), styles: { halign: 'right', fontStyle: 'bold' } });
+            body.push(fila);
+          });
+        });
+      });
+      body.push([{ content: 'TOTAL POR PAGAR', colSpan: cols - 1, styles: { fontStyle: 'bold', fillColor: [235, 235, 230] } }, { content: P(total), styles: { fontStyle: 'bold', halign: 'right', fillColor: [235, 235, 230] } }]);
+      const head = ['Documento', 'Emisión', 'Vence', ...(conItems ? ['Detalle'] : []), 'Total', 'Abonos / NC', 'Saldo'];
+      const cs = conItems ? { 0: { cellWidth: 34 }, 1: { cellWidth: 21 }, 2: { cellWidth: 27 }, 4: { cellWidth: 27, halign: 'right' }, 5: { cellWidth: 25, halign: 'right' }, 6: { cellWidth: 29, halign: 'right' } }
+        : { 0: { cellWidth: 50 }, 1: { cellWidth: 30 }, 2: { cellWidth: 35 }, 3: { halign: 'right' }, 4: { halign: 'right' }, 5: { halign: 'right' } };
+      pdf.autoTable({ startY: y, head: [head], body, margin: { left: 12, right: 12 }, theme: 'grid',
+        styles: { fontSize: 8, cellPadding: 1.5, overflow: 'linebreak', lineColor: [215, 215, 210], lineWidth: 0.1 }, headStyles: { fillColor: [235, 235, 230], textColor: 20 }, columnStyles: cs });
+    }
+    const np = pdf.internal.getNumberOfPages();
+    for (let i = 1; i <= np; i++) { pdf.setPage(i); pdf.setFontSize(8); pdf.setTextColor(120); pdf.text(L(`Control Los Maitenes · generado el ${fmtFechaInv(hoyIsoInv())}`), 12, 203); pdf.text(`Página ${i} de ${np}`, 285, 203, { align: 'right' }); }
+    const trozo = t => normNom(t).trim().replace(/\s+/g, '_').slice(0, 30);
+    const fname = `cuentas_por_pagar${fp ? '_' + trozo(nomProv) : ''}${fm ? '_' + (fm === 'vencidas' ? 'vencido' : fm === '_' ? 'sin_fecha' : fm) : ''}_${hoyIsoInv()}.pdf`;
+    const blob = pdf.output('blob'), file = new File([blob], fname, { type: 'application/pdf' });
+    const m = document.getElementById('dte-elegir'); if (m) m.remove();
+    if (navigator.canShare && /Android|iPhone|iPad/i.test(navigator.userAgent) && navigator.canShare({ files: [file] })) await navigator.share({ files: [file], title: fname });
+    else { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = fname; document.body.appendChild(a); a.click(); a.remove(); toast('✓ PDF descargado', true); }
+  } catch (e) {
+    if (e && e.name === 'AbortError') return;
+    toast('Error al generar el PDF: ' + e.message, false); if (bt) { bt.disabled = false; bt.textContent = '📄 Generar PDF'; }
+  }
 }
 // ── Pestaña de Inventario: mercadería facturada que todavía no llega (aparte del stock real) ──
 function lineasPendRecInv() {
