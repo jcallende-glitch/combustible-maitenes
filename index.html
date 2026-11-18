@@ -15963,7 +15963,7 @@ let dteRecibidosInv = [], dteSubscrito = false, filtroDteInv = 'pendientes', dte
 let siiDteConfig = null;      // null = sin consultar · false = función no publicada · { configurado }
 let dteSyncEnCurso = false;
 const nombreTipoDte = t => TIPOS_DTE_INV[t] || ('Documento tipo ' + t);
-const abrevTipoDte = t => ({ 33: 'Factura', 34: 'Factura exenta', 43: 'Liquidación', 46: 'Factura compra', 52: 'Guía', 56: 'N. débito', 61: 'N. crédito', 39: 'Boleta', BH: 'Boleta honorarios', OT: 'Otra deuda', SA: 'Saldo anterior' })[t] || ('Doc ' + t);
+const abrevTipoDte = t => ({ 33: 'Factura', 34: 'Factura exenta', 43: 'Liquidación', 46: 'Factura compra', 52: 'Guía', 56: 'N. débito', 61: 'N. crédito', 39: 'Boleta', BH: 'Boleta honorarios', OT: 'Otra deuda', SA: 'Saldo anterior', CU: 'Cuota' })[t] || ('Doc ' + t);
 const colorTipoDte = t => t === 52 ? ['#DBEAFE', '#1D4ED8'] : t === 61 ? ['#FEE2E2', '#B91C1C'] : t === 56 ? ['#FFEDD5', '#C2410C'] : ['#DCFCE7', '#15803D'];
 const normRutDte = r => String(r || '').replace(/\./g, '').replace(/\s/g, '').toUpperCase();
 const idDteInv = (rut, tipo, folio) => `${normRutDte(rut).split('-')[0].replace(/\D/g, '')}_${tipo}_${folio}`;
@@ -16402,7 +16402,7 @@ let compraPendInv = null;
 window.dteQuienComproInv = function(id) {
   const d = dteRecibidosInv.find(x => x.id === id); if (!d) return;
   const ps = compradoresActivosInv(); compraPendInv = id;
-  modalElegirDteInv('🛒 ¿Quién compró?', `${escA(abrevTipoDte(d.tipo))}${d.folio ? ' N° ' + escA(d.folio) : ''} · ${escA(d.razonSocial || '')}. Puede ser otra persona que la que pagó.${ps.length ? '' : '<br>Agrega a los autorizados en Contabilidad → Configuración.'}`,
+  modalElegirDteInv('🛒 ¿Quién compró?', `${escA(etiquetaDocInv(d))} · ${escA(d.razonSocial || '')}. Puede ser otra persona que la que pagó.${ps.length ? '' : '<br>Agrega a los autorizados en Contabilidad → Configuración.'}`,
     ps.map((n, i) => `<div class="config-item" style="cursor:pointer${normNom(n) === normNom(d.compro || '') ? ';background:var(--verde-suave)' : ''}" onclick="dteCompradorIdxInv(${i})">🛒 ${escA(n)}</div>`)
       .concat([`<div class="config-item" style="cursor:pointer;color:var(--acero)" onclick="dteCompradorOtroInv()">✏️ Otra persona…</div>`], d.compro ? [`<div class="config-item" style="cursor:pointer;color:#B91C1C" onclick="dteGuardarCompradorInv('')">↩ Quitar (sin definir)</div>`] : []));
 }
@@ -16997,7 +16997,7 @@ window.dteRevisionInv = function(id) {
   ov.onclick = e => { if (e.target === ov) ov.remove(); };
   ov.innerHTML = `<div style="background:var(--blanco);border-radius:12px;max-width:560px;width:100%;padding:16px;box-sizing:border-box;min-width:0">
     <div style="display:flex;justify-content:space-between;gap:8px"><strong>❓ Dejar pendiente para revisar</strong><span style="cursor:pointer;font-size:20px;line-height:1" onclick="document.getElementById('dte-duda').remove()">✕</span></div>
-    <div style="font-size:12px;color:var(--acero);margin:4px 0 10px;overflow-wrap:anywhere">${escA(abrevTipoDte(d.tipo))}${d.folio ? ' N° ' + escA(d.folio) : ''} · ${escA(d.razonSocial || '')}${d.total ? ' · ' + pesoInv(d.total) : ''}</div>
+    <div style="font-size:12px;color:var(--acero);margin:4px 0 10px;overflow-wrap:anywhere">${escA(etiquetaDocInv(d))} · ${escA(d.razonSocial || '')}${d.total ? ' · ' + pesoInv(d.total) : ''}</div>
     <div style="font-size:12px;font-weight:700;margin-bottom:6px">Toca una o varias${usadas.length ? ' (después de la primera, las que más se usan)' : ''}:</div>
     <div id="dte-duda-chips" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">${opciones.map((t, i) => `<span class="cultivo-chip" data-i="${i}" style="font-size:13px;padding:5px 10px" onclick="dteDudaChipInv(this)">${escA(t)}</span>`).join('')}</div>
     <div style="font-size:12px;margin:-4px 0 10px"><a href="#" onclick="event.preventDefault();abrirConfigDudasInv()">⚙️ Agregar o quitar dudas de esta lista</a></div>
@@ -17405,6 +17405,11 @@ function panelProveedoresInv() {
 // ── Cuentas por pagar: hoja propia de Contabilidad. No guarda nada aparte: muestra las mismas
 //    facturas marcadas "A crédito" y los pagos que se registran quedan en esa misma factura ──
 let cxpVistaInv = 'pagar', cxpOrdenInv = 'mes', cxpBuscaInv = '', cxpMesInv = '', cxpAbiertosInv = new Set(), cxpVerMasInv = false;
+// Créditos: cuotas (créditos, leasing, convenios) y "otra deuda". Se pueden mostrar o no en Cuentas por pagar, el PDF y el Excel
+const esCreditoCxpInv = d => d.tipo === 'CU' || d.tipo === 'OT';
+let cxpConCreditosInv = true;
+try { cxpConCreditosInv = localStorage.getItem('cxpSinCreditos') !== '1'; } catch (e) {}
+window.cxpCreditosSetInv = function(v) { cxpConCreditosInv = !!v; try { localStorage.setItem('cxpSinCreditos', v ? '0' : '1'); } catch (e) {} cxpVerMasInv = false; renderCxpInv(); };
 const porPagarCxpInv = () => dteRecibidosInv.filter(d => esPagableDteInv(d) && d.pago === 'credito' && !d.pagada && saldoPagarInv(d) > 0);
 const sinFormaPagoCxpInv = () => dteRecibidosInv.filter(d => esPagableDteInv(d) && !d.pago);
 const RANGOS_CXP_INV = [['vencidas', '🔴 Vencidas', '#B91C1C'], ['semana', '🟠 Próximos 7 días', '#B45309'], ['mes', '🟡 De 8 a 30 días', '#A16207'], ['despues', '⚪ Más adelante', 'var(--negro)'], ['sinfecha', '❔ Sin fecha de vencimiento', 'var(--acero)']];
@@ -17425,7 +17430,7 @@ function filaCxpInv(d, sinProv) {
   const det = [`Emitida ${fechaCortaDte(d.fecha)}`, `total ${pesoInv(d.total)}`, ab ? `abonado ${pesoInv(ab)}` : '', nc ? `nota de crédito −${pesoInv(nc)}` : '', d.compro ? `compró ${escA(d.compro)}` : '', d.cuenta ? `cta. ${escA(d.cuenta)}` : ''].filter(Boolean).join(' · ');
   const B = (t, fn, st) => `<button class="btn-add" style="padding:6px 10px${st ? ';' + st : ''}" onclick="${fn}('${d.id}')">${t}</button>`, G = 'background:var(--fondo);color:var(--negro)';
   return `<div class="config-item" style="flex-direction:column;align-items:stretch;gap:3px">
-    <div style="display:flex;justify-content:space-between;gap:8px"><div style="min-width:0;overflow-wrap:anywhere;display:flex;gap:8px;align-items:center">${sinProv ? '' : logoProvInv(d.rutEmisor, d.razonSocial, 24)}<span>${sinProv ? '' : `<strong>${escA(d.razonSocial || rutFmtDte(d.rutEmisor))}</strong> · `}${escA(abrevTipoDte(d.tipo))}${d.folio ? ' N° ' + escA(d.folio) : ''}</span></div><div style="font-weight:800;white-space:nowrap">${pesoInv(saldoPagarInv(d))}</div></div>
+    <div style="display:flex;justify-content:space-between;gap:8px"><div style="min-width:0;overflow-wrap:anywhere;display:flex;gap:8px;align-items:center">${sinProv ? '' : logoProvInv(d.rutEmisor, d.razonSocial, 24)}<span>${sinProv ? '' : `<strong>${escA(d.razonSocial || rutFmtDte(d.rutEmisor))}</strong> · `}${escA(etiquetaDocInv(d))}</span></div><div style="font-weight:800;white-space:nowrap">${pesoInv(saldoPagarInv(d))}</div></div>
     <div style="font-size:12px;font-weight:700;color:${col}">${textoVenceCxpInv(d)}</div>
     <div style="font-size:12px;color:var(--acero);overflow-wrap:anywhere">${det}</div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:3px">${B('💵 Registrar pago', 'dteRegistrarPagoInv')}${d.manual ? B('✏️ Editar', 'cxpManualInv', G) : B('📅 Vencimiento', 'dteEditarVenceInv', G)}${B('👁 Ver', 'dteVerInv', G)}</div>
@@ -17450,7 +17455,7 @@ function filaMesCxpInv(d) {
   const dv = diasVenceInv(d), s = saldoPagarInv(d), col = dv !== null && dv < 0 ? '#B91C1C' : dv !== null && dv <= 7 ? '#B45309' : 'var(--acero)';
   const otros = [d.manual ? '✍️ ingresada a mano' : '', s < (d.total || 0) - 1 ? `total ${pesoInv(d.total)}` : '', sumAbonosInv(d) ? `abonado ${pesoInv(sumAbonosInv(d))}` : '', sumNcInv(d) ? `NC −${pesoInv(sumNcInv(d))}` : '', d.compro ? `compró ${escA(d.compro)}` : ''].filter(Boolean).join(' · ');
   return `<div class="config-item" style="flex-direction:column;align-items:stretch;gap:3px;cursor:pointer" onclick="dteVerInv('${d.id}')">
-    <div style="display:flex;justify-content:space-between;gap:8px"><div style="min-width:0;overflow-wrap:anywhere;display:flex;gap:8px;align-items:center">${logoProvInv(d.rutEmisor, d.razonSocial, 24)}<span><strong>${escA(d.razonSocial || rutFmtDte(d.rutEmisor))}</strong> · ${escA(abrevTipoDte(d.tipo))}${d.folio ? ' N° ' + escA(d.folio) : ''}</span></div><div style="font-weight:800;white-space:nowrap">${pesoInv(s)}</div></div>
+    <div style="display:flex;justify-content:space-between;gap:8px"><div style="min-width:0;overflow-wrap:anywhere;display:flex;gap:8px;align-items:center">${logoProvInv(d.rutEmisor, d.razonSocial, 24)}<span><strong>${escA(d.razonSocial || rutFmtDte(d.rutEmisor))}</strong> · ${escA(etiquetaDocInv(d))}</span></div><div style="font-weight:800;white-space:nowrap">${pesoInv(s)}</div></div>
     <div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><span style="font-size:12px;font-weight:700;color:${col}">${d.vence ? 'Vence ' + fmtFechaInv(d.vence) + (dv < 0 ? ` · vencida hace ${-dv} d` : dv === 0 ? ' · hoy' : dv <= 7 ? ` · en ${dv} d` : '') : 'Sin fecha de vencimiento'}</span><span style="display:flex;gap:4px;flex:none">${d.manual ? `<button class="btn-add" style="padding:4px 8px;font-size:12px;background:var(--fondo);color:var(--negro)" onclick="event.stopPropagation();cxpManualInv('${d.id}')">✏️</button>` : ''}<button class="btn-add" style="padding:4px 10px;font-size:12px" onclick="event.stopPropagation();dteRegistrarPagoInv('${d.id}')">💵 Pagar</button></span></div>
     ${itemsCxpInv(d) || (d.glosa ? `<div style="font-size:12px">· ${escA(d.glosa)}</div>` : '')}
     ${otros ? `<div style="font-size:11px;color:var(--acero);overflow-wrap:anywhere">${otros}</div>` : ''}
@@ -17505,7 +17510,7 @@ window.cxpBuscarInv = function(v) { cxpBuscaInv = v; clearTimeout(window._cxpT);
 window.cxpVerMasSetInv = function() { cxpVerMasInv = true; renderCxpInv(); };
 // ── Ingresar a mano facturas o deudas que no llegaron por la app (por ejemplo, las anteriores a noviembre 2026) ──
 const INICIO_CONT_INV = '2026-11-01';
-const TIPOS_MANUAL_INV = [[33, 'Factura'], [34, 'Factura exenta'], [39, 'Boleta'], ['BH', 'Boleta de honorarios'], ['SA', 'Saldo anterior (sin N° de factura)'], ['OT', 'Otra deuda (crédito, acuerdo, etc.)']];
+const TIPOS_MANUAL_INV = [[33, 'Factura'], [34, 'Factura exenta'], [39, 'Boleta'], ['BH', 'Boleta de honorarios'], ['SA', 'Saldo anterior (sin N° de factura)'], ['OT', 'Otra deuda (crédito, acuerdo, etc.)'], ['CU', 'Cuota (crédito, leasing, convenio)']];
 const FECHA_SALDO_ANT_INV = '2026-10-31'; // día antes del inicio, para saldos sin fecha
 function provConocidosInv() {
   const m = new Map(); dteRecibidosInv.forEach(d => { if (d.rutEmisor && d.razonSocial) m.set(normRutDte(d.rutEmisor), d.razonSocial); });
@@ -17530,7 +17535,8 @@ window.cxpManualInv = function(id) {
     ${L('Cuenta contable (opcional)')}<input type="text" id="mn-cuenta" list="mn-ctas" value="${v('cuenta')}" placeholder="Código, ej: 3045" style="${inp}"><datalist id="mn-ctas">${(planCuentasInv || []).map(c => `<option value="${escA(c.c)}">${escA(c.n || '')}</option>`).join('')}</datalist>
     ${comps.length ? `${L('¿Quién compró? (opcional)')}<select id="mn-compro" data-no-mejorar style="${inp}"><option value="">—</option>${comps.map(n => `<option value="${escA(n)}"${d && d.compro === n ? ' selected' : ''}>${escA(n)}</option>`).join('')}</select>` : ''}
     <button class="btn btn-verde" id="mn-guardar" style="width:100%;justify-content:center" onclick="cxpGuardarManualInv('${d ? d.id : ''}')">✓ Guardar</button>
-    ${d ? `<button class="btn-add" style="width:100%;margin-top:8px;background:var(--fondo);color:#B91C1C" onclick="cxpBorrarManualInv('${d.id}')">🗑 Eliminar esta cuenta</button>` : ''}`]);
+    ${d ? `<button class="btn-add" style="width:100%;margin-top:8px;background:var(--fondo);color:#B91C1C" onclick="cxpBorrarManualInv('${d.id}')">🗑 Eliminar ${d.cuota ? 'esta cuota' : 'esta cuenta'}</button>` : ''}
+    ${d && d.cuota ? `<button class="btn-add" style="width:100%;margin-top:8px;background:var(--fondo);color:#B91C1C" onclick="cxpBorrarCuotasInv('${d.cuota.grupo}')">🗑 Eliminar todas las cuotas pendientes de este ${escA((d.cuota.clase || 'crédito').toLowerCase())}</button>` : ''}`]);
 }
 window.cxpProvManualInv = function(n) {
   const p = provConocidosInv().find(x => x.n.toLowerCase() === String(n || '').trim().toLowerCase()), r = document.getElementById('mn-rut');
@@ -17540,6 +17546,108 @@ window.cxpPlazoManualInv = function(n) {
   const f = document.getElementById('mn-fecha').value; if (!f) { toast('Pon primero la fecha de emisión', false); return; }
   const t = new Date(f + 'T12:00:00'); t.setDate(t.getDate() + n);
   document.getElementById('mn-vence').value = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
+}
+// ── Cuotas: créditos, leasing, convenios, arriendos y otros compromisos a plazo, sin factura ──
+const CLASES_CUOTA_INV = ['Crédito bancario', 'Leasing', 'Convenio o compromiso de pago', 'Arriendo', 'Otro'];
+const FRECUENCIAS_CUOTA_INV = [[1, 'Mensual'], [12, 'Anual'], [6, 'Semestral'], [3, 'Trimestral'], [2, 'Bimestral']];
+const etiquetaDocInv = d => d.cuota ? `Cuota ${d.cuota.n} de ${d.cuota.de}` : `${abrevTipoDte(d.tipo)}${d.folio ? ' N° ' + d.folio : ''}`;
+function sumarMesesInv(iso, k) {
+  const [y, m, d] = String(iso).split('-').map(Number), t = new Date(y, m - 1 + k, 1), ult = new Date(t.getFullYear(), t.getMonth() + 1, 0).getDate();
+  return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(Math.min(d, ult)).padStart(2, '0')}`;
+}
+window.cxpCuotasInv = function() {
+  const inp = 'width:100%;box-sizing:border-box;margin-bottom:8px', L = t => `<label style="font-size:12px;text-transform:none;letter-spacing:0;font-weight:600">${t}</label>`;
+  const provs = provConocidosInv(), on = 'oninput="cxpCuotasPreviewInv()"';
+  modalElegirDteInv('📅 Cuotas o compromisos a plazo', 'Para deudas sin factura que se pagan en cuotas: créditos, leasing, convenios, arriendos. Cada cuota queda en Cuentas por pagar con su vencimiento y se paga con 💵 Registrar pago.', [`
+    <div style="font-size:13px;font-weight:800;margin:2px 0 6px">1 · Plan de pago</div>
+    ${L('¿Cada cuánto se paga?')}<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">${FRECUENCIAS_CUOTA_INV.map(([k, t], i) => `<label style="display:flex;gap:5px;align-items:center;font-size:13px;text-transform:none;letter-spacing:0;font-weight:600;margin:0;padding:7px 11px;border:1px solid var(--borde);border-radius:999px;cursor:pointer"><input type="radio" name="cu-frec" value="${k}" ${i === 0 ? 'checked' : ''} onchange="cxpCuotasPreviewInv()" style="width:auto;margin:0">${t}</label>`).join('')}</div>
+    <div style="display:flex;gap:8px"><div style="flex:1;min-width:0">${L('¿Cuántas cuotas quedan?')}<input type="number" id="cu-n" min="1" max="120" inputmode="numeric" ${on} style="${inp}"></div>
+      <div style="flex:1;min-width:0">${L('De un total de (opcional)')}<input type="number" id="cu-de" placeholder="Las mismas" inputmode="numeric" ${on} style="${inp}"></div></div>
+    <div style="display:flex;gap:8px"><div style="flex:1;min-width:0">${L('Fecha de término (vence la última)')}<input type="date" id="cu-fin" ${on} style="${inp}"></div>
+      <div style="flex:1;min-width:0">${L('…o vence la próxima')}<input type="date" id="cu-vence" ${on} style="${inp}"></div></div>
+    <div id="cu-plan-nota" style="font-size:12px;color:var(--acero);margin:-4px 0 10px"></div>
+    <div style="display:flex;gap:8px"><div style="flex:1;min-width:0">${L('Monto de cada cuota ($)')}<input type="number" id="cu-monto" inputmode="numeric" ${on} style="${inp}"></div>
+      <div style="flex:1;min-width:0">${L('…o el total a dividir ($)')}<input type="number" id="cu-total" inputmode="numeric" ${on} style="${inp}"></div></div>
+    <div style="font-size:13px;font-weight:800;margin:8px 0 6px">2 · A quién y por qué</div>
+    ${L('Acreedor (banco, empresa o persona)')}<input type="text" id="cu-prov" list="cu-provs" placeholder="Ej: Banco de Chile, Copelec" oninput="cxpCuotaProvInv(this.value)" style="${inp}"><datalist id="cu-provs">${provs.map(p => `<option value="${escA(p.n)}">${rutFmtDte(p.rut)}</option>`).join('')}</datalist>
+    ${L('RUT (opcional)')}<input type="text" id="cu-rut" placeholder="12.345.678-9" style="${inp}">
+    <div style="display:flex;gap:8px"><div style="flex:1;min-width:0">${L('Tipo')}<select id="cu-clase" data-no-mejorar style="${inp}">${CLASES_CUOTA_INV.map(c => `<option>${c}</option>`).join('')}</select></div>
+      <div style="flex:1;min-width:0">${L('N° de operación (opcional)')}<input type="text" id="cu-op" style="${inp}"></div></div>
+    ${L('Concepto')}<input type="text" id="cu-concepto" placeholder="Ej: crédito tractor JD 6910, convenio deuda luz" style="${inp}">
+    ${L('Cuenta contable (opcional)')}<input type="text" id="cu-cuenta" list="cu-ctas" placeholder="Código, ej: 3045" style="${inp}"><datalist id="cu-ctas">${(planCuentasInv || []).map(c => `<option value="${escA(c.c)}">${escA(c.n || '')}</option>`).join('')}</datalist>
+    <div id="cu-lista" style="margin:4px 0 10px"></div>
+    <button class="btn btn-verde" id="cu-guardar" style="width:100%;justify-content:center" onclick="cxpGuardarCuotasInv()">✓ Guardar cuotas</button>`]);
+  cxpCuotasPreviewInv();
+}
+window.cxpCuotaProvInv = function(n) {
+  const p = provConocidosInv().find(x => x.n.toLowerCase() === String(n || '').trim().toLowerCase()), r = document.getElementById('cu-rut');
+  if (p && r && !r.value) r.value = rutFmtDte(p.rut);
+}
+// Arma la lista de cuotas (cada una con su fecha y monto, que se pueden corregir a mano)
+window.cxpCuotasPreviewInv = function() {
+  const g = id => (document.getElementById(id) || {}).value || '', el = document.getElementById('cu-lista'); if (!el) return;
+  const n = Math.min(120, Math.max(0, Math.round(Number(g('cu-n')) || 0))), de = Math.max(n, Math.round(Number(g('cu-de')) || 0) || n);
+  const monto = Math.round(Number(g('cu-monto')) || 0), total = Math.round(Number(g('cu-total')) || 0), frec = Number((document.querySelector('input[name="cu-frec"]:checked') || {}).value) || 1;
+  const fin = g('cu-fin'), prox = g('cu-vence'), nota = document.getElementById('cu-plan-nota');
+  // Con la próxima y la de término, la cantidad de cuotas sale sola
+  let nn = n;
+  if (fin && prox && prox <= fin) {
+    const meses = (Number(fin.slice(0, 4)) - Number(prox.slice(0, 4))) * 12 + Number(fin.slice(5, 7)) - Number(prox.slice(5, 7));
+    nn = Math.min(120, Math.floor(meses / frec) + 1);
+    const inN = document.getElementById('cu-n'); if (inN && Number(inN.value) !== nn) inN.value = nn;
+  }
+  const v0 = fin && nn ? sumarMesesInv(fin, -(nn - 1) * frec) : prox;
+  if (nota) nota.textContent = fin && prox && prox > fin ? '⚠️ La próxima no puede ser después de la de término' : fin && prox ? `${nn} cuota${nn === 1 ? '' : 's'} entre ${fmtFechaInv(prox)} y ${fmtFechaInv(fin)}` : fin && nn ? `La primera de las que quedan vence el ${fmtFechaInv(v0)}` : prox && nn ? `La última vence el ${fmtFechaInv(sumarMesesInv(prox, (nn - 1) * frec))}` : 'Pon la fecha de término (o la de la próxima cuota)';
+  if (!nn || !v0 || !(monto > 0 || total > 0)) { el.innerHTML = '<div style="font-size:12px;color:var(--acero)">Completa la frecuencia, cuántas cuotas quedan, la fecha de término y el monto para ver la lista.</div>'; return; }
+  const deN = Math.max(nn, de === n ? nn : de);
+  const base = monto > 0 ? monto : Math.floor(total / nn), resto = monto > 0 ? 0 : total - base * nn;
+  // Las fechas se calculan desde la de término (si está) para respetar su día del mes
+  const filas = Array.from({ length: nn }, (_, i) => ({ num: deN - nn + 1 + i, vence: fin ? sumarMesesInv(fin, -(nn - 1 - i) * frec) : sumarMesesInv(v0, i * frec), monto: base + (i === nn - 1 ? resto : 0) }));
+  el.innerHTML = `<div style="font-size:12px;color:var(--acero);margin-bottom:4px">Puedes corregir la fecha o el monto de cualquier cuota:</div>
+    <div style="max-height:260px;overflow-y:auto;border:1px solid var(--borde);border-radius:8px;padding:4px 8px">${filas.map(f => `<div class="cu-fila" data-n="${f.num}" style="display:flex;gap:6px;align-items:center;padding:3px 0;border-bottom:1px solid var(--borde)"><span style="font-size:12px;font-weight:700;width:96px;flex:none">Cuota ${f.num} de ${deN}</span><input type="date" class="cu-f" value="${f.vence}" style="margin:0;padding:4px 6px;font-size:13px;flex:1;min-width:0"><input type="number" class="cu-m" value="${f.monto}" inputmode="numeric" oninput="cxpCuotasSumaInv()" style="margin:0;padding:4px 6px;font-size:13px;width:110px;flex:none"></div>`).join('')}</div>
+    <div id="cu-suma" style="font-size:13px;font-weight:800;margin-top:6px"></div>`;
+  cxpCuotasSumaInv();
+}
+window.cxpCuotasSumaInv = function() {
+  const el = document.getElementById('cu-suma'); if (!el) return;
+  const ms = [...document.querySelectorAll('.cu-m')].map(i => Math.round(Number(i.value) || 0));
+  el.textContent = `${ms.length} cuota${ms.length === 1 ? '' : 's'} · total ${pesoInv(ms.reduce((a, b) => a + b, 0))}`;
+}
+window.cxpGuardarCuotasInv = async function() {
+  const g = id => ((document.getElementById(id) || {}).value || '').trim();
+  const prov = g('cu-prov'), rut = normRutDte(g('cu-rut')), clase = g('cu-clase'), concepto = g('cu-concepto'), op = g('cu-op'), cta = g('cu-cuenta');
+  const filas = [...document.querySelectorAll('.cu-fila')].map(f => ({ n: Number(f.dataset.n), vence: f.querySelector('.cu-f').value, monto: Math.round(Number(f.querySelector('.cu-m').value) || 0) }));
+  if (!prov) { toast('Indica el acreedor', false); return; }
+  if (rut && !/^\d{6,8}-[\dK]$/.test(rut)) { toast('Revisa el RUT (ej: 12.345.678-9)', false); return; }
+  if (!filas.length) { toast('Completa las cuotas', false); return; }
+  if (filas.some(f => !fechaValidaInv(f.vence) || !(f.monto > 0))) { toast('Cada cuota necesita fecha y monto', false); return; }
+  const de = Math.max(...filas.map(f => f.n)), grupo = 'cu_' + Date.now().toString(36), hoy = hoyIsoInv(), nombre = concepto || clase;
+  const yaHay = dteRecibidosInv.find(d => d.cuota && mismoProvInv(d, { prov, rut }) && normNom(d.cuota.concepto || '') === normNom(concepto) && d.cuota.n === filas[0].n && saldoPagarInv(d) > 0);
+  if (yaHay && !confirm(`Ya hay cuotas pendientes de ${prov}${concepto ? ' (' + concepto + ')' : ''}. ¿Agregarlas igual?`)) return;
+  const bt = document.getElementById('cu-guardar'); if (bt) { bt.disabled = true; bt.textContent = 'Guardando…'; }
+  try {
+    const wb = writeBatch(dbInv);
+    filas.forEach(f => {
+      const r = armarCxpManualInv({ prov, rut, tipo: 'CU', folio: '', fecha: hoy, total: f.monto, vence: f.vence, glosa: `${nombre} · cuota ${f.n} de ${de}`, cuenta: cta });
+      if (r.error) throw new Error(r.error);
+      wb.set(doc(dbInv, 'dte_recibidos', r.id + '_' + f.n), { ...r.data, cuota: { n: f.n, de, grupo, clase, concepto, op } });
+    });
+    await wb.commit();
+    const m = document.getElementById('dte-elegir'); if (m) m.remove();
+    toast(`✓ ${filas.length} cuota${filas.length === 1 ? '' : 's'} de ${prov} en Cuentas por pagar · ${pesoInv(filas.reduce((a, f) => a + f.monto, 0))}`, true);
+  } catch (e) { toast('Error: ' + e.message, false); if (bt) { bt.disabled = false; bt.textContent = '✓ Guardar cuotas'; } }
+}
+// Borra de una vez las cuotas pendientes (sin pagos) de un mismo crédito o compromiso
+window.cxpBorrarCuotasInv = async function(grupo) {
+  const todas = dteRecibidosInv.filter(d => d.cuota && d.cuota.grupo === grupo), borrar = todas.filter(d => !d.pagada && !sumAbonosInv(d));
+  if (!borrar.length) { toast('No hay cuotas sin pagos para eliminar', false); return; }
+  const d0 = todas[0];
+  if (!confirm(`¿Eliminar ${borrar.length} cuota${borrar.length === 1 ? '' : 's'} pendiente${borrar.length === 1 ? '' : 's'} de ${d0.razonSocial}${d0.cuota.concepto ? ' (' + d0.cuota.concepto + ')' : ''} por ${pesoInv(borrar.reduce((a, d) => a + (d.total || 0), 0))}?${todas.length > borrar.length ? `\n\nLas ${todas.length - borrar.length} que ya tienen pagos se mantienen.` : ''}`)) return;
+  try {
+    const wb = writeBatch(dbInv); borrar.forEach(d => wb.delete(doc(dbInv, 'dte_recibidos', d.id))); await wb.commit();
+    const m = document.getElementById('dte-elegir'); if (m) m.remove();
+    toast(`✓ ${borrar.length} cuotas eliminadas`, true);
+  } catch (e) { toast('Error: ' + e.message, false); }
 }
 // Arma el documento de una cuenta ingresada a mano; devuelve { id, data } o { error }
 function armarCxpManualInv(x) {
@@ -18191,7 +18299,7 @@ function vistaSinFormaCxpInv(q) {
   const tope = cxpVerMasInv ? 500 : 30, G = 'background:var(--fondo);color:var(--negro)';
   return `<div style="font-size:12px;color:var(--acero);margin:4px 0 8px">Facturas y boletas que todavía no dicen cómo se pagan. Las que dejes <strong>A crédito</strong> pasan a "Por pagar".</div>
     ${lista.length ? lista.slice(0, tope).map(d => `<div class="config-item" style="flex-direction:column;align-items:stretch;gap:3px">
-      <div style="display:flex;justify-content:space-between;gap:8px"><div style="min-width:0;overflow-wrap:anywhere"><strong>${escA(d.razonSocial || rutFmtDte(d.rutEmisor))}</strong> · ${escA(abrevTipoDte(d.tipo))}${d.folio ? ' N° ' + escA(d.folio) : ''}</div><div style="font-weight:800;white-space:nowrap">${pesoInv(d.total)}</div></div>
+      <div style="display:flex;justify-content:space-between;gap:8px"><div style="min-width:0;overflow-wrap:anywhere"><strong>${escA(d.razonSocial || rutFmtDte(d.rutEmisor))}</strong> · ${escA(etiquetaDocInv(d))}</div><div style="font-weight:800;white-space:nowrap">${pesoInv(d.total)}</div></div>
       <div style="font-size:12px;color:var(--acero)">Emitida ${fechaCortaDte(d.fecha)}${d.fchVenc ? ' · el XML trae vencimiento ' + escA(fmtFechaInv(parseVenceInv(d.fchVenc) || '')) : ''}${d.compro ? ' · compró ' + escA(d.compro) : ''}</div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:3px"><button class="btn-add" style="padding:6px 10px" onclick="dtePagoInv('${d.id}','credito')">💳 A crédito</button><button class="btn-add" style="padding:6px 10px;${G}" onclick="dtePagoInv('${d.id}','cuenta')">🏦 De la cuenta</button><button class="btn-add" style="padding:6px 10px;${G}" onclick="dtePagoInv('${d.id}','caja')">💵 Caja chica</button><button class="btn-add" style="padding:6px 10px;${G}" onclick="dteVerInv('${d.id}')">👁 Ver</button></div></div>`).join('')
       + (lista.length > tope ? `<button class="btn-add" style="width:100%;margin-top:6px;${G}" onclick="cxpVerMasSetInv()">Ver las ${lista.length - tope} restantes</button>` : '') : '<div class="empty">Todas las facturas tienen forma de pago 👍</div>'}`;
@@ -18199,7 +18307,8 @@ function vistaSinFormaCxpInv(q) {
 window.renderCxpInv = function() {
   const cont = document.getElementById('cont-pagar-panel'); if (!cont) return;
   etiquetaCxpInv();
-  const q = normNom(cxpBuscaInv || ''), todas = porPagarCxpInv(), sinForma = sinFormaPagoCxpInv().length;
+  const todasConCred = porPagarCxpInv(), creditos = todasConCred.filter(esCreditoCxpInv);
+  const q = normNom(cxpBuscaInv || ''), todas = cxpConCreditosInv ? todasConCred : todasConCred.filter(d => !esCreditoCxpInv(d)), sinForma = sinFormaPagoCxpInv().length;
   const suma = f => todas.filter(f).reduce((a, d) => a + saldoPagarInv(d), 0), R = rangoVenceCxpInv;
   const caja = (t, v, c, n) => `<div style="flex:1;min-width:110px;background:var(--fondo);border-radius:8px;padding:8px"><div style="font-size:11px;color:var(--acero)">${t}</div><div style="font-weight:800;color:${c || 'var(--negro)'}">${pesoInv(v)}</div>${n !== undefined ? `<div style="font-size:11px;color:var(--acero)">${n} factura${n === 1 ? '' : 's'}</div>` : ''}</div>`;
   const cuantas = f => todas.filter(f).length;
@@ -18218,16 +18327,17 @@ window.renderCxpInv = function() {
   cont.innerHTML = `<div class="panel-title">💳 Cuentas por pagar</div>
     <div style="font-size:12px;color:var(--acero);margin-bottom:8px">Son las mismas facturas de "Facturas y guías" que quedaron <strong>A crédito</strong>. Lo que pagues aquí queda anotado en la factura, y al revés.</div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">${caja('Total por pagar', suma(() => true), '', todas.length)}${caja('🔴 Vencido', suma(d => R(d) === 'vencidas'), '#B91C1C', cuantas(d => R(d) === 'vencidas'))}${caja('🟠 Próximos 7 días', suma(d => R(d) === 'semana'), '#B45309', cuantas(d => R(d) === 'semana'))}${caja('Después o sin fecha', suma(d => ['mes', 'despues', 'sinfecha'].includes(R(d))), '', cuantas(d => ['mes', 'despues', 'sinfecha'].includes(R(d))))}</div>
+    ${creditos.length ? `<label style="display:flex;gap:8px;align-items:center;font-size:13px;text-transform:none;letter-spacing:0;font-weight:600;margin:-2px 2px 10px;cursor:pointer"><input type="checkbox" ${cxpConCreditosInv ? 'checked' : ''} onchange="cxpCreditosSetInv(this.checked)" style="width:auto;margin:0">🏦 Incluir créditos y cuotas <span style="font-weight:400;color:var(--acero)">(${creditos.length} · ${pesoInv(creditos.reduce((a, d) => a + saldoPagarInv(d), 0))})</span></label>` : ''}
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px"><button class="btn-add" style="flex:1;min-width:200px;justify-content:center;padding:10px" onclick="cxpPdfInv()">📄 Informe PDF (por proveedor y mes)</button><button class="btn-add" style="flex:1;min-width:200px;justify-content:center;padding:10px;background:var(--fondo);color:var(--negro)" onclick="exportarCxpInv()">⬇️ Excel (por pagar y pagos del mes)</button></div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">${chip('pagar', `💳 Por pagar (${todas.length})`)}${chip('pagos', '✅ Pagos hechos')}${chip('sinforma', `❔ Sin forma de pago (${sinForma})`)}${chip('anteriores', `📚 Anteriores${saldosPorEnlazarInv().length ? ` (${saldosPorEnlazarInv().length} por enlazar)` : ''}`)}</div>
-    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px"><button class="btn-add" style="flex:1;min-width:150px;padding:9px" onclick="cxpManualInv()">➕ Agregar una a mano</button><button class="btn-add" style="flex:1;min-width:150px;padding:9px;background:#EFF6FF;color:#1D4ED8" onclick="cxpSubirExcelInv()">📄 Cargar varias (Excel)</button></div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px"><button class="btn-add" style="flex:1;min-width:150px;padding:9px" onclick="cxpManualInv()">➕ Agregar factura o deuda</button><button class="btn-add" style="flex:1;min-width:150px;padding:9px;background:#FEF3C7;color:#92400E" onclick="cxpCuotasInv()">📅 Cuotas (créditos, convenios…)</button><button class="btn-add" style="flex:1;min-width:150px;padding:9px;background:#EFF6FF;color:#1D4ED8" onclick="cxpSubirExcelInv()">📄 Cargar varias (Excel)</button></div>
     <div style="font-size:12px;margin:-4px 0 10px;color:var(--acero)">Para cargar varias: <a href="#" onclick="event.preventDefault();cxpPlantillaInv()">⬇️ descarga la plantilla</a>, llénala y súbela.</div>
     ${cxpVistaInv === 'pagar' ? `<div style="display:flex;gap:0;margin-bottom:8px;border:1px solid var(--borde);border-radius:10px;overflow:hidden">${[['mes', '📆 Detalle por mes'], ['mesprov', '📊 Resumen por proveedor']].map(([k, t], i) => `<button onclick="cxpOrdenSetInv('${k}')" style="flex:1;padding:9px 6px;border:0;${i ? 'border-left:1px solid var(--borde);' : ''}font-weight:700;font-size:13px;cursor:pointer;background:${cxpOrdenInv === k ? 'var(--verde)' : 'var(--blanco)'};color:${cxpOrdenInv === k ? '#fff' : 'var(--negro)'}">${t}</button>`).join('')}</div>` : ''}
     <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
       <input type="text" id="cxp-busca" placeholder="🔎 Buscar proveedor, N°, quién compró…" value="${escA(cxpBuscaInv)}" oninput="cxpBuscarInv(this.value)" style="flex:2;min-width:180px;margin:0;box-sizing:border-box">
       <select data-no-mejorar onchange="cxpOrdenSetInv(this.value)" style="flex:1;min-width:160px;margin:0;${cxpVistaInv === 'anteriores' ? 'display:none' : ''}" title="Ordenar por">${ordenes.map(k => `<option value="${k}"${k === cxpOrdenInv ? ' selected' : ''}>Ordenar: ${nomOrden(k)}</option>`).join('')}</select>
     </div>
-    ${cuerpo}
-    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px"><button class="btn-add" style="flex:1;min-width:200px;justify-content:center;padding:10px" onclick="cxpPdfInv()">📄 PDF por pagar (por proveedor y mes)</button><button class="btn-add" style="flex:1;min-width:200px;justify-content:center;padding:10px;background:var(--fondo);color:var(--negro)" onclick="exportarCxpInv()">⬇️ Excel (por pagar y pagos del mes)</button></div>`;
+    ${cuerpo}`;
 }
 // Pagar varias facturas del mismo proveedor con un solo pago (por ejemplo, una transferencia)
 window.cxpPagarVariasInv = function(rut, mes) {
@@ -18264,7 +18374,7 @@ window.cxpGuardarVariasInv = async function() {
 }
 window.exportarCxpInv = function() {
   if (typeof XLSX === 'undefined') { toast('Todavía está cargando la herramienta de Excel; intenta en unos segundos', false); return; }
-  const filas = porPagarCxpInv().sort(porVenceCxpInv).map(d => ({ 'Mes vencimiento': d.vence ? nomMesCxpInv(d.vence.slice(0, 7)) : 'Sin fecha', Proveedor: d.razonSocial || '', RUT: rutFmtDte(d.rutEmisor), Documento: abrevTipoDte(d.tipo), 'N°': Number(d.folio) || d.folio, 'Emisión': fmtFechaInv(d.fecha), Vence: d.vence ? fmtFechaInv(d.vence) : '', 'Días': diasVenceInv(d) === null ? '' : diasVenceInv(d), Total: d.total || 0, Abonado: sumAbonosInv(d), 'Nota de crédito': sumNcInv(d), Saldo: saldoPagarInv(d), 'Compró': d.compro || '', 'Cuenta': d.cuenta || '', 'Nombre cuenta': d.cuentaNombre || '', 'Ítems': (d.items || []).map(x => `${x.nombre}${x.cantidad ? ` (${x.cantidad} ${x.unidad || ''})` : ''}`).join(' | ') }));
+  const filas = porPagarCxpInv().filter(d => cxpConCreditosInv || !esCreditoCxpInv(d)).sort(porVenceCxpInv).map(d => ({ 'Mes vencimiento': d.vence ? nomMesCxpInv(d.vence.slice(0, 7)) : 'Sin fecha', Proveedor: d.razonSocial || '', RUT: rutFmtDte(d.rutEmisor), Documento: d.cuota ? etiquetaDocInv(d) : abrevTipoDte(d.tipo), 'N°': Number(d.folio) || d.folio, 'Emisión': fmtFechaInv(d.fecha), Vence: d.vence ? fmtFechaInv(d.vence) : '', 'Días': diasVenceInv(d) === null ? '' : diasVenceInv(d), Total: d.total || 0, Abonado: sumAbonosInv(d), 'Nota de crédito': sumNcInv(d), Saldo: saldoPagarInv(d), 'Compró': d.compro || '', 'Cuenta': d.cuenta || '', 'Nombre cuenta': d.cuentaNombre || '', 'Ítems': (d.items || []).map(x => `${x.nombre}${x.cantidad ? ` (${x.cantidad} ${x.unidad || ''})` : ''}`).join(' | ') }));
   const mes = cxpMesInv || hoyIsoInv().slice(0, 7);
   const pagos = pagosHechosCxpInv().filter(p => String(p.fecha).startsWith(mes)).sort((a, b) => String(a.fecha).localeCompare(String(b.fecha))).map(p => ({ Fecha: fmtFechaInv(p.fecha), Proveedor: p.d.razonSocial || '', RUT: rutFmtDte(p.d.rutEmisor), Documento: abrevTipoDte(p.d.tipo), 'N°': Number(p.d.folio) || p.d.folio, Monto: p.monto, 'Forma de pago': ({ transferencia: 'Transferencia', cheque: 'Cheque', tarjeta: 'Tarjeta', caja: 'Caja chica', otro: p.formaOtro || 'Otra' })[p.forma || (p.medio === 'caja' ? 'caja' : '')] || 'Cuenta', 'Caja chica': p.medio === 'caja' ? p.detalle || '' : '', 'N° transferencia / cheque': p.nro || '', 'Cobro cheque': p.chequeFecha ? fmtFechaInv(p.chequeFecha) : '', 'Pagó': p.quien, Tipo: p.tipo === 'credito' ? 'Crédito' : 'Contado', Comprobante: p.comprobanteId ? 'Sí' : '' }));
   const wb = XLSX.utils.book_new();
@@ -18293,6 +18403,7 @@ window.cxpPdfInv = function() {
       ${chk('pdf-resumen', '<span><strong>Resumen</strong>: por mes, el total de cada proveedor</span>', true)}
       ${chk('pdf-detalle', '<span><strong>Detalle</strong>: por mes y proveedor, cada factura</span>', true)}
       ${chk('pdf-items', 'Incluir los productos de cada factura', true)}
+      ${lista.some(esCreditoCxpInv) ? chk('pdf-creditos', `<span>🏦 Incluir créditos y cuotas <span style="color:var(--acero)">(${lista.filter(esCreditoCxpInv).length} · ${pesoInv(lista.filter(esCreditoCxpInv).reduce((a, d) => a + saldoPagarInv(d), 0))})</span></span>`, cxpConCreditosInv) : ''}
       <button class="btn btn-verde" id="pdf-ok" style="justify-content:center" onclick="cxpGenerarPdfInv()">📄 Generar PDF</button>
     </div>`]);
 }
@@ -18300,7 +18411,8 @@ window.cxpGenerarPdfInv = async function() {
   const v = id => document.getElementById(id), fp = v('pdf-prov').value, fm = v('pdf-mes').value;
   const conRes = v('pdf-resumen').checked, conDet = v('pdf-detalle').checked, conItems = v('pdf-items').checked;
   if (!conRes && !conDet) { toast('Marca el resumen, el detalle o ambos', false); return; }
-  let lista = porPagarCxpInv();
+  const conCred = v('pdf-creditos') ? v('pdf-creditos').checked : true;
+  let lista = porPagarCxpInv().filter(d => conCred || !esCreditoCxpInv(d));
   if (fp) lista = lista.filter(d => claveProvPdfInv(d) === fp);
   if (fm === 'vencidas') lista = lista.filter(d => (diasVenceInv(d) ?? 1) < 0);
   else if (fm === '_') lista = lista.filter(d => !d.vence);
@@ -18330,7 +18442,7 @@ window.cxpGenerarPdfInv = async function() {
     const nomFiltroMes = !fm ? 'Todos los meses' : fm === 'vencidas' ? 'Solo lo vencido' : nomMes(fm);
     pdf.setFontSize(16); pdf.setTextColor(...VERDE); pdf.text('Cuentas por pagar', 12, 14);
     pdf.setFontSize(9); pdf.setTextColor(80);
-    pdf.text(L(`Al ${fmtFechaInv(hoyIsoInv())} · Proveedor: ${nomProv} · Vencimiento: ${nomFiltroMes}`), 12, 20);
+    pdf.text(L(`Al ${fmtFechaInv(hoyIsoInv())} · Proveedor: ${nomProv} · Vencimiento: ${nomFiltroMes}${conCred ? '' : ' · Sin créditos ni cuotas'}`), 12, 20);
     pdf.setFontSize(11); pdf.setTextColor(20);
     pdf.text(L(`${lista.length} documento${lista.length === 1 ? '' : 's'} · Total por pagar ${P(total)}${venc ? ` · Vencido ${P(venc)}` : ''}`), 12, 26);
     let y = 34;
@@ -18356,7 +18468,7 @@ window.cxpGenerarPdfInv = async function() {
           p.docs.forEach(d => {
             const dias = diasVenceInv(d), vencida = dias !== null && dias < 0, menos = sumAbonosInv(d) + sumNcInv(d);
             const its = (d.items || []).filter(x => x && x.nombre).map(x => `${x.nombre}${x.cantidad ? ` (${(Number(x.cantidad) || 0).toLocaleString('es-CL')}${x.unidad ? ' ' + x.unidad : ''})` : ''}`).join(' · ') || d.glosa || '';
-            const fila = [L(`${abrevTipoDte(d.tipo)}${d.folio ? ' N° ' + d.folio : ''}`), d.fecha ? fmtFechaInv(d.fecha) : '', { content: d.vence ? fmtFechaInv(d.vence) + (vencida ? ` (-${-dias} d)` : '') : '-', styles: vencida ? { textColor: ROJO, fontStyle: 'bold' } : {} }];
+            const fila = [L(etiquetaDocInv(d)), d.fecha ? fmtFechaInv(d.fecha) : '', { content: d.vence ? fmtFechaInv(d.vence) + (vencida ? ` (-${-dias} d)` : '') : '-', styles: vencida ? { textColor: ROJO, fontStyle: 'bold' } : {} }];
             if (conItems) fila.push(L(its).slice(0, 260));
             fila.push({ content: P(d.total), styles: { halign: 'right' } }, { content: menos ? '-' + P(menos) : '', styles: { halign: 'right' } }, { content: P(saldoPagarInv(d)), styles: { halign: 'right', fontStyle: 'bold' } });
             body.push(fila);
@@ -18543,7 +18655,7 @@ function renderDteRecibidosInv(soloLista) {
   const sinCuenta = d => !d.anterior && esCodificableDteInv(d) && !d.cuenta;
   const filtros = { despachar: porDespachar, sinfactura: pendienteFacturaGuiaInv, pagar: porPagar, sindefinir: sinDefinir, sincuenta: sinCuenta, revisar: d => !!d.revision };
   // Al buscar se busca en todos los grupos, no solo en el que está abierto
-  let lista = q ? dteRecibidosInv.filter(d => textoBuscaDteInv(d).includes(q)) : dteRecibidosInv.filter(d => filtros[filtroDteInv] ? filtros[filtroDteInv](d) : (filtroDteInv === 'todos' || grupoDteInv(d) === filtroDteInv));
+  let lista = q ? dteRecibidosInv.filter(d => textoBuscaDteInv(d).includes(q)) : dteRecibidosInv.filter(d => d.tipo !== 'CU').filter(d => filtros[filtroDteInv] ? filtros[filtroDteInv](d) : (filtroDteInv === 'todos' || grupoDteInv(d) === filtroDteInv));
   const porLlegada = q || filtroDteInv !== 'pagar';
   if (porLlegada) lista.sort((a, b) => llegadaDteInv(b) - llegadaDteInv(a) || String(b.fecha || '').localeCompare(String(a.fecha || '')) || (Number(b.folio) || 0) - (Number(a.folio) || 0));
   else lista.sort((a, b) => { const x = diasVenceInv(a), y = diasVenceInv(b); return (x === null ? 1e9 : x) - (y === null ? 1e9 : y); });
