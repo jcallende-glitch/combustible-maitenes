@@ -17807,7 +17807,8 @@ function facturasProvInv(rut) {
 // Las que el cruce automático puede usar: las del archivo y las de la app que todavía no tienen forma de pago
 function candidatosHistInv(rut, nombre) {
   const r = normRutDte(rut || '') || rutPorNombreInv(nombre); if (!r) return [];
-  return facturasProvInv(r).filter(c => ['libre', 'descartada', 'sinpago'].includes(c.estado) && c.total > 0);
+  // También las que ya están por pagar en la app (por ejemplo, facturas de noviembre que están en tu listado): calzan sin duplicarse
+  return facturasProvInv(r).filter(c => ['libre', 'descartada', 'sinpago', 'cxp'].includes(c.estado) && c.total > 0);
 }
 // Busca qué facturas suman el saldo: primero las más recientes seguidas, después una sola, después combinaciones
 function combinacionSaldoInv(cands, saldo, mes, soloMes) {
@@ -17956,7 +17957,7 @@ window.cruceAutoInv = async function() {
   const linea = r => `<div class="config-item" style="flex-direction:column;align-items:stretch;gap:2px">
     <div style="display:flex;justify-content:space-between;gap:8px"><span style="display:flex;gap:8px;align-items:center;min-width:0;overflow-wrap:anywhere">${logoProvInv(r.rut || (r.comb ? r.comb[0].rutEmisor : ''), r.d.razonSocial, 22)}<strong>${escA(r.d.razonSocial)}</strong></span><strong style="white-space:nowrap">${pesoInv(saldoPagarInv(r.d))}</strong></div>
     ${sumAbonosInv(r.d) ? `<div style="font-size:12px;color:var(--acero)">Total ${pesoInv(r.d.total)}, ya pagado ${pesoInv(sumAbonosInv(r.d))}: se descuenta de la factura más antigua</div>` : ''}
-    ${r.comb ? r.comb.map(h => `<div style="font-size:12px;overflow-wrap:anywhere">✓ ${escA(abrevTipoDte(h.tipo))} N° ${escA(h.folio)} · ${fmtFechaInv(h.fecha)} · ${pesoInv(h.total)} · vence ${fmtFechaInv(h.fchVenc || r.d.vence || sumarDiasInv(h.fecha, r.plazo.dias))}${h.fchVenc ? '' : r.d.vence ? ' (de tu listado)' : ' (estimado)'}${h.src === 'app' ? ' · 📱 ya en la app' : h.descartada ? ' · 🗂 estaba dada por pagada' : ''}${(h.items || []).length ? `<br><span style="color:var(--acero)">· ${escA(glosaHistInv(h))}</span>` : ''}</div>`).join('') : `<div style="font-size:12px;color:#B45309">✗ ${motivo(r)}</div>`}
+    ${r.comb ? r.comb.map(h => `<div style="font-size:12px;overflow-wrap:anywhere">✓ ${escA(abrevTipoDte(h.tipo))} N° ${escA(h.folio)} · ${fmtFechaInv(h.fecha)} · ${pesoInv(h.total)} · vence ${fmtFechaInv(h.fchVenc || r.d.vence || sumarDiasInv(h.fecha, r.plazo.dias))}${h.fchVenc ? '' : r.d.vence ? ' (de tu listado)' : ' (estimado)'}${h.estado === 'cxp' ? ' · 💳 ya estaba por pagar (no se duplica)' : h.src === 'app' ? ' · 📱 en la app, queda a crédito' : h.descartada ? ' · 🗂 estaba dada por pagada' : ''}${(h.items || []).length ? `<br><span style="color:var(--acero)">· ${escA(glosaHistInv(h))}</span>` : ''}</div>`).join('') : `<div style="font-size:12px;color:#B45309">✗ ${motivo(r)}</div>`}
     <div style="margin-top:4px"><button class="btn-add" style="padding:5px 10px;font-size:12px;${r.comb ? 'background:var(--fondo);color:var(--negro)' : ''}" onclick="histEnlazarInv('${r.d.id}','','',true)">${r.comb ? '✏️ Elegir otras' : '🔎 Ver sus facturas y elegir'}</button></div>
   </div>`;
   modalElegirDteInv('⚡ Cruce automático', `<strong>${ok.length}</strong> de ${res.length} saldo${res.length === 1 ? '' : 's'} calzan con facturas del archivo. Revisa y confirma.`, [`
@@ -18024,7 +18025,7 @@ window.histEnlazarInv = function(saldoId, histId, rutForzado, volver, o) {
   if (!sa && !h0) return;
   const rut = normRutDte(rutForzado || (sa ? sa.rutEmisor : h0.rutEmisor) || '') || (sa ? rutPorNombreInv(sa.razonSocial) : '');
   const todas = facturasProvInv(rut), saldo = sa ? metaSaldoInv(sa) : 0, venceLista = sa && sa.vence ? sa.vence : '', mesLista = venceLista.slice(0, 7);
-  const auto = sa && !o.marcados ? combinacionSaldoInv(todas.filter(c => ['libre', 'descartada', 'sinpago'].includes(c.estado) && c.total > 0), saldo, mesLista) : null;
+  const auto = sa && !o.marcados ? combinacionSaldoInv(todas.filter(c => ['libre', 'descartada', 'sinpago', 'cxp'].includes(c.estado) && c.total > 0), saldo, mesLista) : null;
   const pre = new Set(o.marcados || (auto ? auto.map(c => c.id) : h0 ? [h0.id] : []));
   const plazo = plazoProvInv(rut), nombre = (sa || h0).razonSocial || '';
   const agrupa = o.agrupa || (mesLista && todas.some(c => c.fchVenc) ? 'vence' : 'emision');
