@@ -17317,8 +17317,8 @@ function grupoDteInv(d) {
 }
 function pendientesDteInv() { return dteRecibidosInv.filter(d => grupoDteInv(d) === 'pendientes').length; }
 window.dteVerMasDteInv = () => { dteVerMasInv = true; renderDteRecibidosInv(); };
-window.setFiltroDteInv = f => { filtroDteInv = f; dteVerMasInv = false; renderDteRecibidosInv(); };
-window.buscarDteInv = v => { dteBuscarInv = v; renderDteRecibidosInv(true); };
+window.setFiltroDteInv = f => { filtroDteInv = f; dteVerMasInv = false; if (f === 'todos') activarDteTodosInv(); renderDteRecibidosInv(); };
+window.buscarDteInv = v => { dteBuscarInv = v; if (normNom(v).trim().length >= 2) activarDteTodosInv(); renderDteRecibidosInv(true); };
 function resumenPagarInv(lista) {
   const suma = f => lista.filter(f).reduce((a, d) => a + saldoPagarInv(d), 0), dv = d => diasVenceInv(d);
   const caja = (t, v, c) => `<div style="flex:1;min-width:120px;background:var(--fondo);border-radius:8px;padding:8px"><div style="font-size:11px;color:var(--acero)">${t}</div><div style="font-weight:800;color:${c || 'var(--negro)'}">${pesoInv(v)}</div></div>`;
@@ -18414,6 +18414,8 @@ function tarjetaDteInv(d) {
   </div>`;
 }
 function renderDteRecibidosInv(soloLista) {
+  // Si estás escribiendo en el buscador, no se redibuja el panel entero (no se pierde el cursor)
+  if (!soloLista && document.activeElement && document.activeElement.id === 'dte-busca') soloLista = true;
   try { renderPendRecInv(); } catch (e) { console.warn('pendrec', e); }
   const cont = document.getElementById('inv-panel-dte'); if (!cont) return;
   if (!verValoresInv()) { cont.style.display = 'none'; return; }
@@ -18421,22 +18423,26 @@ function renderDteRecibidosInv(soloLista) {
   { const tb = document.getElementById('tab-cont-docs'); if (tb) tb.textContent = `📨 Facturas y guías${pendientesDteInv() ? ` (${pendientesDteInv()} por ingresar)` : ''}`; }
   try { etiquetaCxpInv(); const tc = document.getElementById('tc-cont-pagar'); if (tc && tc.classList.contains('active')) renderCxpInv(); } catch (e) { console.warn('cxp', e); }
   const cuenta = g => dteRecibidosInv.filter(d => grupoDteInv(d) === g).length;
-  const q = normNom(dteBuscarInv);
+  const q = normNom(String(dteBuscarInv || '').replace(/\./g, '')).trim();
   const porDespachar = d => { const e = estadoRecepcionInv(d); return !!e && (e.k === 'espera' || e.k === 'parcial'); };
   const porPagar = d => d.pago === 'credito' && !d.pagada && saldoPagarInv(d) > 0;
   const hayCompradores = compradoresActivosInv().length > 0;
   const sinDefinir = d => !d.anterior && ((hayCompradores && esPagableDteInv(d) && !d.compro) || (esFacturaDteInv(d) && (estadoRecepcionInv(d) || {}).k === '') || (esPagableDteInv(d) && !d.pago) || (esCodificableDteInv(d) && !d.cuenta));
   const sinCuenta = d => !d.anterior && esCodificableDteInv(d) && !d.cuenta;
   const filtros = { despachar: porDespachar, sinfactura: pendienteFacturaGuiaInv, pagar: porPagar, sindefinir: sinDefinir, sincuenta: sinCuenta, revisar: d => !!d.revision };
-  let lista = dteRecibidosInv.filter(d => filtros[filtroDteInv] ? filtros[filtroDteInv](d) : (filtroDteInv === 'todos' || grupoDteInv(d) === filtroDteInv));
-  if (q) lista = lista.filter(d => normNom(`${d.razonSocial} ${d.folio} ${abrevTipoDte(d.tipo)} ${d.compro || ''} ${(d.items || []).map(x => x.nombre).join(' ')}`).includes(q));
-  const porLlegada = filtroDteInv !== 'pagar';
+  // Al buscar se busca en todos los grupos, no solo en el que está abierto
+  let lista = q ? dteRecibidosInv.filter(d => textoBuscaDteInv(d).includes(q)) : dteRecibidosInv.filter(d => filtros[filtroDteInv] ? filtros[filtroDteInv](d) : (filtroDteInv === 'todos' || grupoDteInv(d) === filtroDteInv));
+  const porLlegada = q || filtroDteInv !== 'pagar';
   if (porLlegada) lista.sort((a, b) => llegadaDteInv(b) - llegadaDteInv(a) || String(b.fecha || '').localeCompare(String(a.fecha || '')) || (Number(b.folio) || 0) - (Number(a.folio) || 0));
   else lista.sort((a, b) => { const x = diasVenceInv(a), y = diasVenceInv(b); return (x === null ? 1e9 : x) - (y === null ? 1e9 : y); });
   const tope = dteVerMasInv ? 300 : 15;
   // Los más nuevos arriba, agrupados por el día en que llegaron
-  const tarjetas = l => { if (!porLlegada) return l.map(tarjetaDteInv).join(''); const cuenta = {}; lista.forEach(d => { if (d.creado) { const k = diaLocalInv(d.creado); cuenta[k] = (cuenta[k] || 0) + 1; } }); let dia = null; return l.map(d => { const k = d.creado ? diaLocalInv(d.creado) : 'antes'; const t = k !== dia ? (k === 'antes' ? (dia !== null ? '<div style="font-size:12px;font-weight:700;color:var(--acero);margin:10px 2px 4px">Antes</div>' : '') : tituloDiaLlegadaInv(d.creado, cuenta[k])) : ''; dia = k; return t + tarjetaDteInv(d); }).join(''); };
-  const htmlLista = (filtroDteInv === 'pagar' ? resumenPagarInv(lista) : '') + (lista.length ? tarjetas(lista.slice(0, tope)) : `<div class="empty">${dteRecibidosInv.length ? 'No hay documentos en este grupo' : 'Todavía no hay documentos: importa el XML o tráelos del SII'}</div>`)
+  const tarjetaBusca = d => q ? `<div style="font-size:11px;font-weight:700;color:var(--acero);margin:8px 2px 2px">${d.anterior || typeof d.tipo !== 'number' ? '💳 Cuentas por pagar (anterior a la app)' : NOMBRE_GRUPO_DTE_INV[grupoDteInv(d)] || ''}</div>` + tarjetaDteInv(d) : tarjetaDteInv(d);
+  const tarjetas = l => { if (q) return l.map(tarjetaBusca).join(''); if (!porLlegada) return l.map(tarjetaDteInv).join(''); const cuenta = {}; lista.forEach(d => { if (d.creado) { const k = diaLocalInv(d.creado); cuenta[k] = (cuenta[k] || 0) + 1; } }); let dia = null; return l.map(d => { const k = d.creado ? diaLocalInv(d.creado) : 'antes'; const t = k !== dia ? (k === 'antes' ? (dia !== null ? '<div style="font-size:12px;font-weight:700;color:var(--acero);margin:10px 2px 4px">Antes</div>' : '') : tituloDiaLlegadaInv(d.creado, cuenta[k])) : ''; dia = k; return t + tarjetaDteInv(d); }).join(''); };
+  const cargandoTodo = q && !dteTodosInv;
+  const avisoBusca = q ? `<div style="font-size:12px;color:var(--acero);margin:0 2px 6px">${cargandoTodo ? '⏳ Buscando también en los documentos antiguos…' : `🔎 ${lista.length} resultado${lista.length === 1 ? '' : 's'} en todos los grupos (${dteRecibidosInv.length} documentos en la app)`}</div>` : '';
+  const vacioBusca = `<div class="empty" style="line-height:1.5">${cargandoTodo ? 'Buscando…' : `No está en la app.<br><span style="font-size:12px">Puede que el robot no la haya bajado (por ejemplo, si la factura es a nombre de otra empresa o el SII entregó más de 20 ese día). Búscala en el Registro de Compras del SII; si está ahí, súbela con 📂 Importar XML. Si es anterior a noviembre, búscala en Cuentas por pagar → 📚 Anteriores.</span>`}</div>`;
+  const htmlLista = avisoBusca + (filtroDteInv === 'pagar' && !q ? resumenPagarInv(lista) : '') + (lista.length ? tarjetas(lista.slice(0, tope)) : q ? vacioBusca : `<div class="empty">${dteRecibidosInv.length ? 'No hay documentos en este grupo' : 'Todavía no hay documentos: importa el XML o tráelos del SII'}</div>`)
     + (lista.length > tope ? `<button class="btn-add" style="width:100%;justify-content:center;margin-top:8px" onclick="dteVerMasDteInv()">Ver ${lista.length - tope} más</button>` : '');
   if (soloLista) { const l = document.getElementById('dte-lista'); if (l) { l.innerHTML = htmlLista; return; } }
   const chip = (f, t, n) => `<span class="cultivo-chip${filtroDteInv === f ? ' sel' : ''}" onclick="setFiltroDteInv('${f}')">${t}${n != null ? ` (${n})` : ''}</span>`;
@@ -18457,12 +18463,12 @@ function renderDteRecibidosInv(soloLista) {
         Las guías de despacho no salen en el Registro de Compras y Ventas: en "Ver documentos recibidos" elige el tipo Guía de despacho.
       </div></details>
     <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">
-      ${chip('pendientes', '📥 Por ingresar', cuenta('pendientes'))}${chip('ingresado', '✓ Ya enviados', cuenta('ingresado'))}${chip('ignorado', '🧾 Solo contabilidad', cuenta('ignorado'))}${cuenta('notas') ? chip('notas', 'Notas de crédito/débito', cuenta('notas')) : ''}${chip('todos', 'Todos', dteRecibidosInv.length)}
+      ${chip('pendientes', '📥 Por ingresar', cuenta('pendientes'))}${chip('ingresado', '✓ Ya enviados', cuenta('ingresado'))}${chip('ignorado', '🧾 Solo contabilidad', cuenta('ignorado'))}${cuenta('notas') ? chip('notas', 'Notas de crédito/débito', cuenta('notas')) : ''}${chip('todos', '📚 Todas las recibidas', dteTodosInv ? dteRecibidosInv.length : null)}
     </div>
     <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">
       ${chip('sindefinir', '❔ Falta algo por definir', dteRecibidosInv.filter(sinDefinir).length)}${chip('revisar', '❓ Por revisar', dteRecibidosInv.filter(d => d.revision).length)}${chip('sincuenta', '📒 Sin cuenta', dteRecibidosInv.filter(sinCuenta).length)}${chip('despachar', '🚚 Por recibir', dteRecibidosInv.filter(porDespachar).length)}${chip('sinfactura', '🧾 Guías sin factura', dteRecibidosInv.filter(pendienteFacturaGuiaInv).length)}${chip('pagar', '💳 Por pagar', dteRecibidosInv.filter(porPagar).length)}
     </div>
-    <input type="text" placeholder="🔎 Buscar proveedor, N° o producto" value="${escA(dteBuscarInv)}" oninput="buscarDteInv(this.value)" style="width:100%;box-sizing:border-box;margin-bottom:8px">
+    <input type="text" id="dte-busca" placeholder="🔎 Buscar en todo: proveedor, RUT, N°, monto o producto" value="${escA(dteBuscarInv)}" oninput="buscarDteInv(this.value)" style="width:100%;box-sizing:border-box;margin-bottom:8px">
     <div id="dte-lista">${htmlLista}</div>`;
 }
 
@@ -18621,12 +18627,21 @@ window.dteAIngresoInv = function(id, todoLlego) {
   setTimeout(() => { const el = document.getElementById('inv-ingreso-proveedor'); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 150);
   toast('✓ Documento pasado al ingreso: revisa y confirma', true);
 }
+// Al buscar se cargan TODOS los documentos (en vivo, así lo borrado o cambiado se refleja)
+let dteTodosInv = null, dteTodosActivoInv = false, dteMezclarInv = null;
+function activarDteTodosInv() {
+  if (dteTodosActivoInv || !dteSubscrito) return;
+  dteTodosActivoInv = true;
+  onSnapshot(collection(dbInv, 'dte_recibidos'), snap => { dteTodosInv = snap.docs.map(d => ({ id: d.id, ...d.data() })); if (dteMezclarInv) dteMezclarInv(); }, e => { console.warn('dte todos', e); dteTodosActivoInv = false; });
+}
+const textoBuscaDteInv = d => normNom(`${d.razonSocial || ''} ${d.rutEmisor || ''} ${String(d.rutEmisor || '').replace(/[.-]/g, '')} ${d.folio || ''} ${abrevTipoDte(d.tipo)} ${d.compro || ''} ${Math.round(d.total || 0)} ${fmtFechaInv(d.fecha || '')} ${d.glosa || ''} ${(d.items || []).map(x => x.nombre).join(' ')}`);
+const NOMBRE_GRUPO_DTE_INV = { pendientes: '📥 Por ingresar', ingresado: '✓ Ya enviado', ignorado: '🧾 Solo contabilidad', notas: 'Nota de crédito/débito' };
 function suscribirDteInv() {
   if (dteSubscrito || !verValoresInv()) return;
   dteSubscrito = true;
-  let porFecha = [], porLlegada = [];
+  let porFecha = [], porLlegada = [], aCredito = [], abiertos = [];
   const alCambiar = () => {
-    const m = new Map(); [...porFecha, ...porLlegada].forEach(d => m.set(d.id, d));
+    const m = new Map(); [...(dteTodosInv || []), ...porFecha, ...porLlegada, ...aCredito, ...abiertos].forEach(d => m.set(d.id, d));
     dteRecibidosInv = [...m.values()].filter(d => !d.id.startsWith('_'));
     const ab = document.getElementById('dte-modal');
     renderDteRecibidosInv();
@@ -18634,7 +18649,11 @@ function suscribirDteInv() {
     try { renderRendCajaInv(); } catch (e) {}
     if (ab && ab.dataset.id) dteVerInv(ab.dataset.id);
   };
+  dteMezclarInv = alCambiar;
   onSnapshot(query(collection(dbInv, 'dte_recibidos'), orderBy('creado', 'desc'), limit(200)), snap => { porLlegada = snap.docs.map(d => ({ id: d.id, ...d.data() })); alCambiar(); }, e => console.warn('dte por llegada', e));
+  // Sin límite: todo lo que está a crédito (Cuentas por pagar completa) y lo que falta ingresar, aunque sea antiguo
+  onSnapshot(query(collection(dbInv, 'dte_recibidos'), where('pago', '==', 'credito')), snap => { aCredito = snap.docs.map(d => ({ id: d.id, ...d.data() })); alCambiar(); }, e => console.warn('dte a crédito', e));
+  onSnapshot(query(collection(dbInv, 'dte_recibidos'), where('estado', 'in', ['pendiente', 'porrecibir'])), snap => { abiertos = snap.docs.map(d => ({ id: d.id, ...d.data() })); alCambiar(); }, e => console.warn('dte pendientes', e));
   onSnapshot(query(collection(dbInv, 'dte_recibidos'), orderBy('fecha', 'desc'), limit(400)), snap => { porFecha = snap.docs.map(d => ({ id: d.id, ...d.data() })); alCambiar(); }, e => {
     console.warn('dte_recibidos', e);
     const c = document.getElementById('inv-panel-dte');
