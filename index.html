@@ -3524,7 +3524,7 @@ const SECCIONES_TABS = {
   asistencia: ['tab-asistencia','tab-config-trabajadores'],
   campo: ['tab-campo','tab-config-potreros','tab-config-gps'],
   inventario: ['tab-inv-inventario','tab-inv-ingresos','tab-inv-pendrec','tab-inv-movimientos','tab-inv-alertas'],
-  contabilidad: ['tab-cont-docs','tab-cont-pagar','tab-cont-rend','tab-cont-config'],
+  contabilidad: ['tab-cont-docs','tab-cont-pagar','tab-cont-flujo','tab-cont-rend','tab-cont-config'],
   autorizaciones: ['tab-autorizaciones']
 };
 
@@ -13973,6 +13973,7 @@ window.setTab = function(id,el) {
   if(id==='cont-config') { renderConfigContInv(); }
   if(id==='cont-rend') { renderRendCajaInv(); }
   if(id==='cont-pagar') { renderCxpInv(); }
+  if(id==='cont-flujo') { renderFlujoInv(); }
   if(id==='inv-pendrec') { renderPendRecInv(); }
   if(id==='inv-movimientos') { initMovimientosInv(); }
   if(id==='cisterna') { initControlCisterna(); }
@@ -18495,6 +18496,416 @@ window.cxpGenerarPdfInv = async function() {
     toast('Error al generar el PDF: ' + e.message, false); if (bt) { bt.disabled = false; bt.textContent = '📄 Generar PDF'; }
   }
 }
+// ─── 📈 FLUJO DE CAJA ───────────────────────────────────────────
+// Mensual, 12 meses desde el mes actual. Egresos automáticos desde Cuentas por pagar (facturas a crédito, y créditos/cuotas aparte);
+// lo demás (ventas proyectadas, gastos fijos, compras planificadas, impuestos, otros créditos, varios) se ingresa a mano, una vez o repetido.
+// Colección flujo_caja: _config { saldo, saldoFecha } y un doc por movimiento { cat, concepto, cultivo, monto, mes, repetir, hasta, ajustes, nota }.
+const CATS_FLUJO_INV = {
+  ventas: { t: 'Otras ventas', tipo: 'ing', ej: 'Ej: venta de un equipo, fardos' },
+  otros_ing: { t: 'Otros ingresos', tipo: 'ing', ej: 'Ej: devolución de IVA, aporte' },
+  fijos: { t: 'Gastos fijos', tipo: 'egr', ej: 'Ej: sueldos, imposiciones, luz' },
+  compras: { t: 'Compras planificadas', tipo: 'egr', ej: 'Ej: fertilizante temporada' },
+  impuestos: { t: 'Impuestos', tipo: 'egr', ej: 'Ej: IVA (F29), PPM, contribuciones' },
+  creditos: { t: 'Otros créditos', tipo: 'egr', ej: 'Ej: cuota que no está en Cuentas por pagar' },
+  varios: { t: 'Varios', tipo: 'egr', ej: 'Ej: imprevistos' },
+};
+const REPETIR_FLUJO_INV = [[0, 'Una sola vez'], [1, 'Cada mes'], [2, 'Cada 2 meses'], [3, 'Cada 3 meses'], [6, 'Cada 6 meses'], [12, 'Cada año']];
+let flujoItemsInv = null, flujoCfgInv = {}, flujoSubInv = false, flujoAbiertosInv = new Set(['cosecha', 'fijos']), flujoMilesInv = true;
+try { flujoMilesInv = localStorage.getItem('flujoPesos') !== '1'; } catch (e) {}
+const mesMasInv = (k, i) => { const [y, m] = k.split('-').map(Number), t = new Date(y, m - 1 + i, 1); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}`; };
+const nomMesCortoInv = k => { const [y, m] = k.split('-').map(Number); const t = new Date(y, m - 1, 1).toLocaleDateString('es-CL', { month: 'short' }).replace('.', ''); return t.charAt(0).toUpperCase() + t.slice(1) + ' ' + String(y).slice(2); };
+function suscribirFlujoInv() {
+  if (flujoSubInv || !dbInv) return; flujoSubInv = true;
+  onSnapshot(collection(dbInv, 'flujo_caja'), snap => {
+    const all = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    flujoCfgInv = all.find(x => x.id === '_config') || {}; flujoItemsInv = all.filter(x => !x.id.startsWith('_'));
+    const tc = document.getElementById('tc-cont-flujo'); if (tc && tc.classList.contains('active')) renderFlujoInv();
+  }, e => { console.warn('flujo', e); flujoSubInv = false; flujoItemsInv = []; });
+}
+// Meses en que cae un movimiento a mano (con su monto, o el ajustado para ese mes)
+function ocurrenciasFlujoInv(it, hasta) {
+  const out = {}, rep = Number(it.repetir) || 0, aj = it.ajustes || {};
+  if (!/^\d{4}-\d{2}$/.test(it.mes || '')) return out;
+  const val = k => aj[k] != null ? Number(aj[k]) || 0 : Number(it.monto) || 0;
+  if (!rep) { out[it.mes] = val(it.mes); return out; }
+  for (let i = 0, k = it.mes; k <= hasta && i < 600; k = mesMasInv(it.mes, ++i * rep)) { if (it.hasta && k > it.hasta) break; out[k] = val(k); }
+  return out;
+}
+function calcularFlujoInv() {
+  const m0 = hoyIsoInv().slice(0, 7), meses = Array.from({ length: 12 }, (_, i) => mesMasInv(m0, i)), ult = meses[11];
+  const vacio = () => Object.fromEntries([...meses, 'despues'].map(k => [k, 0]));
+  const autoFila = (key, t, filtro) => {
+    const vals = vacio(), docs = {}, vencido = { n: 0, monto: 0 };
+    porPagarCxpInv().filter(filtro).forEach(d => {
+      const s = saldoPagarInv(d); let k = d.vence ? d.vence.slice(0, 7) : m0;
+      if (k < m0) { vencido.n++; vencido.monto += s; k = m0; }
+      if (k > ult) k = 'despues';
+      vals[k] += s; (docs[k] = docs[k] || []).push(d);
+    });
+    return { key, tipo: 'egr', t, auto: true, vals, docs, vencido };
+  };
+  const manualFila = cat => {
+    const vals = vacio();
+    const sub = (flujoItemsInv || []).filter(it => it.cat === cat && it.tipo !== 'cosecha').map(it => {
+      const v = vacio();
+      Object.entries(ocurrenciasFlujoInv(it, ult)).forEach(([k, n]) => { if (k < m0) return; const kk = k > ult ? 'despues' : k; v[kk] += n; vals[kk] += n; });
+      if (!Number(it.repetir) && it.mes > ult) { v.despues += Number(it.monto) || 0; vals.despues += Number(it.monto) || 0; }
+      return { it, vals: v };
+    }).sort((a, b) => String(a.it.mes).localeCompare(String(b.it.mes)) || String(a.it.concepto).localeCompare(String(b.it.concepto), 'es'));
+    return { key: cat, tipo: CATS_FLUJO_INV[cat].tipo, t: CATS_FLUJO_INV[cat].t, vals, sub };
+  };
+  const cosechaFila = () => {
+    const vals = vacio();
+    const sub = planesCosechaInv().filter(planCompletoInv).map(p => { const v = vacio(); Object.entries(pagosCosechaInv(p, meses)).forEach(([k, n]) => { v[k] += n; vals[k] += n; }); return { it: p, vals: v }; });
+    return { key: 'cosecha', tipo: 'ing', t: 'Ventas de cosecha', vals, sub, cosecha: true };
+  };
+  const ing = [cosechaFila(), ...['ventas', 'otros_ing'].map(manualFila)];
+  const egr = [autoFila('cxp_prov', 'Proveedores (cuentas por pagar)', d => !esCreditoCxpInv(d)), autoFila('cxp_cred', 'Créditos y cuotas (cuentas por pagar)', esCreditoCxpInv), ...['fijos', 'compras', 'impuestos', 'creditos', 'varios'].map(manualFila)];
+  const suma = (fs, k) => fs.reduce((a, f) => a + (f.vals[k] || 0), 0);
+  const totIng = {}, totEgr = {}, neto = {}, saldoIni = {}, saldo = {};
+  let s = Number(flujoCfgInv.saldo) || 0;
+  meses.forEach(k => { saldoIni[k] = s; totIng[k] = suma(ing, k); totEgr[k] = suma(egr, k); neto[k] = totIng[k] - totEgr[k]; s += neto[k]; saldo[k] = s; });
+  totIng.despues = suma(ing, 'despues'); totEgr.despues = suma(egr, 'despues');
+  return { m0, meses, ing, egr, totIng, totEgr, neto, saldoIni, saldo };
+}
+window.renderFlujoInv = function() {
+  const cont = document.getElementById('cont-flujo-panel'); if (!cont) return;
+  if (!verValoresInv()) { cont.innerHTML = ''; return; }
+  suscribirFlujoInv();
+  if (flujoItemsInv === null) { cont.innerHTML = '<div class="panel-title">📈 Flujo de caja</div><div class="empty">Cargando…</div>'; return; }
+  cargarCampoFlujoInv(); buscarDolarHoyInv();
+  flujoPlanesInv = planesCosechaInv();
+  const F = calcularFlujoInv(), { meses } = F, sum12 = o => meses.reduce((a, k) => a + (o[k] || 0), 0);
+  const fmtHa = n => (Math.round((Number(n) || 0) * 100) / 100).toLocaleString('es-CL');
+  const tarjetaCos = (p, i) => {
+    const ok = planCompletoInv(p), uni = p.unidad === 'qqm' ? 'qqm' : p.unidad || 'kg';
+    const difiere = !p.sinPlan && p.haCampo != null && Math.abs(Number(p.ha) - Number(p.haCampo)) > 0.01;
+    return `<div class="config-item" style="flex-direction:column;align-items:stretch;gap:2px;cursor:pointer" onclick="flujoCosechaInv(${i})">
+      <div style="display:flex;justify-content:space-between;gap:8px"><strong style="min-width:0;overflow-wrap:anywhere">${p.frutal ? '🌳' : '🌾'} ${escA(p.cultivo)}</strong><strong style="white-space:nowrap;color:${ok ? 'var(--verde)' : p.activo === false ? 'var(--acero)' : '#B45309'}">${ok ? pesoInv(ingresoCosechaInv(p)) : p.activo === false && !p.sinPlan ? 'No incluido' : 'Completar ✏️'}</strong></div>
+      <div style="font-size:12px;color:var(--acero)">${fmtHa(p.ha)} ha ${p.sinPlan ? '<span style="color:#B45309">· según Campo, por confirmar</span>' : p.haConfirmada ? '<span style="color:var(--verde)">✓ confirmadas</span>' : '<span style="color:#B45309">· por confirmar</span>'}${difiere ? ` · <span style="color:#B45309">Campo dice ${fmtHa(p.haCampo)} ha</span>` : ''}</div>
+      ${p.sinPlan ? '' : `<div style="font-size:12px;color:var(--acero)">${(Number(p.rend) || 0).toLocaleString('es-CL')} ${uni}/ha · ${p.moneda === 'USD' ? 'US$ ' + (Number(p.precio) || 0).toLocaleString('es-CL') : pesoInv(p.precio)}/${uni} · cosecha ${(p.cosecha || []).map(c => MESES_ABR_INV[c.mes - 1] + ((p.cosecha || []).length > 1 ? ' ' + c.pct + '%' : '')).join(', ')} · pago ${Number(p.desfase) ? '+' + p.desfase + ' mes' + (Number(p.desfase) === 1 ? '' : 'es') : 'al cosechar'}</div>`}
+    </div>`;
+  };
+  const totCos = flujoPlanesInv.filter(planCompletoInv).reduce((a, p) => a + ingresoCosechaInv(p), 0), nFalta = flujoPlanesInv.filter(p => p.sinPlan).length;
+  const bloqueCosecha = `<details ${flujoPlanesInv.some(planCompletoInv) && !nFalta ? '' : 'open'} style="border:1px solid var(--borde);border-radius:10px;padding:8px 10px;margin-bottom:10px">
+    <summary style="font-weight:800;cursor:pointer">🌾 Ingresos por cosecha · ${pesoInv(totCos)}${nFalta ? ` <span style="font-weight:600;color:#B45309;font-size:12px">(${nFalta} por completar)</span>` : ''}</summary>
+    <div style="font-size:12px;color:var(--acero);margin:6px 0">Las hectáreas salen de Campo: huertos por su especie y potreros anuales por los lotes de esta temporada o su última siembra. Confírmalas o corrígelas, y completa rendimiento, precio, meses de cosecha y cuándo pagan.${flujoCampoInv !== true ? ' ⏳ Leyendo Campo…' : ''}</div>
+    ${flujoPlanesInv.map(tarjetaCos).join('') || '<div class="empty">No hay potreros con cultivo en Campo.</div>'}
+    <button class="btn-add" style="width:100%;margin-top:6px;padding:8px;background:var(--fondo);color:var(--negro)" onclick="flujoCosechaInv('nuevo')">➕ Agregar otro cultivo</button>
+  </details>`;
+  const fmt = n => { n = Math.round(n || 0); if (!n) return '<span style="color:#C4C4BC">–</span>'; const v = flujoMilesInv ? Math.round(n / 1000) : n; return (v < 0 ? '−' : '') + Math.abs(v).toLocaleString('es-CL'); };
+  const hayS = flujoCfgInv.saldo != null && flujoCfgInv.saldo !== '';
+  const minK = meses.reduce((a, k) => F.saldo[k] < F.saldo[a] ? k : a, meses[0]), negK = meses.find(k => F.saldo[k] < 0);
+  const caja = (t, v, c, sub) => `<div style="flex:1;min-width:120px;background:var(--fondo);border-radius:8px;padding:8px"><div style="font-size:11px;color:var(--acero)">${t}</div><div style="font-weight:800;color:${c || 'var(--negro)'}">${(v < 0 ? '−' : '') + pesoInv(Math.abs(v))}</div>${sub ? `<div style="font-size:11px;color:var(--acero)">${sub}</div>` : ''}</div>`;
+  const TH = 'padding:7px 8px;text-align:right;border-bottom:2px solid var(--borde);background:var(--fondo);color:var(--negro);text-transform:none;letter-spacing:0;font-size:12px;font-weight:800;font-family:inherit;';
+  const S = 'position:sticky;left:0;z-index:1;background:var(--blanco);', TD = 'padding:5px 8px;text-align:right;border-bottom:1px solid var(--borde)', TD0 = S + 'padding:5px 8px;text-align:left;border-bottom:1px solid var(--borde);white-space:normal;min-width:150px;max-width:210px';
+  const celdas = (vals, onclick, estilo) => meses.map(k => `<td style="${TD};${estilo || ''}${onclick && vals[k] ? ';cursor:pointer' : ''}" ${onclick && vals[k] ? `onclick="${onclick(k)}"` : ''}>${fmt(vals[k])}</td>`).join('') + `<td style="${TD};font-weight:700;background:#F7F7F2;${estilo || ''}">${fmt(sum12(vals))}</td><td style="${TD};color:var(--acero);${estilo || ''}">${fmt(vals.despues)}</td>`;
+  const filaCat = f => {
+    const abierta = flujoAbiertosInv.has(f.key), nSub = f.auto ? 0 : f.sub.length;
+    const titulo = `<td style="${TD0};font-weight:700;cursor:pointer" onclick="flujoToggleInv('${f.key}')">${f.auto ? '🔗' : abierta ? '▾' : '▸'} ${escA(f.t)}${nSub ? ` <span style="font-weight:400;color:var(--acero)">(${nSub})</span>` : ''}${f.auto && f.vencido.n ? `<div style="font-size:10px;font-weight:600;color:#B91C1C">incluye ${pesoInv(f.vencido.monto)} vencido</div>` : ''}</td>`;
+    let h = `<tr>${titulo}${celdas(f.vals, f.auto ? k => `flujoDetalleAutoInv('${f.key}','${k}')` : null, 'font-weight:700')}</tr>`;
+    if (!f.auto && abierta) {
+      if (f.cosecha) h += f.sub.map(s => { const i = flujoPlanesInv.findIndex(p => normNom(p.cultivo) === normNom(s.it.cultivo)); return `<tr><td style="${TD0};padding-left:20px;font-size:11.5px"><a href="#" onclick="flujoCosechaInv(${i});return false" style="color:var(--negro);text-decoration:none">${s.it.frutal ? '🌳' : '🌾'} ${escA(s.it.cultivo)} <span style="color:var(--acero)">· ${fmtHa(s.it.ha)} ha</span> ✏️</a></td>${celdas(s.vals, () => `flujoCosechaInv(${i})`, 'font-size:11.5px')}</tr>`; }).join('');
+      else h += f.sub.map(s => `<tr><td style="${TD0};padding-left:20px;font-size:11.5px"><a href="#" onclick="flujoItemInv('${s.it.id}');return false" style="color:var(--negro);text-decoration:none">${escA(s.it.concepto || '(sin concepto)')}${s.it.cultivo ? ` <span style="color:var(--acero)">· ${escA(s.it.cultivo)}</span>` : ''}${Number(s.it.repetir) ? ` <span style="color:var(--acero)">↻</span>` : ''} ✏️</a></td>${celdas(s.vals, k => `flujoCeldaInv('${s.it.id}','${k}')`, 'font-size:11.5px')}</tr>`).join('');
+      if (!f.cosecha) h += `<tr><td style="${TD0};padding-left:20px"><a href="#" onclick="flujoItemInv('','${f.key}');return false" style="font-size:11.5px;color:var(--verde);font-weight:700">+ Agregar en ${escA(f.t.toLowerCase())}</a></td>${meses.map(() => `<td style="${TD}"></td>`).join('')}<td style="${TD};background:#F7F7F2"></td><td style="${TD}"></td></tr>`;
+    }
+    return h;
+  };
+  const filaTot = (t, vals, c, fondo) => `<tr><td style="${TD0};font-weight:800;background:${fondo};color:${c || 'var(--negro)'}">${t}</td>${meses.map(k => `<td style="${TD};font-weight:800;background:${fondo};color:${(vals[k] || 0) < 0 ? '#B91C1C' : c || 'var(--negro)'}">${fmt(vals[k])}</td>`).join('')}<td style="${TD};font-weight:800;background:${fondo}">${vals.despues === undefined ? '' : fmt(meses.reduce((a, k) => a + (vals[k] || 0), 0))}</td><td style="${TD};background:${fondo};color:var(--acero)">${vals.despues === undefined ? '' : fmt(vals.despues)}</td></tr>`;
+  const sec = t => `<tr><td style="${S}padding:8px 8px 4px;font-size:11px;font-weight:800;letter-spacing:.08em;color:var(--acero);background:var(--blanco)">${t}</td><td colspan="${meses.length + 2}" style="background:var(--blanco)"></td></tr>`;
+  const saldoFila = (t, o, bold) => `<tr><td style="${TD0};${bold ? 'font-weight:800;background:#ECF1E8' : 'color:var(--acero)'}">${t}</td>${meses.map(k => `<td style="${TD};${bold ? 'font-weight:800;background:#ECF1E8;' : 'color:var(--acero);'}color:${o[k] < 0 ? '#B91C1C' : bold ? 'var(--verde)' : 'var(--acero)'}">${fmt(o[k])}</td>`).join('')}<td style="${TD};${bold ? 'background:#ECF1E8' : ''}"></td><td style="${TD};${bold ? 'background:#ECF1E8' : ''}"></td></tr>`;
+  const sinNada = !(flujoItemsInv || []).length;
+  cont.innerHTML = `<div class="panel-title">📈 Flujo de caja</div>
+    <div style="font-size:12px;color:var(--acero);margin-bottom:8px">Los 12 meses desde este mes. Lo de Cuentas por pagar entra solo (🔗), con lo vencido sumado al mes actual. Lo demás lo agregas tú, una vez o repetido.</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
+      <div style="flex:1;min-width:120px;background:var(--fondo);border-radius:8px;padding:8px;cursor:pointer" onclick="flujoSaldoInv()"><div style="font-size:11px;color:var(--acero)">Saldo en banco ✏️</div><div style="font-weight:800">${hayS ? (flujoCfgInv.saldo < 0 ? '−' : '') + pesoInv(Math.abs(flujoCfgInv.saldo)) : '<span style="color:#B45309">Ingrésalo</span>'}</div><div style="font-size:11px;color:var(--acero)">${hayS && flujoCfgInv.saldoFecha ? 'al ' + fmtFechaInv(flujoCfgInv.saldoFecha) : 'toca para cambiarlo'}</div></div>
+      ${(() => { const d = dolarCfgInv(); return `<div style="flex:1;min-width:120px;background:var(--fondo);border-radius:8px;padding:8px;cursor:pointer" onclick="flujoDolarInv()"><div style="font-size:11px;color:var(--acero)">💵 Dólar ✏️</div><div style="font-weight:800">${d.hoy ? pesoInv(d.hoy.valor) : '…'}</div><div style="font-size:11px;color:var(--acero)">${d.modo === 'fijo' ? 'fijo ' + pesoInv(d.fijo) : `en 11 meses ${pesoInv(d.eee.m11)}`}</div></div>`; })()}
+      ${caja('Ingresos 12 meses', sum12(F.totIng), 'var(--verde)')}${caja('Egresos 12 meses', sum12(F.totEgr), '#B91C1C')}${caja('Saldo en 12 meses', F.saldo[meses[11]], F.saldo[meses[11]] < 0 ? '#B91C1C' : '')}${caja('Mes más bajo', F.saldo[minK], F.saldo[minK] < 0 ? '#B91C1C' : '', nomMesCxpInv(minK))}
+    </div>
+    ${negK ? `<div style="background:#FEF2F2;color:#991B1B;border-radius:8px;padding:8px 10px;font-size:13px;margin-bottom:8px">⚠️ El saldo queda negativo en <strong>${nomMesCxpInv(negK).toLowerCase()}</strong> (${'−' + pesoInv(Math.abs(F.saldo[negK]))}).</div>` : ''}
+    ${!hayS ? `<div style="background:#FFFBEB;color:#92400E;border-radius:8px;padding:8px 10px;font-size:13px;margin-bottom:8px">Para que el saldo sea real, ingresa cuánto hay hoy en el banco: toca "Saldo en banco".</div>` : ''}
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px"><button class="btn-add" style="flex:1;min-width:140px;padding:9px;justify-content:center" onclick="flujoItemInv('','otros_ing')">➕ Otro ingreso</button><button class="btn-add" style="flex:1;min-width:140px;padding:9px;justify-content:center;background:#FEF2F2;color:#B91C1C" onclick="flujoItemInv('','fijos')">➖ Egreso</button><button class="btn-add" style="flex:1;min-width:140px;padding:9px;justify-content:center;background:var(--fondo);color:var(--negro)" onclick="flujoExcelInv()">⬇️ Excel</button></div>
+    ${bloqueCosecha}
+    ${sinNada ? `<div style="font-size:12px;color:var(--acero);margin-bottom:8px">Para empezar: completa arriba los <strong>ingresos por cosecha</strong> de cada cultivo, y agrega los <strong>gastos fijos</strong> (sueldos, imposiciones, luz: se repiten solos), los <strong>impuestos</strong> y las <strong>compras</strong> de la temporada que aún no se facturan.</div>` : ''}
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin:0 2px 4px;font-size:11px;color:var(--acero)"><span>Cifras en ${flujoMilesInv ? 'miles de pesos (M$)' : 'pesos'}. Toca un valor para ver el detalle o cambiarlo.</span><a href="#" onclick="flujoMilesSetInv(${!flujoMilesInv});return false" style="color:var(--verde);font-weight:700;white-space:nowrap">${flujoMilesInv ? 'Ver en pesos' : 'Ver en miles'}</a></div>
+    <div style="overflow-x:auto;border:1px solid var(--borde);border-radius:10px;-webkit-overflow-scrolling:touch">
+      <table style="border-collapse:separate;border-spacing:0;font-size:12px;white-space:nowrap;min-width:100%">
+        <thead><tr><th style="${TH}${S}text-align:left;z-index:2;background:var(--fondo)">Concepto</th>${meses.map(k => `<th style="${TH}${k === F.m0 ? 'color:var(--verde)' : ''}">${nomMesCortoInv(k)}</th>`).join('')}<th style="${TH}background:#ECECE4">Total 12 m</th><th style="${TH}color:var(--acero)">Después</th></tr></thead>
+        <tbody>
+          ${saldoFila('Saldo al inicio del mes', F.saldoIni)}
+          ${sec('INGRESOS')}${F.ing.map(filaCat).join('')}${filaTot('Total ingresos', F.totIng, 'var(--verde)', '#F7F7F2')}
+          ${sec('EGRESOS')}${F.egr.map(filaCat).join('')}${filaTot('Total egresos', F.totEgr, '#B91C1C', '#F7F7F2')}
+          ${filaTot('Flujo del mes', { ...F.neto }, '', 'var(--blanco)')}
+          ${saldoFila('Saldo al final del mes', F.saldo, true)}
+        </tbody>
+      </table>
+    </div>
+    <div style="font-size:11px;color:var(--acero);margin-top:6px">"Después" son pagos de Cuentas por pagar y movimientos de una sola vez que caen más allá de 12 meses. ↻ = se repite.</div>`;
+}
+window.flujoToggleInv = function(k) { if (flujoAbiertosInv.has(k)) flujoAbiertosInv.delete(k); else flujoAbiertosInv.add(k); renderFlujoInv(); };
+window.flujoMilesSetInv = function(v) { flujoMilesInv = !!v; try { localStorage.setItem('flujoPesos', v ? '0' : '1'); } catch (e) {} renderFlujoInv(); };
+// Detalle de una celda automática (documentos de Cuentas por pagar)
+window.flujoDetalleAutoInv = function(key, k) {
+  const F = calcularFlujoInv(), f = F.egr.find(x => x.key === key); if (!f) return;
+  const docs = (f.docs[k] || []).slice().sort(porVenceCxpInv);
+  const tit = k === 'despues' ? 'más adelante' : nomMesCxpInv(k).toLowerCase();
+  modalElegirDteInv(`🔗 ${escA(f.t)} · ${tit}`, `${docs.length} documento${docs.length === 1 ? '' : 's'} · ${pesoInv(docs.reduce((a, d) => a + saldoPagarInv(d), 0))}. Vienen de Cuentas por pagar: para cambiarlos, cambia ahí su vencimiento o regístralos como pagados.`,
+    docs.map(d => { const dv = diasVenceInv(d); return `<div class="config-item" style="flex-direction:column;align-items:stretch;gap:2px"><div style="display:flex;justify-content:space-between;gap:8px"><span style="min-width:0;overflow-wrap:anywhere"><strong>${escA(d.razonSocial || '')}</strong> · ${escA(etiquetaDocInv(d))}</span><strong style="white-space:nowrap">${pesoInv(saldoPagarInv(d))}</strong></div><div style="font-size:12px;color:${dv !== null && dv < 0 ? '#B91C1C' : 'var(--acero)'}">${d.vence ? (dv < 0 ? `Venció el ${fmtFechaInv(d.vence)}` : `Vence ${fmtFechaInv(d.vence)}`) : 'Sin fecha de vencimiento'}</div></div>`; }));
+}
+// Cambiar el monto de un movimiento solo en un mes
+window.flujoCeldaInv = function(id, k) {
+  const it = (flujoItemsInv || []).find(x => x.id === id); if (!it) return;
+  if (!Number(it.repetir) || k === 'despues') { flujoItemInv(id); return; }
+  const actual = (it.ajustes || {})[k] != null ? Number(it.ajustes[k]) : Number(it.monto) || 0, ajustado = (it.ajustes || {})[k] != null;
+  modalElegirDteInv(`${escA(it.concepto || '')} · ${nomMesCxpInv(k).toLowerCase()}`, `Se repite ${REPETIR_FLUJO_INV.find(r => r[0] === Number(it.repetir))[1].toLowerCase()} por ${pesoInv(it.monto)}. Aquí cambias solo este mes.`, [`
+    <label style="font-size:12px;text-transform:none;letter-spacing:0;font-weight:600">Monto de ${nomMesCxpInv(k).toLowerCase()} ($)</label><input type="number" id="fc-monto" value="${actual}" inputmode="numeric" style="width:100%;box-sizing:border-box;margin-bottom:8px">
+    <button class="btn btn-verde" style="width:100%;justify-content:center" onclick="flujoAjusteInv('${id}','${k}', document.getElementById('fc-monto').value)">✓ Guardar solo este mes</button>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">${ajustado ? `<button class="btn-add" style="flex:1;padding:8px;background:var(--fondo);color:var(--negro)" onclick="flujoAjusteInv('${id}','${k}', null)">↺ Volver a ${pesoInv(it.monto)}</button>` : ''}<button class="btn-add" style="flex:1;padding:8px;background:var(--fondo);color:var(--negro)" onclick="flujoAjusteInv('${id}','${k}', 0)">Este mes no va</button><button class="btn-add" style="flex:1;padding:8px;background:var(--fondo);color:var(--negro)" onclick="flujoItemInv('${id}')">✏️ Editar todo</button></div>`]);
+}
+window.flujoAjusteInv = async function(id, k, v) {
+  const it = (flujoItemsInv || []).find(x => x.id === id); if (!it) return;
+  const aj = { ...(it.ajustes || {}) }; if (v === null) delete aj[k]; else aj[k] = Math.round(Number(v) || 0);
+  try { await updateDoc(doc(dbInv, 'flujo_caja', id), { ajustes: aj, editadoPor: currentUser || '', editadoTs: Date.now() }); const m = document.getElementById('dte-elegir'); if (m) m.remove(); }
+  catch (e) { toast('Error: ' + e.message, false); }
+}
+// Agregar o editar un movimiento a mano
+window.flujoItemInv = function(id, cat) {
+  const it = id ? (flujoItemsInv || []).find(x => x.id === id) : null; if (id && !it) return;
+  cat = it ? it.cat : (cat || 'fijos');
+  const inp = 'width:100%;box-sizing:border-box;margin-bottom:8px', L = t => `<label style="font-size:12px;text-transform:none;letter-spacing:0;font-weight:600">${t}</label>`, v = (k, d = '') => escA(it && it[k] != null ? it[k] : d);
+  const grupo = (tipo, t) => `<optgroup label="${t}">${Object.entries(CATS_FLUJO_INV).filter(([, c]) => c.tipo === tipo).map(([k, c]) => `<option value="${k}"${k === cat ? ' selected' : ''}>${c.t}</option>`).join('')}</optgroup>`;
+  const cultivos = ((typeof config !== 'undefined' && config && config.centros) || []).filter(c => !/otros|especificar|energ/i.test(c));
+  modalElegirDteInv(it ? '✏️ Editar movimiento' : CATS_FLUJO_INV[cat].tipo === 'ing' ? '➕ Agregar ingreso' : '➖ Agregar egreso', 'Si se repite (sueldos, imposiciones, una cuota), ingrésalo una vez y elige cada cuánto. Después puedes cambiar el monto de un mes en particular tocando la celda.', [`
+    ${L('Categoría')}<select id="fi-cat" data-no-mejorar onchange="flujoCatCambioInv()" style="${inp}">${grupo('ing', 'Ingresos')}${grupo('egr', 'Egresos')}</select>
+    ${L('Concepto')}<input type="text" id="fi-concepto" value="${v('concepto')}" placeholder="${escA(CATS_FLUJO_INV[cat].ej)}" style="${inp}">
+    <div id="fi-cultivo-box" style="display:${cat === 'ventas' ? 'block' : 'none'}">${L('Cultivo')}<input type="text" id="fi-cultivo" list="fi-cultivos" value="${v('cultivo')}" placeholder="Ej: Avellano, Trigo" style="${inp}"><datalist id="fi-cultivos">${cultivos.map(c => `<option value="${escA(c)}">`).join('')}</datalist></div>
+    <div style="display:flex;gap:8px"><div style="flex:1;min-width:0">${L('Monto ($)')}<input type="number" id="fi-monto" value="${v('monto')}" inputmode="numeric" style="${inp}"></div>
+      <div style="flex:1;min-width:0">${L('Mes')}<input type="month" id="fi-mes" value="${v('mes', hoyIsoInv().slice(0, 7))}" style="${inp}"></div></div>
+    <div style="display:flex;gap:8px"><div style="flex:1;min-width:0">${L('¿Se repite?')}<select id="fi-rep" data-no-mejorar onchange="document.getElementById('fi-hasta-box').style.visibility=this.value==='0'?'hidden':'visible'" style="${inp}">${REPETIR_FLUJO_INV.map(([k, t]) => `<option value="${k}"${String(k) === String(it ? Number(it.repetir) || 0 : 0) ? ' selected' : ''}>${t}</option>`).join('')}</select></div>
+      <div id="fi-hasta-box" style="flex:1;min-width:0;visibility:${it && Number(it.repetir) ? 'visible' : 'hidden'}">${L('Hasta (opcional)')}<input type="month" id="fi-hasta" value="${v('hasta')}" style="${inp}"></div></div>
+    ${L('Nota (opcional)')}<input type="text" id="fi-nota" value="${v('nota')}" style="${inp}">
+    <button class="btn btn-verde" id="fi-guardar" style="width:100%;justify-content:center" onclick="flujoGuardarItemInv('${it ? it.id : ''}')">✓ Guardar</button>
+    ${it ? `<button class="btn-add" style="width:100%;margin-top:8px;background:var(--fondo);color:#B91C1C" onclick="flujoBorrarItemInv('${it.id}')">🗑 Eliminar</button>` : ''}`]);
+}
+window.flujoCatCambioInv = function() {
+  const c = document.getElementById('fi-cat').value, b = document.getElementById('fi-cultivo-box'), i = document.getElementById('fi-concepto');
+  if (b) b.style.display = c === 'ventas' ? 'block' : 'none'; if (i && CATS_FLUJO_INV[c]) i.placeholder = CATS_FLUJO_INV[c].ej;
+}
+window.flujoGuardarItemInv = async function(id) {
+  const g = k => ((document.getElementById('fi-' + k) || {}).value || '').trim();
+  const cat = g('cat'), concepto = g('concepto'), monto = Math.round(Number(g('monto')) || 0), mes = g('mes'), repetir = Number(g('rep')) || 0, hasta = repetir ? g('hasta') : '';
+  if (!CATS_FLUJO_INV[cat]) { toast('Elige la categoría', false); return; }
+  if (!concepto) { toast('Indica el concepto', false); return; }
+  if (!(monto > 0)) { toast('Indica el monto', false); return; }
+  if (!/^\d{4}-\d{2}$/.test(mes)) { toast('Indica el mes (año y mes)', false); return; }
+  if (hasta && (!/^\d{4}-\d{2}$/.test(hasta) || hasta < mes)) { toast('"Hasta" debe ser un mes igual o posterior', false); return; }
+  const it = id ? (flujoItemsInv || []).find(x => x.id === id) : null;
+  const data = { cat, concepto, cultivo: cat === 'ventas' ? g('cultivo') : '', monto, mes, repetir, hasta, nota: g('nota'), ajustes: it ? it.ajustes || {} : {}, por: it ? it.por || currentUser || '' : currentUser || '', creado: it ? it.creado || Date.now() : Date.now(), editadoPor: currentUser || '', editadoTs: Date.now() };
+  const bt = document.getElementById('fi-guardar'); if (bt) bt.disabled = true;
+  try {
+    await setDoc(doc(dbInv, 'flujo_caja', id || 'f_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)), data);
+    flujoAbiertosInv.add(cat);
+    const m = document.getElementById('dte-elegir'); if (m) m.remove();
+    toast('✓ Guardado en el flujo de caja', true);
+  } catch (e) { toast('Error: ' + e.message, false); if (bt) bt.disabled = false; }
+}
+window.flujoBorrarItemInv = async function(id) {
+  const it = (flujoItemsInv || []).find(x => x.id === id); if (!it) return;
+  if (!confirm(`¿Eliminar "${it.concepto}" del flujo de caja?`)) return;
+  try { await deleteDoc(doc(dbInv, 'flujo_caja', id)); const m = document.getElementById('dte-elegir'); if (m) m.remove(); } catch (e) { toast('Error: ' + e.message, false); }
+}
+window.flujoSaldoInv = function() {
+  const c = flujoCfgInv || {};
+  modalElegirDteInv('🏦 Saldo en banco', 'Cuánto hay hoy en la cuenta corriente. El flujo parte de este saldo; actualízalo cuando quieras (por ejemplo, cada semana con la cartola).', [`
+    <label style="font-size:12px;text-transform:none;letter-spacing:0;font-weight:600">Saldo ($)</label><input type="number" id="fs-saldo" value="${c.saldo != null ? escA(c.saldo) : ''}" inputmode="numeric" style="width:100%;box-sizing:border-box;margin-bottom:8px">
+    <label style="font-size:12px;text-transform:none;letter-spacing:0;font-weight:600">Al día</label><input type="date" id="fs-fecha" value="${escA(c.saldoFecha || hoyIsoInv())}" style="width:100%;box-sizing:border-box;margin-bottom:8px">
+    <button class="btn btn-verde" style="width:100%;justify-content:center" onclick="flujoGuardarSaldoInv()">✓ Guardar</button>`]);
+}
+window.flujoGuardarSaldoInv = async function() {
+  const t = (document.getElementById('fs-saldo') || {}).value, f = (document.getElementById('fs-fecha') || {}).value;
+  if (t === '' || isNaN(Number(t))) { toast('Indica el saldo', false); return; }
+  try { await setDoc(doc(dbInv, 'flujo_caja', '_config'), { saldo: Math.round(Number(t)), saldoFecha: f || hoyIsoInv(), saldoPor: currentUser || '', saldoTs: Date.now() }, { merge: true }); const m = document.getElementById('dte-elegir'); if (m) m.remove(); }
+  catch (e) { toast('Error: ' + e.message, false); }
+}
+window.flujoExcelInv = function() {
+  if (typeof XLSX === 'undefined') { toast('Todavía está cargando la herramienta de Excel; intenta en unos segundos', false); return; }
+  const F = calcularFlujoInv(), { meses } = F, cab = ['Concepto', ...meses.map(nomMesCxpInv), 'Total 12 meses', 'Después'];
+  const fila = (t, o) => [t, ...meses.map(k => Math.round(o[k] || 0)), Math.round(meses.reduce((a, k) => a + (o[k] || 0), 0)), o.despues === undefined ? '' : Math.round(o.despues || 0)];
+  const filas = [cab, fila('Saldo al inicio del mes', { ...F.saldoIni, despues: undefined }), ['INGRESOS']];
+  const cat = f => { filas.push(fila(f.t, f.vals)); if (!f.auto) f.sub.forEach(s => filas.push(fila('   ' + (f.cosecha ? `${s.it.cultivo} (${s.it.ha} ha × ${s.it.rend} ${s.it.unidad}/ha × $${s.it.precio})` : (s.it.concepto || '') + (s.it.cultivo ? ' · ' + s.it.cultivo : '')), s.vals))); };
+  F.ing.forEach(cat); filas.push(fila('Total ingresos', F.totIng), ['EGRESOS']); F.egr.forEach(cat);
+  filas.push(fila('Total egresos', F.totEgr), fila('Flujo del mes', { ...F.neto, despues: undefined }), fila('Saldo al final del mes', { ...F.saldo, despues: undefined }));
+  const wb = XLSX.utils.book_new(), ws = XLSX.utils.aoa_to_sheet(filas); ws['!cols'] = [{ wch: 42 }, ...meses.map(() => ({ wch: 14 })), { wch: 16 }, { wch: 14 }];
+  XLSX.utils.book_append_sheet(wb, ws, 'Flujo de caja'); XLSX.writeFile(wb, `flujo_de_caja_${hoyIsoInv()}.xlsx`);
+}
+// ── 🌾 Ingresos por cosecha: hectáreas de cada cultivo y huerto (desde Campo, confirmadas o corregidas) × rendimiento × precio,
+// repartido en los meses de cosecha (con % si son varios) y corrido por el desfase del pago ──
+const UNIDADES_COSECHA_INV = [['kg', 'kg'], ['ton', 'toneladas'], ['qqm', 'quintales (qqm)'], ['caja', 'cajas'], ['bin', 'bins'], ['un', 'unidades']];
+const MESES_ABR_INV = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+let flujoCampoInv = false, flujoPlanesInv = [];
+function cargarCampoFlujoInv() {
+  if (flujoCampoInv) return; flujoCampoInv = 'cargando';
+  Promise.all([cargarCultivosActualesPotreros(), cargarLotesTemporada()]).catch(e => console.warn('campo flujo', e)).then(() => { flujoCampoInv = true; const tc = document.getElementById('tc-cont-flujo'); if (tc && tc.classList.contains('active')) renderFlujoInv(); });
+}
+// Hectáreas por cultivo según Campo: huertos por su especie; potreros anuales por sus lotes de esta temporada o su última siembra
+function haPorCultivoCampoInv() {
+  const anio = new Date().getFullYear(), m = new Map();
+  const add = (cultivo, ha, donde, frutal) => { if (!(ha > 0)) return; const k = String(cultivo || 'Sin cultivo definido').trim(); const x = m.get(k) || { cultivo: k, ha: 0, partes: [], frutal: false }; x.ha += ha; x.partes.push({ donde, ha }); x.frutal = x.frutal || !!frutal; m.set(k, x); };
+  (potrerosConfig || []).forEach(p => {
+    const ha = Number(p.hectareas) || 0;
+    if (p.tipo === 'frutal') { add(p.cultivoPermanente, ha, p.nombre, true); return; }
+    const ls = lotesDe(p.nombre, anio);
+    if (ls) ls.forEach(l => add(l.cultivo, areaHaPoligono(l.poligono), `${p.nombre} · ${l.nombre}`));
+    else { const c = cultivoActualPorPotrero[p.nombre]; add(c && c.cultivo, ha, p.nombre); }
+  });
+  m.forEach(x => { x.ha = Math.round(x.ha * 100) / 100; });
+  return m;
+}
+function planesCosechaInv() {
+  const campo = haPorCultivoCampoInv(), guardados = (flujoItemsInv || []).filter(x => x.tipo === 'cosecha'), out = [];
+  guardados.forEach(g => { const c = [...campo.values()].find(x => normNom(x.cultivo) === normNom(g.cultivo)); out.push({ ...g, haCampo: c ? c.ha : null, partes: c ? c.partes : [], frutal: c ? c.frutal : !!g.frutal }); });
+  campo.forEach(c => { if (!guardados.some(g => normNom(g.cultivo) === normNom(c.cultivo))) out.push({ id: '', cultivo: c.cultivo, ha: c.ha, haCampo: c.ha, partes: c.partes, frutal: c.frutal, sinPlan: true }); });
+  return out.sort((a, b) => (a.sinPlan ? 1 : 0) - (b.sinPlan ? 1 : 0) || (Number(b.ha) || 0) - (Number(a.ha) || 0));
+}
+// ── 💵 Dólar: el de hoy (dólar observado, vía mindicador.cl) y el esperado (Encuesta de Expectativas Económicas del Banco Central) ──
+// La encuesta se publica cada mes (cerca del día 10) con el dólar esperado a 2 y a 11 meses; entre medio se interpola y después queda fijo.
+const EEE_DOLAR_INV = { m2: 960, m11: 930, mes: '2026-11', fuente: 'Encuesta de Expectativas Económicas del Banco Central, noviembre 2026' };
+let flujoDolarHoyInv = null, flujoDolarBuscandoInv = false, flujoDolarEstadoInv = '';
+const mesesFlujoInv = () => { const m0 = hoyIsoInv().slice(0, 7); return Array.from({ length: 12 }, (_, i) => mesMasInv(m0, i)); };
+function dolarCfgInv() {
+  const c = flujoCfgInv || {}, eee = c.eee && c.eee.m11 ? c.eee : EEE_DOLAR_INV;
+  const hoy = flujoDolarHoyInv && (!c.dolarFecha || flujoDolarHoyInv.fecha >= c.dolarFecha) ? flujoDolarHoyInv : (c.dolarActual ? { valor: c.dolarActual, fecha: c.dolarFecha || '' } : flujoDolarHoyInv);
+  return { modo: c.dolarModo === 'fijo' ? 'fijo' : 'eee', fijo: Number(c.dolarFijo) || 0, eee, hoy };
+}
+// Dólar para el mes i del horizonte (0 = este mes)
+function dolarMesInv(i) {
+  const d = dolarCfgInv(), a0 = d.hoy ? Number(d.hoy.valor) : Number(d.eee.m2) || 0;
+  if (d.modo === 'fijo' && d.fijo > 0) return d.fijo;
+  const m2 = Number(d.eee.m2) || a0, m11 = Number(d.eee.m11) || m2;
+  if (i <= 0) return a0; if (i <= 2) return a0 + (m2 - a0) * i / 2; if (i <= 11) return m2 + (m11 - m2) * (i - 2) / 9; return m11;
+}
+// Primero el Banco Central (función /api/dolar en Netlify, con la clave de la API guardada allá): trae el dólar de hoy y la encuesta;
+// si la encuesta es más nueva que la guardada, la reemplaza sola. Si no está configurada, el dólar de hoy sale de mindicador.cl.
+function buscarDolarHoyInv() {
+  if (flujoDolarHoyInv || flujoDolarBuscandoInv) return; flujoDolarBuscandoInv = true;
+  const redibujar = () => { const tc = document.getElementById('tc-cont-flujo'); if (tc && tc.classList.contains('active')) renderFlujoInv(); };
+  fetch('/api/dolar').then(r => r.ok || r.status === 502 ? r.json() : Promise.reject(new Error('sin función'))).then(j => {
+    if (!j || !j.ok) { flujoDolarEstadoInv = j && j.codigo === 'SIN_CLAVE' ? 'sinclave' : 'error: ' + ((j && j.error) || ''); throw new Error('bcch'); }
+    flujoDolarEstadoInv = 'bcch';
+    const c = flujoCfgInv || {}, upd = {};
+    if (j.hoy && j.hoy.valor) { flujoDolarHoyInv = { valor: j.hoy.valor, fecha: j.hoy.fecha }; if (!c.dolarFecha || j.hoy.fecha > c.dolarFecha) Object.assign(upd, { dolarActual: j.hoy.valor, dolarFecha: j.hoy.fecha, dolarFuente: 'Dólar observado (Banco Central)' }); }
+    const eeeAnt = c.eee && c.eee.m11 ? c.eee : EEE_DOLAR_INV;
+    if (j.eee && j.eee.m11 && j.eee.mes && j.eee.mes > (eeeAnt.mes || '')) upd.eee = { m2: j.eee.m2 || j.eee.m11, m11: j.eee.m11, ...(j.eee.m23 ? { m23: j.eee.m23 } : {}), mes: j.eee.mes, auto: true, fuente: `Encuesta de Expectativas Económicas del Banco Central, ${nomMesCxpInv(j.eee.mes).toLowerCase()} (se actualiza sola)` };
+    if (Object.keys(upd).length) setDoc(doc(dbInv, 'flujo_caja', '_config'), upd, { merge: true }).catch(() => {});
+    redibujar();
+  }).catch(() => fetch('https://mindicador.cl/api/dolar').then(r => r.json()).then(j => {
+    const x = j && j.serie && j.serie[0]; if (!x) return;
+    flujoDolarHoyInv = { valor: Math.round(Number(x.valor) * 100) / 100, fecha: String(x.fecha).slice(0, 10) };
+    const c = flujoCfgInv || {};
+    if (!c.dolarFecha || flujoDolarHoyInv.fecha > c.dolarFecha) setDoc(doc(dbInv, 'flujo_caja', '_config'), { dolarActual: flujoDolarHoyInv.valor, dolarFecha: flujoDolarHoyInv.fecha, dolarFuente: 'Dólar observado (mindicador.cl)' }, { merge: true }).catch(() => {});
+    redibujar();
+  })).catch(e => console.warn('dólar', e)).finally(() => { flujoDolarBuscandoInv = false; });
+}
+window.flujoDolarInv = function() {
+  const d = dolarCfgInv(), inp = 'width:100%;box-sizing:border-box;margin-bottom:8px', L = t => `<label style="font-size:12px;text-transform:none;letter-spacing:0;font-weight:600">${t}</label>`;
+  modalElegirDteInv('💵 Dólar para el flujo', `Hoy: <strong>${d.hoy ? pesoInv(d.hoy.valor) : 'sin dato'}</strong>${d.hoy && d.hoy.fecha ? ` (dólar observado del ${fmtFechaInv(d.hoy.fecha)}, se actualiza solo)` : ''}. Para los meses que vienen se usa lo que esperan los economistas en la encuesta mensual del Banco Central, o un valor fijo.`, [`
+    <label style="display:flex;gap:8px;align-items:center;font-size:13px;text-transform:none;letter-spacing:0;font-weight:600;margin:0 0 6px;cursor:pointer"><input type="radio" name="fd-modo" value="eee" ${d.modo === 'eee' ? 'checked' : ''} style="width:auto;margin:0">Según la encuesta del Banco Central</label>
+    <div style="display:flex;gap:8px;margin-left:24px"><div style="flex:1;min-width:0">${L('Esperado en 2 meses ($)')}<input type="number" id="fd-m2" value="${escA(d.eee.m2)}" style="${inp}"></div><div style="flex:1;min-width:0">${L('Esperado en 11 meses ($)')}<input type="number" id="fd-m11" value="${escA(d.eee.m11)}" style="${inp}"></div></div>
+    <div style="font-size:11px;color:var(--acero);margin:-4px 0 10px 24px">${escA(d.eee.fuente || '')}${d.eee.m23 ? ` · a 23 meses ${pesoInv(d.eee.m23)}` : ''}.<br>${flujoDolarEstadoInv === 'bcch' ? '✅ Conectado al Banco Central: cuando sale la encuesta nueva (cerca del día 10), se actualiza sola.' : flujoDolarEstadoInv === 'sinclave' ? '⚠️ Falta la clave de la API del Banco Central en Netlify (BCCH_USER y BCCH_PASS): mientras tanto, actualiza estos valores a mano.' : 'La actualización automática desde el Banco Central no está activa: actualiza estos valores a mano cuando salga la encuesta (cerca del día 10).'}</div>
+    <label style="display:flex;gap:8px;align-items:center;font-size:13px;text-transform:none;letter-spacing:0;font-weight:600;margin:0 0 6px;cursor:pointer"><input type="radio" name="fd-modo" value="fijo" ${d.modo === 'fijo' ? 'checked' : ''} style="width:auto;margin:0">Un valor fijo para todos los meses</label>
+    <div style="margin-left:24px">${L('Dólar fijo ($)')}<input type="number" id="fd-fijo" value="${d.fijo || ''}" style="${inp}"></div>
+    <div style="font-size:12px;color:var(--acero);margin-bottom:10px">Con estos valores: ${mesesFlujoInv().filter((_, i) => [0, 2, 5, 8, 11].includes(i)).map(k => `${nomMesCortoInv(k)} ${pesoInv(Math.round(dolarMesInv(mesesFlujoInv().indexOf(k))))}`).join(' · ')}</div>
+    <button class="btn btn-verde" style="width:100%;justify-content:center" onclick="flujoGuardarDolarInv()">✓ Guardar</button>`]);
+}
+window.flujoGuardarDolarInv = async function() {
+  const g = id => Number((document.getElementById(id) || {}).value) || 0, modo = (document.querySelector('input[name="fd-modo"]:checked') || {}).value || 'eee';
+  if (modo === 'fijo' && !(g('fd-fijo') > 0)) { toast('Indica el dólar fijo', false); return; }
+  if (modo === 'eee' && !(g('fd-m2') > 0 && g('fd-m11') > 0)) { toast('Indica el dólar esperado a 2 y 11 meses', false); return; }
+  const c = flujoCfgInv || {}, eeeAnt = c.eee && c.eee.m11 ? c.eee : EEE_DOLAR_INV, cambio = g('fd-m2') !== Number(eeeAnt.m2) || g('fd-m11') !== Number(eeeAnt.m11);
+  const eee = { m2: g('fd-m2'), m11: g('fd-m11'), mes: cambio ? hoyIsoInv().slice(0, 7) : eeeAnt.mes, fuente: cambio ? `Ingresado por ${currentUser || 'el usuario'} el ${fmtFechaInv(hoyIsoInv())}` : eeeAnt.fuente };
+  try { await setDoc(doc(dbInv, 'flujo_caja', '_config'), { dolarModo: modo, dolarFijo: g('fd-fijo'), eee }, { merge: true }); const m = document.getElementById('dte-elegir'); if (m) m.remove(); } catch (e) { toast('Error: ' + e.message, false); }
+}
+const baseCosechaInv = p => (Number(p.ha) || 0) * (Number(p.rend) || 0) * (Number(p.precio) || 0);
+const planCompletoInv = p => !p.sinPlan && p.activo !== false && baseCosechaInv(p) > 0 && (p.cosecha || []).length;
+// En qué mes del horizonte cae cada pago (mes de cosecha + desfase), y cuánto en pesos (si el precio es en dólares, con el dólar de ese mes)
+function pagosCosechaInv(p, meses) {
+  const out = {}, total = baseCosechaInv(p);
+  (p.cosecha || []).forEach(c => { const mp = ((Number(c.mes) - 1 + (Number(p.desfase) || 0)) % 12) + 1, i = meses.findIndex(x => Number(x.slice(5, 7)) === mp); if (i < 0) return; const k = meses[i]; out[k] = (out[k] || 0) + total * (Number(c.pct) || 0) / 100 * (p.moneda === 'USD' ? dolarMesInv(i) : 1); });
+  return out;
+}
+const ingresoCosechaInv = p => Object.values(pagosCosechaInv(p, mesesFlujoInv())).reduce((a, b) => a + b, 0);
+window.flujoCosechaInv = function(i) {
+  const p = i === 'nuevo' ? { cultivo: '', ha: '', nuevo: true, partes: [] } : flujoPlanesInv[i]; if (!p) return;
+  const inp = 'width:100%;box-sizing:border-box;margin-bottom:8px', L = t => `<label style="font-size:12px;text-transform:none;letter-spacing:0;font-weight:600">${t}</label>`, v = (k, d = '') => escA(p[k] != null && p[k] !== '' ? p[k] : d);
+  const sel = new Set((p.cosecha || []).map(c => Number(c.mes))), pct = Object.fromEntries((p.cosecha || []).map(c => [Number(c.mes), c.pct]));
+  window.__cosEd = { i, pct, nuevo: !!p.nuevo };
+  const partes = (p.partes || []).length ? `<details style="font-size:12px;color:var(--acero);margin:-4px 0 8px"><summary style="cursor:pointer">Según Campo: <strong>${String(p.haCampo).replace('.', ',')} ha</strong> en ${p.partes.length} potrero${p.partes.length === 1 ? '' : 's'}${p.haCampo != null && Number(p.ha) !== Number(p.haCampo) && !p.sinPlan ? ` <span style="color:#B45309">(tú tienes ${String(p.ha).replace('.', ',')} ha)</span>` : ''}</summary>${p.partes.map(x => `<div>· ${escA(x.donde)}: ${x.ha.toFixed(2).replace('.', ',')} ha</div>`).join('')}</details>` : p.nuevo ? '' : '<div style="font-size:12px;color:#B45309;margin:-4px 0 8px">Este cultivo ya no aparece en Campo: revisa las hectáreas.</div>';
+  modalElegirDteInv(`🌾 ${p.nuevo ? 'Agregar cultivo' : escA(p.cultivo)}`, 'Ingreso estimado = hectáreas × rendimiento por ha × precio. Se reparte en los meses de cosecha y entra al flujo cuando pagan.', [`
+    ${p.nuevo ? `${L('Cultivo o huerto')}<input type="text" id="fc-cultivo" list="fc-cultivos" placeholder="Ej: Avellano, Trigo" style="${inp}"><datalist id="fc-cultivos">${(cultivosCampoConfig || []).map(c => `<option value="${escA(c)}">`).join('')}</datalist>` : ''}
+    <div style="font-size:13px;font-weight:800;margin:2px 0 6px">1 · Hectáreas</div>
+    ${L('Hectáreas que van a cosecha')}<input type="number" id="fc-ha" value="${v('ha')}" step="0.01" inputmode="decimal" oninput="flujoCosechaPrevInv()" style="${inp}">
+    ${partes}
+    <label style="display:flex;gap:8px;align-items:center;font-size:13px;text-transform:none;letter-spacing:0;font-weight:600;margin:0 0 10px;cursor:pointer"><input type="checkbox" id="fc-conf" ${p.haConfirmada ? 'checked' : ''} style="width:auto;margin:0">Confirmo estas hectáreas</label>
+    <div style="font-size:13px;font-weight:800;margin:2px 0 6px">2 · Rendimiento y precio estimados</div>
+    <div style="display:flex;gap:8px"><div style="flex:1;min-width:0">${L('Rendimiento por ha')}<input type="number" id="fc-rend" value="${v('rend')}" step="any" inputmode="decimal" oninput="flujoCosechaPrevInv()" style="${inp}"></div>
+      <div style="flex:1;min-width:0">${L('Unidad')}<select id="fc-unidad" data-no-mejorar onchange="flujoCosechaPrevInv()" style="${inp}">${UNIDADES_COSECHA_INV.map(([k, t]) => `<option value="${k}"${k === (p.unidad || 'kg') ? ' selected' : ''}>${t}</option>`).join('')}</select></div></div>
+    <div style="display:flex;gap:8px"><div style="flex:2;min-width:0"><label id="fc-precio-lbl" style="font-size:12px;text-transform:none;letter-spacing:0;font-weight:600">Precio estimado ($ por ${p.unidad || 'kg'})</label><input type="number" id="fc-precio" value="${v('precio')}" step="any" inputmode="decimal" oninput="flujoCosechaPrevInv()" style="${inp}"></div>
+      <div style="flex:1;min-width:0">${L('Moneda')}<select id="fc-moneda" data-no-mejorar onchange="flujoCosechaPrevInv()" style="${inp}"><option value="CLP"${p.moneda === 'USD' ? '' : ' selected'}>Pesos</option><option value="USD"${p.moneda === 'USD' ? ' selected' : ''}>Dólares</option></select></div></div>
+    <div style="font-size:13px;font-weight:800;margin:2px 0 6px">3 · Cosecha y pago</div>
+    ${L('Meses de cosecha (uno o más)')}<div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px">${MESES_ABR_INV.map((t, k) => `<label style="display:flex;gap:4px;align-items:center;font-size:12px;text-transform:none;letter-spacing:0;font-weight:600;margin:0;padding:6px 9px;border:1px solid var(--borde);border-radius:999px;cursor:pointer"><input type="checkbox" class="fc-mes" value="${k + 1}" ${sel.has(k + 1) ? 'checked' : ''} onchange="flujoCosechaMesesInv()" style="width:auto;margin:0">${t}</label>`).join('')}</div>
+    <div id="fc-pcts"></div>
+    ${L('¿Cuándo pagan, respecto de la cosecha?')}<select id="fc-desf" data-no-mejorar onchange="flujoCosechaPrevInv()" style="${inp}">${Array.from({ length: 13 }, (_, n) => `<option value="${n}"${n === (Number(p.desfase) || 0) ? ' selected' : ''}>${n === 0 ? 'El mismo mes de la cosecha' : n === 1 ? '1 mes después' : n + ' meses después'}</option>`).join('')}</select>
+    <label style="display:flex;gap:8px;align-items:center;font-size:13px;text-transform:none;letter-spacing:0;font-weight:600;margin:0 0 8px;cursor:pointer"><input type="checkbox" id="fc-activo" ${p.activo === false ? '' : 'checked'} style="width:auto;margin:0">Incluir en el flujo de caja</label>
+    ${L('Nota (opcional)')}<input type="text" id="fc-nota" value="${v('nota')}" placeholder="Ej: precio exportadora, 70% calibre" style="${inp}">
+    <div id="fc-prev" style="background:var(--fondo);border-radius:8px;padding:8px 10px;font-size:13px;margin-bottom:10px"></div>
+    <button class="btn btn-verde" id="fc-guardar" style="width:100%;justify-content:center" onclick="flujoGuardarCosechaInv()">✓ Guardar</button>
+    ${p.id ? `<button class="btn-add" style="width:100%;margin-top:8px;background:var(--fondo);color:#B91C1C" onclick="flujoBorrarCosechaInv('${p.id}')">🗑 Borrar la estimación</button>` : ''}`]);
+  flujoCosechaMesesInv(true);
+}
+// Con un mes, todo ahí; con varios, pide el % de cada uno (parte repartido en partes iguales)
+window.flujoCosechaMesesInv = function(inicial) {
+  const ed = window.__cosEd || { pct: {} }, ms = [...document.querySelectorAll('.fc-mes:checked')].map(c => Number(c.value)), el = document.getElementById('fc-pcts'); if (!el) return;
+  if (!inicial || !ms.every(m => ed.pct[m] != null)) { const base = Math.floor(100 / (ms.length || 1)); ms.forEach((m, j) => { ed.pct[m] = j === ms.length - 1 ? 100 - base * (ms.length - 1) : base; }); }
+  el.innerHTML = ms.length > 1 ? `<div style="font-size:12px;font-weight:600;margin-bottom:4px">¿Qué % se cosecha cada mes?</div><div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px">${ms.map(m => `<label style="display:flex;gap:4px;align-items:center;font-size:12px;text-transform:none;letter-spacing:0;font-weight:600;margin:0">${MESES_ABR_INV[m - 1]}<input type="number" class="fc-pct" data-m="${m}" value="${ed.pct[m]}" min="0" max="100" inputmode="numeric" oninput="window.__cosEd.pct[${m}]=Number(this.value)||0;flujoCosechaPrevInv()" style="width:62px;margin:0;padding:4px 6px">%</label>`).join('')}</div><div id="fc-pct-suma" style="font-size:12px;margin-bottom:8px"></div>` : '';
+  flujoCosechaPrevInv();
+}
+function leerCosechaFormInv() {
+  const g = id => ((document.getElementById(id) || {}).value || '').trim(), ed = window.__cosEd || { pct: {} };
+  const ms = [...document.querySelectorAll('.fc-mes:checked')].map(c => Number(c.value));
+  return { ha: Number(String(g('fc-ha')).replace(',', '.')) || 0, rend: Number(String(g('fc-rend')).replace(',', '.')) || 0, unidad: g('fc-unidad') || 'kg', precio: Number(String(g('fc-precio')).replace(',', '.')) || 0,
+    cosecha: ms.map(m => ({ mes: m, pct: ms.length === 1 ? 100 : Number(ed.pct[m]) || 0 })), desfase: Number(g('fc-desf')) || 0, moneda: g('fc-moneda') === 'USD' ? 'USD' : 'CLP' };
+}
+window.flujoCosechaPrevInv = function() {
+  const el = document.getElementById('fc-prev'); if (!el) return;
+  const x = leerCosechaFormInv(), lbl = document.getElementById('fc-precio-lbl'); if (lbl) lbl.textContent = `Precio estimado (${x.moneda === 'USD' ? 'US$' : '$'} por ${x.unidad})`;
+  const sp = x.cosecha.reduce((a, c) => a + c.pct, 0), ps = document.getElementById('fc-pct-suma');
+  if (ps) ps.innerHTML = Math.abs(sp - 100) < 0.5 ? '<span style="color:var(--verde)">✓ Suma 100%</span>' : `<span style="color:#B91C1C">Suma ${sp}%: debe dar 100%</span>`;
+  const base = x.ha * x.rend * x.precio, prod = x.ha * x.rend;
+  if (!(base > 0) || !x.cosecha.length) { el.innerHTML = '<span style="color:var(--acero)">Completa hectáreas, rendimiento, precio y meses de cosecha para ver el ingreso.</span>'; return; }
+  const ms = mesesFlujoInv(), pg = pagosCosechaInv(x, ms), total = Object.values(pg).reduce((a, b) => a + b, 0);
+  const pagos = ms.filter(k => pg[k]).map(k => `${nomMesCortoInv(k)} ${pesoInv(pg[k])}${x.moneda === 'USD' ? ` <span style="color:var(--acero)">(US$ 1 = ${pesoInv(Math.round(dolarMesInv(ms.indexOf(k))))})</span>` : ''}`).join(' · ');
+  el.innerHTML = `Producción: <strong>${Math.round(prod).toLocaleString('es-CL')} ${x.unidad}</strong> · Ingreso: <strong>${x.moneda === 'USD' ? 'US$ ' + Math.round(base).toLocaleString('es-CL') + ' ≈ ' : ''}${pesoInv(total)}</strong><br><span style="font-size:12px;color:var(--acero)">Pagos: ${pagos}</span>`;
+}
+window.flujoGuardarCosechaInv = async function() {
+  const ed = window.__cosEd || {}, p = ed.nuevo ? null : flujoPlanesInv[ed.i];
+  const cultivo = p ? p.cultivo : ((document.getElementById('fc-cultivo') || {}).value || '').trim(), x = leerCosechaFormInv();
+  if (!cultivo) { toast('Indica el cultivo', false); return; }
+  if (!(x.ha > 0)) { toast('Indica las hectáreas', false); return; }
+  if (!(x.rend > 0) || !(x.precio > 0)) { toast('Indica rendimiento y precio', false); return; }
+  if (!x.cosecha.length) { toast('Marca al menos un mes de cosecha', false); return; }
+  if (Math.abs(x.cosecha.reduce((a, c) => a + c.pct, 0) - 100) >= 0.5) { toast('Los % de cosecha deben sumar 100%', false); return; }
+  const id = p && p.id ? p.id : 'cos_' + normNom(cultivo).trim().replace(/\s+/g, '_').slice(0, 40);
+  if (!p && (flujoItemsInv || []).some(z => z.id === id)) { toast('Ese cultivo ya tiene estimación: edítalo en la lista', false); return; }
+  const conf = !!(document.getElementById('fc-conf') || {}).checked;
+  const data = { tipo: 'cosecha', cultivo, ...x, haConfirmada: conf, haCampo: p && p.haCampo != null ? p.haCampo : null, frutal: !!(p && p.frutal), activo: !!(document.getElementById('fc-activo') || {}).checked, nota: ((document.getElementById('fc-nota') || {}).value || '').trim(), editadoPor: currentUser || '', editadoTs: Date.now() };
+  const bt = document.getElementById('fc-guardar'); if (bt) bt.disabled = true;
+  try { await setDoc(doc(dbInv, 'flujo_caja', id), data); flujoAbiertosInv.add('cosecha'); const m = document.getElementById('dte-elegir'); if (m) m.remove(); toast(`✓ ${cultivo}: ${pesoInv(ingresoCosechaInv(data))} estimados`, true); }
+  catch (e) { toast('Error: ' + e.message, false); if (bt) bt.disabled = false; }
+}
+window.flujoBorrarCosechaInv = async function(id) {
+  if (!confirm('¿Borrar la estimación de este cultivo? Las hectáreas de Campo siguen apareciendo para volver a completarla.')) return;
+  try { await deleteDoc(doc(dbInv, 'flujo_caja', id)); const m = document.getElementById('dte-elegir'); if (m) m.remove(); } catch (e) { toast('Error: ' + e.message, false); }
+}
 // ── Pestaña de Inventario: mercadería facturada que todavía no llega (aparte del stock real) ──
 function lineasPendRecInv() {
   const out = [];
@@ -18646,6 +19057,7 @@ function renderDteRecibidosInv(soloLista) {
   cont.style.display = '';
   { const tb = document.getElementById('tab-cont-docs'); if (tb) tb.textContent = `📨 Facturas y guías${pendientesDteInv() ? ` (${pendientesDteInv()} por ingresar)` : ''}`; }
   try { etiquetaCxpInv(); const tc = document.getElementById('tc-cont-pagar'); if (tc && tc.classList.contains('active')) renderCxpInv(); } catch (e) { console.warn('cxp', e); }
+  try { const tf = document.getElementById('tc-cont-flujo'); if (tf && tf.classList.contains('active')) renderFlujoInv(); } catch (e) { console.warn('flujo', e); }
   const cuenta = g => dteRecibidosInv.filter(d => grupoDteInv(d) === g).length;
   const q = normNom(String(dteBuscarInv || '').replace(/\./g, '')).trim();
   const porDespachar = d => { const e = estadoRecepcionInv(d); return !!e && (e.k === 'espera' || e.k === 'parcial'); };
@@ -19740,6 +20152,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     <button class="tab" id="tab-config-gps" style="display:none" onclick="setTab('config-gps',this)">📡 Config. GPS</button>
     <button class="tab" id="tab-cont-docs" style="display:none" onclick="setTab('cont-docs',this)">📨 Facturas y guías</button>
     <button class="tab" id="tab-cont-pagar" style="display:none" onclick="setTab('cont-pagar',this)">💳 Cuentas por pagar</button>
+    <button class="tab" id="tab-cont-flujo" style="display:none" onclick="setTab('cont-flujo',this)">📈 Flujo de caja</button>
     <button class="tab" id="tab-cont-rend" style="display:none" onclick="setTab('cont-rend',this)">💵 Rendición de cajas</button>
     <button class="tab" id="tab-cont-config" style="display:none" onclick="setTab('cont-config',this)">⚙️ Configuración</button>
     <button class="tab" id="tab-inv-inventario" style="display:none" onclick="setTab('inv-inventario',this)">📦 Inventario</button>
@@ -20884,6 +21297,10 @@ tbody td{padding:10px 12px;vertical-align:middle;}
 
     <div id="tc-cont-pagar" class="tab-content">
       <div id="cont-pagar-panel" class="panel"></div>
+    </div>
+
+    <div id="tc-cont-flujo" class="tab-content">
+      <div id="cont-flujo-panel" class="panel"></div>
     </div>
 
     <div id="tc-cont-rend" class="tab-content">
