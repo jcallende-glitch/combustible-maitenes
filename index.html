@@ -18510,7 +18510,7 @@ const CATS_FLUJO_INV = {
   varios: { t: 'Varios', tipo: 'egr', ej: 'Ej: imprevistos' },
 };
 const REPETIR_FLUJO_INV = [[0, 'Una sola vez'], [1, 'Cada mes'], [2, 'Cada 2 meses'], [3, 'Cada 3 meses'], [6, 'Cada 6 meses'], [12, 'Cada año']];
-let flujoItemsInv = null, flujoCfgInv = {}, flujoSubInv = false, flujoAbiertosInv = new Set(['cosecha', 'fijos']), flujoMilesInv = true;
+let flujoErrorInv = '', flujoItemsInv = null, flujoCfgInv = {}, flujoSubInv = false, flujoAbiertosInv = new Set(['cosecha', 'fijos']), flujoMilesInv = true;
 try { flujoMilesInv = localStorage.getItem('flujoPesos') !== '1'; } catch (e) {}
 const mesMasInv = (k, i) => { const [y, m] = k.split('-').map(Number), t = new Date(y, m - 1 + i, 1); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}`; };
 const nomMesCortoInv = k => { const [y, m] = k.split('-').map(Number); const t = new Date(y, m - 1, 1).toLocaleDateString('es-CL', { month: 'short' }).replace('.', ''); return t.charAt(0).toUpperCase() + t.slice(1) + ' ' + String(y).slice(2); };
@@ -18520,7 +18520,7 @@ function suscribirFlujoInv() {
     const all = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     flujoCfgInv = all.find(x => x.id === '_config') || {}; flujoItemsInv = all.filter(x => !x.id.startsWith('_'));
     const tc = document.getElementById('tc-cont-flujo'); if (tc && tc.classList.contains('active')) renderFlujoInv();
-  }, e => { console.warn('flujo', e); flujoSubInv = false; flujoItemsInv = []; });
+  }, e => { console.warn('flujo', e); flujoSubInv = false; flujoItemsInv = []; flujoErrorInv = e.message || String(e); const tc = document.getElementById('tc-cont-flujo'); if (tc && tc.classList.contains('active')) renderFlujoInv(); });
 }
 // Meses en que cae un movimiento a mano (con su monto, o el ajustado para ese mes)
 function ocurrenciasFlujoInv(it, hasta) {
@@ -18569,10 +18569,19 @@ function calcularFlujoInv() {
   return { m0, meses, ing, egr, totIng, totEgr, neto, saldoIni, saldo };
 }
 window.renderFlujoInv = function() {
+  try { renderFlujoInternoInv(); }
+  catch (e) {
+    console.error('flujo', e);
+    const cont = document.getElementById('cont-flujo-panel');
+    if (cont) cont.innerHTML = `<div class="panel-title">📈 Flujo de caja</div><div class="empty" style="color:#B91C1C">No se pudo armar el flujo: ${escA(e.message || String(e))}<br><span style="font-size:12px;color:var(--acero)">Mándale este mensaje a Claude.</span></div>`;
+  }
+}
+function renderFlujoInternoInv() {
   const cont = document.getElementById('cont-flujo-panel'); if (!cont) return;
   if (!verValoresInv()) { cont.innerHTML = ''; return; }
   suscribirFlujoInv();
   if (flujoItemsInv === null) { cont.innerHTML = '<div class="panel-title">📈 Flujo de caja</div><div class="empty">Cargando…</div>'; return; }
+  if (flujoErrorInv) { cont.innerHTML = `<div class="panel-title">📈 Flujo de caja</div><div class="empty" style="color:#B91C1C">No se pudo leer el flujo de caja de la base de datos: ${escA(flujoErrorInv)}</div>`; flujoErrorInv = ''; return; }
   cargarCampoFlujoInv(); buscarDolarHoyInv();
   flujoPlanesInv = planesCosechaInv();
   const F = calcularFlujoInv(), { meses } = F, sum12 = o => meses.reduce((a, k) => a + (o[k] || 0), 0);
@@ -18755,7 +18764,7 @@ function haPorCultivoCampoInv() {
     const ha = Number(p.hectareas) || 0;
     if (p.tipo === 'frutal') { add(p.cultivoPermanente, ha, p.nombre, true); return; }
     const ls = lotesDe(p.nombre, anio);
-    if (ls) ls.forEach(l => add(l.cultivo, areaHaPoligono(l.poligono), `${p.nombre} · ${l.nombre}`));
+    if (ls) ls.forEach(l => { let h = Number(l.hectareas); if (!(h > 0)) { try { h = areaHaPoligono(jdpNormPoligono(l.poligono)); } catch (e) { h = 0; } } add(l.cultivo, h, `${p.nombre} · ${l.nombre}`); });
     else { const c = cultivoActualPorPotrero[p.nombre]; add(c && c.cultivo, ha, p.nombre); }
   });
   m.forEach(x => { x.ha = Math.round(x.ha * 100) / 100; });
