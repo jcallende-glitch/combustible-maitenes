@@ -18583,7 +18583,7 @@ window.renderFlujoInv = function() {
     return `<div class="config-item" style="flex-direction:column;align-items:stretch;gap:2px;cursor:pointer" onclick="flujoCosechaInv(${i})">
       <div style="display:flex;justify-content:space-between;gap:8px"><strong style="min-width:0;overflow-wrap:anywhere">${p.frutal ? '🌳' : '🌾'} ${escA(p.cultivo)}</strong><strong style="white-space:nowrap;color:${ok ? 'var(--verde)' : p.activo === false ? 'var(--acero)' : '#B45309'}">${ok ? pesoInv(ingresoCosechaInv(p)) : p.activo === false && !p.sinPlan ? 'No incluido' : 'Completar ✏️'}</strong></div>
       <div style="font-size:12px;color:var(--acero)">${fmtHa(p.ha)} ha ${p.sinPlan ? '<span style="color:#B45309">· según Campo, por confirmar</span>' : p.haConfirmada ? '<span style="color:var(--verde)">✓ confirmadas</span>' : '<span style="color:#B45309">· por confirmar</span>'}${difiere ? ` · <span style="color:#B45309">Campo dice ${fmtHa(p.haCampo)} ha</span>` : ''}</div>
-      ${p.sinPlan ? '' : `<div style="font-size:12px;color:var(--acero)">${(Number(p.rend) || 0).toLocaleString('es-CL')} ${uni}/ha · ${p.moneda === 'USD' ? 'US$ ' + (Number(p.precio) || 0).toLocaleString('es-CL') : pesoInv(p.precio)}/${uni} · cosecha ${(p.cosecha || []).map(c => MESES_ABR_INV[c.mes - 1] + ((p.cosecha || []).length > 1 ? ' ' + c.pct + '%' : '')).join(', ')} · pago ${Number(p.desfase) ? '+' + p.desfase + ' mes' + (Number(p.desfase) === 1 ? '' : 'es') : 'al cosechar'}</div>`}
+      ${p.sinPlan ? '' : `<div style="font-size:12px;color:var(--acero)">${(Number(p.rend) || 0).toLocaleString('es-CL')} ${uni}/ha · ${p.moneda === 'USD' ? 'US$ ' + (Number(p.precio) || 0).toLocaleString('es-CL') : pesoInv(p.precio)}/${uni}${p.moneda === 'COM' ? ` hoy (commodity${Number(p.varIntl) ? ', ' + (p.varIntl > 0 ? '+' : '') + p.varIntl + '%' : ''})` : p.moneda === 'CLP' || !p.moneda ? ' fijo' : ''} · cosecha ${(p.cosecha || []).map(c => MESES_ABR_INV[c.mes - 1] + ((p.cosecha || []).length > 1 ? ' ' + c.pct + '%' : '')).join(', ')} · pago ${Number(p.desfase) ? '+' + p.desfase + ' mes' + (Number(p.desfase) === 1 ? '' : 'es') : 'al cosechar'}</div>`}
     </div>`;
   };
   const totCos = flujoPlanesInv.filter(planCompletoInv).reduce((a, p) => a + ingresoCosechaInv(p), 0), nFalta = flujoPlanesInv.filter(p => p.sinPlan).length;
@@ -18795,7 +18795,7 @@ function buscarDolarHoyInv() {
     const c = flujoCfgInv || {}, upd = {};
     if (j.hoy && j.hoy.valor) { flujoDolarHoyInv = { valor: j.hoy.valor, fecha: j.hoy.fecha }; if (!c.dolarFecha || j.hoy.fecha > c.dolarFecha) Object.assign(upd, { dolarActual: j.hoy.valor, dolarFecha: j.hoy.fecha, dolarFuente: 'Dólar observado (Banco Central)' }); }
     const eeeAnt = c.eee && c.eee.m11 ? c.eee : EEE_DOLAR_INV;
-    if (j.eee && j.eee.m11 && j.eee.mes && j.eee.mes > (eeeAnt.mes || '')) upd.eee = { m2: j.eee.m2 || j.eee.m11, m11: j.eee.m11, ...(j.eee.m23 ? { m23: j.eee.m23 } : {}), mes: j.eee.mes, auto: true, fuente: `Encuesta de Expectativas Económicas del Banco Central, ${nomMesCxpInv(j.eee.mes).toLowerCase()} (se actualiza sola)` };
+    if (j.eee && j.eee.m11 && j.eee.mes && (j.eee.mes > (eeeAnt.mes || '') || !(c.eee && c.eee.m11))) upd.eee = { m2: j.eee.m2 || j.eee.m11, m11: j.eee.m11, ...(j.eee.m23 ? { m23: j.eee.m23 } : {}), mes: j.eee.mes, auto: true, fuente: `Encuesta de Expectativas Económicas del Banco Central, ${nomMesCxpInv(j.eee.mes).toLowerCase()} (se actualiza sola)` };
     if (Object.keys(upd).length) setDoc(doc(dbInv, 'flujo_caja', '_config'), upd, { merge: true }).catch(() => {});
     redibujar();
   }).catch(() => fetch('https://mindicador.cl/api/dolar').then(r => r.json()).then(j => {
@@ -18827,10 +18827,14 @@ window.flujoGuardarDolarInv = async function() {
 }
 const baseCosechaInv = p => (Number(p.ha) || 0) * (Number(p.rend) || 0) * (Number(p.precio) || 0);
 const planCompletoInv = p => !p.sinPlan && p.activo !== false && baseCosechaInv(p) > 0 && (p.cosecha || []).length;
-// En qué mes del horizonte cae cada pago (mes de cosecha + desfase), y cuánto en pesos (si el precio es en dólares, con el dólar de ese mes)
+// Tipos de precio: CLP = pesos fijos (contrato); USD = dólares, al dólar del mes de pago;
+// COM = pesos de un commodity (trigo, maíz, raps…): el precio de hoy se mueve con el dólar y con la variación esperada del precio internacional
+const TIPOS_PRECIO_INV = [['CLP', 'Pesos, precio fijo'], ['USD', 'Dólares'], ['COM', 'Pesos, commodity (sigue al mercado internacional)']];
+const factorPrecioInv = (p, i) => p.moneda === 'USD' ? dolarMesInv(i) : p.moneda === 'COM' ? (dolarMesInv(0) > 0 ? dolarMesInv(i) / dolarMesInv(0) : 1) * (1 + (Number(p.varIntl) || 0) / 100) : 1;
+// En qué mes del horizonte cae cada pago (mes de cosecha + desfase), y cuánto en pesos
 function pagosCosechaInv(p, meses) {
   const out = {}, total = baseCosechaInv(p);
-  (p.cosecha || []).forEach(c => { const mp = ((Number(c.mes) - 1 + (Number(p.desfase) || 0)) % 12) + 1, i = meses.findIndex(x => Number(x.slice(5, 7)) === mp); if (i < 0) return; const k = meses[i]; out[k] = (out[k] || 0) + total * (Number(c.pct) || 0) / 100 * (p.moneda === 'USD' ? dolarMesInv(i) : 1); });
+  (p.cosecha || []).forEach(c => { const mp = ((Number(c.mes) - 1 + (Number(p.desfase) || 0)) % 12) + 1, i = meses.findIndex(x => Number(x.slice(5, 7)) === mp); if (i < 0) return; const k = meses[i]; out[k] = (out[k] || 0) + total * (Number(c.pct) || 0) / 100 * factorPrecioInv(p, i); });
   return out;
 }
 const ingresoCosechaInv = p => Object.values(pagosCosechaInv(p, mesesFlujoInv())).reduce((a, b) => a + b, 0);
@@ -18850,7 +18854,11 @@ window.flujoCosechaInv = function(i) {
     <div style="display:flex;gap:8px"><div style="flex:1;min-width:0">${L('Rendimiento por ha')}<input type="number" id="fc-rend" value="${v('rend')}" step="any" inputmode="decimal" oninput="flujoCosechaPrevInv()" style="${inp}"></div>
       <div style="flex:1;min-width:0">${L('Unidad')}<select id="fc-unidad" data-no-mejorar onchange="flujoCosechaPrevInv()" style="${inp}">${UNIDADES_COSECHA_INV.map(([k, t]) => `<option value="${k}"${k === (p.unidad || 'kg') ? ' selected' : ''}>${t}</option>`).join('')}</select></div></div>
     <div style="display:flex;gap:8px"><div style="flex:2;min-width:0"><label id="fc-precio-lbl" style="font-size:12px;text-transform:none;letter-spacing:0;font-weight:600">Precio estimado ($ por ${p.unidad || 'kg'})</label><input type="number" id="fc-precio" value="${v('precio')}" step="any" inputmode="decimal" oninput="flujoCosechaPrevInv()" style="${inp}"></div>
-      <div style="flex:1;min-width:0">${L('Moneda')}<select id="fc-moneda" data-no-mejorar onchange="flujoCosechaPrevInv()" style="${inp}"><option value="CLP"${p.moneda === 'USD' ? '' : ' selected'}>Pesos</option><option value="USD"${p.moneda === 'USD' ? ' selected' : ''}>Dólares</option></select></div></div>
+      <div style="flex:1;min-width:0">${L('Tipo de precio')}<select id="fc-moneda" data-no-mejorar onchange="flujoCosechaPrevInv()" style="${inp}">${TIPOS_PRECIO_INV.map(([k, t]) => `<option value="${k}"${(p.moneda || 'CLP') === k ? ' selected' : ''}>${t}</option>`).join('')}</select></div></div>
+    <div id="fc-com-box" style="display:${p.moneda === 'COM' ? 'block' : 'none'};background:var(--fondo);border-radius:8px;padding:8px 10px;margin:-2px 0 10px">
+      <div style="font-size:12px;color:var(--acero);margin-bottom:6px">Pon el precio de <strong>hoy</strong> en pesos. Como sigue al mercado internacional, se ajusta solo con el dólar del mes en que pagan (si el dólar baja 5%, el precio baja 5%) y con la variación que esperes del precio internacional. Referencias: <a href="https://www.odepa.gob.cl/category/rubro/cereales" target="_blank" rel="noopener">ODEPA · cereales y precios futuros</a>.</div>
+      ${L('Variación esperada del precio internacional hasta la cosecha (%)')}<input type="number" id="fc-varintl" value="${escA(p.varIntl != null ? p.varIntl : 0)}" step="any" inputmode="decimal" oninput="flujoCosechaPrevInv()" placeholder="Ej: -5 si esperas que baje 5%" style="${inp};margin-bottom:0">
+    </div>
     <div style="font-size:13px;font-weight:800;margin:2px 0 6px">3 · Cosecha y pago</div>
     ${L('Meses de cosecha (uno o más)')}<div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px">${MESES_ABR_INV.map((t, k) => `<label style="display:flex;gap:4px;align-items:center;font-size:12px;text-transform:none;letter-spacing:0;font-weight:600;margin:0;padding:6px 9px;border:1px solid var(--borde);border-radius:999px;cursor:pointer"><input type="checkbox" class="fc-mes" value="${k + 1}" ${sel.has(k + 1) ? 'checked' : ''} onchange="flujoCosechaMesesInv()" style="width:auto;margin:0">${t}</label>`).join('')}</div>
     <div id="fc-pcts"></div>
@@ -18873,17 +18881,18 @@ function leerCosechaFormInv() {
   const g = id => ((document.getElementById(id) || {}).value || '').trim(), ed = window.__cosEd || { pct: {} };
   const ms = [...document.querySelectorAll('.fc-mes:checked')].map(c => Number(c.value));
   return { ha: Number(String(g('fc-ha')).replace(',', '.')) || 0, rend: Number(String(g('fc-rend')).replace(',', '.')) || 0, unidad: g('fc-unidad') || 'kg', precio: Number(String(g('fc-precio')).replace(',', '.')) || 0,
-    cosecha: ms.map(m => ({ mes: m, pct: ms.length === 1 ? 100 : Number(ed.pct[m]) || 0 })), desfase: Number(g('fc-desf')) || 0, moneda: g('fc-moneda') === 'USD' ? 'USD' : 'CLP' };
+    cosecha: ms.map(m => ({ mes: m, pct: ms.length === 1 ? 100 : Number(ed.pct[m]) || 0 })), desfase: Number(g('fc-desf')) || 0, moneda: ['USD', 'COM'].includes(g('fc-moneda')) ? g('fc-moneda') : 'CLP', varIntl: g('fc-moneda') === 'COM' ? Number(String(g('fc-varintl')).replace(',', '.')) || 0 : 0 };
 }
 window.flujoCosechaPrevInv = function() {
   const el = document.getElementById('fc-prev'); if (!el) return;
-  const x = leerCosechaFormInv(), lbl = document.getElementById('fc-precio-lbl'); if (lbl) lbl.textContent = `Precio estimado (${x.moneda === 'USD' ? 'US$' : '$'} por ${x.unidad})`;
+  const x = leerCosechaFormInv(), lbl = document.getElementById('fc-precio-lbl'); if (lbl) lbl.textContent = x.moneda === 'COM' ? `Precio hoy ($ por ${x.unidad})` : `Precio estimado (${x.moneda === 'USD' ? 'US$' : '$'} por ${x.unidad})`;
+  const cb = document.getElementById('fc-com-box'); if (cb) cb.style.display = x.moneda === 'COM' ? 'block' : 'none';
   const sp = x.cosecha.reduce((a, c) => a + c.pct, 0), ps = document.getElementById('fc-pct-suma');
   if (ps) ps.innerHTML = Math.abs(sp - 100) < 0.5 ? '<span style="color:var(--verde)">✓ Suma 100%</span>' : `<span style="color:#B91C1C">Suma ${sp}%: debe dar 100%</span>`;
   const base = x.ha * x.rend * x.precio, prod = x.ha * x.rend;
   if (!(base > 0) || !x.cosecha.length) { el.innerHTML = '<span style="color:var(--acero)">Completa hectáreas, rendimiento, precio y meses de cosecha para ver el ingreso.</span>'; return; }
   const ms = mesesFlujoInv(), pg = pagosCosechaInv(x, ms), total = Object.values(pg).reduce((a, b) => a + b, 0);
-  const pagos = ms.filter(k => pg[k]).map(k => `${nomMesCortoInv(k)} ${pesoInv(pg[k])}${x.moneda === 'USD' ? ` <span style="color:var(--acero)">(US$ 1 = ${pesoInv(Math.round(dolarMesInv(ms.indexOf(k))))})</span>` : ''}`).join(' · ');
+  const pagos = ms.filter(k => pg[k]).map(k => { const i = ms.indexOf(k); return `${nomMesCortoInv(k)} ${pesoInv(pg[k])}${x.moneda === 'USD' ? ` <span style="color:var(--acero)">(US$ 1 = ${pesoInv(Math.round(dolarMesInv(i)))})</span>` : x.moneda === 'COM' ? ` <span style="color:var(--acero)">(precio ${pesoInv(Math.round(x.precio * factorPrecioInv(x, i)))}/${x.unidad})</span>` : ''}`; }).join(' · ');
   el.innerHTML = `Producción: <strong>${Math.round(prod).toLocaleString('es-CL')} ${x.unidad}</strong> · Ingreso: <strong>${x.moneda === 'USD' ? 'US$ ' + Math.round(base).toLocaleString('es-CL') + ' ≈ ' : ''}${pesoInv(total)}</strong><br><span style="font-size:12px;color:var(--acero)">Pagos: ${pagos}</span>`;
 }
 window.flujoGuardarCosechaInv = async function() {
