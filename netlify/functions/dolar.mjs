@@ -75,20 +75,23 @@ async function buscarSerieTasa() {
   for (const f of ['DAILY', 'MONTHLY']) { try { todas.push(...await lista(f)); } catch (e) { /* sigue con la otra */ } }
   const cand = todas.map(s => {
     const t = norm(s.titulo + ' ' + s.en);
-    if (!/colocacion|lending|loan/.test(t) || !/nominal|no reajustable|non-indexed|non indexed/.test(t) || !/(^|\D)90(\D|$)/.test(t)) return null;
-    if (/captacion|deposit|\buf\b|dolar|moneda extranjera|foreign/.test(t)) return null;
+    if (!/colocacion|lending|loan/.test(t) || !/nominal|no reajustable|non-indexed|non indexed|pesos|peso/.test(t) || !/(^|\D)90(\D|$)/.test(t)) return null;
+    if (/captacion|deposit|\buf\b|reajustable en|indexed to|dolar|us\$|moneda extranjera|foreign|interbancari|interbank/.test(t)) return null;
     const u = fechaObs(s.ultima), reciente = u && Date.now() - u.getTime() < 75 * 86400000;
-    const puntaje = (/180/.test(t) ? 5 : 0) + (/365|1 ano|un ano|1 year/.test(t) ? 3 : 0) + (/promedio|average/.test(t) ? 2 : 0) + (/sistema financiero|financial system/.test(t) ? 2 : 0)
+    const puntaje = (/180/.test(t) ? 5 : 0) + (/365|1 ano|un ano|1 year|one year/.test(t) ? 4 : 0) + (/promedio|average|\btip\b/.test(t) ? 2 : 0) + (/sistema financiero|financial system/.test(t) ? 2 : 0)
       + (s.frecuencia === 'DAILY' ? 1 : 0) + (reciente ? 3 : -4) - (/consumo|consumer|vivienda|mortgage|comercial|commercial|empresa|persona/.test(t) ? 3 : 0) - (/30 a 89|30-89|30 to 89/.test(t) ? 5 : 0);
     return { ...s, puntaje };
   }).filter(Boolean).sort((a, b) => b.puntaje - a.puntaje);
   serieTasa = { mejor: cand[0] || null, candidatas: cand.slice(0, 20) };
   return serieTasa;
 }
+// Si la búsqueda por nombre no encuentra la serie, se prueban los códigos probables de la TIP de colocaciones 90 días a 1 año en pesos
+const TASA_PROBABLES = ['F022.COL.TIP.AN01.NO.Z.D', 'F022.COL.TIP.D90.NO.Z.D', 'F022.COL.TIP.D90A1A.NO.Z.D'];
 async function tasaColocacion() {
-  const fijo = env('BCCH_TASA'), s = fijo ? null : await buscarSerieTasa(), id = fijo || (s.mejor && s.mejor.id);
-  if (!id) return null;
-  const u = await ultimo(id, 120); if (!u) return null;
+  const fijo = env('BCCH_TASA'), s = fijo ? null : await buscarSerieTasa();
+  let id = fijo || (s.mejor && s.mejor.id), u = id ? await ultimo(id, 120).catch(() => null) : null;
+  if (!u && !fijo) for (const c of TASA_PROBABLES) { u = await ultimo(c, 30).catch(() => null); if (u) { id = c; break; } }
+  if (!u) return null;
   // El contrato la pide anual (base 360). Si la serie viene en % mensual (valores bajo 2), se pasa a anual.
   const mensual = u.valor < 2;
   return { valor: Math.round((mensual ? u.valor * 12 : u.valor) * 100) / 100, fecha: u.fecha, titulo: u.titulo || (s && s.mejor && s.mejor.titulo) || id, id, ...(mensual ? { mensualx12: true } : {}) };
