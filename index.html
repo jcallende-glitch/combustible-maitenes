@@ -18519,7 +18519,7 @@ function suscribirFlujoInv() {
   if (flujoSubInv || !dbInv) return; flujoSubInv = true;
   onSnapshot(collection(dbInv, 'flujo_caja'), snap => {
     const all = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    flujoCfgInv = all.find(x => x.id === '_config') || {}; flujoItemsInv = all.filter(x => !x.id.startsWith('_'));
+    flujoCfgInv = all.find(x => x.id === '_config') || {}; flujoIvaVentasInv = all.find(x => x.id === '_iva_ventas') || {}; flujoItemsInv = all.filter(x => !x.id.startsWith('_'));
     const tc = document.getElementById('tc-cont-flujo'); redibujarFlujoInv();
   }, e => { console.warn('flujo', e); flujoSubInv = false; flujoItemsInv = []; flujoErrorInv = e.message || String(e); const tc = document.getElementById('tc-cont-flujo'); redibujarFlujoInv(); });
 }
@@ -18561,8 +18561,10 @@ function calcularFlujoInv() {
       .sort((a, b) => (b.ok ? 1 : 0) - (a.ok ? 1 : 0));
     return { key: 'cosecha', tipo: 'ing', t: 'Ventas de cosecha', vals, sub, cosecha: true };
   };
-  const ing = [cosechaFila(), ...['ventas', 'otros_ing'].map(manualFila)];
-  const egr = [autoFila('cxp_prov', 'Proveedores (cuentas por pagar)', d => !esCreditoCxpInv(d)), autoFila('cxp_cred', 'Créditos y cuotas (cuentas por pagar)', esCreditoCxpInv), ...['fijos', 'compras', 'impuestos', 'creditos', 'varios'].map(manualFila)];
+  const IVA = cuentaIvaInv(), ivaFila = (key, t, src, nota) => { const vals = vacio(); meses.forEach(k => { vals[k] = Math.round(src[k] || 0); }); return { key, tipo: key === 'iva_f29' ? 'egr' : 'ing', t, auto: true, vals, docs: {}, vencido: { n: 0, monto: 0 }, clic: 'flujoIvaInv()', nota }; };
+  const ivaVentas = ivaFila('iva_ventas', 'IVA de las ventas (aparte)', IVA.caja), hayIvaV = meses.some(k => ivaVentas.vals[k]);
+  const ing = [cosechaFila(), ...(hayIvaV ? [ivaVentas] : []), ...['ventas', 'otros_ing'].map(manualFila)];
+  const egr = [autoFila('cxp_prov', 'Proveedores (cuentas por pagar)', d => !esCreditoCxpInv(d)), autoFila('cxp_cred', 'Créditos y cuotas (cuentas por pagar)', esCreditoCxpInv), ivaFila('iva_f29', 'IVA a pagar (F29)', IVA.pagar, IVA.tieneIni ? '' : 'ingresa el IVA acumulado ›'), ...['fijos', 'compras', 'impuestos', 'creditos', 'varios'].map(manualFila)];
   const suma = (fs, k) => fs.reduce((a, f) => a + (f.vals[k] || 0), 0);
   const totIng = {}, totEgr = {}, neto = {}, saldoIni = {}, saldo = {};
   let s = Number(flujoCfgInv.saldo) || 0;
@@ -18664,6 +18666,7 @@ function renderFlujoInternoInv() {
   if (flujoErrorInv) { cont.innerHTML = `<div class="panel-title">📈 Flujo de caja</div><div class="empty" style="color:#B91C1C">No se pudo leer el flujo de caja de la base de datos: ${escA(flujoErrorInv)}</div>`; flujoErrorInv = ''; return; }
   cargarCampoFlujoInv(); buscarDolarHoyInv();
   flujoPlanesInv = planesCosechaInv(); buscarFuturosTrigoInv();
+  if (!historicoInv && !histCargandoInv) cargarHistoricoInv().then(() => redibujarFlujoInv());
   const F = calcularFlujoInv(), { meses } = F, sum12 = o => meses.reduce((a, k) => a + (o[k] || 0), 0);
   const fmtHa = n => (Math.round((Number(n) || 0) * 100) / 100).toLocaleString('es-CL');
   const okCos = flujoPlanesInv.filter(planCompletoInv), totCos = okCos.reduce((a, p) => a + ingresoCosechaInv(p), 0), nFalta = flujoPlanesInv.filter(p => !planCompletoInv(p) && (p.sinPlan || p.activo !== false)).length;
@@ -18677,8 +18680,8 @@ function renderFlujoInternoInv() {
   const celdas = (vals, onclick, estilo) => meses.map(k => `<td style="${TD};${estilo || ''}${onclick && vals[k] ? ';cursor:pointer' : ''}" ${onclick && vals[k] ? `onclick="${onclick(k)}"` : ''}>${fmt(vals[k])}</td>`).join('') + `<td style="${TD};font-weight:700;background:#F7F7F2;${estilo || ''}">${fmt(sum12(vals))}</td><td style="${TD};color:var(--acero);${estilo || ''}">${fmt(vals.despues)}</td>`;
   const filaCat = f => {
     const abierta = flujoAbiertosInv.has(f.key), nSub = f.auto ? 0 : f.cosecha ? f.sub.filter(s => s.ok).length : f.sub.length;
-    const titulo = `<td style="${TD0};font-weight:700;cursor:pointer" onclick="flujoToggleInv('${f.key}')">${f.auto ? '🔗' : abierta ? '▾' : '▸'} ${escA(f.t)}${nSub ? ` <span style="font-weight:400;color:var(--acero)">(${nSub})</span>` : ''}${f.auto && f.vencido.n ? `<div style="font-size:10px;font-weight:600;color:#B91C1C">incluye ${pesoInv(f.vencido.monto)} vencido</div>` : ''}</td>`;
-    let h = `<tr>${titulo}${celdas(f.vals, f.auto ? k => `flujoDetalleAutoInv('${f.key}','${k}')` : null, 'font-weight:700')}</tr>`;
+    const titulo = `<td style="${TD0};font-weight:700;cursor:pointer" onclick="${f.clic || `flujoToggleInv('${f.key}')`}">${f.clic ? '🧾' : f.auto ? '🔗' : abierta ? '▾' : '▸'} ${escA(f.t)}${f.nota ? `<div style="font-size:10px;font-weight:600;color:#B45309">${escA(f.nota)}</div>` : ''}${nSub ? ` <span style="font-weight:400;color:var(--acero)">(${nSub})</span>` : ''}${f.auto && f.vencido.n ? `<div style="font-size:10px;font-weight:600;color:#B91C1C">incluye ${pesoInv(f.vencido.monto)} vencido</div>` : ''}</td>`;
+    let h = `<tr>${titulo}${celdas(f.vals, f.clic ? () => f.clic : f.auto ? k => `flujoDetalleAutoInv('${f.key}','${k}')` : null, 'font-weight:700')}</tr>`;
     if (!f.auto && abierta) {
       if (f.cosecha) h += f.sub.filter(s => s.ok).map(s => { const i = flujoPlanesInv.findIndex(p => normNom(p.cultivo) === normNom(s.it.cultivo)); return `<tr><td style="${TD0};padding-left:20px;font-size:11.5px"><a href="#" onclick="${s.ok ? 'flujoSupuestosInv' : 'flujoCosechaInv'}(${i});return false" style="color:var(--negro);text-decoration:none">${s.it.frutal ? '🌳' : '🌾'} ${escA(s.it.cultivo)} <span style="color:var(--acero)">· ${fmtHa(s.it.ha)} ha</span><div style="font-size:10.5px;font-weight:700;color:${s.ok ? 'var(--verde)' : '#B45309'}">${s.ok ? '📋 ver supuestos' : '✏️ completar: aún no suma'}</div></a></td>${celdas(s.vals, k => `flujoSupuestosInv(${i},'${k}')`, 'font-size:11.5px')}</tr>`; }).join('')
         + `<tr><td style="${TD0};padding-left:20px"><a href="#" onclick="irCultivosInv();return false" style="font-size:11.5px;color:${f.sub.some(s => !s.ok) ? '#B45309' : 'var(--verde)'};font-weight:700">${f.sub.some(s => !s.ok) ? `⚠️ ${f.sub.filter(s => !s.ok).length} por completar (no suman) ›` : 'Cultivos y supuestos ›'}</a></td>${meses.map(() => `<td style="${TD}"></td>`).join('')}<td style="${TD};background:#F7F7F2"></td><td style="${TD}"></td></tr>`;
@@ -18906,6 +18909,8 @@ let flujoTasaHoyInv = null, flujoDolarHoyInv = null, flujoDolarBuscandoInv = fal
 const mesesFlujoInv = () => { const m0 = hoyIsoInv().slice(0, 7); return Array.from({ length: 12 }, (_, i) => mesMasInv(m0, i)); };
 // Tasa de colocación 90/180 días: la automática del Banco Central (vía /api/dolar) salvo que el plan use una propia
 const tasaAutoInv = () => flujoTasaHoyInv || (flujoCfgInv && flujoCfgInv.tasaColoc && flujoCfgInv.tasaColoc.valor > 0 ? flujoCfgInv.tasaColoc : null);
+// Variación del trigo internacional hasta la entrega: automática desde los futuros (contrato que vence el mes de entrega o después) salvo que el plan use una propia
+const varIntlCarozziInv = (p, k) => { const f = (p && p.fcz) || {}; if (f.futAuto !== false && k) { const x = futuroTrigoParaInv(String(k).slice(0, 7)); if (x) return x.v; } return Number(f.varIntl) || 0; };
 const tasaCarozziInv = p => { const f = (p && p.fcz) || {}, a = tasaAutoInv(); return f.tasaAuto !== false && a ? Number(a.valor) : Number(f.tasa) || 0; };
 function dolarCfgInv() {
   const c = flujoCfgInv || {}, eee = c.eee && c.eee.m11 ? c.eee : EEE_DOLAR_INV;
@@ -19035,7 +19040,7 @@ function preciosCultivoInv(p, ms) {
   if (p.moneda === 'FCZ') {
     const e = entregasCarozziInv(p, ms), sp = e.reduce((a, x) => a + x.pct, 0) || 1, hoy = precioCarozziInv(p, 0, ms[0], true).final;
     const prs = e.map(x => precioCarozziInv(p, x.i, x.fEnt)), fut = e.reduce((a, x, j) => a + x.pct * prs[j].final, 0) / sp;
-    return { uni: 'qqm', hoy, fut, minimo: prs.some(x => x.minimo), minHoy: precioCarozziInv(p, 0, ms[0], true).minimo, cuando: e.map(x => `${x.q === '1' ? '1ª q. ' : x.q === '2' ? '2ª q. ' : ''}${MESES_ABR_INV[x.mes - 1].toLowerCase()}`).join(', '), base: `fórmula Carozzi · ICI hoy ~${pesoInv(iciHoyInv(p).valor)} · trigo ${(Number((p.fcz || {}).varIntl) || 0) > 0 ? '+' : ''}${(Number((p.fcz || {}).varIntl) || 0).toLocaleString('es-CL')}%` };
+    return { uni: 'qqm', hoy, fut, minimo: prs.some(x => x.minimo), minHoy: precioCarozziInv(p, 0, ms[0], true).minimo, cuando: e.map(x => `${x.q === '1' ? '1ª q. ' : x.q === '2' ? '2ª q. ' : ''}${MESES_ABR_INV[x.mes - 1].toLowerCase()}`).join(', '), base: `fórmula Carozzi · ICI hoy ~${pesoInv(iciHoyInv(p).valor)} · trigo ${(() => { const v = varIntlCarozziInv(p, e[0] ? ms[e[0].i] : ms[0]); return (v > 0 ? '+' : '') + v.toLocaleString('es-CL', { maximumFractionDigits: 1 }) + '%' + ((p.fcz || {}).futAuto !== false && flujoTrigoInv ? ' (futuros)' : ''); })()}` };
   }
   const pagos = partesPagoInv(p, ms);
   const sp = pagos.reduce((a, x) => a + x.pct, 0) || 1, pr = Number(p.precio) || 0;
@@ -19052,7 +19057,7 @@ function bloquePreciosFlujoInv() {
   const pf = planes.find(p => p.moneda === 'FCZ'); let fut = '';
   if (pf) {
     const e0 = entregasCarozziInv(pf, ms)[0], k = e0 ? ms[e0.i] : ms[0], f = futuroTrigoParaInv(k), vPlan = Number((pf.fcz || {}).varIntl) || 0;
-    if (f) fut = `<tr><td style="${td0}"><strong>📈 Trigo HRW Kansas (CME)</strong><div style="font-size:10.5px;color:var(--acero)">futuros, referencia del ICI · ${escA(fmtFechaInv(f.fr.fecha))}</div></td><td style="${td}">${f.fr.mes ? `<div style="font-size:10.5px;color:var(--acero)">contrato ${nomMesCortoInv(f.fr.mes).toLowerCase()}</div>` : ''}${f.fr.centavosBushel.toLocaleString('es-CL')} <span style="color:var(--acero);font-size:11px">¢/bu</span><div style="font-size:10.5px;color:var(--acero)">US$ ${f.fr.usTon.toLocaleString('es-CL')}/t</div></td><td style="${td};font-weight:800">${f.c.centavosBushel.toLocaleString('es-CL')} <span style="color:var(--acero);font-size:11px;font-weight:400">¢/bu</span><div style="font-size:10.5px;color:var(--acero);font-weight:400">contrato ${nomMesCortoInv(f.c.mes).toLowerCase()}</div><div style="font-weight:400">${varTxt(f.v)}</div>${Math.abs(f.v - vPlan) >= 0.5 ? `<div><a href="#" onclick="flujoAplicarFuturosInv();return false" style="font-size:10.5px;color:var(--verde);font-weight:700">usar en el trigo</a></div><div style="font-size:10px;color:var(--acero);font-weight:400">(hoy usa ${vPlan > 0 ? '+' : ''}${vPlan.toLocaleString('es-CL')}%)</div>` : ''}</td></tr>`;
+    if (f) fut = `<tr><td style="${td0}"><strong>📈 Trigo HRW Kansas (CME)</strong><div style="font-size:10.5px;color:var(--acero)">futuros, referencia del ICI · ${escA(fmtFechaInv(f.fr.fecha))}</div></td><td style="${td}">${f.fr.mes ? `<div style="font-size:10.5px;color:var(--acero)">contrato ${nomMesCortoInv(f.fr.mes).toLowerCase()}</div>` : ''}${f.fr.centavosBushel.toLocaleString('es-CL')} <span style="color:var(--acero);font-size:11px">¢/bu</span><div style="font-size:10.5px;color:var(--acero)">US$ ${f.fr.usTon.toLocaleString('es-CL')}/t</div></td><td style="${td};font-weight:800">${f.c.centavosBushel.toLocaleString('es-CL')} <span style="color:var(--acero);font-size:11px;font-weight:400">¢/bu</span><div style="font-size:10.5px;color:var(--acero);font-weight:400">contrato ${nomMesCortoInv(f.c.mes).toLowerCase()}</div><div style="font-weight:400">${varTxt(f.v)}</div>${(pf.fcz || {}).futAuto === false && Math.abs(f.v - vPlan) >= 0.5 ? `<div><a href="#" onclick="flujoAplicarFuturosInv();return false" style="font-size:10.5px;color:var(--verde);font-weight:700">usar en el trigo</a></div><div style="font-size:10px;color:var(--acero);font-weight:400">(hoy usa ${vPlan > 0 ? '+' : ''}${vPlan.toLocaleString('es-CL')}%)</div>` : ''}</td></tr>`;
     else fut = `<tr><td colspan="3" style="padding:4px 0;font-size:11px;color:var(--acero)">📈 Futuros del trigo (CME): ${flujoTrigoBuscandoInv || !flujoTrigoEstadoInv ? '⏳ consultando…' : '⚠️ no disponibles (revisa que trigo.mjs esté en netlify/functions); el trigo usa ' + ((Number((pf.fcz || {}).varIntl) || 0) > 0 ? '+' : '') + (Number((pf.fcz || {}).varIntl) || 0).toLocaleString('es-CL') + '%'}</td></tr>`;
   }
   return `<div style="border:1px solid var(--borde);border-radius:10px;padding:8px 12px;margin-bottom:8px">
@@ -19074,6 +19079,116 @@ window.flujoAplicarFuturosInv = async function() {
     toast('✓ Trigo actualizado con los futuros');
   } catch (e) { toast('No se pudo actualizar: ' + e.message, false); }
 };
+// ── 🧾 IVA: cuenta mes a mes = remanente inicial + crédito (IVA de las compras) − débito (IVA de las ventas).
+// Si el saldo queda negativo, eso se paga en el F29 del mes siguiente; si queda positivo, pasa como remanente.
+// Crédito real: facturas recibidas (robot + Registro de Compras). Débito real: Registro de Ventas del SII que sube JC;
+// hacia adelante, el IVA de las ventas proyectadas de los cultivos. Las ventas van netas y el IVA en una fila aparte.
+const IVA_TASAS_VENTA_INV = [[19, '19% (normal)'], [15, '15%: trigo a molino (el comprador retiene 4%)'], [0, '0%: exento o exportación']];
+const ivaVentaPlanInv = p => p && p.ivaVenta != null && p.ivaVenta !== '' ? Number(p.ivaVenta) : p && p.moneda === 'FCZ' ? 15 : 19;
+let flujoIvaVentasInv = {};
+function creditoRealIvaInv() {
+  const out = {}, vistos = new Set();
+  const add = d => {
+    if (!d || !d.id || vistos.has(d.id)) return; vistos.add(d.id);
+    const t = Number(d.tipo); if (![33, 56, 61].includes(t) || ['rechazado', 'reclamado'].includes(d.estado)) return;
+    const iva = Number(d.iva) || 0; if (!iva || !d.fecha) return;
+    const k = String(d.fecha).slice(0, 7); out[k] = (out[k] || 0) + (t === 61 ? -iva : iva);
+  };
+  (dteRecibidosInv || []).forEach(add); (historicoInv || []).forEach(add);
+  return out;
+}
+// IVA de las ventas proyectadas: débito en el mes de la factura y plata (caja) en el mes de pago
+function ivaVentasProyInv(meses) {
+  const deb = {}, caja = {}, sum = (o, k, v) => { if (k && meses.includes(k)) o[k] = (o[k] || 0) + v; };
+  (flujoPlanesInv || []).filter(planCompletoInv).forEach(p => {
+    const t = ivaVentaPlanInv(p) / 100; if (!t) return;
+    if (p.moneda === 'FCZ') {
+      const qq = (Number(p.ha) || 0) * (Number(p.rend) || 0) * qqPorUnidadInv(p.unidad);
+      entregasCarozziInv(p, meses).forEach(e => {
+        const neto = qq * e.pct / 100 * precioCarozziInv(p, e.i, e.fEnt).final, f = new Date(e.fEnt + 'T12:00:00'); f.setDate(f.getDate() + 7);
+        sum(deb, `${f.getFullYear()}-${String(f.getMonth() + 1).padStart(2, '0')}`, neto * t); sum(caja, e.fPago.slice(0, 7), neto * t);
+      });
+      const b = bonosCarozziInv(p), kb = meses.find(m => Number(m.slice(5, 7)) === b.mes); if (b.total > 0 && kb) { sum(deb, kb, b.total * t); sum(caja, kb, b.total * t); }
+    } else {
+      const total = baseCosechaInv(p);
+      partesPagoInv(p, meses).forEach(x => { const neto = total * x.pct / 100 * factorPrecioInv(p, x.i); sum(caja, x.k, neto * t); sum(deb, meses.find(m => Number(m.slice(5, 7)) === x.mes), neto * t); });
+    }
+  });
+  return { deb, caja };
+}
+function cuentaIvaInv() {
+  const ms = mesesFlujoInv(), m0 = ms[0], c = flujoCfgInv || {}, fechaIni = c.ivaFecha || '2026-10-31', kIni = fechaIni.slice(0, 7);
+  const tieneIni = c.ivaRemanente != null && c.ivaRemanente !== '', cr = creditoRealIvaInv(), proy = ivaVentasProyInv(ms), real = (flujoIvaVentasInv && flujoIvaVentasInv.meses) || {};
+  const completos = []; for (let k = mesMasInv(kIni, 1), g = 0; k < m0 && g < 60; k = mesMasInv(k, 1), g++) completos.push(k);
+  const prom = completos.length ? completos.reduce((a, k) => a + (cr[k] || 0), 0) / completos.length : (cr[m0] || 0);
+  const manual = c.ivaCreditoEst != null && c.ivaCreditoEst !== '', est = manual ? Number(c.ivaCreditoEst) || 0 : Math.max(0, Math.round(prom));
+  const filas = [], pagar = {}; let S = Number(c.ivaRemanente) || 0;
+  if (tieneIni) filas.push({ k: kIni, apertura: true, saldo: Math.max(0, S), paga: S < 0 ? -S : 0 });
+  if (S < 0) { pagar[mesMasInv(kIni, 1)] = -S; S = 0; }
+  for (let k = mesMasInv(kIni, 1), g = 0; k <= ms[11] && g < 60; k = mesMasInv(k, 1), g++) {
+    const crReal = cr[k] || 0, credito = k < m0 ? crReal : k === m0 ? Math.max(crReal, est) : est, credFuente = k < m0 || (k === m0 && crReal >= est) ? 'real' : 'estimado';
+    const dr = real[k], debito = dr ? Number(dr.debito) || 0 : k >= m0 ? (proy.deb[k] || 0) : 0, debFuente = dr ? 'real' : debito ? 'proyectado' : '';
+    const ini = S; S += credito - debito; let paga = 0;
+    if (S < 0) { paga = -S; S = 0; const kp = mesMasInv(k, 1); pagar[kp] = (pagar[kp] || 0) + paga; }
+    filas.push({ k, ini, credito, credFuente, debito, debFuente, saldo: S, paga });
+  }
+  return { filas, pagar, caja: proy.caja, est, prom, manual, kIni, fechaIni, tieneIni };
+}
+window.flujoIvaInv = function() {
+  const c = flujoCfgInv || {}, x = cuentaIvaInv(), N = v => (v < 0 ? '−' : '') + pesoInv(Math.abs(Math.round(v)));
+  if (!historicoInv && !histCargandoInv) cargarHistoricoInv().then(() => { if (document.getElementById('fi-iva-tabla')) flujoIvaInv(); redibujarFlujoInv(); });
+  const inp = 'width:100%;box-sizing:border-box;margin-bottom:8px', L = t => `<label style="font-size:12px;text-transform:none;letter-spacing:0;font-weight:600">${t}</label>`;
+  const th = 'padding:4px 6px;border-bottom:2px solid var(--borde);background:var(--fondo);color:var(--negro);text-transform:none;letter-spacing:0;font-size:11.5px;font-weight:800;font-family:inherit;text-align:right;white-space:nowrap', td = 'padding:4px 6px;border-bottom:1px solid var(--borde);text-align:right;white-space:nowrap;vertical-align:top', sub = t => t ? `<div style="font-size:10px;color:var(--acero)">${t}</div>` : '';
+  const ventasReal = Object.keys((flujoIvaVentasInv && flujoIvaVentasInv.meses) || {}).sort();
+  modalElegirDteInv('🧾 Cuenta de IVA (estimado)', 'Mes a mes: IVA acumulado a favor + IVA de las compras − IVA de las ventas. Si queda negativo, eso se paga en el F29 del mes siguiente; si queda a favor, compensa las ventas de los meses que vienen.', [`
+    <div style="display:flex;gap:8px"><div style="flex:1;min-width:0">${L('IVA acumulado al')}<input type="date" id="fi-iva-fecha" value="${escA(x.fechaIni)}" style="${inp}"></div>
+      <div style="flex:1;min-width:0">${L('Monto ($)')}<input type="number" id="fi-iva-monto" value="${escA(c.ivaRemanente != null ? c.ivaRemanente : '')}" step="1" inputmode="numeric" placeholder="Ej: 12000000" style="${inp}"></div></div>
+    <div style="font-size:11px;color:var(--acero);margin:-4px 0 8px">Positivo = remanente de crédito fiscal a favor (lo que dice tu último F29). Negativo = IVA por pagar de ese mes.</div>
+    ${L('Crédito estimado por mes (IVA de compras futuras)')}<input type="number" id="fi-iva-est" value="${escA(x.manual ? c.ivaCreditoEst : '')}" step="1" inputmode="numeric" placeholder="Promedio: ${escA(pesoInv(Math.round(x.prom)))}" style="${inp}">
+    <div style="font-size:11px;color:var(--acero);margin:-4px 0 8px">Vacío = el promedio de los meses con facturas recibidas desde esa fecha (${pesoInv(Math.round(x.prom))}).</div>
+    <button class="btn btn-verde" style="width:100%;justify-content:center;margin-bottom:8px" onclick="flujoGuardarIvaInv()">✓ Guardar</button>
+    <button class="btn-add" style="width:100%;justify-content:center;padding:9px;margin-bottom:4px;background:var(--fondo);color:var(--negro)" onclick="flujoSubirVentasIvaInv()">📥 Subir Registro de Ventas (CSV del SII)</button>
+    <div style="font-size:11px;color:var(--acero);margin-bottom:10px">SII → Registro de compras y ventas → Ventas → "Descargar detalles", un archivo por mes. ${ventasReal.length ? `Ventas reales cargadas: ${ventasReal.map(k => nomMesCortoInv(k).toLowerCase()).join(', ')}.` : 'Sin ventas reales cargadas: se usa lo proyectado de los cultivos.'}</div>
+    <div id="fi-iva-tabla" style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;min-width:470px;font-size:12px">
+      <thead><tr style="background:transparent"><th style="${th};text-align:left">Mes</th><th style="${th}">A favor al inicio</th><th style="${th}">+ Compras</th><th style="${th}">− Ventas</th><th style="${th}">A favor al cierre</th><th style="${th}">F29 a pagar</th></tr></thead>
+      <tbody>${x.filas.map(f => f.apertura ? `<tr style="background:var(--fondo)"><td style="${td};text-align:left">${nomMesCortoInv(f.k)}${sub('saldo inicial')}</td><td style="${td}" colspan="3"></td><td style="${td};font-weight:700">${N(f.saldo)}</td><td style="${td};font-weight:700;color:${f.paga ? '#B91C1C' : 'var(--acero)'}">${f.paga ? N(f.paga) : '–'}${f.paga ? sub('se paga en ' + nomMesCortoInv(mesMasInv(f.k, 1)).toLowerCase()) : ''}</td></tr>` : `<tr><td style="${td};text-align:left">${nomMesCortoInv(f.k)}</td><td style="${td}">${N(f.ini)}</td><td style="${td}">${N(f.credito)}${sub(f.credFuente)}</td><td style="${td}">${f.debito ? N(f.debito) : '–'}${sub(f.debFuente)}</td><td style="${td};font-weight:700;color:${f.saldo > 0 ? 'var(--verde)' : 'var(--negro)'}">${N(f.saldo)}</td><td style="${td};font-weight:700;color:${f.paga ? '#B91C1C' : 'var(--acero)'}">${f.paga ? N(f.paga) : '–'}${f.paga ? sub('se paga en ' + nomMesCortoInv(mesMasInv(f.k, 1)).toLowerCase()) : ''}</td></tr>`).join('')}</tbody></table></div>
+    <div style="font-size:11px;color:var(--acero);margin-top:8px">Compras: IVA de las facturas recibidas (robot y Registro de Compras), con notas de crédito restadas; los meses que vienen usan el crédito estimado. Ventas: reales si subiste el Registro de Ventas; si no, el IVA de las ventas proyectadas en 🌾 Cultivos y supuestos, en el mes de la factura (trigo con Carozzi: 15%, porque el molino retiene 4%; ese 4% se puede pedir de vuelta al SII y no está incluido). Si en "Impuestos" ya tenías el F29 a mano, bórralo para no contarlo dos veces. Es un estimado: confírmalo con tu contadora.</div>`]);
+  if (!x.tieneIni) { const m = document.getElementById('fi-iva-monto'); if (m) m.focus(); }
+};
+window.flujoGuardarIvaInv = async function() {
+  const g = id => (document.getElementById(id) || {}).value, monto = String(g('fi-iva-monto') || '').trim(), est = String(g('fi-iva-est') || '').trim();
+  try {
+    await setDoc(doc(dbInv, 'flujo_caja', '_config'), { ivaFecha: g('fi-iva-fecha') || '2026-10-31', ivaRemanente: monto === '' ? null : Number(monto.replace(/\./g, '').replace(',', '.')) || 0, ivaCreditoEst: est === '' ? null : Number(est.replace(/\./g, '').replace(',', '.')) || 0 }, { merge: true });
+    toast('✓ IVA guardado'); setTimeout(() => flujoIvaInv(), 300);
+  } catch (e) { toast('No se pudo guardar: ' + e.message, false); }
+};
+window.flujoSubirVentasIvaInv = function() {
+  const fi = document.createElement('input'); fi.type = 'file'; fi.accept = '.csv,.xlsx,.xls'; fi.multiple = true;
+  fi.onchange = () => importarVentasIvaInv([...(fi.files || [])]); fi.click();
+};
+async function importarVentasIvaInv(fs) {
+  if (!fs.length) return;
+  try {
+    const acc = {}; let n = 0, esCompras = false;
+    for (const f of fs) {
+      const filas = await leerFilasArchivoInv(f), hs = new Set(Object.keys(filas[0] || {}).map(limColInv));
+      if ([...hs].some(h => h.startsWith('rutproveedor'))) { esCompras = true; continue; }
+      for (const r of filas) {
+        const tipo = parseInt(colPrioInv(r, 'tipodoc', 'tipodocumento', 'tipo'), 10), fecha = fechaCeldaInv(colPrioInv(r, 'fechadocto', 'fechadocumento', 'fechaemision', 'fecha'));
+        if (!tipo || !fechaValidaInv(fecha) || [52, 50, 46].includes(tipo)) continue;
+        const iva = Number(montoCeldaInv(colPrioInv(r, 'montoiva', 'iva'))) || 0, ret = (Number(montoCeldaInv(colPrioInv(r, 'ivaretenidototal'))) || 0) + (Number(montoCeldaInv(colPrioInv(r, 'ivaretenidoparcial'))) || 0);
+        const neto = Number(montoCeldaInv(colPrioInv(r, 'montoneto'))) || 0, s = tipo === 61 ? -1 : 1, k = fecha.slice(0, 7);
+        const a = acc[k] = acc[k] || { debito: 0, neto: 0, iva: 0, retenido: 0, n: 0 };
+        a.debito += s * (iva - ret); a.neto += s * neto; a.iva += s * iva; a.retenido += s * ret; a.n++; n++;
+      }
+    }
+    if (!n) { toast(esCompras ? 'Ese es el Registro de Compras: para el IVA de ventas sube el de Ventas' : 'No encontré documentos: ¿es el detalle del Registro de Ventas?', false); return; }
+    const meses = { ...((flujoIvaVentasInv && flujoIvaVentasInv.meses) || {}), ...acc };
+    await setDoc(doc(dbInv, 'flujo_caja', '_iva_ventas'), { meses, actualizado: hoyIsoInv() });
+    toast(`✓ ${n} documentos de venta · ${Object.keys(acc).sort().map(k => nomMesCortoInv(k).toLowerCase()).join(', ')}`);
+    setTimeout(() => flujoIvaInv(), 300);
+  } catch (e) { toast('No pude leer el archivo: ' + e.message, false); }
+}
 window.flujoDolarInv = function() {
   const d = dolarCfgInv(), inp = 'width:100%;box-sizing:border-box;margin-bottom:8px', L = t => `<label style="font-size:12px;text-transform:none;letter-spacing:0;font-weight:600">${t}</label>`;
   modalElegirDteInv('💵 Dólar para el flujo', `Hoy: <strong>${d.hoy ? pesoInv(d.hoy.valor) : 'sin dato'}</strong>${d.hoy && d.hoy.fecha ? ` (dólar observado del ${fmtFechaInv(d.hoy.fecha)}, se actualiza solo)` : ''}. Para los meses que vienen se usa lo que esperan los economistas en la encuesta mensual del Banco Central, o un valor fijo.`, [`
@@ -19122,7 +19237,7 @@ function facDescCarozziInv(k) { const w = semanaIsoInv(String(k).length === 7 ? 
 // Precio por qqm para una entrega en el mes k (i = su posición en el horizonte, para proyectar el ICI con el dólar)
 function precioCarozziInv(p, i, k, hoy) {
   const f = p.fcz || {}, C = CAROZZI_INV, d0 = dolarMesInv(0);
-  const ih = iciHoyInv(p).valor, ici = hoy ? ih : ih * (d0 > 0 ? dolarMesInv(Math.max(0, i)) / d0 : 1) * (1 + (Number(f.varIntl) || 0) / 100), fac = facDescCarozziInv(hoy ? hoyIsoInv().slice(0, 7) : k);
+  const ih = iciHoyInv(p).valor, ici = hoy ? ih : ih * (d0 > 0 ? dolarMesInv(Math.max(0, i)) / d0 : 1) * (1 + varIntlCarozziInv(p, k) / 100), fac = facDescCarozziInv(hoy ? hoyIsoInv().slice(0, 7) : k);
   const guarda = C.guarda * fac, fin = ici * tasaCarozziInv(p) / 100 * fac, finIva = fin * C.ivaFin, riesgo = ici * C.riesgo * fac, premio = ici * C.premioPH;
   const indicador = ici - guarda - fin - finIva - riesgo + premio, base = indicador * C.factor, conMinimo = Math.max(base, C.minimo);
   const lugar = (C.lugares.find(l => l[0] === f.lugar) || C.lugares[0])[1], calidad = Number(f.calidad) || 0;
@@ -19212,7 +19327,8 @@ window.flujoSupuestosInv = function(i, k) {
       (() => { const x = iciHoyInv(p); return `ICI trigo HRW 11%: oficial <strong>${N(x.oficial)}</strong>/qqm (ODEPA${x.fecha ? `, ${fmtFechaInv(x.fecha)}` : ''}${x.dias > 7 ? ` <span style="color:#B45309">hace ${x.dias} días: actualízalo</span>` : ''}) → estimado hoy <strong>${N(x.valor)}</strong>${x.fd !== 1 || x.ff !== 1 ? ` <span style="color:var(--acero)">(dólar ×${x.fd.toLocaleString('es-CL', { maximumFractionDigits: 3 })}, futuros ×${x.ff.toLocaleString('es-CL', { maximumFractionDigits: 3 })} desde esa fecha)</span>` : ''}`; })(),
       (() => { const a = tasaAutoInv(), auto = f.tasaAuto !== false && a; return `Tasa de colocación 90/180 días: <strong>${nf(tasaCarozziInv(p))}%</strong> anual ${auto ? `(Banco Central, automática${a.fecha ? `, ${fmtFechaInv(a.fecha)}` : ''})` : '(ingresada a mano)'}`; })(),
       `Dólar: hoy <strong>${N(dolarMesInv(0))}</strong>${e0 ? ` → a la cosecha <strong>${N(dolarMesInv(e0.i))}</strong>` : ''} (${fuenteDolar}). El ICI se mueve con el dólar.`,
-      `Trigo internacional hasta la cosecha: <strong>${(Number(f.varIntl) || 0) > 0 ? '+' : ''}${pct(f.varIntl)}</strong>${f.futNota ? `<div style="font-size:11px;color:var(--acero)">${escA(f.futNota)}</div>` : ' (a mano)'}`,
+      (() => { if (f.futAuto !== false && flujoTrigoInv) { const det = ent.map(e => { const x = futuroTrigoParaInv(ms[e.i]); return x ? `${nomMesCortoInv(ms[e.i]).toLowerCase()}: contrato ${nomMesCortoInv(x.c.mes).toLowerCase()} ${x.c.centavosBushel.toLocaleString('es-CL')} ¢/bu vs. hoy ${x.fr.centavosBushel.toLocaleString('es-CL')} → <strong>${x.v > 0 ? '+' : ''}${x.v.toLocaleString('es-CL')}%</strong>` : ''; }).filter(Boolean); return `Trigo internacional hasta la entrega, según los futuros del trigo HRW (CME), automático: ${det.join(' · ')}`; }
+        return `Trigo internacional hasta la cosecha: <strong>${(Number(f.varIntl) || 0) > 0 ? '+' : ''}${pct(f.varIntl)}</strong> ${f.futAuto === false ? '(a mano)' : '(guardado; futuros no disponibles ahora)'}${f.futNota ? `<div style="font-size:11px;color:var(--acero)">${escA(f.futNota)}</div>` : ''}`; })(),
       `Planta: <strong>${escA(f.lugar || 'Nos')}</strong>${pc.lugar ? ` (−${N(pc.lugar)}/qqm)` : ''} · calidad ${(Number(f.calidad) || 0) > 0 ? '+' : ''}${pct(f.calidad)}`,
       ...(f.estimada ? [`Producción estimada del contrato: ${nf(f.estimada)} qqm${f.bMeta ? ` (bono meta si entregas entre ${Math.round(f.estimada * 0.9).toLocaleString('es-CL')} y ${Math.round(f.estimada * 1.05).toLocaleString('es-CL')} qqm)` : ''}`] : []),
       `Descuentos de guarda, financiero y riesgo: completos hasta la semana 5 de 2027 (~7 feb); desde la semana 6 bajan 1/26 por semana. Pago: martes subsiguiente a la semana de entrega.`];
@@ -19235,6 +19351,7 @@ window.flujoSupuestosInv = function(i, k) {
     ${H(p.moneda === 'FCZ' ? '2 · Entregas y pagos' : '2 · Cosecha y pagos')}${tabla}
     ${precioHtml ? H('3 · Precio') + precioHtml : ''}
     ${H(precioHtml ? '4 · Supuestos de mercado' : '3 · Precio')}<ul style="margin:0;padding-left:18px;font-size:12.5px">${mercado.map(li).join('')}</ul>
+    <div style="font-size:12px;color:var(--acero);margin-top:8px">🧾 Montos netos. IVA de la venta: <strong>${(IVA_TASAS_VENTA_INV.find(t => t[0] === ivaVentaPlanInv(p)) || [0, ivaVentaPlanInv(p) + '%'])[1]}</strong>; va aparte en el flujo ("IVA de las ventas") y en la cuenta de IVA.</div>
     ${p.nota ? `<div style="font-size:12px;color:var(--acero);margin-top:8px">📝 ${escA(p.nota)}</div>` : ''}
     <div style="display:flex;gap:8px;margin-top:14px"><button class="btn-add" style="flex:2;padding:10px;justify-content:center" onclick="flujoCosechaInv(${i})">✏️ Cambiar supuestos</button><button class="btn-add" style="flex:1;padding:10px;justify-content:center;background:var(--fondo);color:var(--negro)" onclick="document.getElementById('dte-elegir').remove()">Cerrar</button></div>`]);
 };
@@ -19257,6 +19374,7 @@ window.flujoCosechaInv = function(i) {
       <div style="flex:1;min-width:0">${L('Unidad')}<select id="fc-unidad" data-no-mejorar onchange="flujoCosechaPrevInv()" style="${inp}">${UNIDADES_COSECHA_INV.map(([k, t]) => `<option value="${k}"${k === (p.unidad || 'kg') ? ' selected' : ''}>${t}</option>`).join('')}</select></div></div>
     <div style="display:flex;gap:8px"><div id="fc-precio-box" style="flex:2;min-width:0"><label id="fc-precio-lbl" style="font-size:12px;text-transform:none;letter-spacing:0;font-weight:600">Precio estimado ($ por ${p.unidad || 'kg'})</label><input type="number" id="fc-precio" value="${v('precio')}" step="any" inputmode="decimal" oninput="flujoCosechaPrevInv()" style="${inp}"></div>
       <div style="flex:1;min-width:0">${L('Tipo de precio')}<select id="fc-moneda" data-no-mejorar onchange="flujoCosechaPrevInv()" style="${inp}">${TIPOS_PRECIO_INV.map(([k, t]) => `<option value="${k}"${(p.moneda || 'CLP') === k ? ' selected' : ''}>${t}</option>`).join('')}</select></div></div>
+    <div style="display:flex;gap:8px;align-items:flex-end"><div style="flex:1;min-width:0">${L('IVA de la venta (va aparte en el flujo)')}<select id="fc-iva" data-no-mejorar data-auto="${p.ivaVenta != null && p.ivaVenta !== '' ? '0' : '1'}" onchange="this.dataset.auto='0';flujoCosechaPrevInv()" style="${inp}">${IVA_TASAS_VENTA_INV.map(([v, t]) => `<option value="${v}"${ivaVentaPlanInv(p) === v ? ' selected' : ''}>${t}</option>`).join('')}</select></div></div>
     <div id="fc-com-box" style="display:${p.moneda === 'COM' ? 'block' : 'none'};background:var(--fondo);border-radius:8px;padding:8px 10px;margin:-2px 0 10px">
       <div style="font-size:12px;color:var(--acero);margin-bottom:6px">Pon el precio de <strong>hoy</strong> en pesos. Como sigue al mercado internacional, se ajusta solo con el dólar del mes en que pagan (si el dólar baja 5%, el precio baja 5%) y con la variación que esperes del precio internacional. Referencias: <a href="https://www.odepa.gob.cl/category/rubro/cereales" target="_blank" rel="noopener">ODEPA · cereales y precios futuros</a>.</div>
       ${L('Variación esperada del precio internacional hasta la cosecha (%)')}<input type="number" id="fc-varintl" value="${escA(p.varIntl != null ? p.varIntl : 0)}" step="any" inputmode="decimal" oninput="flujoCosechaPrevInv()" placeholder="Ej: -5 si esperas que baje 5%" style="${inp};margin-bottom:0">
@@ -19270,7 +19388,9 @@ window.flujoCosechaInv = function(i) {
       <div style="display:flex;gap:8px"><div style="flex:1;min-width:0">${L('Tasa colocación 90/180 días (% anual)')}${(() => { const a = tasaAutoInv(), auto = f.tasaAuto !== false && !!a; return `<input type="number" id="fc-tasa" value="${escA(auto ? a.valor : f.tasa != null ? f.tasa : '')}" step="any" inputmode="decimal" oninput="flujoCosechaPrevInv()" placeholder="Banco Central" ${auto ? 'disabled' : ''} style="${inp}">${a ? `<label style="display:flex;gap:6px;align-items:center;font-size:11.5px;text-transform:none;letter-spacing:0;font-weight:600;margin:-4px 0 8px;cursor:pointer"><input type="checkbox" id="fc-tasa-auto" ${auto ? 'checked' : ''} onchange="const t=document.getElementById('fc-tasa');t.disabled=this.checked;if(this.checked)t.value='${a.valor}';flujoCosechaPrevInv()" style="width:auto;margin:0">Automática del Banco Central (${String(a.valor).replace('.', ',')}%${a.fecha ? ' al ' + fmtFechaInv(a.fecha) : ''})</label>` : `<div style="font-size:11px;color:#B45309;margin:-4px 0 8px">Todavía no llega la tasa del Banco Central. Escribe una provisional (% anual); cuando llegue, la app usa la automática.</div>`}`; })()}</div><div style="flex:1;min-width:0;font-size:11px;color:var(--acero);padding-top:18px">Entre una publicación y otra, el ICI se estima con el dólar y los futuros del trigo.</div></div>
       <div style="display:flex;gap:8px"><div style="flex:1;min-width:0">${L('Planta de entrega')}<select id="fc-lugar" data-no-mejorar onchange="flujoCosechaPrevInv()" style="${inp}">${CAROZZI_INV.lugares.map(([l, v]) => `<option value="${l}"${(f.lugar || 'Nos') === l ? ' selected' : ''}>${l}${v ? ' (−' + (v / 100).toLocaleString('es-CL') + ' $/kg)' : ''}</option>`).join('')}</select></div>
         <div style="flex:1;min-width:0">${L('Ajuste por calidad esperado (%)')}<input type="number" id="fc-cal" value="${escA(f.calidad || 0)}" step="any" inputmode="decimal" oninput="flujoCosechaPrevInv()" placeholder="Ej: +3 (proteína 12-13%)" style="${inp}"></div></div>
-      <div style="display:flex;gap:8px"><div style="flex:1;min-width:0">${L('Variación del trigo internacional hasta la cosecha (%)')}<input type="number" id="fc-fvar" value="${escA(f.varIntl || 0)}" step="any" inputmode="decimal" oninput="flujoCosechaPrevInv()" style="${inp};margin-bottom:2px"><a href="#" onclick="flujoTraerFuturosInv();return false" style="font-size:12px;color:var(--verde);font-weight:700">📈 Traer de los futuros del trigo (CME)</a><div id="fc-fut-estado" style="font-size:11px;color:var(--acero);margin:2px 0 8px">${escA(f.futNota || '')}</div></div>
+      <div style="display:flex;gap:8px"><div style="flex:1;min-width:0">${L('Variación del trigo internacional hasta la cosecha (%)')}${(() => { const auto = f.futAuto !== false, ms0 = mesesFlujoInv(), k0 = ((p.cosecha || [])[0] ? ms0.find(m => Number(m.slice(5, 7)) === Number(p.cosecha[0].mes)) : null) || ms0[2], fx = futuroTrigoParaInv(k0); return `<input type="number" id="fc-fvar" value="${escA(auto && fx ? fx.v : f.varIntl || 0)}" step="any" inputmode="decimal" oninput="flujoCosechaPrevInv()" ${auto ? 'disabled' : ''} style="${inp};margin-bottom:2px">
+        <label style="display:flex;gap:6px;align-items:center;font-size:11.5px;text-transform:none;letter-spacing:0;font-weight:600;margin:0 0 2px;cursor:pointer"><input type="checkbox" id="fc-fut-auto" ${auto ? 'checked' : ''} onchange="document.getElementById('fc-fvar').disabled=this.checked;flujoCosechaPrevInv()" style="width:auto;margin:0">Automática de los futuros del trigo (CME)</label>
+        <div id="fc-fut-estado" style="font-size:11px;color:var(--acero);margin:2px 0 8px">${fx ? `Contrato ${nomMesCortoInv(fx.c.mes).toLowerCase()} ${fx.c.centavosBushel.toLocaleString('es-CL')} ¢/bu vs. hoy (${fx.fr.mes ? 'contrato ' + nomMesCortoInv(fx.fr.mes).toLowerCase() : 'continuo'}) ${fx.fr.centavosBushel.toLocaleString('es-CL')} ¢/bu: ${fx.v > 0 ? '+' : ''}${fx.v.toLocaleString('es-CL')}% · se actualiza solo` : flujoTrigoEstadoInv === 'error' ? '⚠️ Futuros no disponibles: se usa el valor guardado.' : '⏳ Consultando futuros…'}</div>`; })()}</div>
         <div style="flex:1;min-width:0">${L('Producción estimada del contrato (qqm)')}<input type="number" id="fc-est" value="${escA(f.estimada || '')}" step="any" inputmode="decimal" oninput="flujoCosechaPrevInv()" placeholder="Ej: 3250" style="${inp}"></div></div>
       ${ck('fc-bfirma', f.bFirma, 'Bono firma antes del 31-oct-2026 (+$400/qqm)')}${ck('fc-bsemilla', f.bSemilla, 'Bono semilla certificada (+$200/qqm, hasta 65 qqm/ha)')}${ck('fc-bmeta', f.bMeta, 'Bono meta: entregar 90% a 105% de lo estimado (+$500/qqm)')}
       <div style="font-size:11px;color:var(--acero);margin-top:4px">Los bonos se pagan aparte: marzo 2027 (Nos, Nancagua) o abril 2027 (Talca, Parral, Chillán). Entregas después del 28-feb-2027 solo en Nos.</div>
@@ -19304,8 +19424,8 @@ function leerCosechaFormInv() {
   const g = id => ((document.getElementById(id) || {}).value || '').trim(), ed = window.__cosEd || { pct: {} };
   const ms = [...document.querySelectorAll('.fc-mes:checked')].map(c => Number(c.value));
   return { ha: Number(String(g('fc-ha')).replace(',', '.')) || 0, rend: Number(String(g('fc-rend')).replace(',', '.')) || 0, unidad: g('fc-unidad') || 'kg', precio: Number(String(g('fc-precio')).replace(',', '.')) || 0,
-    cosecha: ms.map(m => ({ mes: m, pct: ms.length === 1 ? 100 : Number(ed.pct[m]) || 0 })), ...(() => { const pagos = leerPagosFormInv(); return { pagos, desfase: pagos.length ? pagos[0].des : 0 }; })(), moneda: ['USD', 'COM', 'FCZ'].includes(g('fc-moneda')) ? g('fc-moneda') : 'CLP', varIntl: g('fc-moneda') === 'COM' ? Number(String(g('fc-varintl')).replace(',', '.')) || 0 : 0,
-    ...(g('fc-moneda') === 'FCZ' ? { fcz: { ...(() => { const ici = Number(String(g('fc-ici')).replace(',', '.')) || 0, iciFecha = g('fc-icifecha') || hoyIsoInv(), ed = window.__cosEd || {}, prev = ((!ed.nuevo && typeof ed.i === 'number' && flujoPlanesInv[ed.i]) || {}).fcz || {}; return { ici, iciFecha, ...(prev.ici === ici && prev.iciFecha === iciFecha && prev.iciDolar ? { iciDolar: prev.iciDolar, iciFut: prev.iciFut || null, iciFutMes: prev.iciFutMes || null } : anclaIciInv()) }; })(), tasa: g('fc-tasa') === '' ? '' : Number(String(g('fc-tasa')).replace(',', '.')) || 0, tasaAuto: document.getElementById('fc-tasa-auto') ? !!document.getElementById('fc-tasa-auto').checked : true, lugar: g('fc-lugar') || 'Nos', calidad: Number(String(g('fc-cal')).replace(',', '.')) || 0, varIntl: Number(String(g('fc-fvar')).replace(',', '.')) || 0, estimada: Number(String(g('fc-est')).replace(',', '.')) || 0, bFirma: !!(document.getElementById('fc-bfirma') || {}).checked, bSemilla: !!(document.getElementById('fc-bsemilla') || {}).checked, bMeta: !!(document.getElementById('fc-bmeta') || {}).checked, usar: 'cosecha', actualizado: hoyIsoInv(), quincena: Object.fromEntries([...document.querySelectorAll('.fc-quin-sel')].map(x => [x.dataset.m, x.value])), futNota: ((document.getElementById('fc-fut-estado') || {}).innerText || '').trim().slice(0, 300) } } : {}) };
+    cosecha: ms.map(m => ({ mes: m, pct: ms.length === 1 ? 100 : Number(ed.pct[m]) || 0 })), ...(() => { const pagos = leerPagosFormInv(); return { pagos, desfase: pagos.length ? pagos[0].des : 0 }; })(), moneda: ['USD', 'COM', 'FCZ'].includes(g('fc-moneda')) ? g('fc-moneda') : 'CLP', varIntl: g('fc-moneda') === 'COM' ? Number(String(g('fc-varintl')).replace(',', '.')) || 0 : 0, ivaVenta: g('fc-iva') === '' || g('fc-iva') == null ? null : Number(g('fc-iva')),
+    ...(g('fc-moneda') === 'FCZ' ? { fcz: { ...(() => { const ici = Number(String(g('fc-ici')).replace(',', '.')) || 0, iciFecha = g('fc-icifecha') || hoyIsoInv(), ed = window.__cosEd || {}, prev = ((!ed.nuevo && typeof ed.i === 'number' && flujoPlanesInv[ed.i]) || {}).fcz || {}; return { ici, iciFecha, ...(prev.ici === ici && prev.iciFecha === iciFecha && prev.iciDolar ? { iciDolar: prev.iciDolar, iciFut: prev.iciFut || null, iciFutMes: prev.iciFutMes || null } : anclaIciInv()) }; })(), tasa: g('fc-tasa') === '' ? '' : Number(String(g('fc-tasa')).replace(',', '.')) || 0, tasaAuto: document.getElementById('fc-tasa-auto') ? !!document.getElementById('fc-tasa-auto').checked : true, lugar: g('fc-lugar') || 'Nos', calidad: Number(String(g('fc-cal')).replace(',', '.')) || 0, varIntl: Number(String(g('fc-fvar')).replace(',', '.')) || 0, futAuto: document.getElementById('fc-fut-auto') ? !!document.getElementById('fc-fut-auto').checked : true, estimada: Number(String(g('fc-est')).replace(',', '.')) || 0, bFirma: !!(document.getElementById('fc-bfirma') || {}).checked, bSemilla: !!(document.getElementById('fc-bsemilla') || {}).checked, bMeta: !!(document.getElementById('fc-bmeta') || {}).checked, usar: 'cosecha', actualizado: hoyIsoInv(), quincena: Object.fromEntries([...document.querySelectorAll('.fc-quin-sel')].map(x => [x.dataset.m, x.value])), futNota: ((document.getElementById('fc-fut-estado') || {}).innerText || '').trim().slice(0, 300) } } : {}) };
 }
 window.flujoCosechaPrevInv = function() {
   const el = document.getElementById('fc-prev'); if (!el) return;
@@ -19314,6 +19434,7 @@ window.flujoCosechaPrevInv = function() {
   const fb = document.getElementById('fc-fcz-box'); if (fb) fb.style.display = x.moneda === 'FCZ' ? 'block' : 'none';
   const db = document.getElementById('fc-desf-box'); if (db) db.style.display = x.moneda === 'FCZ' ? 'none' : 'block';
   const qx = document.getElementById('fc-quin-box'); if (qx) qx.style.display = x.moneda === 'FCZ' ? 'block' : 'none';
+  const iv = document.getElementById('fc-iva'); if (iv && iv.dataset.auto === '1') { const t = x.moneda === 'FCZ' ? '15' : '19'; if (iv.value !== t) { iv.value = t; x.ivaVenta = Number(t); } }
   const pb = document.getElementById('fc-precio-box'); if (pb) pb.style.visibility = x.moneda === 'FCZ' ? 'hidden' : 'visible';
   if (x.moneda === 'FCZ') {
     // La fórmula es por qqm: si la unidad quedó en kg con un rendimiento de qqm (menos de 300 por ha), se pasa a qqm
@@ -19325,7 +19446,7 @@ window.flujoCosechaPrevInv = function() {
     const ph = precioCarozziInv(x, 0, ms[0], true), pc = precioCarozziInv(x, i0, kEnt), usaHoy = false, td = 'text-align:right;padding:2px 0 2px 10px;white-space:nowrap';
     el.innerHTML = `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
         <div style="flex:1;min-width:140px;border:${usaHoy ? '2px solid var(--verde)' : '1px solid var(--borde)'};border-radius:8px;padding:6px 8px;background:var(--blanco)"><div style="font-size:11px;color:var(--acero)">Con valores de hoy · referencia</div><div style="font-weight:800;font-size:17px;color:var(--acero)">${N(ph.final)}/qqm</div><div style="font-size:11px;color:var(--acero)">ICI y dólar de hoy · no entra al flujo</div></div>
-        <div style="flex:1;min-width:140px;border:${usaHoy ? '1px solid var(--borde)' : '2px solid var(--verde)'};border-radius:8px;padding:6px 8px;background:var(--blanco)"><div style="font-size:11px;color:var(--acero)">Estimado a la cosecha (${nomQuincenaInv(q0)} ${nomMesCortoInv(kMes).toLowerCase()})</div><div style="font-weight:800;font-size:17px">${N(pc.final)}/qqm</div><div style="font-size:11px;color:var(--acero)">dólar ${N(dolarMesInv(Math.max(0, i0)))}, trigo ${x.fcz.varIntl > 0 ? '+' : ''}${(x.fcz.varIntl || 0).toLocaleString('es-CL')}%${usaHoy ? '' : ' · se usa en el flujo'}</div></div></div>
+        <div style="flex:1;min-width:140px;border:${usaHoy ? '1px solid var(--borde)' : '2px solid var(--verde)'};border-radius:8px;padding:6px 8px;background:var(--blanco)"><div style="font-size:11px;color:var(--acero)">Estimado a la cosecha (${nomQuincenaInv(q0)} ${nomMesCortoInv(kMes).toLowerCase()})</div><div style="font-weight:800;font-size:17px">${N(pc.final)}/qqm</div><div style="font-size:11px;color:var(--acero)">dólar ${N(dolarMesInv(Math.max(0, i0)))}, trigo ${(() => { const v = varIntlCarozziInv(x, kEnt); return (v > 0 ? '+' : '') + v.toLocaleString('es-CL', { maximumFractionDigits: 1 }) + '%'; })()}${usaHoy ? '' : ' · se usa en el flujo'}</div></div></div>
       ${tablaCarozziInv(x, ph, pc)}
       <div style="font-size:11px;color:var(--acero);margin-top:4px">${entregasCarozziInv(x, ms).map(e => { const pe = precioCarozziInv(x, e.i, e.fEnt, usaHoy); return `Entrega ${nomQuincenaInv(e.q)} ${nomMesCortoInv(ms[e.i]).toLowerCase()}${e.pct < 100 ? ` (${e.pct}%)` : ''}: ~${fmtFechaInv(e.fEnt)}, semana ${e.sem.sem} → <strong>${N(pe.final)}/qqm</strong>, pago ~${fmtFechaInv(e.fPago)}${pe.fac < 1 ? ` · descuentos al ${Math.round(pe.fac * 100)}%` : ''}`; }).join('<br>')}<br>Hasta la semana 5 de 2027 (~7 feb) los descuentos de guarda, financiero y riesgo van completos; desde la semana 6 bajan 1/26 por semana.</div>
       <div style="margin-top:6px">Producción: <strong>${Math.round(b.qq).toLocaleString('es-CL')} qqm</strong> · Ingreso total: <strong>${pesoInv(total)}</strong>${b.total ? ` <span style="color:var(--acero)">(incluye bonos ${pesoInv(b.total)}, en ${MESES_ABR_INV[b.mes - 1].toLowerCase()}.)</span>` : ''}${x.fcz.bMeta && x.fcz.estimada > 0 && b.qq < x.fcz.estimada * 0.9 ? '<br><span style="color:#B45309">Con esta producción no se alcanza el 90% de lo estimado: no hay bono meta.</span>' : ''}</div>
