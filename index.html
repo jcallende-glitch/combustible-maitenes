@@ -18902,8 +18902,11 @@ function planesCosechaInv() {
 // ── 💵 Dólar: el de hoy (dólar observado, vía mindicador.cl) y el esperado (Encuesta de Expectativas Económicas del Banco Central) ──
 // La encuesta se publica cada mes (cerca del día 10) con el dólar esperado a 2 y a 11 meses; entre medio se interpola y después queda fijo.
 const EEE_DOLAR_INV = { m2: 960, m11: 930, mes: '2026-11', fuente: 'Encuesta de Expectativas Económicas del Banco Central, noviembre 2026' };
-let flujoDolarHoyInv = null, flujoDolarBuscandoInv = false, flujoDolarEstadoInv = '';
+let flujoTasaHoyInv = null, flujoDolarHoyInv = null, flujoDolarBuscandoInv = false, flujoDolarEstadoInv = '';
 const mesesFlujoInv = () => { const m0 = hoyIsoInv().slice(0, 7); return Array.from({ length: 12 }, (_, i) => mesMasInv(m0, i)); };
+// Tasa de colocación 90/180 días: la automática del Banco Central (vía /api/dolar) salvo que el plan use una propia
+const tasaAutoInv = () => flujoTasaHoyInv || (flujoCfgInv && flujoCfgInv.tasaColoc && flujoCfgInv.tasaColoc.valor > 0 ? flujoCfgInv.tasaColoc : null);
+const tasaCarozziInv = p => { const f = (p && p.fcz) || {}, a = tasaAutoInv(); return f.tasaAuto !== false && a ? Number(a.valor) : Number(f.tasa) || 0; };
 function dolarCfgInv() {
   const c = flujoCfgInv || {}, eee = c.eee && c.eee.m11 ? c.eee : EEE_DOLAR_INV;
   const hoy = flujoDolarHoyInv && (!c.dolarFecha || flujoDolarHoyInv.fecha >= c.dolarFecha) ? flujoDolarHoyInv : (c.dolarActual ? { valor: c.dolarActual, fecha: c.dolarFecha || '' } : flujoDolarHoyInv);
@@ -18925,6 +18928,7 @@ function buscarDolarHoyInv() {
     if (!j || !j.ok) { flujoDolarEstadoInv = j && j.codigo === 'SIN_CLAVE' ? 'sinclave' : 'error: ' + ((j && j.error) || ''); throw new Error('bcch'); }
     flujoDolarEstadoInv = 'bcch';
     const c = flujoCfgInv || {}, upd = {};
+    if (j.tasa && j.tasa.valor > 0) { flujoTasaHoyInv = { valor: j.tasa.valor, fecha: j.tasa.fecha, titulo: j.tasa.titulo || '' }; const tc = c.tasaColoc || {}; if (tc.valor !== j.tasa.valor || tc.fecha !== j.tasa.fecha) upd.tasaColoc = flujoTasaHoyInv; }
     if (j.hoy && j.hoy.valor) { flujoDolarHoyInv = { valor: j.hoy.valor, fecha: j.hoy.fecha }; if (!c.dolarFecha || j.hoy.fecha > c.dolarFecha) Object.assign(upd, { dolarActual: j.hoy.valor, dolarFecha: j.hoy.fecha, dolarFuente: 'Dólar observado (Banco Central)' }); }
     const eeeAnt = c.eee && c.eee.m11 ? c.eee : EEE_DOLAR_INV;
     if (j.eee && j.eee.m11 && j.eee.mes && (j.eee.mes > (eeeAnt.mes || '') || !(c.eee && c.eee.m11))) upd.eee = { m2: j.eee.m2 || j.eee.m11, m11: j.eee.m11, ...(j.eee.m23 ? { m23: j.eee.m23 } : {}), mes: j.eee.mes, auto: true, fuente: `Encuesta de Expectativas Económicas del Banco Central, ${nomMesCxpInv(j.eee.mes).toLowerCase()} (se actualiza sola)` };
@@ -18949,6 +18953,7 @@ function bloqueDolarFlujoInv() {
     <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-end">
       ${item('💵 Dólar hoy', d.hoy ? pesoInv(d.hoy.valor) : '…', d.hoy && d.hoy.fecha ? 'observado del ' + fmtFechaInv(d.hoy.fecha) : 'buscando…', true)}
       ${futuros}
+      ${tasaAutoInv() ? item('🏦 Tasa colocación 90/180', String(tasaAutoInv().valor).replace('.', ',') + '%', 'anual' + (tasaAutoInv().fecha ? ' · ' + fmtFechaInv(tasaAutoInv().fecha) : '')) : ''}
       <div style="flex:1;min-width:160px;font-size:11px;color:var(--acero);text-align:right">${d.modo === 'fijo' ? 'Dólar fijo' : escA(String(d.eee.fuente || 'Encuesta de Expectativas Económicas del Banco Central').replace(' (se actualiza sola)', ''))}${estado ? '<br>' + estado : ''}<br><span style="color:var(--verde);font-weight:700">✏️ Cambiar</span></div>
     </div>
   </div>`;
@@ -18967,11 +18972,19 @@ function iciHoyInv(p) {
 }
 // Línea del ICI para el flujo y la sección de cultivos
 function lineaIciInv() {
-  const pf = (flujoPlanesInv || []).find(p => p.moneda === 'FCZ' && Number((p.fcz || {}).ici) > 0); if (!pf) return '';
+  const planes = flujoPlanesInv || [], pf = planes.find(p => p.moneda === 'FCZ' && Number((p.fcz || {}).ici) > 0);
+  const link = `<a href="https://www.odepa.gob.cl/indicador-costo-internacion-trigo-puesto-en-santiago-de-chile" target="_blank" rel="noopener" style="color:var(--verde);font-weight:700;white-space:nowrap">🔗 Ver ICI en ODEPA</a>`;
+  if (!pf) {
+    // Todavía no hay ICI: si hay trigo candeal (o un plan con la fórmula), mostrar dónde ingresarlo
+    const i = planes.findIndex(p => p.moneda === 'FCZ' || /candeal/i.test(p.cultivo || ''));
+    return `<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center;font-size:12px;margin-top:6px;padding:6px 8px;border-radius:8px;background:#FFFBEB">
+      <span>📋 <strong>ICI trigo HRW 11% (ODEPA):</strong> <span style="color:#B45309">falta ingresarlo</span>. Es la base del precio del trigo candeal (fórmula Carozzi).</span>
+      <span style="display:flex;gap:12px">${link}<a href="#" onclick="${i >= 0 ? `flujoCosechaInv(${i})` : `flujoCosechaInv('trigo')`};return false" style="color:var(--verde);font-weight:700;white-space:nowrap">✏️ Ingresar ICI</a></span></div>`;
+  }
   const x = iciHoyInv(pf), viejo = x.dias != null && x.dias > 7, dif = x.oficial ? (x.valor / x.oficial - 1) * 100 : 0;
   return `<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center;font-size:12px;margin-top:6px;padding:6px 8px;border-radius:8px;background:${viejo ? '#FFFBEB' : 'var(--fondo)'}">
     <span>📋 <strong>ICI trigo HRW 11% (ODEPA):</strong> oficial ${pesoInv(x.oficial)}/qqm${x.fecha ? ` del ${fmtFechaInv(x.fecha)}` : ''}${x.dias != null ? ` <span style="color:${viejo ? '#B45309' : 'var(--acero)'}">(${x.dias === 0 ? 'hoy' : x.dias === 1 ? 'hace 1 día' : `hace ${x.dias} días`}${viejo ? ': actualízalo' : ''})</span>` : ''} · estimado hoy <strong>${pesoInv(x.valor)}</strong>${Math.abs(dif) >= 0.05 ? ` <span style="color:var(--acero)">(${dif > 0 ? '+' : ''}${dif.toLocaleString('es-CL', { maximumFractionDigits: 1 })}% por dólar y futuros)</span>` : ''}</span>
-    <a href="#" onclick="flujoIciInv();return false" style="color:var(--verde);font-weight:700;white-space:nowrap">✏️ Actualizar ICI</a></div>`;
+    <span style="display:flex;gap:12px">${link}<a href="#" onclick="flujoIciInv();return false" style="color:var(--verde);font-weight:700;white-space:nowrap">✏️ Actualizar ICI</a></span></div>`;
 }
 // Actualizar el ICI oficial de la semana en todos los planes con fórmula Carozzi
 window.flujoIciInv = function() {
@@ -19110,7 +19123,7 @@ function facDescCarozziInv(k) { const w = semanaIsoInv(String(k).length === 7 ? 
 function precioCarozziInv(p, i, k, hoy) {
   const f = p.fcz || {}, C = CAROZZI_INV, d0 = dolarMesInv(0);
   const ih = iciHoyInv(p).valor, ici = hoy ? ih : ih * (d0 > 0 ? dolarMesInv(Math.max(0, i)) / d0 : 1) * (1 + (Number(f.varIntl) || 0) / 100), fac = facDescCarozziInv(hoy ? hoyIsoInv().slice(0, 7) : k);
-  const guarda = C.guarda * fac, fin = ici * (Number(f.tasa) || 0) / 100 * fac, finIva = fin * C.ivaFin, riesgo = ici * C.riesgo * fac, premio = ici * C.premioPH;
+  const guarda = C.guarda * fac, fin = ici * tasaCarozziInv(p) / 100 * fac, finIva = fin * C.ivaFin, riesgo = ici * C.riesgo * fac, premio = ici * C.premioPH;
   const indicador = ici - guarda - fin - finIva - riesgo + premio, base = indicador * C.factor, conMinimo = Math.max(base, C.minimo);
   const lugar = (C.lugares.find(l => l[0] === f.lugar) || C.lugares[0])[1], calidad = Number(f.calidad) || 0;
   const final = (conMinimo - lugar) * (1 + calidad / 100);
@@ -19197,7 +19210,7 @@ window.flujoSupuestosInv = function(i, k) {
     precioHtml = `<div style="font-size:12px;color:var(--acero);margin-bottom:4px">Fórmula del contrato Carozzi, por qqm${e0 ? `, para la entrega de ${nomQuincenaInv(e0.q)} ${nomMesCortoInv(ms[e0.i]).toLowerCase()}` : ''}. La columna "Hoy" es solo referencia.</div>${tablaCarozziInv(p, ph, pc)}`;
     mercado = [
       (() => { const x = iciHoyInv(p); return `ICI trigo HRW 11%: oficial <strong>${N(x.oficial)}</strong>/qqm (ODEPA${x.fecha ? `, ${fmtFechaInv(x.fecha)}` : ''}${x.dias > 7 ? ` <span style="color:#B45309">hace ${x.dias} días: actualízalo</span>` : ''}) → estimado hoy <strong>${N(x.valor)}</strong>${x.fd !== 1 || x.ff !== 1 ? ` <span style="color:var(--acero)">(dólar ×${x.fd.toLocaleString('es-CL', { maximumFractionDigits: 3 })}, futuros ×${x.ff.toLocaleString('es-CL', { maximumFractionDigits: 3 })} desde esa fecha)</span>` : ''}`; })(),
-      `Tasa de colocación 90/180 días: <strong>${nf(f.tasa)}%</strong> anual`,
+      (() => { const a = tasaAutoInv(), auto = f.tasaAuto !== false && a; return `Tasa de colocación 90/180 días: <strong>${nf(tasaCarozziInv(p))}%</strong> anual ${auto ? `(Banco Central, automática${a.fecha ? `, ${fmtFechaInv(a.fecha)}` : ''})` : '(ingresada a mano)'}`; })(),
       `Dólar: hoy <strong>${N(dolarMesInv(0))}</strong>${e0 ? ` → a la cosecha <strong>${N(dolarMesInv(e0.i))}</strong>` : ''} (${fuenteDolar}). El ICI se mueve con el dólar.`,
       `Trigo internacional hasta la cosecha: <strong>${(Number(f.varIntl) || 0) > 0 ? '+' : ''}${pct(f.varIntl)}</strong>${f.futNota ? `<div style="font-size:11px;color:var(--acero)">${escA(f.futNota)}</div>` : ' (a mano)'}`,
       `Planta: <strong>${escA(f.lugar || 'Nos')}</strong>${pc.lugar ? ` (−${N(pc.lugar)}/qqm)` : ''} · calidad ${(Number(f.calidad) || 0) > 0 ? '+' : ''}${pct(f.calidad)}`,
@@ -19253,7 +19266,8 @@ window.flujoCosechaInv = function(i) {
       <div style="font-size:12px;color:var(--acero);margin-bottom:6px">Precio base = 1,08 × [ICI HRW 11% − guarda − costo financiero − IVA del costo financiero − riesgo + premio peso hectolitro], con mínimo garantizado de $27.500/qqm en Nos. El ICI se proyecta con el dólar del mes de entrega. Datos semanales: <a href="https://www.odepa.gob.cl/indicador-costo-internacion-trigo-puesto-en-santiago-de-chile" target="_blank" rel="noopener">ODEPA (ICI)</a> · <a href="https://www.carozzicorp.com/proveedores/precio-del-trigo/" target="_blank" rel="noopener">Carozzi (precio publicado)</a>.</div>
       <div style="display:flex;gap:8px"><div style="flex:1;min-width:0">${L('ICI oficial ODEPA ($/qqm)')}<input type="number" id="fc-ici" value="${escA(f.ici || '')}" step="any" inputmode="decimal" oninput="flujoCosechaPrevInv()" placeholder="Último publicado" style="${inp}"></div>
         <div style="flex:1;min-width:0">${L('Fecha de ese ICI')}<input type="date" id="fc-icifecha" value="${escA(f.iciFecha || hoyIsoInv())}" onchange="flujoCosechaPrevInv()" style="${inp}"></div></div>
-      <div style="display:flex;gap:8px"><div style="flex:1;min-width:0">${L('Tasa colocación 90/180 días (% anual)')}<input type="number" id="fc-tasa" value="${escA(f.tasa != null ? f.tasa : '')}" step="any" inputmode="decimal" oninput="flujoCosechaPrevInv()" placeholder="Banco Central" style="${inp}"></div><div style="flex:1;min-width:0;font-size:11px;color:var(--acero);padding-top:18px">Entre una publicación y otra, el ICI se estima con el dólar y los futuros del trigo.</div></div>
+      <a href="https://www.odepa.gob.cl/indicador-costo-internacion-trigo-puesto-en-santiago-de-chile" target="_blank" rel="noopener" style="display:inline-block;font-size:12px;color:var(--verde);font-weight:700;margin:-4px 0 8px">🔗 Ver el último ICI publicado en ODEPA (se abre en otra pestaña)</a>
+      <div style="display:flex;gap:8px"><div style="flex:1;min-width:0">${L('Tasa colocación 90/180 días (% anual)')}${(() => { const a = tasaAutoInv(), auto = f.tasaAuto !== false && !!a; return `<input type="number" id="fc-tasa" value="${escA(auto ? a.valor : f.tasa != null ? f.tasa : '')}" step="any" inputmode="decimal" oninput="flujoCosechaPrevInv()" placeholder="Banco Central" ${auto ? 'disabled' : ''} style="${inp}">${a ? `<label style="display:flex;gap:6px;align-items:center;font-size:11.5px;text-transform:none;letter-spacing:0;font-weight:600;margin:-4px 0 8px;cursor:pointer"><input type="checkbox" id="fc-tasa-auto" ${auto ? 'checked' : ''} onchange="const t=document.getElementById('fc-tasa');t.disabled=this.checked;if(this.checked)t.value='${a.valor}';flujoCosechaPrevInv()" style="width:auto;margin:0">Automática del Banco Central (${String(a.valor).replace('.', ',')}%${a.fecha ? ' al ' + fmtFechaInv(a.fecha) : ''})</label>` : ''}`; })()}</div><div style="flex:1;min-width:0;font-size:11px;color:var(--acero);padding-top:18px">Entre una publicación y otra, el ICI se estima con el dólar y los futuros del trigo.</div></div>
       <div style="display:flex;gap:8px"><div style="flex:1;min-width:0">${L('Planta de entrega')}<select id="fc-lugar" data-no-mejorar onchange="flujoCosechaPrevInv()" style="${inp}">${CAROZZI_INV.lugares.map(([l, v]) => `<option value="${l}"${(f.lugar || 'Nos') === l ? ' selected' : ''}>${l}${v ? ' (−' + (v / 100).toLocaleString('es-CL') + ' $/kg)' : ''}</option>`).join('')}</select></div>
         <div style="flex:1;min-width:0">${L('Ajuste por calidad esperado (%)')}<input type="number" id="fc-cal" value="${escA(f.calidad || 0)}" step="any" inputmode="decimal" oninput="flujoCosechaPrevInv()" placeholder="Ej: +3 (proteína 12-13%)" style="${inp}"></div></div>
       <div style="display:flex;gap:8px"><div style="flex:1;min-width:0">${L('Variación del trigo internacional hasta la cosecha (%)')}<input type="number" id="fc-fvar" value="${escA(f.varIntl || 0)}" step="any" inputmode="decimal" oninput="flujoCosechaPrevInv()" style="${inp};margin-bottom:2px"><a href="#" onclick="flujoTraerFuturosInv();return false" style="font-size:12px;color:var(--verde);font-weight:700">📈 Traer de los futuros del trigo (CME)</a><div id="fc-fut-estado" style="font-size:11px;color:var(--acero);margin:2px 0 8px">${escA(f.futNota || '')}</div></div>
@@ -19291,7 +19305,7 @@ function leerCosechaFormInv() {
   const ms = [...document.querySelectorAll('.fc-mes:checked')].map(c => Number(c.value));
   return { ha: Number(String(g('fc-ha')).replace(',', '.')) || 0, rend: Number(String(g('fc-rend')).replace(',', '.')) || 0, unidad: g('fc-unidad') || 'kg', precio: Number(String(g('fc-precio')).replace(',', '.')) || 0,
     cosecha: ms.map(m => ({ mes: m, pct: ms.length === 1 ? 100 : Number(ed.pct[m]) || 0 })), ...(() => { const pagos = leerPagosFormInv(); return { pagos, desfase: pagos.length ? pagos[0].des : 0 }; })(), moneda: ['USD', 'COM', 'FCZ'].includes(g('fc-moneda')) ? g('fc-moneda') : 'CLP', varIntl: g('fc-moneda') === 'COM' ? Number(String(g('fc-varintl')).replace(',', '.')) || 0 : 0,
-    ...(g('fc-moneda') === 'FCZ' ? { fcz: { ...(() => { const ici = Number(String(g('fc-ici')).replace(',', '.')) || 0, iciFecha = g('fc-icifecha') || hoyIsoInv(), ed = window.__cosEd || {}, prev = ((!ed.nuevo && typeof ed.i === 'number' && flujoPlanesInv[ed.i]) || {}).fcz || {}; return { ici, iciFecha, ...(prev.ici === ici && prev.iciFecha === iciFecha && prev.iciDolar ? { iciDolar: prev.iciDolar, iciFut: prev.iciFut || null, iciFutMes: prev.iciFutMes || null } : anclaIciInv()) }; })(), tasa: g('fc-tasa') === '' ? '' : Number(String(g('fc-tasa')).replace(',', '.')) || 0, lugar: g('fc-lugar') || 'Nos', calidad: Number(String(g('fc-cal')).replace(',', '.')) || 0, varIntl: Number(String(g('fc-fvar')).replace(',', '.')) || 0, estimada: Number(String(g('fc-est')).replace(',', '.')) || 0, bFirma: !!(document.getElementById('fc-bfirma') || {}).checked, bSemilla: !!(document.getElementById('fc-bsemilla') || {}).checked, bMeta: !!(document.getElementById('fc-bmeta') || {}).checked, usar: 'cosecha', actualizado: hoyIsoInv(), quincena: Object.fromEntries([...document.querySelectorAll('.fc-quin-sel')].map(x => [x.dataset.m, x.value])), futNota: ((document.getElementById('fc-fut-estado') || {}).innerText || '').trim().slice(0, 300) } } : {}) };
+    ...(g('fc-moneda') === 'FCZ' ? { fcz: { ...(() => { const ici = Number(String(g('fc-ici')).replace(',', '.')) || 0, iciFecha = g('fc-icifecha') || hoyIsoInv(), ed = window.__cosEd || {}, prev = ((!ed.nuevo && typeof ed.i === 'number' && flujoPlanesInv[ed.i]) || {}).fcz || {}; return { ici, iciFecha, ...(prev.ici === ici && prev.iciFecha === iciFecha && prev.iciDolar ? { iciDolar: prev.iciDolar, iciFut: prev.iciFut || null, iciFutMes: prev.iciFutMes || null } : anclaIciInv()) }; })(), tasa: g('fc-tasa') === '' ? '' : Number(String(g('fc-tasa')).replace(',', '.')) || 0, tasaAuto: document.getElementById('fc-tasa-auto') ? !!document.getElementById('fc-tasa-auto').checked : false, lugar: g('fc-lugar') || 'Nos', calidad: Number(String(g('fc-cal')).replace(',', '.')) || 0, varIntl: Number(String(g('fc-fvar')).replace(',', '.')) || 0, estimada: Number(String(g('fc-est')).replace(',', '.')) || 0, bFirma: !!(document.getElementById('fc-bfirma') || {}).checked, bSemilla: !!(document.getElementById('fc-bsemilla') || {}).checked, bMeta: !!(document.getElementById('fc-bmeta') || {}).checked, usar: 'cosecha', actualizado: hoyIsoInv(), quincena: Object.fromEntries([...document.querySelectorAll('.fc-quin-sel')].map(x => [x.dataset.m, x.value])), futNota: ((document.getElementById('fc-fut-estado') || {}).innerText || '').trim().slice(0, 300) } } : {}) };
 }
 window.flujoCosechaPrevInv = function() {
   const el = document.getElementById('fc-prev'); if (!el) return;
@@ -19304,7 +19318,7 @@ window.flujoCosechaPrevInv = function() {
   if (x.moneda === 'FCZ') {
     // La fórmula es por qqm: si la unidad quedó en kg con un rendimiento de qqm (menos de 300 por ha), se pasa a qqm
     const us = document.getElementById('fc-unidad'); if (us && (!['qqm', 'kg', 'ton'].includes(us.value) || (us.value === 'kg' && !(x.rend >= 300)))) { us.value = 'qqm'; x.unidad = 'qqm'; }
-    if (!(x.fcz.ici > 0) || x.fcz.tasa === '' || !(x.ha > 0) || !(x.rend > 0) || !x.cosecha.length) { el.innerHTML = '<span style="color:var(--acero)">Completa hectáreas, rendimiento, meses de cosecha, el ICI de hoy y la tasa para ver el precio.</span>'; return; }
+    if (!(x.fcz.ici > 0) || (x.fcz.tasa === '' && !(x.fcz.tasaAuto && tasaAutoInv())) || !(x.ha > 0) || !(x.rend > 0) || !x.cosecha.length) { el.innerHTML = '<span style="color:var(--acero)">Completa hectáreas, rendimiento, meses de cosecha, el ICI de hoy y la tasa para ver el precio.</span>'; return; }
     const ms = mesesFlujoInv(), pg = pagosCosechaInv(x, ms), total = Object.values(pg).reduce((a, b) => a + b, 0), b = bonosCarozziInv(x), N = v => '$' + Math.round(v).toLocaleString('es-CL');
     const c0 = x.cosecha[0], i0 = ms.findIndex(k => Number(k.slice(5, 7)) === Number(c0.mes)), kMes = i0 >= 0 ? ms[i0] : mesMasInv(ms[0], (Number(c0.mes) - Number(ms[0].slice(5, 7)) + 12) % 12);
     const q0 = quincenaDeInv(x, c0.mes), kEnt = `${kMes}-${diaQuincenaInv(q0)}`;
@@ -19357,7 +19371,7 @@ window.flujoGuardarCosechaInv = async function() {
   if (!cultivo) { toast('Indica el cultivo', false); return; }
   if (!(x.ha > 0)) { toast('Indica las hectáreas', false); return; }
   if (!(x.rend > 0)) { toast('Indica el rendimiento', false); return; }
-  if (x.moneda === 'FCZ' ? !(x.fcz.ici > 0) || x.fcz.tasa === '' : !(x.precio > 0)) { toast(x.moneda === 'FCZ' ? 'Indica el ICI de hoy y la tasa de colocación' : 'Indica el precio', false); return; }
+  if (x.moneda === 'FCZ' ? !(x.fcz.ici > 0) || (x.fcz.tasa === '' && !(x.fcz.tasaAuto && tasaAutoInv())) : !(x.precio > 0)) { toast(x.moneda === 'FCZ' ? 'Indica el ICI de hoy y la tasa de colocación' : 'Indica el precio', false); return; }
   if (!x.cosecha.length) { toast('Marca al menos un mes de cosecha', false); return; }
   if (Math.abs(x.cosecha.reduce((a, c) => a + c.pct, 0) - 100) >= 0.5) { toast('Los % de cosecha deben sumar 100%', false); return; }
   if (x.moneda !== 'FCZ' && x.pagos.length > 1 && Math.abs(x.pagos.reduce((a, q) => a + q.pct, 0) - 100) >= 0.5) { toast('Las partes del pago deben sumar 100%', false); return; }
