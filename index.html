@@ -18610,7 +18610,7 @@ window.renderCultivosInv = function() {
       if (!p.sinPlan) {
         if (p.moneda === 'FCZ') { const e = entregasCarozziInv(p, ms), e0 = e[0], ph = precioCarozziInv(p, 0, ms[0], true), pc = e0 ? precioCarozziInv(p, e0.i, e0.fEnt) : ph; precio = (p.fcz && p.fcz.ici > 0 ? `${pesoInv(pc.final)}/qqm` : '–') + sub(`fórmula Carozzi · ${escA((p.fcz || {}).lugar || 'Nos')}`); cosecha = e.map(x => `${MESES_ABR_INV[x.mes - 1]} ${x.q === '1' ? '1ª q.' : x.q === '2' ? '2ª q.' : ''}${e.length > 1 ? ' ' + x.pct + '%' : ''}`).join(', ') + sub(e.map(x => `pago ~${fmtFechaInv(x.fPago).slice(0, 5)}`).join(', ')); }
         else if (Number(p.precio) > 0) { precio = (p.moneda === 'USD' ? `US$ ${nf(p.precio)}` : pesoInv(p.precio)) + `/${uni}` + sub(p.moneda === 'USD' ? 'en dólares' : p.moneda === 'COM' ? `commodity${Number(p.varIntl) ? ' ' + (p.varIntl > 0 ? '+' : '') + nf(p.varIntl) + '%' : ''}` : 'fijo en pesos'); }
-        if (p.moneda !== 'FCZ' && (p.cosecha || []).length) cosecha = (p.cosecha || []).map(c => MESES_ABR_INV[c.mes - 1] + ((p.cosecha || []).length > 1 ? ' ' + c.pct + '%' : '')).join(', ') + sub(Number(p.desfase) ? `pago +${p.desfase} mes${Number(p.desfase) === 1 ? '' : 'es'}` : 'pago al cosechar');
+        if (p.moneda !== 'FCZ' && (p.cosecha || []).length) cosecha = (p.cosecha || []).map(c => MESES_ABR_INV[c.mes - 1] + ((p.cosecha || []).length > 1 ? ' ' + c.pct + '%' : '')).join(', ') + sub(txtPagoInv(p));
       }
       const ingreso = esOk ? `<strong style="color:var(--verde)">${pesoInv(ingresoCosechaInv(p))}</strong>` + sub('📋 ver supuestos', 'var(--verde)') : excl ? sub('No incluido') : `<strong style="color:#B45309">Completar ✏️</strong>` + sub('aún no suma', '#B45309');
       return `<tr style="cursor:pointer${excl ? ';opacity:.6' : ''}" onclick="${esOk ? 'flujoSupuestosInv' : 'flujoCosechaInv'}(${i})">
@@ -18640,7 +18640,7 @@ window.renderCultivosInv = function() {
             ${ok.length ? `<tr><td style="${TD0};font-weight:800;background:#F7F7F2">Total en el flujo</td><td style="${TD};font-weight:800;background:#F7F7F2">${fmtHa(haOk)}</td><td style="${TD};background:#F7F7F2" colspan="4"></td><td style="${TD};font-weight:800;background:#F7F7F2">${pesoInv(tot)}</td></tr>` : ''}</tbody>
         </table>
       </div>
-      <div style="font-size:12px;color:var(--acero);margin-bottom:8px">Las hectáreas salen de Campo (huertos por su especie; potreros anuales por los lotes de esta temporada o su última siembra). Lo que corrijas aquí no cambia Campo. Si un cultivo no aparece (sin siembra de esta temporada u otro nombre), agrégalo con ➕.</div>
+      <div style="font-size:12px;color:var(--acero);margin-bottom:8px">Las hectáreas salen de Campo (huertos por su especie; potreros anuales por los lotes de esta temporada o su última siembra). Lo que corrijas aquí no cambia Campo. Si un cultivo no aparece (sin siembra de esta temporada u otro nombre), agrégalo con ➕.${(() => { const sc = haPorCultivoCampoInv().get('Sin cultivo definido'); return sc && sc.ha > 0 ? ` Hay <strong>${fmtHa(sc.ha)} ha</strong> en potreros sin cultivo en Campo: no entran aquí (míralos en el detalle de abajo).` : ''; })()}</div>
       ${bloqueHectareasInv()}`;
   } catch (e) {
     console.error('cultivos', e);
@@ -18895,7 +18895,7 @@ function detallePotrerosFlujoInv() {
 function planesCosechaInv() {
   const campo = haPorCultivoCampoInv(), guardados = (flujoItemsInv || []).filter(x => x.tipo === 'cosecha'), out = [];
   guardados.forEach(g => { const c = [...campo.values()].find(x => normNom(x.cultivo) === normNom(g.cultivo)); out.push({ ...g, haCampo: c ? c.ha : null, partes: c ? c.partes : [], frutal: c ? c.frutal : !!g.frutal }); });
-  campo.forEach(c => { if (!guardados.some(g => normNom(g.cultivo) === normNom(c.cultivo))) out.push({ id: '', cultivo: c.cultivo, ha: c.ha, haCampo: c.ha, partes: c.partes, frutal: c.frutal, sinPlan: true }); });
+  campo.forEach(c => { if (c.cultivo === 'Sin cultivo definido') return; if (!guardados.some(g => normNom(g.cultivo) === normNom(c.cultivo))) out.push({ id: '', cultivo: c.cultivo, ha: c.ha, haCampo: c.ha, partes: c.partes, frutal: c.frutal, sinPlan: true }); });
   return out.sort((a, b) => (a.sinPlan ? 1 : 0) - (b.sinPlan ? 1 : 0) || (Number(b.ha) || 0) - (Number(a.ha) || 0));
 }
 // ── 💵 Dólar: el de hoy (dólar observado, vía mindicador.cl) y el esperado (Encuesta de Expectativas Económicas del Banco Central) ──
@@ -18961,11 +18961,18 @@ function buscarFuturosTrigoInv() {
     .catch(e => { flujoTrigoEstadoInv = 'error'; flujoTrigoErrorTsInv = Date.now(); console.warn('futuros trigo', e); })
     .then(() => { flujoTrigoBuscandoInv = false; redibujarFlujoInv(); });
 }
+// "Hoy" en futuros = el contrato vigente más cercano (Yahoo pasa KE=F al contrato siguiente antes de que venza el actual);
+// se descarta un contrato sin cotización reciente (más de 4 días antes que la del continuo)
+function frenteTrigoInv(T) {
+  const f = T.frente, ok = (T.contratos || []).filter(x => x.centavosBushel > 0 && (!f || !f.fecha || !x.fecha || (new Date(f.fecha) - new Date(x.fecha)) / 86400000 <= 4));
+  return ok.length ? ok[0] : { ...f, mes: '' };
+}
 // Contrato de futuros del trigo para el mes de entrega k (el primero que vence ese mes o después) y su variación contra el contrato más cercano
 function futuroTrigoParaInv(k) {
   const T = flujoTrigoInv; if (!T || !T.frente || !(T.contratos || []).length) return null;
+  const fr = frenteTrigoInv(T);
   const c = T.contratos.find(x => x.mes >= k) || T.contratos[T.contratos.length - 1];
-  return { c, fr: T.frente, v: Math.round((c.centavosBushel / T.frente.centavosBushel - 1) * 1000) / 10 };
+  return { c, fr, v: Math.round((c.centavosBushel / fr.centavosBushel - 1) * 1000) / 10 };
 }
 function preciosCultivoInv(p, ms) {
   const uni = p.unidad === 'qqm' ? 'qqm' : p.unidad || 'kg';
@@ -18974,10 +18981,10 @@ function preciosCultivoInv(p, ms) {
     const prs = e.map(x => precioCarozziInv(p, x.i, x.fEnt)), fut = e.reduce((a, x, j) => a + x.pct * prs[j].final, 0) / sp;
     return { uni: 'qqm', hoy, fut, minimo: prs.some(x => x.minimo), minHoy: precioCarozziInv(p, 0, ms[0], true).minimo, cuando: e.map(x => `${x.q === '1' ? '1ª q. ' : x.q === '2' ? '2ª q. ' : ''}${MESES_ABR_INV[x.mes - 1].toLowerCase()}`).join(', '), base: `fórmula Carozzi · ICI ${pesoInv((p.fcz || {}).ici)} · trigo ${(Number((p.fcz || {}).varIntl) || 0) > 0 ? '+' : ''}${(Number((p.fcz || {}).varIntl) || 0).toLocaleString('es-CL')}%` };
   }
-  const des = Number(p.desfase) || 0, pagos = (p.cosecha || []).map(c => { const mp = ((Number(c.mes) - 1 + des) % 12) + 1; return { i: ms.findIndex(x => Number(x.slice(5, 7)) === mp), pct: Number(c.pct) || 0 }; }).filter(x => x.i >= 0);
+  const pagos = partesPagoInv(p, ms);
   const sp = pagos.reduce((a, x) => a + x.pct, 0) || 1, pr = Number(p.precio) || 0;
   const hoy = p.moneda === 'USD' ? pr * dolarMesInv(0) : pr, fut = pagos.length ? pagos.reduce((a, x) => a + x.pct * pr * factorPrecioInv(p, x.i), 0) / sp : hoy;
-  return { uni, hoy, fut, cuando: pagos.map(x => nomMesCortoInv(ms[x.i]).toLowerCase()).join(', '), base: p.moneda === 'USD' ? `US$ ${pr.toLocaleString('es-CL')}/${uni} × dólar` : p.moneda === 'COM' ? `commodity · dólar y mercado ${(Number(p.varIntl) || 0) > 0 ? '+' : ''}${(Number(p.varIntl) || 0).toLocaleString('es-CL')}%` : 'precio fijo en pesos' };
+  return { uni, hoy, fut, cuando: [...new Set(pagos.map(x => nomMesCortoInv(ms[x.i]).toLowerCase()))].join(', '), base: p.moneda === 'USD' ? `US$ ${pr.toLocaleString('es-CL')}/${uni} × dólar` : p.moneda === 'COM' ? `commodity · dólar y mercado ${(Number(p.varIntl) || 0) > 0 ? '+' : ''}${(Number(p.varIntl) || 0).toLocaleString('es-CL')}%` : 'precio fijo en pesos' };
 }
 function bloquePreciosFlujoInv() {
   const ms = mesesFlujoInv(), planes = (flujoPlanesInv || []).filter(planCompletoInv);
@@ -18989,7 +18996,7 @@ function bloquePreciosFlujoInv() {
   const pf = planes.find(p => p.moneda === 'FCZ'); let fut = '';
   if (pf) {
     const e0 = entregasCarozziInv(pf, ms)[0], k = e0 ? ms[e0.i] : ms[0], f = futuroTrigoParaInv(k), vPlan = Number((pf.fcz || {}).varIntl) || 0;
-    if (f) fut = `<tr><td style="${td0}"><strong>📈 Trigo HRW Kansas (CME)</strong><div style="font-size:10.5px;color:var(--acero)">futuros, referencia del ICI · ${escA(fmtFechaInv(f.fr.fecha))}</div></td><td style="${td}">${f.fr.centavosBushel.toLocaleString('es-CL')} <span style="color:var(--acero);font-size:11px">¢/bu</span><div style="font-size:10.5px;color:var(--acero)">US$ ${f.fr.usTon.toLocaleString('es-CL')}/t</div></td><td style="${td};font-weight:800">${f.c.centavosBushel.toLocaleString('es-CL')} <span style="color:var(--acero);font-size:11px;font-weight:400">¢/bu</span><div style="font-size:10.5px;color:var(--acero);font-weight:400">contrato ${nomMesCortoInv(f.c.mes).toLowerCase()}</div><div style="font-weight:400">${varTxt(f.v)}</div>${Math.abs(f.v - vPlan) >= 0.5 ? `<div><a href="#" onclick="flujoAplicarFuturosInv();return false" style="font-size:10.5px;color:var(--verde);font-weight:700">usar en el trigo</a></div><div style="font-size:10px;color:var(--acero);font-weight:400">(hoy usa ${vPlan > 0 ? '+' : ''}${vPlan.toLocaleString('es-CL')}%)</div>` : ''}</td></tr>`;
+    if (f) fut = `<tr><td style="${td0}"><strong>📈 Trigo HRW Kansas (CME)</strong><div style="font-size:10.5px;color:var(--acero)">futuros, referencia del ICI · ${escA(fmtFechaInv(f.fr.fecha))}</div></td><td style="${td}">${f.fr.mes ? `<div style="font-size:10.5px;color:var(--acero)">contrato ${nomMesCortoInv(f.fr.mes).toLowerCase()}</div>` : ''}${f.fr.centavosBushel.toLocaleString('es-CL')} <span style="color:var(--acero);font-size:11px">¢/bu</span><div style="font-size:10.5px;color:var(--acero)">US$ ${f.fr.usTon.toLocaleString('es-CL')}/t</div></td><td style="${td};font-weight:800">${f.c.centavosBushel.toLocaleString('es-CL')} <span style="color:var(--acero);font-size:11px;font-weight:400">¢/bu</span><div style="font-size:10.5px;color:var(--acero);font-weight:400">contrato ${nomMesCortoInv(f.c.mes).toLowerCase()}</div><div style="font-weight:400">${varTxt(f.v)}</div>${Math.abs(f.v - vPlan) >= 0.5 ? `<div><a href="#" onclick="flujoAplicarFuturosInv();return false" style="font-size:10.5px;color:var(--verde);font-weight:700">usar en el trigo</a></div><div style="font-size:10px;color:var(--acero);font-weight:400">(hoy usa ${vPlan > 0 ? '+' : ''}${vPlan.toLocaleString('es-CL')}%)</div>` : ''}</td></tr>`;
     else fut = `<tr><td colspan="3" style="padding:4px 0;font-size:11px;color:var(--acero)">📈 Futuros del trigo (CME): ${flujoTrigoBuscandoInv || !flujoTrigoEstadoInv ? '⏳ consultando…' : '⚠️ no disponibles (revisa que trigo.mjs esté en netlify/functions); el trigo usa ' + ((Number((pf.fcz || {}).varIntl) || 0) > 0 ? '+' : '') + (Number((pf.fcz || {}).varIntl) || 0).toLocaleString('es-CL') + '%'}</td></tr>`;
   }
   return `<div style="border:1px solid var(--borde);border-radius:10px;padding:8px 12px;margin-bottom:8px">
@@ -19004,7 +19011,7 @@ window.flujoAplicarFuturosInv = async function() {
   try {
     for (const p of planes) {
       const e0 = entregasCarozziInv(p, ms)[0], f = futuroTrigoParaInv(e0 ? ms[e0.i] : ms[0]); if (!f) continue;
-      const nota = `✓ Futuro ${nomMesCortoInv(f.c.mes).toLowerCase()} ${f.c.centavosBushel.toLocaleString('es-CL')} ¢/bu (US$ ${f.c.usTon.toLocaleString('es-CL')}/t) vs. hoy ${f.fr.centavosBushel.toLocaleString('es-CL')} ¢/bu: ${f.v > 0 ? '+' : ''}${f.v.toLocaleString('es-CL')}% · ${flujoTrigoInv.fuente}, ${fmtFechaInv(f.fr.fecha)}`;
+      const nota = `✓ Futuro ${nomMesCortoInv(f.c.mes).toLowerCase()} ${f.c.centavosBushel.toLocaleString('es-CL')} ¢/bu (US$ ${f.c.usTon.toLocaleString('es-CL')}/t) vs. hoy${f.fr.mes ? ' (contrato ' + nomMesCortoInv(f.fr.mes).toLowerCase() + ')' : ''} ${f.fr.centavosBushel.toLocaleString('es-CL')} ¢/bu: ${f.v > 0 ? '+' : ''}${f.v.toLocaleString('es-CL')}% · ${flujoTrigoInv.fuente}, ${fmtFechaInv(f.fr.fecha)}`;
       await updateDoc(doc(dbInv, 'flujo_caja', p.id), { fcz: { ...(p.fcz || {}), varIntl: f.v, futNota: nota } });
     }
     toast('✓ Trigo actualizado con los futuros');
@@ -19073,10 +19080,10 @@ window.flujoTraerFuturosInv = async function() {
     if (!flujoTrigoInv || Date.now() - flujoTrigoInv.ts > 3 * 3600000) { const r = await fetch('/api/trigo'); const j = await r.json(); if (!j.ok) throw new Error(j.error || 'sin datos'); flujoTrigoInv = j; }
     const ms = [...document.querySelectorAll('.fc-mes:checked')].map(c => Number(c.value)); if (!ms.length) throw new Error('marca primero los meses de cosecha');
     const m0 = hoyIsoInv().slice(0, 7), kEnt = mesesFlujoInv().find(k => Number(k.slice(5, 7)) === ms[0]) || m0;
-    const c = flujoTrigoInv.contratos.find(x => x.mes >= kEnt) || flujoTrigoInv.contratos[flujoTrigoInv.contratos.length - 1], fr = flujoTrigoInv.frente;
+    const c = flujoTrigoInv.contratos.find(x => x.mes >= kEnt) || flujoTrigoInv.contratos[flujoTrigoInv.contratos.length - 1], fr = frenteTrigoInv(flujoTrigoInv);
     if (!c || !fr) throw new Error('no hay contratos con precio');
     const v = Math.round((c.centavosBushel / fr.centavosBushel - 1) * 1000) / 10, inp = document.getElementById('fc-fvar'); if (inp) inp.value = v;
-    if (st) st.innerHTML = `✓ Futuro ${nomMesCortoInv(c.mes).toLowerCase()} ${c.centavosBushel.toLocaleString('es-CL')} ¢/bu (US$ ${c.usTon.toLocaleString('es-CL')}/t) vs. hoy ${fr.centavosBushel.toLocaleString('es-CL')} ¢/bu: <strong>${v > 0 ? '+' : ''}${v.toLocaleString('es-CL')}%</strong> · ${escA(flujoTrigoInv.fuente)}, ${fmtFechaInv(fr.fecha)}`;
+    if (st) st.innerHTML = `✓ Futuro ${nomMesCortoInv(c.mes).toLowerCase()} ${c.centavosBushel.toLocaleString('es-CL')} ¢/bu (US$ ${c.usTon.toLocaleString('es-CL')}/t) vs. hoy${fr.mes ? ' (contrato ' + nomMesCortoInv(fr.mes).toLowerCase() + ')' : ''} ${fr.centavosBushel.toLocaleString('es-CL')} ¢/bu: <strong>${v > 0 ? '+' : ''}${v.toLocaleString('es-CL')}%</strong> · ${escA(flujoTrigoInv.fuente)}, ${fmtFechaInv(fr.fecha)}`;
     window.__cosEd = window.__cosEd || {}; window.__cosEd.fut = st ? st.innerText : '';
     flujoCosechaPrevInv();
   } catch (e) { if (st) st.textContent = '⚠️ No se pudieron traer los futuros (' + e.message + '). Pon la variación a mano.'; }
@@ -19090,6 +19097,16 @@ function bonosCarozziInv(p) {
   return { firma, semilla, meta, total: firma + semilla + meta, mes: ['Nos', 'Nancagua'].includes(f.lugar || 'Nos') ? 3 : 4, qq };
 }
 const factorPrecioInv = (p, i) => p.moneda === 'USD' ? dolarMesInv(i) : p.moneda === 'COM' ? (dolarMesInv(0) > 0 ? dolarMesInv(i) / dolarMesInv(0) : 1) * (1 + (Number(p.varIntl) || 0) / 100) : 1;
+// Forma de pago: una o varias partes, cada una con su % y cuántos meses después de la cosecha (p.pagos; si no hay, p.desfase al 100%)
+const cuotasPagoInv = p => { const a = (p.pagos || []).filter(x => Number(x.pct) > 0); return a.length ? a.map(x => ({ pct: Number(x.pct), des: Number(x.des) || 0 })) : [{ pct: 100, des: Number(p.desfase) || 0 }]; };
+const txtDesInv = d => d ? `+${d} mes${d === 1 ? '' : 'es'}` : 'al cosechar';
+const txtPagoInv = p => { const q = cuotasPagoInv(p); return 'pago ' + (q.length === 1 ? txtDesInv(q[0].des) : q.map(x => `${x.pct.toLocaleString('es-CL')}% ${txtDesInv(x.des)}`).join(', ')); };
+// Cada parte de la venta: mes de cosecha × parte del pago → mes del horizonte en que entra la plata
+function partesPagoInv(p, meses) {
+  const out = [];
+  (p.cosecha || []).forEach(c => cuotasPagoInv(p).forEach(q => { const mp = ((Number(c.mes) - 1 + q.des) % 12) + 1, i = meses.findIndex(x => Number(x.slice(5, 7)) === mp); if (i >= 0) out.push({ mes: Number(c.mes), des: q.des, pctC: Number(c.pct) || 0, pctQ: q.pct, pct: (Number(c.pct) || 0) * q.pct / 100, i, k: meses[i], varias: cuotasPagoInv(p).length > 1 }); }));
+  return out;
+}
 // En qué mes del horizonte cae cada pago (mes de cosecha + desfase), y cuánto en pesos
 function pagosCosechaInv(p, meses) {
   const out = {}, total = baseCosechaInv(p);
@@ -19103,7 +19120,7 @@ function pagosCosechaInv(p, meses) {
     if (b.total > 0 && ib >= 0) out[meses[ib]] = (out[meses[ib]] || 0) + b.total;
     return out;
   }
-  (p.cosecha || []).forEach(c => { const mp = ((Number(c.mes) - 1 + (Number(p.desfase) || 0)) % 12) + 1, i = meses.findIndex(x => Number(x.slice(5, 7)) === mp); if (i < 0) return; const k = meses[i]; out[k] = (out[k] || 0) + total * (Number(c.pct) || 0) / 100 * factorPrecioInv(p, i); });
+  partesPagoInv(p, meses).forEach(x => { out[x.k] = (out[x.k] || 0) + total * x.pct / 100 * factorPrecioInv(p, x.i); });
   return out;
 }
 const ingresoCosechaInv = p => Object.values(pagosCosechaInv(p, mesesFlujoInv())).reduce((a, b) => a + b, 0);
@@ -19143,8 +19160,7 @@ window.flujoSupuestosInv = function(i, k) {
       ...(f.estimada ? [`Producción estimada del contrato: ${nf(f.estimada)} qqm${f.bMeta ? ` (bono meta si entregas entre ${Math.round(f.estimada * 0.9).toLocaleString('es-CL')} y ${Math.round(f.estimada * 1.05).toLocaleString('es-CL')} qqm)` : ''}`] : []),
       `Descuentos de guarda, financiero y riesgo: completos hasta la semana 5 de 2027 (~7 feb); desde la semana 6 bajan 1/26 por semana. Pago: martes subsiguiente a la semana de entrega.`];
   } else {
-    const des = Number(p.desfase) || 0;
-    (p.cosecha || []).forEach(c => { const mp = ((Number(c.mes) - 1 + des) % 12) + 1, ii = ms.findIndex(x => Number(x.slice(5, 7)) === mp); if (ii < 0) return; const precio = (Number(p.precio) || 0) * factorPrecioInv(p, ii); filas.push({ k: ms[ii], ent: `${MESES_ABR_INV[c.mes - 1]}${des ? `<div style="font-size:10.5px;color:var(--acero)">pagan ${des} mes${des === 1 ? '' : 'es'} después</div>` : ''}`, pct: c.pct, cant: prod * c.pct / 100, precio, monto: prod * c.pct / 100 * precio, pago: nomMesCortoInv(ms[ii]).toLowerCase(), dolar: p.moneda === 'USD' || p.moneda === 'COM' ? dolarMesInv(ii) : 0 }); });
+    partesPagoInv(p, ms).forEach(x => { const ii = x.i, precio = (Number(p.precio) || 0) * factorPrecioInv(p, ii); filas.push({ k: ms[ii], ent: `${MESES_ABR_INV[x.mes - 1]}${(p.cosecha || []).length > 1 ? ` <span style="color:var(--acero)">(${x.pctC}% de la cosecha)</span>` : ''}<div style="font-size:10.5px;color:var(--acero)">${x.varias ? `${x.pctQ.toLocaleString('es-CL')}% del pago, ` : ''}${x.des ? `${x.des} mes${x.des === 1 ? '' : 'es'} después` : 'al cosechar'}</div>`, pct: x.pct, cant: prod * x.pct / 100, precio, monto: prod * x.pct / 100 * precio, pago: nomMesCortoInv(ms[ii]).toLowerCase(), dolar: p.moneda === 'USD' || p.moneda === 'COM' ? dolarMesInv(ii) : 0 }); });
     mercado = [p.moneda === 'USD' ? `Precio: <strong>US$ ${nf(p.precio)}</strong> por ${uni}, convertido con el dólar de cada mes de pago (${fuenteDolar})`
       : p.moneda === 'COM' ? `Precio hoy: <strong>${N(p.precio)}</strong> por ${uni}; sigue al dólar (${fuenteDolar}) y al mercado internacional (${(Number(p.varIntl) || 0) > 0 ? '+' : ''}${pct(p.varIntl)} hasta la cosecha)`
       : `Precio fijo: <strong>${N(p.precio)}</strong> por ${uni}`];
@@ -19166,13 +19182,15 @@ window.flujoSupuestosInv = function(i, k) {
     <div style="display:flex;gap:8px;margin-top:14px"><button class="btn-add" style="flex:2;padding:10px;justify-content:center" onclick="flujoCosechaInv(${i})">✏️ Cambiar supuestos</button><button class="btn-add" style="flex:1;padding:10px;justify-content:center;background:var(--fondo);color:var(--negro)" onclick="document.getElementById('dte-elegir').remove()">Cerrar</button></div>`]);
 };
 window.flujoCosechaInv = function(i) {
-  const p = i === 'nuevo' ? { cultivo: '', ha: '', nuevo: true, partes: [] } : flujoPlanesInv[i]; if (!p) return;
+  let p = i === 'nuevo' ? { cultivo: '', ha: '', nuevo: true, partes: [] } : i === 'trigo' ? { cultivo: 'Trigo candeal', ha: '', nuevo: true, partes: [], unidad: 'qqm', moneda: 'FCZ', cosecha: [{ mes: 1, pct: 100 }], fcz: { lugar: 'Chillán', quincena: { 1: '2' }, bFirma: true } } : flujoPlanesInv[i]; if (!p) return;
+  // Trigo candeal sin plan: parte con la fórmula del contrato Carozzi (enero, 2ª quincena), que se puede cambiar en "Tipo de precio"
+  if (p.sinPlan && /candeal/i.test(p.cultivo) && !p.moneda) p = { ...p, unidad: 'qqm', moneda: 'FCZ', cosecha: [{ mes: 1, pct: 100 }], fcz: { lugar: 'Chillán', quincena: { 1: '2' }, bFirma: true } };
   const inp = 'width:100%;box-sizing:border-box;margin-bottom:8px', L = t => `<label style="font-size:12px;text-transform:none;letter-spacing:0;font-weight:600">${t}</label>`, v = (k, d = '') => escA(p[k] != null && p[k] !== '' ? p[k] : d);
   const sel = new Set((p.cosecha || []).map(c => Number(c.mes))), pct = Object.fromEntries((p.cosecha || []).map(c => [Number(c.mes), c.pct]));
   window.__cosEd = { i, pct, nuevo: !!p.nuevo, quin: (p.fcz && p.fcz.quincena) || {} };
   const partes = (p.partes || []).length ? `<details style="font-size:12px;color:var(--acero);margin:-4px 0 8px"><summary style="cursor:pointer">Según Campo: <strong>${String(p.haCampo).replace('.', ',')} ha</strong> en ${p.partes.length} potrero${p.partes.length === 1 ? '' : 's'}${p.haCampo != null && Number(p.ha) !== Number(p.haCampo) && !p.sinPlan ? ` <span style="color:#B45309">(tú tienes ${String(p.ha).replace('.', ',')} ha)</span>` : ''}</summary>${p.partes.map(x => `<div>· ${escA(x.donde)}: ${x.ha.toFixed(2).replace('.', ',')} ha</div>`).join('')}</details>` : p.nuevo ? '' : '<div style="font-size:12px;color:#B45309;margin:-4px 0 8px">Este cultivo ya no aparece en Campo: revisa las hectáreas.</div>';
   modalElegirDteInv(`🌾 ${p.nuevo ? 'Agregar cultivo' : escA(p.cultivo)}`, 'Ingreso estimado = hectáreas × rendimiento por ha × precio. Se reparte en los meses de cosecha y entra al flujo cuando pagan.', [`
-    ${p.nuevo ? `${L('Cultivo o huerto')}<input type="text" id="fc-cultivo" list="fc-cultivos" placeholder="Ej: Avellano, Trigo" style="${inp}"><datalist id="fc-cultivos">${(cultivosCampoConfig || []).map(c => `<option value="${escA(c)}">`).join('')}</datalist>` : ''}
+    ${p.nuevo ? `${L('Cultivo o huerto')}<input type="text" id="fc-cultivo" list="fc-cultivos" placeholder="Ej: Avellano, Trigo" value="${escA(p.cultivo || '')}" style="${inp}"><datalist id="fc-cultivos">${(cultivosCampoConfig || []).map(c => `<option value="${escA(c)}">`).join('')}</datalist>` : ''}
     <div style="font-size:13px;font-weight:800;margin:2px 0 6px">1 · Hectáreas</div>
     ${L('Hectáreas que van a cosecha')}<input type="number" id="fc-ha" value="${v('ha')}" step="0.01" inputmode="decimal" oninput="flujoCosechaPrevInv()" style="${inp}">
     ${partes}
@@ -19203,12 +19221,14 @@ window.flujoCosechaInv = function(i) {
     <div id="fc-pcts"></div>
     <div id="fc-quin-box" style="display:${p.moneda === 'FCZ' ? 'block' : 'none'}">${L('¿En qué parte del mes se entrega? (fórmula Carozzi)')}<div id="fc-quin" style="margin:2px 0 4px"></div>
       <div style="font-size:11px;color:var(--acero);margin-bottom:8px">El precio es el publicado la semana de la entrega y se paga a más tardar el martes subsiguiente a esa semana (cláusula octava). Hasta la semana 5 de 2027 (~7 de febrero) los descuentos van completos.</div></div>
-    <div id="fc-desf-box" style="display:${p.moneda === 'FCZ' ? 'none' : 'block'}">${L('¿Cuándo pagan, respecto de la cosecha?')}<select id="fc-desf" data-no-mejorar onchange="flujoCosechaPrevInv()" style="${inp}">${Array.from({ length: 13 }, (_, n) => `<option value="${n}"${n === (Number(p.desfase) || 0) ? ' selected' : ''}>${n === 0 ? 'El mismo mes de la cosecha' : n === 1 ? '1 mes después' : n + ' meses después'}</option>`).join('')}</select></div>
+    <div id="fc-desf-box" style="display:${p.moneda === 'FCZ' ? 'none' : 'block'}">${L('¿Cuándo pagan, respecto de la cosecha?')}<div id="fc-pagos"></div>
+      <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;margin:0 0 10px"><a href="#" onclick="flujoPagoAgregarInv();return false" style="font-size:12px;color:var(--verde);font-weight:700">+ Dividir el pago (ej.: 50% al cosechar y 50% al mes siguiente)</a><span id="fc-pago-suma" style="font-size:12px"></span></div></div>
     <label style="display:flex;gap:8px;align-items:center;font-size:13px;text-transform:none;letter-spacing:0;font-weight:600;margin:0 0 8px;cursor:pointer"><input type="checkbox" id="fc-activo" ${p.activo === false ? '' : 'checked'} style="width:auto;margin:0">Incluir en el flujo de caja</label>
     ${L('Nota (opcional)')}<input type="text" id="fc-nota" value="${v('nota')}" placeholder="Ej: precio exportadora, 70% calibre" style="${inp}">
     <div id="fc-prev" style="background:var(--fondo);border-radius:8px;padding:8px 10px;font-size:13px;margin-bottom:10px"></div>
     <button class="btn btn-verde" id="fc-guardar" style="width:100%;justify-content:center" onclick="flujoGuardarCosechaInv()">✓ Guardar</button>
     ${p.id ? `<button class="btn-add" style="width:100%;margin-top:8px;background:var(--fondo);color:#B91C1C" onclick="flujoBorrarCosechaInv('${p.id}')">🗑 Borrar la estimación</button>` : ''}`]);
+  pintarPagosInv(cuotasPagoInv(p));
   flujoCosechaMesesInv(true);
 }
 // Con un mes, todo ahí; con varios, pide el % de cada uno (parte repartido en partes iguales)
@@ -19225,7 +19245,7 @@ function leerCosechaFormInv() {
   const g = id => ((document.getElementById(id) || {}).value || '').trim(), ed = window.__cosEd || { pct: {} };
   const ms = [...document.querySelectorAll('.fc-mes:checked')].map(c => Number(c.value));
   return { ha: Number(String(g('fc-ha')).replace(',', '.')) || 0, rend: Number(String(g('fc-rend')).replace(',', '.')) || 0, unidad: g('fc-unidad') || 'kg', precio: Number(String(g('fc-precio')).replace(',', '.')) || 0,
-    cosecha: ms.map(m => ({ mes: m, pct: ms.length === 1 ? 100 : Number(ed.pct[m]) || 0 })), desfase: Number(g('fc-desf')) || 0, moneda: ['USD', 'COM', 'FCZ'].includes(g('fc-moneda')) ? g('fc-moneda') : 'CLP', varIntl: g('fc-moneda') === 'COM' ? Number(String(g('fc-varintl')).replace(',', '.')) || 0 : 0,
+    cosecha: ms.map(m => ({ mes: m, pct: ms.length === 1 ? 100 : Number(ed.pct[m]) || 0 })), ...(() => { const pagos = leerPagosFormInv(); return { pagos, desfase: pagos.length ? pagos[0].des : 0 }; })(), moneda: ['USD', 'COM', 'FCZ'].includes(g('fc-moneda')) ? g('fc-moneda') : 'CLP', varIntl: g('fc-moneda') === 'COM' ? Number(String(g('fc-varintl')).replace(',', '.')) || 0 : 0,
     ...(g('fc-moneda') === 'FCZ' ? { fcz: { ici: Number(String(g('fc-ici')).replace(',', '.')) || 0, tasa: g('fc-tasa') === '' ? '' : Number(String(g('fc-tasa')).replace(',', '.')) || 0, lugar: g('fc-lugar') || 'Nos', calidad: Number(String(g('fc-cal')).replace(',', '.')) || 0, varIntl: Number(String(g('fc-fvar')).replace(',', '.')) || 0, estimada: Number(String(g('fc-est')).replace(',', '.')) || 0, bFirma: !!(document.getElementById('fc-bfirma') || {}).checked, bSemilla: !!(document.getElementById('fc-bsemilla') || {}).checked, bMeta: !!(document.getElementById('fc-bmeta') || {}).checked, usar: 'cosecha', actualizado: hoyIsoInv(), quincena: Object.fromEntries([...document.querySelectorAll('.fc-quin-sel')].map(x => [x.dataset.m, x.value])), futNota: ((document.getElementById('fc-fut-estado') || {}).innerText || '').trim().slice(0, 300) } } : {}) };
 }
 window.flujoCosechaPrevInv = function() {
@@ -19253,6 +19273,7 @@ window.flujoCosechaPrevInv = function() {
       <div style="font-size:12px;color:var(--acero)">Pagos: ${ms.filter(k => pg[k]).map(k => `${nomMesCortoInv(k)} ${pesoInv(pg[k])}`).join(' · ')}</div>`;
     return;
   }
+  const pq = document.getElementById('fc-pago-suma'); if (pq) { const sq = (x.pagos || []).reduce((a, q) => a + q.pct, 0); pq.innerHTML = (x.pagos || []).length > 1 ? (Math.abs(sq - 100) < 0.5 ? '<span style="color:var(--verde)">✓ Suma 100%</span>' : `<span style="color:#B91C1C">Suma ${sq.toLocaleString('es-CL')}%: debe dar 100%</span>`) : ''; }
   const sp = x.cosecha.reduce((a, c) => a + c.pct, 0), ps = document.getElementById('fc-pct-suma');
   if (ps) ps.innerHTML = Math.abs(sp - 100) < 0.5 ? '<span style="color:var(--verde)">✓ Suma 100%</span>' : `<span style="color:#B91C1C">Suma ${sp}%: debe dar 100%</span>`;
   const base = x.ha * x.rend * x.precio, prod = x.ha * x.rend;
@@ -19261,6 +19282,30 @@ window.flujoCosechaPrevInv = function() {
   const pagos = ms.filter(k => pg[k]).map(k => { const i = ms.indexOf(k); return `${nomMesCortoInv(k)} ${pesoInv(pg[k])}${x.moneda === 'USD' ? ` <span style="color:var(--acero)">(US$ 1 = ${pesoInv(Math.round(dolarMesInv(i)))})</span>` : x.moneda === 'COM' ? ` <span style="color:var(--acero)">(precio ${pesoInv(Math.round(x.precio * factorPrecioInv(x, i)))}/${x.unidad})</span>` : ''}`; }).join(' · ');
   el.innerHTML = `Producción: <strong>${Math.round(prod).toLocaleString('es-CL')} ${x.unidad}</strong> · Ingreso: <strong>${x.moneda === 'USD' ? 'US$ ' + Math.round(base).toLocaleString('es-CL') + ' ≈ ' : ''}${pesoInv(total)}</strong><br><span style="font-size:12px;color:var(--acero)">Pagos: ${pagos}</span>`;
 }
+// Forma de pago en el formulario del cultivo: filas de % + meses después de la cosecha
+function pintarPagosInv(lista) {
+  const el = document.getElementById('fc-pagos'); if (!el) return;
+  const una = lista.length <= 1, opc = d => Array.from({ length: 13 }, (_, n) => `<option value="${n}"${n === d ? ' selected' : ''}>${n === 0 ? 'el mismo mes de la cosecha' : n === 1 ? '1 mes después' : n + ' meses después'}</option>`).join('');
+  el.innerHTML = lista.map((q, j) => `<div class="fc-pago-row" style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
+    ${una ? '' : `<input type="number" class="fc-pago-pct" value="${escA(q.pct)}" min="0" max="100" step="any" inputmode="decimal" oninput="flujoCosechaPrevInv()" style="width:72px;margin:0;box-sizing:border-box"><span style="font-size:13px">%</span>`}
+    <select class="fc-pago-des" data-no-mejorar onchange="flujoCosechaPrevInv()" style="flex:1;min-width:0;margin:0;box-sizing:border-box">${opc(Number(q.des) || 0)}</select>
+    ${una ? '' : `<a href="#" onclick="flujoPagoQuitarInv(${j});return false" title="Quitar" style="color:#B91C1C;font-size:16px;text-decoration:none;padding:0 4px">✕</a>`}</div>`).join('');
+}
+function leerPagosFormInv() {
+  const rows = [...document.querySelectorAll('.fc-pago-row')];
+  if (!rows.length) return [];
+  return rows.map(r => ({ pct: rows.length === 1 ? 100 : Number(String((r.querySelector('.fc-pago-pct') || {}).value || '').replace(',', '.')) || 0, des: Number((r.querySelector('.fc-pago-des') || {}).value) || 0 }));
+}
+window.flujoPagoAgregarInv = function() {
+  const l = leerPagosFormInv(); if (!l.length) l.push({ pct: 100, des: 0 });
+  if (l.length === 1) { l[0].pct = 50; l.push({ pct: 50, des: Math.min(12, l[0].des + 1) }); }
+  else { const resto = Math.max(0, 100 - l.reduce((a, q) => a + q.pct, 0)); l.push({ pct: resto, des: Math.min(12, l[l.length - 1].des + 1) }); }
+  pintarPagosInv(l); flujoCosechaPrevInv();
+};
+window.flujoPagoQuitarInv = function(j) {
+  const l = leerPagosFormInv(); l.splice(j, 1); if (l.length === 1) l[0].pct = 100;
+  pintarPagosInv(l); flujoCosechaPrevInv();
+};
 window.flujoGuardarCosechaInv = async function() {
   const ed = window.__cosEd || {}, p = ed.nuevo ? null : flujoPlanesInv[ed.i];
   const cultivo = p ? p.cultivo : ((document.getElementById('fc-cultivo') || {}).value || '').trim(), x = leerCosechaFormInv();
@@ -19270,6 +19315,7 @@ window.flujoGuardarCosechaInv = async function() {
   if (x.moneda === 'FCZ' ? !(x.fcz.ici > 0) || x.fcz.tasa === '' : !(x.precio > 0)) { toast(x.moneda === 'FCZ' ? 'Indica el ICI de hoy y la tasa de colocación' : 'Indica el precio', false); return; }
   if (!x.cosecha.length) { toast('Marca al menos un mes de cosecha', false); return; }
   if (Math.abs(x.cosecha.reduce((a, c) => a + c.pct, 0) - 100) >= 0.5) { toast('Los % de cosecha deben sumar 100%', false); return; }
+  if (x.moneda !== 'FCZ' && x.pagos.length > 1 && Math.abs(x.pagos.reduce((a, q) => a + q.pct, 0) - 100) >= 0.5) { toast('Las partes del pago deben sumar 100%', false); return; }
   const id = p && p.id ? p.id : 'cos_' + normNom(cultivo).trim().replace(/\s+/g, '_').slice(0, 40);
   if (!p && (flujoItemsInv || []).some(z => z.id === id)) { toast('Ese cultivo ya tiene estimación: edítalo en la lista', false); return; }
   const conf = !!(document.getElementById('fc-conf') || {}).checked;
