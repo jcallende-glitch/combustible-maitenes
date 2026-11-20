@@ -18608,7 +18608,7 @@ window.renderCultivosInv = function() {
     const S = 'position:sticky;left:0;z-index:1;background:var(--blanco);', TD = 'padding:6px 8px;text-align:right;border-bottom:1px solid var(--borde);vertical-align:top;white-space:nowrap', TD0 = S + 'padding:6px 8px;text-align:left;border-bottom:1px solid var(--borde);vertical-align:top;min-width:130px;max-width:200px;white-space:normal';
     const sub = (t, c) => `<div style="font-size:10.5px;color:${c || 'var(--acero)'};font-weight:600">${t}</div>`;
     const fila = (p, i) => {
-      const esOk = planCompletoInv(p), excl = !esOk && p.activo === false && !p.sinPlan, uni = p.unidad === 'qqm' ? 'qqm' : p.unidad || 'kg', prod = (Number(p.ha) || 0) * (Number(p.rend) || 0);
+      const esOk = planCompletoInv(p), excl = !esOk && p.activo === false && !p.sinPlan, uni = p.unidad === 'qqm' ? 'qqm' : p.unidad || 'kg', prod = p.moneda === 'AVL' && !p.sinPlan ? kgAvlInv(p) : (Number(p.ha) || 0) * (Number(p.rend) || 0);
       const difiere = p.haCampo != null && Math.abs(Number(p.ha) - Number(p.haCampo)) > 0.01;
       let precio = '–', cosecha = '–';
       if (!p.sinPlan) {
@@ -18616,6 +18616,7 @@ window.renderCultivosInv = function() {
         else if (!esContratoInv(p.moneda) && Number(p.precio) > 0) { precio = (p.moneda === 'USD' ? `US$ ${nf(p.precio)}` : pesoInv(p.precio)) + `/${uni}` + sub(p.moneda === 'USD' ? 'en dólares' : p.moneda === 'COM' ? `commodity${Number(p.varIntl) ? ' ' + (p.varIntl > 0 ? '+' : '') + nf(p.varIntl) + '%' : ''}` : 'fijo en pesos'); }
         else if (p.moneda === 'AGI') { const v = ventasAgroindInv(p, ms); precio = `${pesoInv(v.c.precio + v.c.bonoSup + v.c.bonoTend)}/kg` + sub(`${escA(v.c.empresa)} · incluye bonos`); if (v.ent.length) cosecha = v.ent.map(e => MESES_ABR_INV[e.mes - 1] + (v.ent.length > 1 ? ' ' + e.pct + '%' : '')).join(', ') + sub('pago día 10 (IVA) y 20 (neto) del mes siguiente'); }
         else if (p.moneda === 'SEM') { const c = semCfgInv(p), v = ventasSemilleroInv(p, ms); precio = `${c.moneda === 'USD' ? 'US$ ' + nf(c.precio) : pesoInv(c.precio)}/${c.porHa ? 'ha' : 'kg'}` + sub('semillero · ' + escA(c.empresa)); if (v) cosecha = (p.cosecha || []).map(x => MESES_ABR_INV[x.mes - 1]).join(', ') + sub(`anticipos ${v.ants.map(a => nomMesCortoInv(a.k).toLowerCase().slice(0, 3)).join('/')} · liquidación ~${fmtFechaInv(v.fPago).slice(3)}`); }
+        else if (p.moneda === 'AVL') { const v = ventasAvellanaInv(p, ms), e0 = v.ent[0]; if (e0) { precio = e0.lineas.map(x => `US$ ${fmtUsdInv(x.pr.final)}`).join(' / ') + '/kg' + sub(`${escA(v.c.empresa)} · ${e0.lineas.map(x => escA(x.nombre)).join(' / ')} · KİB ${e0.ref.oficial ? '✓' : 'estimado'}`); cosecha = v.ent.map(x => `${MESES_ABR_INV[x.mes - 1]}${v.ent.length > 1 ? ' ' + x.pct + '%' : ''}`).join(', ') + sub(`inicial ~${fmtFechaInv(e0.fPagoIni).slice(0, 5)} · saldo ~${fmtFechaInv(e0.fPagoFin).slice(0, 5)}`); } }
         else if (p.moneda === 'ORF') { const pr = precioOrfInv(p), e = entregasOraftiInv(p, ms); precio = `${pesoInv(pr.total)}/ton` + sub('contrato Orafti'); if (e.length) cosecha = e.map(x => `${MESES_ABR_INV[x.mes - 1]} ${x.q === '1' ? '1ª q.' : x.q === '2' ? '2ª q.' : ''}${e.length > 1 ? ' ' + x.pct + '%' : ''}`).join(', ') + sub(e.map(x => `pago ~${fmtFechaInv(x.fPago).slice(0, 5)}`).join(', ')); }
         if (!esContratoInv(p.moneda) && (p.cosecha || []).length) cosecha = (p.cosecha || []).map(c => MESES_ABR_INV[c.mes - 1] + ((p.cosecha || []).length > 1 ? ' ' + c.pct + '%' : '')).join(', ') + sub(txtPagoInv(p));
       }
@@ -18641,6 +18642,7 @@ window.renderCultivosInv = function() {
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px"><button class="btn-add" style="flex:1;min-width:160px;padding:9px;justify-content:center" onclick="flujoCosechaInv('nuevo')">➕ Agregar cultivo o huerto</button></div>
       ${flujoCampoInv !== true ? '<div style="font-size:12px;color:var(--acero);margin-bottom:6px">⏳ Leyendo Campo…</div>' : ''}
       ${lineaIciInv() ? `<div style="margin-bottom:8px">${lineaIciInv()}</div>` : ''}
+      ${lineaKibInv() ? `<div style="margin-bottom:8px">${lineaKibInv()}</div>` : ''}
       <div style="overflow-x:auto;border:1px solid var(--borde);border-radius:10px;-webkit-overflow-scrolling:touch;margin-bottom:10px">
         <table style="border-collapse:separate;border-spacing:0;font-size:12px;min-width:100%">
           <thead><tr><th style="${TH}${S}text-align:left;z-index:2;background:var(--fondo)">Cultivo</th><th style="${TH}">Ha</th><th style="${TH}">Rend./ha</th><th style="${TH}">Producción</th><th style="${TH}">Precio</th><th style="${TH}text-align:left">Cosecha</th><th style="${TH}">Ventas 12 m</th></tr></thead>
@@ -19023,7 +19025,7 @@ let flujoTrigoEstadoInv = '', flujoTrigoBuscandoInv = false, flujoTrigoErrorTsIn
 function buscarFuturosTrigoInv() {
   if (flujoTrigoBuscandoInv || (flujoTrigoInv && Date.now() - flujoTrigoInv.ts < 3 * 3600000) || Date.now() - flujoTrigoErrorTsInv < 15 * 60000 || !(flujoPlanesInv || []).some(p => p.moneda === 'FCZ')) return;
   flujoTrigoBuscandoInv = true;
-  fetch('/api/trigo').then(r => r.json()).then(j => { if (!j || !j.ok) throw new Error((j && j.error) || 'sin datos'); flujoTrigoInv = j; flujoTrigoEstadoInv = 'ok'; })
+  fetch('/api/trigo').then(r => r.json()).then(j => { if (!j || !j.ok) throw new Error((j && j.error) || 'sin datos'); flujoTrigoInv = { ...j, ts: Date.now() }; flujoTrigoEstadoInv = 'ok'; })
     .catch(e => { flujoTrigoEstadoInv = 'error'; flujoTrigoErrorTsInv = Date.now(); console.warn('futuros trigo', e); })
     .then(() => { flujoTrigoBuscandoInv = false; redibujarFlujoInv(); });
 }
@@ -19046,6 +19048,13 @@ function preciosCultivoInv(p, ms) {
     const e = entregasCarozziInv(p, ms), sp = e.reduce((a, x) => a + x.pct, 0) || 1, hoy = precioCarozziInv(p, 0, ms[0], true).final;
     const prs = e.map(x => precioCarozziInv(p, x.i, x.fEnt)), fut = e.reduce((a, x, j) => a + x.pct * prs[j].final, 0) / sp;
     return { uni: 'qqm', hoy, fut, minimo: prs.some(x => x.minimo), minHoy: precioCarozziInv(p, 0, ms[0], true).minimo, cuando: e.map(x => `${x.q === '1' ? '1ª q. ' : x.q === '2' ? '2ª q. ' : ''}${MESES_ABR_INV[x.mes - 1].toLowerCase()}`).join(', '), base: `fórmula Carozzi · ICI hoy ~${pesoInv(iciHoyInv(p).valor)} · trigo ${(() => { const v = varIntlCarozziInv(p, e[0] ? ms[e[0].i] : ms[0]); return (v > 0 ? '+' : '') + v.toLocaleString('es-CL', { maximumFractionDigits: 1 }) + '%' + ((p.fcz || {}).futAuto !== false && flujoTrigoInv ? ' (futuros)' : ''); })()}` };
+  }
+  if (p.moneda === 'AVL') {
+    const v = ventasAvellanaInv(p, ms), y = anioCosechaAvlInv(p, ms), rH = kibRefInv(y, 5, 0), kg = v.kgTot;
+    const pond = ref => kg ? v.vars.reduce((a, x) => a + x.kg * precioAvlInv(ref, x.v).final, 0) / kg : precioAvlInv(ref, 'GIF').final;
+    const kgE = v.ent.reduce((a, e) => a + e.kgE, 0), hoy = pond(rH.usdKg) * dolarMesInv(0), r = v.ent[0] ? v.ent[0].ref : kibRefInv(y, 5, v.c.ajuste);
+    return { uni: 'kg', hoy, fut: kgE ? v.ent.reduce((a, e) => a + e.fin, 0) / kgE : hoy, minimo: v.ent.some(e => e.lineas.some(x => x.pr.minimo)), cuando: [...new Set(v.ent.map(e => 'saldo ' + nomMesCortoInv(e.kFin).toLowerCase()))].join(', '),
+      base: `${v.c.empresa} · KİB ${periodoKibInv(r)}: US$ ${fmtUsdInv(r.usdKg)}/kg pepa${v.vars.length ? ' · ' + v.vars.map(x => `${x.nombre} US$ ${fmtUsdInv(precioAvlInv(r.usdKg, x.v).final)}`).join(', ') : ''}` };
   }
   if (p.moneda === 'AGI') { const c = agiCfgInv(p), v = ventasAgroindInv(p, ms), pk = c.precio + c.bonoSup + c.bonoTend; return { uni: 'kg', hoy: pk, fut: pk * (1 - c.calidad / 100), cuando: [...new Set(v.ent.map(e => nomMesCortoInv(e.kPago).toLowerCase()))].join(', '), base: `${c.empresa}: ${pesoInv(c.precio)} + bonos ${pesoInv(c.bonoSup + c.bonoTend)}/kg` }; }
   if (p.moneda === 'SEM') {
@@ -19074,11 +19083,17 @@ function bloquePreciosFlujoInv() {
     if (f) fut = `<tr><td style="${td0}"><strong>📈 Trigo HRW Kansas (CME)</strong><div style="font-size:10.5px;color:var(--acero)">futuros, referencia del ICI · ${escA(fmtFechaInv(f.fr.fecha))}</div></td><td style="${td}">${f.fr.mes ? `<div style="font-size:10.5px;color:var(--acero)">contrato ${nomMesCortoInv(f.fr.mes).toLowerCase()}</div>` : ''}${f.fr.centavosBushel.toLocaleString('es-CL')} <span style="color:var(--acero);font-size:11px">¢/bu</span><div style="font-size:10.5px;color:var(--acero)">US$ ${f.fr.usTon.toLocaleString('es-CL')}/t</div></td><td style="${td};font-weight:800">${f.c.centavosBushel.toLocaleString('es-CL')} <span style="color:var(--acero);font-size:11px;font-weight:400">¢/bu</span><div style="font-size:10.5px;color:var(--acero);font-weight:400">contrato ${nomMesCortoInv(f.c.mes).toLowerCase()}</div><div style="font-weight:400">${varTxt(f.v)}</div>${(pf.fcz || {}).futAuto === false && Math.abs(f.v - vPlan) >= 0.5 ? `<div><a href="#" onclick="flujoAplicarFuturosInv();return false" style="font-size:10.5px;color:var(--verde);font-weight:700">usar en el trigo</a></div><div style="font-size:10px;color:var(--acero);font-weight:400">(hoy usa ${vPlan > 0 ? '+' : ''}${vPlan.toLocaleString('es-CL')}%)</div>` : ''}</td></tr>`;
     else fut = `<tr><td colspan="3" style="padding:4px 0;font-size:11px;color:var(--acero)">📈 Futuros del trigo (CME): ${flujoTrigoBuscandoInv || !flujoTrigoEstadoInv ? '⏳ consultando…' : '⚠️ no disponibles (revisa que trigo.mjs esté en netlify/functions); el trigo usa ' + ((Number((pf.fcz || {}).varIntl) || 0) > 0 ? '+' : '') + (Number((pf.fcz || {}).varIntl) || 0).toLocaleString('es-CL') + '%'}</td></tr>`;
   }
+  // Avellana: exportaciones de Turquía (KİB), referencia del precio Agrichile
+  const pa = planAvellanaInv(); let kib = '';
+  if (pa) {
+    const y = anioCosechaAvlInv(pa.moneda === 'AVL' ? pa : { cosecha: [{ mes: 3 }] }, ms), r = kibRefInv(y, 5, 0), ra = kibRefInv(y, 5, pa.moneda === 'AVL' ? avlCfgInv(pa).ajuste : 0), ant = kibRefInv(y - 1, 5, 0), vv = ant.usdKg ? (ra.usdKg / ant.usdKg - 1) * 100 : NaN;
+    kib = `<tr style="cursor:pointer" onclick="flujoKibInv()"><td style="${td0}"><strong>🌰 Avellana Turquía (KİB)</strong><div style="font-size:10.5px;color:var(--acero)">exportaciones, US$/kg de pepa · base del precio Agrichile</div></td><td style="${td}">US$ ${fmtUsdInv(r.usdKg)}<div style="font-size:10.5px;color:var(--acero)">${escA(periodoKibInv(r))}</div></td><td style="${td};font-weight:800">US$ ${fmtUsdInv(ra.usdKg)}<div style="font-size:10.5px;color:var(--acero);font-weight:400">${ra.oficial ? '✓ sep–feb oficial' : `sep–feb, boletín ~5-mar-${y}`}</div><div style="font-weight:400">${varTxt(vv)} <span style="font-size:10.5px;color:var(--acero)">vs. cosecha ${y - 1} (US$ ${fmtUsdInv(ant.usdKg)})</span></div></td></tr>`;
+  }
   return `<div style="border:1px solid var(--borde);border-radius:10px;padding:8px 12px;margin-bottom:8px">
     <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:baseline;margin-bottom:4px"><strong style="font-size:13px">📊 Precios: hoy y estimado al pago</strong><a href="#" onclick="irCultivosInv();return false" style="font-size:12px;color:var(--verde);font-weight:700">🌾 Cultivos y supuestos ›</a></div>
-    ${planes.length ? `<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;min-width:0;font-size:12px"><thead><tr style="background:transparent"><th style="${th};text-align:left;padding-left:0">Cultivo</th><th style="${th}">Hoy</th><th style="${th}">Estimado al pago</th></tr></thead><tbody>${filas}${fut}</tbody></table></div>`
+    ${planes.length ? `<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;min-width:0;font-size:12px"><thead><tr style="background:transparent"><th style="${th};text-align:left;padding-left:0">Cultivo</th><th style="${th}">Hoy</th><th style="${th}">Estimado al pago</th></tr></thead><tbody>${filas}${fut}${kib}</tbody></table></div>`
       : `<div style="font-size:12px;color:var(--acero)">Todavía no hay cultivos con su plan completo. Complétalos en <a href="#" onclick="irCultivosInv();return false" style="color:var(--verde);font-weight:700">🌾 Cultivos y supuestos</a>.</div>`}
-    ${lineaIciInv()}
+    ${lineaIciInv()}${lineaKibInv()}
   </div>`;
 }
 // Pasa la variación de los futuros del trigo a los planes con fórmula Carozzi
@@ -19107,6 +19122,7 @@ function sugerenciaIvaInv(p) {
   if ((p && p.moneda === 'FCZ') || /trigo/.test(n)) return enNomina
     ? { pct: 15, motivo: 'Contrato Carozzi: factura al contado con IVA. Como tu empresa está en la nómina de contribuyentes sujetos a retención, el molino retiene 4% (Res. SII 192/2010) y recibes 15%.' }
     : { pct: 19, motivo: 'Contrato Carozzi: factura "al contado" con IVA (cláusula octava). El molino retiene 4% solo si tu empresa está en la nómina de contribuyentes sujetos a retención del SII; si lo está, márcalo en la Cuenta de IVA y queda en 15%.' };
+  if ((p && p.moneda === 'AVL') || /avellan/.test(n)) return { pct: 19, motivo: 'Contrato Agrichile: venta nacional con factura afecta. La factura inicial (al precio mínimo) y la nota de débito de la liquidación llevan IVA 19%. La avellana no tiene un régimen de retención de IVA conocido: confírmalo con tu factura 2026 o con tu contadora.' };
   if ((p && p.moneda === 'AGI') || /arveja/.test(n)) return { pct: 19, motivo: 'Contrato Alifrut: precio "más IVA"; el IVA de cada factura mensual te lo pagan el día 10 del mes siguiente, aparte del neto.' };
   if ((p && p.moneda === 'SEM') || /semillero/.test(n)) return { pct: 19, motivo: 'Venta de semilla en Chile a la empresa semillera (aunque ella exporte): 19%. Los anticipos también se facturan más IVA, en el mes en que los recibes.' };
   if ((p && p.moneda === 'ORF') || /achicoria/.test(n)) return { pct: 19, motivo: 'Contrato Orafti: el precio es "más IVA" (Anexo A) y los bonos también llevan IVA; la achicoria no tiene retención.' };
@@ -19140,6 +19156,9 @@ function ivaVentasProyInv(meses) {
       const b = bonosCarozziInv(p), kb = meses.find(m => Number(m.slice(5, 7)) === b.mes); if (b.total > 0 && kb) { sum(deb, kb, b.total * t); sum(caja, kb, b.total * t); }
     } else if (p.moneda === 'AGI') {
       ventasAgroindInv(p, meses).ent.forEach(e => { sum(deb, e.k, e.neto * t); sum(caja, e.kPago, e.neto * t); });
+    } else if (p.moneda === 'AVL') {
+      // Factura inicial en el mes de la entrega y nota de débito en el de la liquidación; cada una se cobra 30 días después
+      ventasAvellanaInv(p, meses).ent.forEach(e => { sum(deb, e.k, e.ini * t); sum(caja, e.kIni, e.ini * t); sum(deb, e.kLiq, e.saldo * t); sum(caja, e.kFin, e.saldo * t); });
     } else if (p.moneda === 'SEM') {
       const v = ventasSemilleroInv(p, meses); if (!v) return;
       v.ants.forEach(a => { sum(deb, a.k, a.clp * t); sum(caja, a.k, a.clp * t); });
@@ -19249,11 +19268,11 @@ window.flujoGuardarDolarInv = async function() {
   const eee = { m2: g('fd-m2'), m11: g('fd-m11'), mes: cambio ? hoyIsoInv().slice(0, 7) : eeeAnt.mes, fuente: cambio ? `Ingresado por ${currentUser || 'el usuario'} el ${fmtFechaInv(hoyIsoInv())}` : eeeAnt.fuente };
   try { await setDoc(doc(dbInv, 'flujo_caja', '_config'), { dolarModo: modo, dolarFijo: g('fd-fijo'), eee }, { merge: true }); const m = document.getElementById('dte-elegir'); if (m) m.remove(); } catch (e) { toast('Error: ' + e.message, false); }
 }
-const baseCosechaInv = p => p.moneda === 'AGI' ? (Number(p.ha) || 0) * (Number(p.rend) || 0) * agiCfgInv(p).precio : p.moneda === 'SEM' && semCfgInv(p).porHa ? (Number(p.ha) || 0) * semCfgInv(p).precio : (Number(p.ha) || 0) * (Number(p.rend) || 0) * (p.moneda === 'SEM' ? semCfgInv(p).precio : p.moneda === 'ORF' ? precioOrfInv(p).total : p.moneda === 'FCZ' ? ((p.fcz && Number(p.fcz.ici) > 0 && p.fcz.tasa !== '' && p.fcz.tasa != null) ? 1 : 0) : (Number(p.precio) || 0));
+const baseCosechaInv = p => p.moneda === 'AVL' ? kgAvlInv(p) : p.moneda === 'AGI' ? (Number(p.ha) || 0) * (Number(p.rend) || 0) * agiCfgInv(p).precio : p.moneda === 'SEM' && semCfgInv(p).porHa ? (Number(p.ha) || 0) * semCfgInv(p).precio : (Number(p.ha) || 0) * (Number(p.rend) || 0) * (p.moneda === 'SEM' ? semCfgInv(p).precio : p.moneda === 'ORF' ? precioOrfInv(p).total : p.moneda === 'FCZ' ? ((p.fcz && Number(p.fcz.ici) > 0 && p.fcz.tasa !== '' && p.fcz.tasa != null) ? 1 : 0) : (Number(p.precio) || 0));
 const planCompletoInv = p => !p.sinPlan && p.activo !== false && baseCosechaInv(p) > 0 && (p.cosecha || []).length;
 // Tipos de precio: CLP = pesos fijos (contrato); USD = dólares, al dólar del mes de pago;
 // COM = pesos de un commodity (trigo, maíz, raps…): el precio de hoy se mueve con el dólar y con la variación esperada del precio internacional
-const TIPOS_PRECIO_INV = [['CLP', 'Pesos, precio fijo'], ['USD', 'Dólares'], ['COM', 'Pesos, commodity (sigue al mercado internacional)'], ['ORF', 'Contrato Orafti (achicoria)'], ['SEM', 'Semillero con anticipos (Curimapu u otro)'], ['AGI', 'Agroindustria por kg con bonos (Alifrut u otro)'], ['FCZ', 'Fórmula contrato Carozzi (trigo candeal)']];
+const TIPOS_PRECIO_INV = [['CLP', 'Pesos, precio fijo'], ['USD', 'Dólares'], ['COM', 'Pesos, commodity (sigue al mercado internacional)'], ['ORF', 'Contrato Orafti (achicoria)'], ['SEM', 'Semillero con anticipos (Curimapu u otro)'], ['AGI', 'Agroindustria por kg con bonos (Alifrut u otro)'], ['AVL', 'Contrato Agrichile (avellana, precio KİB Turquía)'], ['FCZ', 'Fórmula contrato Carozzi (trigo candeal)']];
 // Contrato de compraventa de trigo candeal Carozzi 2026-2027 (cláusulas 6ª a 8ª y 14ª), todo en $ por quintal métrico:
 // Precio base = 1,08 × [ICI HRW 11% − guarda − costo financiero − costo financiero IVA − riesgo de precio + premio peso hectolitro]
 //   ICI HRW 11% = Indicador de costo de internación trigo HRW 11% puesto en Santiago (ODEPA, semanal)
@@ -19290,7 +19309,7 @@ let flujoTrigoInv = null;
 window.flujoTraerFuturosInv = async function() {
   const st = document.getElementById('fc-fut-estado'); if (st) st.textContent = '⏳ Consultando los futuros del trigo…';
   try {
-    if (!flujoTrigoInv || Date.now() - flujoTrigoInv.ts > 3 * 3600000) { const r = await fetch('/api/trigo'); const j = await r.json(); if (!j.ok) throw new Error(j.error || 'sin datos'); flujoTrigoInv = j; }
+    if (!flujoTrigoInv || Date.now() - flujoTrigoInv.ts > 3 * 3600000) { const r = await fetch('/api/trigo'); const j = await r.json(); if (!j.ok) throw new Error(j.error || 'sin datos'); flujoTrigoInv = { ...j, ts: Date.now() }; }
     const ms = [...document.querySelectorAll('.fc-mes:checked')].map(c => Number(c.value)); if (!ms.length) throw new Error('marca primero los meses de cosecha');
     const m0 = hoyIsoInv().slice(0, 7), kEnt = mesesFlujoInv().find(k => Number(k.slice(5, 7)) === ms[0]) || m0;
     const c = flujoTrigoInv.contratos.find(x => x.mes >= kEnt) || flujoTrigoInv.contratos[flujoTrigoInv.contratos.length - 1], fr = frenteTrigoInv(flujoTrigoInv);
@@ -19318,7 +19337,7 @@ const factorPrecioInv = (p, i) => p.moneda === 'USD' ? dolarMesInv(i) : p.moneda
 const ORAFTI_INV = { precio: 68750, bonoSust: 4250, cosechaHa: 595000, asocHa: 4000, rebroteHa: 50000, tasa: 6.5, finInteres: '2027-02-28', diasLibres: 60 };
 const TEMPRANA_ORF_INV = [49.39, 47.27, 45.19, 43.17, 41.19, 39.26, 37.37, 35.52, 33.72, 31.96, 30.23, 28.55, 26.90, 25.28, 23.70, 22.15, 21.36, 20.58, 19.81, 19.04, 18.29, 17.54, 16.80, 16.06, 15.34, 14.62, 13.91, 13.20, 12.51, 11.82, 11.13,
   10.46, 9.71, 8.96, 8.23, 7.50, 6.78, 6.07, 5.37, 4.67, 3.98, 3.30, 2.63, 1.96, 1.30, 0.65];
-const esContratoInv = m => m === 'FCZ' || m === 'ORF' || m === 'SEM' || m === 'AGI';
+const esContratoInv = m => m === 'FCZ' || m === 'ORF' || m === 'SEM' || m === 'AGI' || m === 'AVL';
 const tonsPlanInv = p => (Number(p.ha) || 0) * (Number(p.rend) || 0) * (p.unidad === 'kg' ? 0.001 : p.unidad === 'qqm' ? 0.1 : 1);
 // % promedio del bono cosecha temprana para entregas repartidas en la parte del mes elegida (solo mar y abr de 2027)
 function bonoTempranaOrfInv(k, q) {
@@ -19413,7 +19432,148 @@ function ventasAgroindInv(p, meses) {
   return { c, ent, desc, kPrimer: ent.map(e => e.kPago).sort()[0] };
 }
 function pagosAgroindInv(p, meses) { const out = {}; ventasAgroindInv(p, meses).ent.forEach(e => { if (meses.includes(e.kPago)) out[e.kPago] = (out[e.kPago] || 0) + e.neto; }); return out; }
-const usaQuincenaInv = m => m === 'FCZ' || m === 'ORF';
+// ── Contrato marco Agrichile (Grupo Ferrero) para avellana en cáscara (contrato 160-26, cosecha 2026; la fijación de precio se
+// mantiene de un año a otro). Cláusula 4.1: precio de compra de referencia = exportaciones de avellana de Turquía de septiembre a
+// febrero que publica en marzo el KİB (Karadeniz İhracatçı Birlikleri, boletín mensual): Değer ($) ÷ Miktar (Ton/İç) ÷ 1000 =
+// US$/kg de avellana sin cáscara. Entrega anticipada (antes de la publicación de marzo, avisando con 5 días): septiembre a enero,
+// publicado en febrero. Anexo II: precio en cáscara = referencia × % de la variedad × coeficiente, con precio mínimo; se pagan los kg
+// netos después de limpieza y secado, ajustados por el rendimiento al corte. Orden de compra inicial: kg × precio mínimo × dólar del
+// día de la entrega; después, la liquidación con el precio final (nota de débito o crédito). Pago 30 días después de recibida la
+// factura o la nota, en pesos.
+const AGRICHILE_INV = { empresa: 'Agrichile', diasPago: 30, diasLiq: 20, pubDia: 5,
+  var: { GIF: { txt: 'Giffoni y TGL', pct: 45, coef: 1.16, min: 2, std: [44, 45] }, OTR: { txt: 'Otras variedades (Lewis…)', pct: 45, coef: 1, min: 1.5, std: [44, 45] }, BAR: { txt: 'Barcelona', pct: 40, coef: 1, min: 1.5, std: [39, 40] }, POL: { txt: 'Polinizantes', pct: 40, coef: 1, min: 1.5, std: [39, 40] } },
+  vars: [{ v: 'GIF', nombre: 'Giffoni', ha: 36, rend: '' }, { v: 'OTR', nombre: 'Lewis', ha: 18, rend: '' }] };
+// Exportaciones de avellana de Turquía acumuladas desde el 1 de septiembre: [Miktar (ton de pepa), Değer (US$)]. Posición 0 = hasta
+// septiembre, 1 = hasta octubre … 5 = hasta febrero. Fuente: KİB, "Sezonlara Göre Aylık İhracat Rakamları" (tabla Kümülatif) y
+// boletín mensual del 03-11-2026. Lo que JC ingresa después queda en flujo_caja/_config.kib y manda sobre esto.
+const KIB_INV = {
+  '2022-23': [[25010, 135250189], [56251, 312657846], [95474, 536339147], [130063, 738979337], [152722, 880364770], [177005, 1035884929]],
+  '2023-24': [[24462, 152866780], [54097, 357449654], [83053, 569358036], [114848, 807565559], [141564, 1013263109], [167125, 1209487609]],
+  '2024-25': [[24633, 195400171], [64199, 515581846], [99722, 806760704], [134251, 1092118753], [159681, 1299297833], [186075, 1515459392]],
+  '2025-26': [[13926, 143978657], [30768, 344067537], [45703, 537355048], [63414, 780980205], [76520, 957668088], [91587, 1160082290]],
+  '2026-27': [[18906, 191799129], [49410, 494569699]] };
+const KIB_FECHA_INV = { '2026-27': { 1: '2026-11-03' } };
+const KIB_MESES_INV = [['Eylül', 'sep'], ['Ekim', 'oct'], ['Kasım', 'nov'], ['Aralık', 'dic'], ['Ocak', 'ene'], ['Şubat', 'feb']];
+const KIB_URL_INV = { boletin: 'https://kib.org.tr/files/downloads/aylikbulten.pdf', pagina: 'https://kib.org.tr/tr/ihracat-istatistikler-findik-istatistikleri-aylik-bulten.html', temporadas: 'https://kib.org.tr/tr/ihracat-istatistikler-findik-istatistikleri-sezonlara-gore-aylik-ihracat-rakamlari.html' };
+const fmtUsdInv = n => (Number(n) || 0).toLocaleString('es-CL', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const temporadaKibInv = y => `${y - 1}-${String(y).slice(2)}`;
+// Mes en que termina el acumulado i de la temporada t ('2026-27', 1 → '2026-10')
+const finPeriodoKibInv = (t, i) => `${Number(t.slice(0, 4)) + (i >= 4 ? 1 : 0)}-${String((8 + i) % 12 + 1).padStart(2, '0')}`;
+const periodoKibInv = r => r && r.n ? (r.n <= 4 ? `sep–${KIB_MESES_INV[r.n - 1][1]} ${r.t.slice(0, 4)}` : `sep ${r.t.slice(0, 4)}–${KIB_MESES_INV[r.n - 1][1]} ${Number(r.t.slice(0, 4)) + 1}`) : r && r.previa ? `sep–feb ${r.previa} (temporada anterior)` : 'sin datos';
+function kibSerieInv(t) {
+  const fe = KIB_FECHA_INV[t] || {}, s = (KIB_INV[t] || []).map((x, i) => x ? { ton: x[0], usd: x[1], fecha: fe[i] || '', fuente: 'KİB, cargado en la app' } : null);
+  Object.entries(((flujoCfgInv || {}).kib || {})[t] || {}).forEach(([i, x]) => { if (x && Number(x.ton) > 0 && Number(x.usd) > 0) s[Number(i)] = { ton: Number(x.ton), usd: Number(x.usd), fecha: x.fecha || '', fuente: x.por ? `ingresado por ${x.por}` : 'ingresado' }; });
+  return s;
+}
+const ultimoKibInv = s => s.reduce((a, x, i) => x ? i : a, -1);
+// Referencia (US$/kg de pepa) para la cosecha del año y: hasta = 5 (sep–feb, boletín de marzo) o 4 (sep–ene, entrega anticipada).
+// Mientras no se publique, se estima con lo acumulado de la temporada × (1 + ajuste %); sin datos, con la temporada anterior.
+function kibRefInv(y, hasta, ajuste, prof) {
+  const t = temporadaKibInv(y), s = kibSerieInv(t), h = hasta == null ? 5 : hasta, aj = 1 + (Number(ajuste) || 0) / 100;
+  if (s[h]) { const b = s[h].usd / s[h].ton / 1000; return { t, hasta: h, n: h + 1, ...s[h], base: b, usdKg: b, oficial: true }; }
+  for (let j = h - 1; j >= 0; j--) if (s[j]) { const b = s[j].usd / s[j].ton / 1000; return { t, hasta: h, n: j + 1, ...s[j], base: b, usdKg: b * aj, oficial: false }; }
+  if ((prof || 0) > 3) return { t, hasta: h, n: 0, base: 0, usdKg: 0, oficial: false };
+  const a = kibRefInv(y - 1, h, 0, (prof || 0) + 1); return { ...a, t, hasta: h, n: 0, previa: a.t, usdKg: a.usdKg * aj, oficial: false };
+}
+const avlVarInv = v => AGRICHILE_INV.var[v] || AGRICHILE_INV.var.OTR;
+function precioAvlInv(ref, v) { const c = avlVarInv(v), calc = ref * c.pct / 100 * c.coef; return { calc, final: Math.max(calc, c.min), minimo: calc < c.min, min: c.min }; }
+// Ajuste de cantidad por rendimiento al corte: fuera del estándar, los kg suben o bajan en la misma proporción
+function factorRtoAvlInv(v, rto) { const r = Number(rto) || 0, s = avlVarInv(v).std; return !(r > 0) ? 1 : r > s[1] ? r / s[1] : r < s[0] ? r / s[0] : 1; }
+function avlCfgInv(p) {
+  const o = (p && p.avl) || {}, A = AGRICHILE_INV;
+  return { empresa: o.empresa || A.empresa, vars: Array.isArray(o.vars) && o.vars.length ? o.vars : A.vars, ajuste: numOInv(o.ajuste, 0), limpieza: numOInv(o.limpieza, 0), diasLiq: numOInv(o.diasLiq, A.diasLiq), anticipada: o.anticipada === true, quincena: o.quincena || {} };
+}
+const kgAvlInv = p => avlCfgInv(p).vars.reduce((a, x) => a + (Number(x.ha) || 0) * (Number(x.rend) || 0) * factorRtoAvlInv(x.v, x.rto), 0);
+const maxIsoInv = (a, b) => a > b ? a : b;
+// Año de la próxima cosecha de avellana: el del primer mes de entrega en el horizonte; si no hay, el del próximo marzo
+function anioCosechaAvlInv(p, meses) {
+  const e = ((p && p.cosecha) || []).map(c => meses.find(m => Number(m.slice(5, 7)) === Number(c.mes))).filter(Boolean).sort()[0];
+  return Number((e || meses.find(m => m.slice(5, 7) === '03') || meses[0]).slice(0, 4));
+}
+// Cada entrega: orden de compra inicial (precio mínimo) y saldo de la liquidación (precio final − lo ya facturado − limpieza y secado)
+function ventasAvellanaInv(p, meses) {
+  const c = avlCfgInv(p), A = AGRICHILE_INV, d2 = n => String(n).padStart(2, '0');
+  const vars = c.vars.map(x => ({ v: x.v || 'OTR', nombre: x.nombre || avlVarInv(x.v).txt, ha: Number(x.ha) || 0, rend: Number(x.rend) || 0, rto: x.rto })).filter(x => x.ha > 0 && x.rend > 0)
+    .map(x => { const f = factorRtoAvlInv(x.v, x.rto); return { ...x, f, kg: x.ha * x.rend * f }; });
+  const ent = (p.cosecha || []).map(cc => ({ mes: Number(cc.mes), pct: Number(cc.pct) || 0, i: meses.findIndex(m => Number(m.slice(5, 7)) === Number(cc.mes)) })).filter(e => e.i >= 0).map(e => {
+    const k = meses[e.i], y = Number(k.slice(0, 4)), q = c.quincena[e.mes] || 'm', fEnt = `${k}-${diaQuincenaInv(q)}`, pubMar = `${y}-03-${d2(A.pubDia)}`;
+    const ant = c.anticipada && fEnt < pubMar, ref = kibRefInv(y, ant ? 4 : 5, c.ajuste), pub = ant ? `${y}-02-${d2(A.pubDia)}` : pubMar, dolar = dolarMesInv(e.i);
+    const lineas = vars.map(x => { const pr = precioAvlInv(ref.usdKg, x.v), kg = x.kg * e.pct / 100; return { ...x, kgE: kg, pr, usdIni: kg * pr.min, usdFin: kg * pr.final }; });
+    const kgE = lineas.reduce((a, x) => a + x.kgE, 0), usdIni = lineas.reduce((a, x) => a + x.usdIni, 0), usdFin = lineas.reduce((a, x) => a + x.usdFin, 0), limp = kgE * c.limpieza;
+    const ini = usdIni * dolar, fin = usdFin * dolar - limp, fPagoIni = sumarDiasInv(fEnt, A.diasPago), fLiq = maxIsoInv(sumarDiasInv(fEnt, c.diasLiq), pub), fPagoFin = sumarDiasInv(fLiq, A.diasPago);
+    return { ...e, k, q, fEnt, ant, ref, pub, dolar, lineas, kgE, usdIni, usdFin, limp, ini, fin, saldo: fin - ini, fPagoIni, fLiq, fPagoFin, kIni: fPagoIni.slice(0, 7), kLiq: fLiq.slice(0, 7), kFin: fPagoFin.slice(0, 7) };
+  });
+  return { c, vars, ent, kgTot: vars.reduce((a, x) => a + x.kg, 0) };
+}
+function pagosAvellanaInv(p, meses) {
+  const out = {}, add = (k, v) => { if (meses.includes(k)) out[k] = (out[k] || 0) + v; };
+  ventasAvellanaInv(p, meses).ent.forEach(e => { add(e.kIni, e.ini); add(e.kFin, e.saldo); });
+  return out;
+}
+const planAvellanaInv = () => (flujoPlanesInv || []).find(p => p.moneda === 'AVL') || (flujoPlanesInv || []).find(p => /avellan/.test(normNom(p.cultivo || '')));
+// Línea del KİB (arriba del flujo y en Cultivos): último dato cargado y aviso si ya debería haber un boletín nuevo
+function lineaKibInv() {
+  const pa = planAvellanaInv(); if (!pa) return '';
+  const y = anioCosechaAvlInv(pa.moneda === 'AVL' ? pa : { cosecha: [{ mes: 3 }] }, mesesFlujoInv()), t = temporadaKibInv(y), s = kibSerieInv(t), u = ultimoKibInv(s), x = u >= 0 ? s[u] : null;
+  const prox = u < 5 ? `${mesMasInv(finPeriodoKibInv(t, u + 1), 1)}-06` : null, atrasado = !!prox && hoyIsoInv() >= prox;
+  return `<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center;font-size:12px;margin-top:6px;padding:6px 8px;border-radius:8px;background:${atrasado ? '#FFFBEB' : 'var(--fondo)'}">
+    <span>🌰 <strong>KİB avellana Turquía:</strong> ${x ? `${u === 5 ? '<span style="color:var(--verde);font-weight:700">✓ precio fijado</span> ' : ''}${periodoKibInv({ t, n: u + 1 })} = <strong>US$ ${fmtUsdInv(x.usd / x.ton / 1000)}</strong>/kg de pepa${x.fecha ? ` (boletín ${fmtFechaInv(x.fecha)})` : ''}` : 'sin datos de esta temporada'}${u < 5 ? ` · la cosecha ${y} se paga con sep–feb (boletín de ~5-mar-${y})` : ''}${atrasado ? ` · <span style="color:#B45309;font-weight:700">ya debería estar el boletín con ${KIB_MESES_INV[u + 1][1]}: actualízalo</span>` : ''}</span>
+    <span style="display:flex;gap:12px"><a href="${KIB_URL_INV.boletin}" target="_blank" rel="noopener" style="color:var(--verde);font-weight:700;white-space:nowrap">🔗 Boletín KİB</a><a href="#" onclick="flujoKibInv();return false" style="color:var(--verde);font-weight:700;white-space:nowrap">✏️ Actualizar KİB</a></span></div>`;
+}
+// Ingresar el acumulado del boletín mensual del KİB (o revisar la historia)
+window.flujoKibInv = function() {
+  const pa = planAvellanaInv(), y = anioCosechaAvlInv(pa && pa.moneda === 'AVL' ? pa : { cosecha: [{ mes: 3 }] }, mesesFlujoInv()), t = temporadaKibInv(y), s = kibSerieInv(t), u = ultimoKibInv(s), sig = Math.min(5, u + 1);
+  const inp = 'width:100%;box-sizing:border-box;margin-bottom:8px', L = x => `<label style="font-size:12px;text-transform:none;letter-spacing:0;font-weight:600">${x}</label>`, U = n => 'US$ ' + fmtUsdInv(n), M = n => Math.round(n).toLocaleString('es-CL');
+  const temps = [...new Set([...Object.keys(KIB_INV), ...Object.keys((flujoCfgInv || {}).kib || {})])].sort();
+  const th = 'padding:3px 6px;border-bottom:2px solid var(--borde);background:transparent;color:var(--acero);text-transform:none;letter-spacing:0;font-size:11px;font-weight:700;font-family:inherit;text-align:right;white-space:nowrap', td = 'padding:3px 6px;border-bottom:1px solid var(--borde);text-align:right;white-space:nowrap;vertical-align:top';
+  const filas = temps.map(tt => { const ss = kibSerieInv(tt), k = ultimoKibInv(ss); if (k < 0) return ''; const x = ss[k], b = x.usd / x.ton / 1000;
+    return `<tr><td style="${td};text-align:left">${tt}<div style="font-size:10.5px;color:var(--acero)">cosecha ${Number(tt.slice(0, 4)) + 1}</div></td><td style="${td}">${k === 5 ? 'sep–feb' : `sep–${KIB_MESES_INV[k][1]}<div style="font-size:10.5px;color:#B45309">parcial</div>`}</td><td style="${td}">${M(x.ton)}</td><td style="${td}">${M(x.usd / 1e6)}</td><td style="${td};font-weight:800">${fmtUsdInv(b)}</td><td style="${td}">${fmtUsdInv(precioAvlInv(b, 'GIF').final)}</td><td style="${td}">${fmtUsdInv(precioAvlInv(b, 'OTR').final)}</td><td style="${td}">${fmtUsdInv(precioAvlInv(b, 'BAR').final)}</td></tr>`; }).join('');
+  const comp = u >= 0 && u < 5 ? temps.filter(tt => tt < t).map(tt => { const ss = kibSerieInv(tt); return ss[u] && ss[5] ? ((ss[5].usd / ss[5].ton) / (ss[u].usd / ss[u].ton) - 1) * 100 : null; }).filter(v => v != null) : [];
+  const pt = v => (v > 0 ? '+' : '') + v.toLocaleString('es-CL', { maximumFractionDigits: 1 }) + '%';
+  const compTxt = comp.length ? `<div style="font-size:12px;color:var(--acero);margin-top:6px">En las ${comp.length} temporadas anteriores, sep–feb terminó entre <strong>${pt(Math.min(...comp))}</strong> y <strong>${pt(Math.max(...comp))}</strong> respecto de sep–${KIB_MESES_INV[u][1]} (promedio ${pt(comp.reduce((a, v) => a + v, 0) / comp.length)}). Es solo referencia: depende de la cosecha turca y de la demanda. Si quieres usarlo, ponlo como "Ajuste esperado del KİB" en la avellana.</div>` : '';
+  modalElegirDteInv('🌰 Precio de la avellana: KİB (Turquía)', 'Agrichile paga según lo que exportó Turquía de septiembre a febrero: <strong>Değer ($) ÷ Miktar (Ton/İç) ÷ 1000</strong> = US$ por kg de avellana sin cáscara (cláusula 4.1). El dato oficial es el del <strong>boletín mensual del KİB de marzo</strong>; los meses anteriores sirven para estimar.', [`
+    <a href="${KIB_URL_INV.boletin}" target="_blank" rel="noopener" class="btn-add" style="display:flex;justify-content:center;padding:9px;margin-bottom:8px;text-decoration:none;background:var(--fondo);color:var(--negro)">🔗 Abrir el boletín mensual del KİB (PDF)</a>
+    <div style="font-size:12px;margin-bottom:6px"><strong>Qué copiar:</strong> en el boletín ("Türkiye Fındık İhracatı"), la <strong>primera tabla</strong>, la fila del año más nuevo que dice <strong>"01 Eylül – [último día] [mes] [año]"</strong>: es lo acumulado desde el 1 de septiembre. Copia <strong>Miktar (Ton/İç)</strong> y <strong>Değer ($)</strong>. La segunda tabla es solo el último mes: no sirve. Meses: Eylül sep · Ekim oct · Kasım nov · Aralık dic · Ocak ene · Şubat feb. En Turquía el punto separa miles (494.569.699 = 494 millones).</div>
+    <div style="font-size:11.5px;color:var(--acero);margin-bottom:10px">En la web: kib.org.tr → İhracat → İstatistikler → Fındık İstatistikleri → <a href="${KIB_URL_INV.pagina}" target="_blank" rel="noopener">Aylık Bülten</a>. Para revisar: <a href="${KIB_URL_INV.temporadas}" target="_blank" rel="noopener">Sezonlara Göre Aylık İhracat Rakamları</a>, tabla "Kümülatif", fila Şubat. <strong style="color:#B45309">El PDF del boletín se reemplaza cada mes:</strong> el de marzo descárgalo y guárdalo; es tu respaldo para revisar la liquidación de Agrichile.</div>
+    <div style="font-size:13px;font-weight:800;margin:2px 0 6px">Temporada ${t} → cosecha ${y}</div>
+    <div style="display:flex;gap:8px"><div style="flex:2;min-width:0">${L('Acumulado desde el 1 de septiembre hasta')}<select id="fk-mes" data-no-mejorar onchange="flujoKibPrevInv('${t}')" style="${inp}">${KIB_MESES_INV.map((m, i) => `<option value="${i}"${i === sig ? ' selected' : ''}>${m[0]} (${m[1]} ${finPeriodoKibInv(t, i).slice(0, 4)})${s[i] ? ' ✓' : ''}</option>`).join('')}</select></div>
+      <div style="flex:1;min-width:0">${L('Fecha del boletín')}<input type="date" id="fk-fecha" value="${hoyIsoInv()}" style="${inp}"></div></div>
+    <div style="display:flex;gap:8px"><div style="flex:1;min-width:0">${L('Miktar (Ton/İç)')}<input type="text" id="fk-ton" inputmode="numeric" placeholder="Ej: 49.410" oninput="flujoKibPrevInv('${t}')" style="${inp}"></div>
+      <div style="flex:1;min-width:0">${L('Değer ($)')}<input type="text" id="fk-usd" inputmode="numeric" placeholder="Ej: 494.569.699" oninput="flujoKibPrevInv('${t}')" style="${inp}"></div></div>
+    <div id="fk-prev" style="background:var(--fondo);border-radius:8px;padding:8px 10px;font-size:12.5px;margin-bottom:10px"></div>
+    <button class="btn btn-verde" style="width:100%;justify-content:center" onclick="flujoGuardarKibInv('${t}')">✓ Guardar</button>
+    <div style="font-size:13px;font-weight:800;margin:14px 0 4px">Historia: referencia y precio en cáscara (US$/kg)</div>
+    <div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;min-width:0;font-size:12px"><thead><tr style="background:transparent"><th style="${th};text-align:left">Temporada</th><th style="${th}">Período</th><th style="${th}">Ton pepa</th><th style="${th}">US$ MM</th><th style="${th}">Ref. pepa</th><th style="${th}">Giffoni</th><th style="${th}">Otras</th><th style="${th}">Barcelona</th></tr></thead><tbody>${filas}</tbody></table></div>
+    <div style="font-size:12px;color:var(--acero);margin-top:6px">Con sep–feb 2025-26 la referencia da Giffoni US$ 6,61 y Barcelona US$ 5,07 por kg: los valores informados para la cosecha 2026. Compáralos con tu liquidación 2026.</div>
+    ${compTxt}`]);
+  flujoKibPrevInv(t);
+};
+const numTrInv = v => Number(String(v || '').replace(/[^\d]/g, '')) || 0;
+window.flujoKibPrevInv = function(t) {
+  const el = document.getElementById('fk-prev'); if (!el) return;
+  const i = Number((document.getElementById('fk-mes') || {}).value) || 0, ton = numTrInv((document.getElementById('fk-ton') || {}).value), usd = numTrInv((document.getElementById('fk-usd') || {}).value), s = kibSerieInv(t);
+  const ya = s[i] ? `<div style="color:var(--acero)">Ya cargado para ${KIB_MESES_INV[i][1]}: ${Math.round(s[i].ton).toLocaleString('es-CL')} ton · US$ ${Math.round(s[i].usd).toLocaleString('es-CL')} = US$ ${fmtUsdInv(s[i].usd / s[i].ton / 1000)}/kg (${escA(s[i].fuente)}). Si guardas, se reemplaza.</div>` : '';
+  if (!(ton > 0) || !(usd > 0)) { el.innerHTML = `<span style="color:var(--acero)">Escribe Miktar y Değer para ver el precio.</span>${ya}`; return; }
+  const b = usd / ton / 1000, prev = [...s.slice(0, i)].reverse().find(Boolean), avisos = [];
+  if (prev && ton < prev.ton) avisos.push(`Es menos que lo acumulado hasta el mes anterior (${Math.round(prev.ton).toLocaleString('es-CL')} ton): parece el dato de un solo mes. Usa la fila "01 Eylül – …".`);
+  if (b < 2 || b > 30) avisos.push(`US$ ${fmtUsdInv(b)}/kg de pepa está fuera de lo normal: revisa que copiaste Değer ($) y Miktar (Ton/İç) completos.`);
+  el.innerHTML = `${Math.round(usd).toLocaleString('es-CL')} ÷ ${Math.round(ton).toLocaleString('es-CL')} ÷ 1000 = <strong>US$ ${fmtUsdInv(b)}</strong>/kg de pepa
+    <div style="margin-top:2px">En cáscara: Giffoni y TGL <strong>US$ ${fmtUsdInv(precioAvlInv(b, 'GIF').final)}</strong> · otras (Lewis) <strong>US$ ${fmtUsdInv(precioAvlInv(b, 'OTR').final)}</strong> · Barcelona y polinizantes <strong>US$ ${fmtUsdInv(precioAvlInv(b, 'BAR').final)}</strong></div>
+    ${i === 5 ? '<div style="color:var(--verde);font-weight:700;margin-top:2px">Septiembre a febrero: este es el precio oficial de la cosecha.</div>' : i === 4 ? '<div style="color:var(--acero);margin-top:2px">Septiembre a enero: es el precio de las entregas anticipadas.</div>' : ''}${avisos.map(a => `<div style="color:#B45309;margin-top:4px">⚠️ ${a}</div>`).join('')}${ya}`;
+};
+window.flujoGuardarKibInv = async function(t) {
+  const i = Number((document.getElementById('fk-mes') || {}).value) || 0, ton = numTrInv((document.getElementById('fk-ton') || {}).value), usd = numTrInv((document.getElementById('fk-usd') || {}).value), fecha = (document.getElementById('fk-fecha') || {}).value || hoyIsoInv();
+  if (!(ton > 0) || !(usd > 0)) { toast('Escribe Miktar (Ton/İç) y Değer ($)', false); return; }
+  const b = usd / ton / 1000; if (b < 1 || b > 50) { toast(`US$ ${fmtUsdInv(b)}/kg no parece correcto: revisa los números`, false); return; }
+  const prev = [...kibSerieInv(t).slice(0, i)].reverse().find(Boolean);
+  if (prev && ton < prev.ton && !confirm('Lo que escribiste es menor que el acumulado del mes anterior. ¿Seguro que es la fila "01 Eylül – …" (acumulado)?')) return;
+  try {
+    await setDoc(doc(dbInv, 'flujo_caja', '_config'), { kib: { [t]: { [String(i)]: { ton, usd, fecha, por: currentUser || '', ts: Date.now() } } } }, { merge: true });
+    const d = document.getElementById('dte-elegir'); if (d) d.remove();
+    toast(`✓ KİB ${KIB_MESES_INV[i][1]}: US$ ${fmtUsdInv(b)}/kg de pepa`);
+  } catch (e) { toast('No se pudo guardar: ' + e.message, false); }
+};
+const usaQuincenaInv = m => m === 'FCZ' || m === 'ORF' || m === 'AVL';
 // Forma de pago: una o varias partes, cada una con su % y cuántos meses después de la cosecha (p.pagos; si no hay, p.desfase al 100%)
 const cuotasPagoInv = p => { const a = (p.pagos || []).filter(x => Number(x.pct) > 0); return a.length ? a.map(x => ({ pct: Number(x.pct), des: Number(x.des) || 0 })) : [{ pct: 100, des: Number(p.desfase) || 0 }]; };
 const txtDesInv = d => d ? `+${d} mes${d === 1 ? '' : 'es'}` : 'al cosechar';
@@ -19440,6 +19600,7 @@ function pagosCosechaInv(p, meses) {
   if (p.moneda === 'ORF') return pagosOraftiInv(p, meses);
   if (p.moneda === 'SEM') return pagosSemilleroInv(p, meses);
   if (p.moneda === 'AGI') return pagosAgroindInv(p, meses);
+  if (p.moneda === 'AVL') return pagosAvellanaInv(p, meses);
   partesPagoInv(p, meses).forEach(x => { out[x.k] = (out[x.k] || 0) + total * x.pct / 100 * factorPrecioInv(p, x.i); });
   return out;
 }
@@ -19480,6 +19641,23 @@ window.flujoSupuestosInv = function(i, k) {
       `Planta: <strong>${escA(f.lugar || 'Nos')}</strong>${pc.lugar ? ` (−${N(pc.lugar)}/qqm)` : ''} · calidad ${(Number(f.calidad) || 0) > 0 ? '+' : ''}${pct(f.calidad)}`,
       ...(f.estimada ? [`Producción estimada del contrato: ${nf(f.estimada)} qqm${f.bMeta ? ` (bono meta si entregas entre ${Math.round(f.estimada * 0.9).toLocaleString('es-CL')} y ${Math.round(f.estimada * 1.05).toLocaleString('es-CL')} qqm)` : ''}`] : []),
       `Descuentos de guarda, financiero y riesgo: completos hasta la semana 5 de 2027 (~7 feb); desde la semana 6 bajan 1/26 por semana. Pago: martes subsiguiente a la semana de entrega.`];
+  } else if (p.moneda === 'AVL') {
+    const v = ventasAvellanaInv(p, ms), c = v.c, U = n => 'US$ ' + fmtUsdInv(n), y = anioCosechaAvlInv(p, ms), e0 = v.ent[0], refs = [...new Map(v.ent.map(e => [e.ref.hasta, e.ref])).values()], r = refs.find(x => x.hasta === 5) || refs[0] || kibRefInv(y, 5, c.ajuste), rA = refs.find(x => x.hasta === 4);
+    v.ent.forEach(e => {
+      filas.push({ k: e.kIni, ent: `Orden de compra inicial · ${e.q === 'm' ? '' : nomQuincenaInv(e.q) + ' '}${nomMesCortoInv(e.k).toLowerCase()}<div style="font-size:10.5px;color:var(--acero)">al precio mínimo (${e.lineas.map(x => `${escA(x.nombre)} ${U(x.pr.min)}`).join(', ')}); factura ~${fmtFechaInv(e.fEnt)}</div>`, pct: e.pct, cant: e.kgE, precio: e.kgE ? e.ini / e.kgE : 0, monto: e.ini, pago: '~' + fmtFechaInv(e.fPagoIni), dolar: e.dolar });
+      filas.push({ k: e.kFin, ent: `Liquidación: diferencia al precio final<div style="font-size:10.5px;color:var(--acero)">${e.lineas.map(x => `${escA(x.nombre)} ${U(x.pr.final)}`).join(', ')} (KİB ${e.ref.oficial ? 'oficial' : 'estimado'}${e.ant ? ', entrega anticipada' : ''})${e.limp ? `, menos limpieza y secado ${N(e.limp)}` : ''}; nota de débito ~${fmtFechaInv(e.fLiq)}</div>`, cant: e.kgE, precio: e.kgE ? e.saldo / e.kgE : 0, monto: e.saldo, pago: '~' + fmtFechaInv(e.fPagoFin), dolar: e.dolar });
+    });
+    const tv = (v.vars.length ? v.vars : c.vars.map(x => ({ ...x, f: 1 }))).map(x => { const d = avlVarInv(x.v), pr = precioAvlInv(r.usdKg, x.v); return `<tr><td style="padding:2px 6px 2px 0">${escA(x.nombre || d.txt)}<div style="font-size:10.5px;color:var(--acero)">${escA(d.txt)}</div></td><td style="text-align:right;padding:2px 6px;white-space:nowrap">${d.pct}%${d.coef !== 1 ? ' × ' + d.coef.toLocaleString('es-CL') : ''}</td><td style="text-align:right;padding:2px 6px;white-space:nowrap">${U(pr.calc)}</td><td style="text-align:right;padding:2px 6px;white-space:nowrap">${U(pr.min)}</td><td style="text-align:right;padding:2px 0 2px 6px;white-space:nowrap;font-weight:800">${U(pr.final)}</td></tr>`; }).join('');
+    const hc = 'text-align:right;padding:2px 6px;font-size:11px;font-weight:700;color:var(--acero);background:transparent;text-transform:none;letter-spacing:0;font-family:inherit;white-space:nowrap';
+    precioHtml = `<div style="font-size:12.5px;margin-bottom:6px">Referencia KİB ${r.oficial ? '<span style="color:var(--verde);font-weight:700">✓ oficial</span>' : '<span style="color:#B45309;font-weight:700">estimada</span>'}: ${r.n ? `${escA(periodoKibInv(r))}: US$ ${Math.round(r.usd).toLocaleString('es-CL')} ÷ ${Math.round(r.ton).toLocaleString('es-CL')} ton ÷ 1000 = <strong>${U(r.base)}</strong>/kg de pepa` : `${escA(periodoKibInv(r))}: <strong>${U(r.base || r.usdKg)}</strong>/kg de pepa`}${!r.oficial && c.ajuste ? ` × ${(1 + c.ajuste / 100).toLocaleString('es-CL', { maximumFractionDigits: 3 })} (ajuste ${c.ajuste > 0 ? '+' : ''}${nf(c.ajuste)}%) = <strong>${U(r.usdKg)}</strong>` : ''}.${r.oficial ? '' : ` El precio queda fijo con septiembre a ${r.hasta === 4 ? 'enero (entrega anticipada), boletín de febrero' : 'febrero, boletín de inicios de marzo'} ${y}.`} <a href="#" onclick="flujoKibInv();return false" style="color:var(--verde);font-weight:700">✏️ KİB</a>${rA && rA !== r ? `<div style="margin-top:3px">Entregas anticipadas (antes del boletín de marzo): ${escA(periodoKibInv(rA))} = <strong>${U(rA.usdKg)}</strong>/kg de pepa${rA.oficial ? ' ✓' : ' (estimado)'} → ${v.vars.map(x => `${escA(x.nombre)} ${U(precioAvlInv(rA.usdKg, x.v).final)}`).join(', ')}.</div>` : ''}</div>
+      <div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:12px;width:100%;max-width:460px;min-width:0"><thead><tr style="background:transparent"><th style="${hc};text-align:left;padding-left:0">US$ por kg en cáscara</th><th style="${hc}">Fórmula</th><th style="${hc}">Calculado</th><th style="${hc}">Mínimo</th><th style="${hc};padding-right:0">Se paga</th></tr></thead><tbody>${tv}</tbody></table></div>`;
+    mercado = [`Orden de compra inicial al aceptar cada entrega: kg × precio mínimo × dólar del día de la entrega. Facturas con esa fecha y Agrichile paga dentro de 30 días desde que recibe la factura, en pesos.`,
+      `Liquidación: con el precio final (después de limpieza, secado y análisis de rendimiento) emites una nota de débito por la diferencia, que también se paga a 30 días. Aquí la liquidación queda ${nf(c.diasLiq)} días después de la entrega y nunca antes de la publicación del KİB. Supuesto: la diferencia se calcula con el dólar del día de la entrega (revísalo en tu liquidación 2026).`,
+      `Dólar a la entrega: ${e0 ? `<strong>${N(e0.dolar)}</strong> ` : ''}(${fuenteDolar}).`,
+      `Kilos pagados: avellana en cáscara neta después de limpieza y secado (pepa con 6% de humedad), ajustada por el rendimiento al corte: Rto = (pepa buena + arrugada ÷ 2 + doble) ÷ 2.000 g; estándar 44–45% en Giffoni, TGL y otras, y 39–40% en Barcelona y polinizantes. Fuera del estándar, los kg suben o bajan en la misma proporción.`,
+      `Limpieza y secado: los cobra Agrichile si la fruta llega con más de 6% de humedad o más de 1% de materia extraña; la tarifa sale en las Condiciones de Compra de cada temporada. ${c.limpieza ? `Aquí: ${N(c.limpieza)}/kg.` : 'Aquí: $0 (entrega seca y limpia).'}`,
+      `Entrega anticipada: ${c.anticipada ? '<strong>sí</strong>. ' : 'no. '}Lo entregado antes de la publicación de marzo se puede pagar con septiembre a enero (boletín de febrero), avisando por escrito a Agrichile con 5 días de anticipación.`,
+      `El contrato 160-26 era para la cosecha 2026 (vigente hasta el 30-jun-2026). Al firmar el de 2027, revisa que el Anexo II mantenga 45% × 1,16 (Giffoni y TGL), 45% (otras), 40% (Barcelona y polinizantes) y los mínimos de US$ 2,00 y 1,50.`];
   } else if (p.moneda === 'AGI') {
     const v = ventasAgroindInv(p, ms), c = v.c, f = uni === 'kg' ? 1 : uni === 'ton' ? 1000 : 100;
     v.ent.forEach(e => filas.push({ k: e.kPago, ent: `${nomMesCortoInv(e.k)}${c.calidad ? `<div style="font-size:10.5px;color:var(--acero)">descuento calidad ${nf(c.calidad)}%</div>` : ''}`, pct: e.pct, cant: e.kg / f, precio: e.precioKg * f, monto: e.neto, pago: `día 20 ${nomMesCortoInv(e.kPago).toLowerCase()}` }));
@@ -19527,10 +19705,10 @@ window.flujoSupuestosInv = function(i, k) {
   const enMes = k && pg[k] ? `<div style="background:#ECF1E8;border-radius:8px;padding:8px 10px;margin:4px 0 8px;font-size:13px">En <strong>${nomMesCxpInv(k).toLowerCase()}</strong> entran <strong>${N(pg[k])}</strong> por ${escA(p.cultivo)} (fila marcada abajo).</div>` : '';
   modalElegirDteInv(`${p.frutal ? '🌳' : '🌾'} ${escA(p.cultivo)} · supuestos del flujo`, 'Así se calcula lo que este cultivo aporta al flujo de caja. Para cambiar un supuesto, toca ✏️ Cambiar supuestos.', [`
     ${enMes}
-    ${H('1 · Producción')}<div style="font-size:13px">${nf(p.ha)} ha ${p.haConfirmada ? '<span style="color:var(--verde)">✓ confirmadas</span>' : '<span style="color:#B45309">(por confirmar)</span>'} × ${nf(p.rend)} ${uni}/ha = <strong>${Math.round(prod).toLocaleString('es-CL')} ${uni}</strong>${difiere ? `<div style="font-size:12px;color:#B45309">Campo dice ${nf(p.haCampo)} ha.</div>` : ''}</div>
+    ${H('1 · Producción')}${p.moneda === 'AVL' ? (() => { const v = ventasAvellanaInv(p, ms); return `<div style="font-size:13px">${v.vars.map(x => `${escA(x.nombre)}: ${nf(x.ha)} ha × ${nf(x.rend)} kg/ha${x.f !== 1 ? ` × ${nf(x.f)} (rto. ${nf(x.rto)}%)` : ''} = ${Math.round(x.kg).toLocaleString('es-CL')} kg`).join('<br>')}<br>Total: <strong>${Math.round(v.kgTot).toLocaleString('es-CL')} kg</strong> de avellana en cáscara seca y limpia</div>`; })() : ''}<div style="font-size:13px;${p.moneda === 'AVL' ? 'display:none' : ''}">${nf(p.ha)} ha ${p.haConfirmada ? '<span style="color:var(--verde)">✓ confirmadas</span>' : '<span style="color:#B45309">(por confirmar)</span>'} × ${nf(p.rend)} ${uni}/ha = <strong>${Math.round(prod).toLocaleString('es-CL')} ${uni}</strong>${difiere ? `<div style="font-size:12px;color:#B45309">Campo dice ${nf(p.haCampo)} ha.</div>` : ''}</div>
     ${H(esContratoInv(p.moneda) ? '2 · Entregas y pagos' : '2 · Cosecha y pagos')}${tabla}
     ${precioHtml ? H('3 · Precio') + precioHtml : ''}
-    ${H(precioHtml ? (p.moneda === 'ORF' || p.moneda === 'SEM' || p.moneda === 'AGI' ? '4 · Condiciones del contrato' : '4 · Supuestos de mercado') : '3 · Precio')}<ul style="margin:0;padding-left:18px;font-size:12.5px">${mercado.map(li).join('')}</ul>
+    ${H(precioHtml ? (p.moneda === 'ORF' || p.moneda === 'SEM' || p.moneda === 'AGI' || p.moneda === 'AVL' ? '4 · Condiciones del contrato' : '4 · Supuestos de mercado') : '3 · Precio')}<ul style="margin:0;padding-left:18px;font-size:12.5px">${mercado.map(li).join('')}</ul>
     <div style="font-size:12px;color:var(--acero);margin-top:8px">🧾 Montos netos. IVA de la venta: <strong>${(IVA_TASAS_VENTA_INV.find(t => t[0] === ivaVentaPlanInv(p)) || [0, ivaVentaPlanInv(p) + '%'])[1]}</strong>; va aparte en el flujo ("IVA de las ventas") y en la cuenta de IVA.</div>
     ${p.nota ? `<div style="font-size:12px;color:var(--acero);margin-top:8px">📝 ${escA(p.nota)}</div>` : ''}
     <div style="display:flex;gap:8px;margin-top:14px"><button class="btn-add" style="flex:2;padding:10px;justify-content:center" onclick="flujoCosechaInv(${i})">✏️ Cambiar supuestos</button><button class="btn-add" style="flex:1;padding:10px;justify-content:center;background:var(--fondo);color:var(--negro)" onclick="document.getElementById('dte-elegir').remove()">Cerrar</button></div>`]);
@@ -19542,10 +19720,11 @@ window.flujoCosechaInv = function(i) {
   else if (p.sinPlan && /girasol|maravilla/i.test(p.cultivo) && !p.moneda) p = { ...p, unidad: 'kg', moneda: 'SEM', sem: { empresa: 'Curimapu', precio: 3200, moneda: 'USD', porHa: true, base: 0, anticipos: [{ txt: 'Siembra', mes: 11, monto: 500 }, { txt: 'Floración', mes: 1, monto: 400 }], interesMes: 0, diasPago: 90, servicios: 522000 } };
   else if (p.sinPlan && /semillero|canola/i.test(p.cultivo) && !p.moneda) p = { ...p, unidad: 'kg', moneda: 'SEM' };
   if (p.sinPlan && /achicoria/i.test(p.cultivo) && !p.moneda) p = { ...p, unidad: 'ton', moneda: 'ORF', orf: { asoc: true } };
+  if (p.sinPlan && /avellan/i.test(p.cultivo) && !p.moneda) p = { ...p, unidad: 'kg', moneda: 'AVL', cosecha: [{ mes: 3, pct: 100 }] };
   if (p.sinPlan && /candeal/i.test(p.cultivo) && !p.moneda) p = { ...p, unidad: 'qqm', moneda: 'FCZ', cosecha: [{ mes: 1, pct: 100 }], fcz: { lugar: 'Chillán', quincena: { 1: '2' }, bFirma: true } };
   const inp = 'width:100%;box-sizing:border-box;margin-bottom:8px', L = t => `<label style="font-size:12px;text-transform:none;letter-spacing:0;font-weight:600">${t}</label>`, v = (k, d = '') => escA(p[k] != null && p[k] !== '' ? p[k] : d);
   const sel = new Set((p.cosecha || []).map(c => Number(c.mes))), pct = Object.fromEntries((p.cosecha || []).map(c => [Number(c.mes), c.pct]));
-  window.__cosEd = { i, pct, nuevo: !!p.nuevo, quin: (p.moneda === 'ORF' ? p.orf && p.orf.quincena : p.fcz && p.fcz.quincena) || {} };
+  window.__cosEd = { i, pct, nuevo: !!p.nuevo, quin: (p.moneda === 'ORF' ? p.orf && p.orf.quincena : p.moneda === 'AVL' ? p.avl && p.avl.quincena : p.fcz && p.fcz.quincena) || {} };
   const partes = (p.partes || []).length ? `<details style="font-size:12px;color:var(--acero);margin:-4px 0 8px"><summary style="cursor:pointer">Según Campo: <strong>${String(p.haCampo).replace('.', ',')} ha</strong> en ${p.partes.length} potrero${p.partes.length === 1 ? '' : 's'}${p.haCampo != null && Number(p.ha) !== Number(p.haCampo) && !p.sinPlan ? ` <span style="color:#B45309">(tú tienes ${String(p.ha).replace('.', ',')} ha)</span>` : ''}</summary>${p.partes.map(x => `<div>· ${escA(x.donde)}: ${x.ha.toFixed(2).replace('.', ',')} ha</div>`).join('')}</details>` : p.nuevo ? '' : '<div style="font-size:12px;color:#B45309;margin:-4px 0 8px">Este cultivo ya no aparece en Campo: revisa las hectáreas.</div>';
   modalElegirDteInv(`🌾 ${p.nuevo ? 'Agregar cultivo' : escA(p.cultivo)}`, 'Ingreso estimado = hectáreas × rendimiento por ha × precio. Se reparte en los meses de cosecha y entra al flujo cuando pagan.', [`
     ${p.nuevo ? `${L('Cultivo o huerto')}<input type="text" id="fc-cultivo" list="fc-cultivos" placeholder="Ej: Avellano, Trigo" value="${escA(p.cultivo || '')}" style="${inp}"><datalist id="fc-cultivos">${(cultivosCampoConfig || []).map(c => `<option value="${escA(c)}">`).join('')}</datalist>` : ''}
@@ -19600,6 +19779,19 @@ window.flujoCosechaInv = function(i) {
       <div style="font-size:12px;font-weight:700;margin:2px 0 4px">Descuentos en la 1ª cuota</div>
       <div style="display:flex;gap:8px">${n('fa-semilla', 'Semilla ($ neto)', c.semilla)}${n('fa-cosecha', 'Cosecha mecanizada ($/ha neto)', c.cosechaHa)}${n('fa-otros', 'Insumos u otros ($)', c.otros, '0')}</div>
     </div>`; })()}
+    ${(() => { const c = avlCfgInv(p), filas = [...c.vars, {}, {}, {}].slice(0, Math.min(4, Math.max(3, c.vars.length + 1))), Ls = t => `<div style="font-size:11px;color:var(--acero);margin-bottom:1px">${t}</div>`, n = (id, val, ph) => `<input type="number" id="${id}" value="${escA(val != null ? val : '')}" step="any" inputmode="decimal" placeholder="${ph || ''}" oninput="flujoCosechaPrevInv()" style="${inp}">`;
+      const selV = (j, v) => `<select id="fv-tipo-${j}" data-no-mejorar onchange="flujoCosechaPrevInv()" style="${inp}">${Object.entries(AGRICHILE_INV.var).map(([k, d]) => `<option value="${k}"${(v || 'OTR') === k ? ' selected' : ''}>${d.txt}</option>`).join('')}</select>`;
+      return `<div id="fc-avl-box" style="display:${p.moneda === 'AVL' ? 'block' : 'none'};background:var(--fondo);border-radius:8px;padding:8px 10px;margin:-2px 0 10px">
+      <div style="font-size:12px;color:var(--acero);margin-bottom:6px">Contrato Agrichile (Ferrero): el precio sale de lo que exportó Turquía de septiembre a febrero (KİB, boletín de inicios de marzo): Değer ($) ÷ Miktar (Ton/İç) ÷ 1000 = US$/kg de pepa. En cáscara: Giffoni y TGL 45% × 1,16; otras variedades 45%; Barcelona y polinizantes 40%; mínimos US$ 2,00 (Giffoni y TGL) y US$ 1,50. Primero facturas al mínimo y después la diferencia.</div>
+      <div id="fv-ref" style="font-size:12px;margin-bottom:8px"></div>
+      <div style="font-size:12px;font-weight:700;margin:2px 0 4px">Variedades: rendimiento en kg de avellana en cáscara seca y limpia por ha</div>
+      ${filas.map((x, j) => `<div style="border-top:1px solid var(--borde);padding-top:6px;margin-top:2px">
+        <div style="display:flex;gap:6px;flex-wrap:wrap"><div style="flex:2 1 150px;min-width:0">${Ls(j < c.vars.length ? 'Tipo en el contrato' : 'Otra variedad (opcional)')}${selV(j, x.v)}</div><div style="flex:1 1 100px;min-width:0">${Ls('Nombre')}<input type="text" id="fv-nom-${j}" value="${escA(x.nombre || '')}" placeholder="${j < c.vars.length ? 'Variedad' : 'Ej: Barcelona'}" oninput="flujoCosechaPrevInv()" style="${inp}"></div></div>
+        <div style="display:flex;gap:6px"><div style="flex:1;min-width:0">${Ls('Hectáreas')}${n('fv-ha-' + j, x.ha)}</div><div style="flex:1;min-width:0">${Ls('kg/ha')}${n('fv-rend-' + j, x.rend, 'Ej: 3000')}</div><div style="flex:1;min-width:0">${Ls('Rto. al corte %')}${n('fv-rto-' + j, x.rto, 'estándar')}</div></div></div>`).join('')}
+      <div style="font-size:11px;color:var(--acero);margin:-4px 0 8px">Las hectáreas parten de las del contrato 2026 (Giffoni 36, Lewis 18): ajústalas si cambiaron. Lewis no aparece por nombre en el contrato: queda en "Otras variedades" (45%); si en 2026 te la pagaron como polinizante (40%), cámbiala. Rto. = rendimiento al corte esperado; vacío = estándar.</div>
+      <div style="display:flex;gap:8px;align-items:flex-end"><div style="flex:1;min-width:0">${L('Ajuste KİB hasta feb. (%)')}${n('fv-aj', c.ajuste, '0')}</div><div style="flex:1;min-width:0">${L('Limpieza y secado ($/kg)')}${n('fv-limp', c.limpieza, '0')}</div><div style="flex:1;min-width:0">${L('Días entrega → liquidación')}${n('fv-dliq', c.diasLiq)}</div></div>
+      <label style="display:flex;gap:8px;align-items:flex-start;font-size:12px;text-transform:none;letter-spacing:0;font-weight:600;margin:0 0 2px;cursor:pointer"><input type="checkbox" id="fv-ant" ${c.anticipada ? 'checked' : ''} onchange="flujoCosechaPrevInv()" style="width:auto;margin:2px 0 0">Entrega anticipada: lo entregado antes del boletín de marzo se paga con septiembre a enero (hay que avisar a Agrichile con 5 días)</label>
+    </div>`; })()}
     ${(() => { const c = semCfgInv(p), sel = (id, v) => `<select id="${id}" data-no-mejorar onchange="flujoCosechaPrevInv()" style="${inp}">${MESES_ABR_INV.map((t, k) => `<option value="${k + 1}"${Number(v) === k + 1 ? ' selected' : ''}>${t}</option>`).join('')}</select>`, ants = [...c.anticipos, { txt: '', mes: 1, monto: '' }].slice(0, 3);
       return `<div id="fc-sem-box" style="display:${p.moneda === 'SEM' ? 'block' : 'none'};background:var(--fondo);border-radius:8px;padding:8px 10px;margin:-2px 0 10px">
       <div style="font-size:12px;color:var(--acero);margin-bottom:6px">Semillero: el rendimiento va en <strong>kg de semilla seleccionada limpia</strong> por ha. Los anticipos se reciben durante el cultivo y se descuentan de la liquidación con sus intereses. Valores de la canola con Curimapu 2026-27 (propuesta 27-CA3168) como punto de partida.</div>
@@ -19619,7 +19811,7 @@ window.flujoCosechaInv = function(i) {
     <div style="font-size:13px;font-weight:800;margin:2px 0 6px">3 · Cosecha y pago</div>
     ${L('Meses de cosecha (uno o más)')}<div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px">${MESES_ABR_INV.map((t, k) => `<label style="display:flex;gap:4px;align-items:center;font-size:12px;text-transform:none;letter-spacing:0;font-weight:600;margin:0;padding:6px 9px;border:1px solid var(--borde);border-radius:999px;cursor:pointer"><input type="checkbox" class="fc-mes" value="${k + 1}" ${sel.has(k + 1) ? 'checked' : ''} onchange="flujoCosechaMesesInv()" style="width:auto;margin:0">${t}</label>`).join('')}</div>
     <div id="fc-pcts"></div>
-    <div id="fc-quin-box" style="display:${usaQuincenaInv(p.moneda) ? 'block' : 'none'}">${L('¿En qué parte del mes se entrega?')}<div id="fc-quin" style="margin:2px 0 4px"></div><div id="fc-quin-orf" style="display:${p.moneda === 'ORF' ? 'block' : 'none'};font-size:11px;color:var(--acero);margin-bottom:8px">Orafti factura por mes y paga el día 10 del mes siguiente (el 25 del mismo mes si toda la cosecha cae en la 1ª quincena). La parte del mes define el bono cosecha temprana en marzo y abril.</div><div id="fc-quin-fcz" style="display:${p.moneda === 'FCZ' ? 'block' : 'none'}">
+    <div id="fc-quin-box" style="display:${usaQuincenaInv(p.moneda) ? 'block' : 'none'}">${L('¿En qué parte del mes se entrega?')}<div id="fc-quin" style="margin:2px 0 4px"></div><div id="fc-quin-orf" style="display:${p.moneda === 'ORF' ? 'block' : 'none'};font-size:11px;color:var(--acero);margin-bottom:8px">Orafti factura por mes y paga el día 10 del mes siguiente (el 25 del mismo mes si toda la cosecha cae en la 1ª quincena). La parte del mes define el bono cosecha temprana en marzo y abril.</div><div id="fc-quin-avl" style="display:${p.moneda === 'AVL' ? 'block' : 'none'};font-size:11px;color:var(--acero);margin-bottom:8px">Agrichile emite la orden de compra al recibir cada entrega y paga 30 días después de tu factura. Lo entregado antes del boletín de marzo (~día 5) se liquida después de esa publicación, salvo entrega anticipada.</div><div id="fc-quin-fcz" style="display:${p.moneda === 'FCZ' ? 'block' : 'none'}">
       <div style="font-size:11px;color:var(--acero);margin-bottom:8px">El precio es el publicado la semana de la entrega y se paga a más tardar el martes subsiguiente a esa semana (cláusula octava). Hasta la semana 5 de 2027 (~7 de febrero) los descuentos van completos.</div></div></div>
     <div id="fc-desf-box" style="display:${esContratoInv(p.moneda) ? 'none' : 'block'}">${L('¿Cuándo pagan, respecto de la cosecha?')}<div id="fc-pagos"></div>
       <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;margin:0 0 10px"><a href="#" onclick="flujoPagoAgregarInv();return false" style="font-size:12px;color:var(--verde);font-weight:700">+ Dividir el pago (ej.: 50% al cosechar y 50% al mes siguiente)</a><span id="fc-pago-suma" style="font-size:12px"></span></div></div>
@@ -19645,7 +19837,10 @@ function leerCosechaFormInv() {
   const g = id => ((document.getElementById(id) || {}).value || '').trim(), ed = window.__cosEd || { pct: {} };
   const ms = [...document.querySelectorAll('.fc-mes:checked')].map(c => Number(c.value));
   return { ha: Number(String(g('fc-ha')).replace(',', '.')) || 0, rend: Number(String(g('fc-rend')).replace(',', '.')) || 0, unidad: g('fc-unidad') || 'kg', precio: Number(String(g('fc-precio')).replace(',', '.')) || 0,
-    cosecha: ms.map(m => ({ mes: m, pct: ms.length === 1 ? 100 : Number(ed.pct[m]) || 0 })), ...(() => { const pagos = leerPagosFormInv(); return { pagos, desfase: pagos.length ? pagos[0].des : 0 }; })(), moneda: ['USD', 'COM', 'FCZ', 'ORF', 'SEM', 'AGI'].includes(g('fc-moneda')) ? g('fc-moneda') : 'CLP', varIntl: g('fc-moneda') === 'COM' ? Number(String(g('fc-varintl')).replace(',', '.')) || 0 : 0, ivaVenta: (() => { const s = document.getElementById('fc-iva'); return s && s.dataset.auto === '0' ? Number(s.value) : null; })(),
+    cosecha: ms.map(m => ({ mes: m, pct: ms.length === 1 ? 100 : Number(ed.pct[m]) || 0 })), ...(() => { const pagos = leerPagosFormInv(); return { pagos, desfase: pagos.length ? pagos[0].des : 0 }; })(), moneda: ['USD', 'COM', 'FCZ', 'ORF', 'SEM', 'AGI', 'AVL'].includes(g('fc-moneda')) ? g('fc-moneda') : 'CLP', varIntl: g('fc-moneda') === 'COM' ? Number(String(g('fc-varintl')).replace(',', '.')) || 0 : 0, ivaVenta: (() => { const s = document.getElementById('fc-iva'); return s && s.dataset.auto === '0' ? Number(s.value) : null; })(),
+    ...(g('fc-moneda') === 'AVL' ? (() => { const nm = x => Number(String(x).replace(',', '.')) || 0, vars = [0, 1, 2, 3].map(j => ({ v: g('fv-tipo-' + j) || 'OTR', nombre: g('fv-nom-' + j), ha: nm(g('fv-ha-' + j)), rend: nm(g('fv-rend-' + j)), rto: g('fv-rto-' + j) === '' ? '' : nm(g('fv-rto-' + j)) })).filter(x => x.ha > 0 || x.rend > 0);
+      const ha = vars.reduce((a, x) => a + x.ha, 0), kg = vars.reduce((a, x) => a + x.ha * x.rend, 0);
+      return { ha: Math.round(ha * 100) / 100, rend: ha > 0 ? Math.round(kg / ha) : 0, unidad: 'kg', avl: { empresa: 'Agrichile', vars, ajuste: nm(g('fv-aj')), limpieza: nm(g('fv-limp')), diasLiq: g('fv-dliq') === '' ? AGRICHILE_INV.diasLiq : nm(g('fv-dliq')), anticipada: !!(document.getElementById('fv-ant') || {}).checked, quincena: Object.fromEntries([...document.querySelectorAll('.fc-quin-sel')].map(x => [x.dataset.m, x.value])) } }; })() : {}),
     ...(g('fc-moneda') === 'AGI' ? { agi: { empresa: g('fa-emp') || 'Alifrut', precio: Number(g('fa-precio').replace(',', '.')) || 0, bonoSup: Number(g('fa-bsup').replace(',', '.')) || 0, bonoTend: Number(g('fa-btend')) || 0, calidad: Number(g('fa-cal').replace(',', '.')) || 0, semilla: Number(g('fa-semilla').replace(/\./g, '')) || 0, cosechaHa: Number(g('fa-cosecha').replace(/\./g, '')) || 0, otros: Number(g('fa-otros').replace(/\./g, '')) || 0 } } : {}),
     ...(g('fc-moneda') === 'SEM' ? { sem: { empresa: g('fs-emp') || 'Curimapu', precio: Number(g('fs-precio').replace(',', '.')) || 0, moneda: g('fs-mon') === 'CLP' ? 'CLP' : 'USD', porHa: g('fs-por') === 'ha', escala: !!(document.getElementById('fs-escala') || {}).checked, base: Number(g('fs-base').replace(',', '.')) || 0, interesMes: Number(g('fs-int').replace(',', '.')) || 0, diasPago: Number(g('fs-dias')) || 0, servicios: Number(g('fs-serv').replace(/\./g, '')) || 0,
       anticipos: [...document.querySelectorAll('.fs-ant-monto')].map(el => { const j = el.dataset.j; return { txt: (document.querySelectorAll('.fs-ant-txt')[j] || {}).value || '', mes: Number(g('fs-ant-mes-' + j)) || 1, monto: Number(String(el.value).replace(',', '.')) || 0 }; }).filter(a => a.monto > 0) } } : {}),
@@ -19662,13 +19857,27 @@ window.flujoCosechaPrevInv = function() {
   const qx = document.getElementById('fc-quin-box'); if (qx) qx.style.display = usaQuincenaInv(x.moneda) ? 'block' : 'none';
   const sb = document.getElementById('fc-sem-box'); if (sb) sb.style.display = x.moneda === 'SEM' ? 'block' : 'none';
   const ab = document.getElementById('fc-agi-box'); if (ab) ab.style.display = x.moneda === 'AGI' ? 'block' : 'none';
-  ['orf', 'fcz'].forEach(t => { const e = document.getElementById('fc-quin-' + t); if (e) e.style.display = x.moneda === t.toUpperCase() ? 'block' : 'none'; });
+  const vb = document.getElementById('fc-avl-box'); if (vb) vb.style.display = x.moneda === 'AVL' ? 'block' : 'none';
+  ['fc-ha', 'fc-rend'].forEach(id => { const e = document.getElementById(id); if (e) { e.readOnly = x.moneda === 'AVL'; e.style.background = x.moneda === 'AVL' ? 'var(--fondo)' : ''; if (x.moneda === 'AVL') e.value = (id === 'fc-ha' ? x.ha : x.rend) || ''; } });
+  ['orf', 'fcz', 'avl'].forEach(t => { const e = document.getElementById('fc-quin-' + t); if (e) e.style.display = x.moneda === t.toUpperCase() ? 'block' : 'none'; });
   const iv = document.getElementById('fc-iva'); if (iv) {
     const cu = document.getElementById('fc-cultivo'), sg = sugerenciaIvaInv({ ...x, cultivo: cu ? cu.value : ((window.__cosEd && flujoPlanesInv[window.__cosEd.i]) || {}).cultivo || '' });
     if (iv.dataset.auto === '1' && iv.value !== String(sg.pct)) iv.value = String(sg.pct);
     const sb = document.getElementById('fc-iva-sug'); if (sb) sb.innerHTML = `💡 Sugerido: <strong>${sg.pct}%</strong>. ${escA(sg.motivo)}${iv.value !== String(sg.pct) ? ` <a href="#" onclick="const s=document.getElementById('fc-iva');s.value='${sg.pct}';s.dataset.auto='1';flujoCosechaPrevInv();return false" style="color:var(--verde);font-weight:700">Usar ${sg.pct}%</a>` : ''}`;
   }
   const pb = document.getElementById('fc-precio-box'); if (pb) pb.style.visibility = esContratoInv(x.moneda) ? 'hidden' : 'visible';
+  if (x.moneda === 'AVL') {
+    const us = document.getElementById('fc-unidad'); if (us && us.value !== 'kg') us.value = 'kg';
+    const ms = mesesFlujoInv(), v = ventasAvellanaInv(x, ms), y = anioCosechaAvlInv(x, ms), r = v.ent[0] ? v.ent[0].ref : kibRefInv(y, 5, x.avl.ajuste), U = n => 'US$ ' + fmtUsdInv(n), N = n => pesoInv(Math.round(n));
+    const rf = document.getElementById('fv-ref'); if (rf) rf.innerHTML = `KİB cosecha ${y}: ${r.oficial ? '<span style="color:var(--verde);font-weight:700">✓ oficial</span>' : '<span style="color:#B45309;font-weight:700">estimado</span>'} con ${escA(periodoKibInv(r))}: <strong>${U(r.usdKg)}</strong>/kg de pepa${!r.oficial && x.avl.ajuste ? ` (incluye ajuste ${x.avl.ajuste > 0 ? '+' : ''}${x.avl.ajuste}%)` : ''} → ${Object.entries(AGRICHILE_INV.var).slice(0, 3).map(([k, d]) => `${d.txt.split(' (')[0]} <strong>${U(precioAvlInv(r.usdKg, k).final)}</strong>`).join(' · ')}. <a href="${KIB_URL_INV.boletin}" target="_blank" rel="noopener" style="color:var(--verde);font-weight:700">🔗 Boletín KİB</a>`;
+    const sinRend = x.avl.vars.filter(z => z.ha > 0 && !(z.rend > 0));
+    if (!v.vars.length || sinRend.length || !x.cosecha.length) { el.innerHTML = `<span style="color:#B45309">Para ver el ingreso falta: <strong>${[!x.avl.vars.some(z => z.ha > 0) && 'hectáreas por variedad', (sinRend.length || !v.vars.length) && 'rendimiento (kg/ha)' + (sinRend.length ? ' de ' + sinRend.map(z => z.nombre || 'una variedad').join(' y ') : ''), !x.cosecha.length && 'meses de cosecha'].filter(Boolean).join(', ')}</strong>.</span>`; return; }
+    const tot = v.ent.reduce((a, e) => a + e.fin, 0);
+    el.innerHTML = `Producción: <strong>${Math.round(v.kgTot).toLocaleString('es-CL')} kg</strong> en cáscara · ventas netas: <strong>${N(tot)}</strong>
+      <div style="font-size:12px;color:var(--acero);margin-top:4px">${v.vars.map(z => `${escA(z.nombre)}: ${Math.round(z.kg).toLocaleString('es-CL')} kg × ${U(precioAvlInv(r.usdKg, z.v).final)}`).join(' · ')}</div>
+      <div style="font-size:12px;color:var(--acero);margin-top:4px">${v.ent.map(e => `${e.q === 'm' ? '' : nomQuincenaInv(e.q) + ' '}${nomMesCortoInv(e.k).toLowerCase()}${e.pct < 100 ? ` (${e.pct}%)` : ''}, dólar ${N(e.dolar)}: inicial al mínimo <strong>${N(e.ini)}</strong> ~${fmtFechaInv(e.fPagoIni)} · saldo <strong>${N(e.saldo)}</strong> ~${fmtFechaInv(e.fPagoFin)}${e.ant ? ' (anticipada)' : ''}`).join('<br>')}</div>`;
+    return;
+  }
   if (x.moneda === 'AGI') {
     const bs = document.getElementById('fa-bsup'); if (bs && bs.dataset.auto === '1') { bs.value = bonoSuperficieAlfInv(x.ha); x.agi.bonoSup = Number(bs.value); }
     const us = document.getElementById('fc-unidad'); if (us && us.value !== 'kg' && x.rend > 100) { us.value = 'kg'; x.unidad = 'kg'; }
@@ -19751,6 +19960,7 @@ window.flujoGuardarCosechaInv = async function() {
   const ed = window.__cosEd || {}, p = ed.nuevo ? null : flujoPlanesInv[ed.i];
   const cultivo = p ? p.cultivo : ((document.getElementById('fc-cultivo') || {}).value || '').trim(), x = leerCosechaFormInv();
   if (!cultivo) { toast('Indica el cultivo', false); return; }
+  if (x.moneda === 'AVL') { const z = x.avl.vars.find(w => !(w.ha > 0) || !(w.rend > 0)); if (!x.avl.vars.length) { toast('Indica hectáreas y rendimiento de cada variedad', false); return; } if (z) { toast(`Falta ${!(z.ha > 0) ? 'las hectáreas' : 'el rendimiento (kg/ha)'} de ${z.nombre || 'una variedad'}`, false); return; } }
   if (!(x.ha > 0)) { toast('Indica las hectáreas', false); return; }
   if (!(x.rend > 0) && !(x.moneda === 'SEM' && x.sem && x.sem.porHa)) { toast('Indica el rendimiento', false); return; }
   if (x.moneda === 'FCZ' && !(x.fcz.ici > 0)) { toast('Falta el ICI de ODEPA', false); return; }
