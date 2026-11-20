@@ -3524,7 +3524,7 @@ const SECCIONES_TABS = {
   asistencia: ['tab-asistencia','tab-config-trabajadores'],
   campo: ['tab-campo','tab-config-potreros','tab-config-gps'],
   inventario: ['tab-inv-inventario','tab-inv-ingresos','tab-inv-pendrec','tab-inv-movimientos','tab-inv-alertas'],
-  contabilidad: ['tab-cont-docs','tab-cont-pagar','tab-cont-flujo','tab-cont-rend','tab-cont-config'],
+  contabilidad: ['tab-cont-docs','tab-cont-pagar','tab-cont-flujo','tab-cont-cultivos','tab-cont-rend','tab-cont-config'],
   autorizaciones: ['tab-autorizaciones']
 };
 
@@ -13974,6 +13974,7 @@ window.setTab = function(id,el) {
   if(id==='cont-rend') { renderRendCajaInv(); }
   if(id==='cont-pagar') { renderCxpInv(); }
   if(id==='cont-flujo') { renderFlujoInv(); }
+  if(id==='cont-cultivos') { renderCultivosInv(); }
   if(id==='inv-pendrec') { renderPendRecInv(); }
   if(id==='inv-movimientos') { initMovimientosInv(); }
   if(id==='cisterna') { initControlCisterna(); }
@@ -18519,8 +18520,8 @@ function suscribirFlujoInv() {
   onSnapshot(collection(dbInv, 'flujo_caja'), snap => {
     const all = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     flujoCfgInv = all.find(x => x.id === '_config') || {}; flujoItemsInv = all.filter(x => !x.id.startsWith('_'));
-    const tc = document.getElementById('tc-cont-flujo'); if (tc && tc.classList.contains('active')) renderFlujoInv();
-  }, e => { console.warn('flujo', e); flujoSubInv = false; flujoItemsInv = []; flujoErrorInv = e.message || String(e); const tc = document.getElementById('tc-cont-flujo'); if (tc && tc.classList.contains('active')) renderFlujoInv(); });
+    const tc = document.getElementById('tc-cont-flujo'); redibujarFlujoInv();
+  }, e => { console.warn('flujo', e); flujoSubInv = false; flujoItemsInv = []; flujoErrorInv = e.message || String(e); const tc = document.getElementById('tc-cont-flujo'); redibujarFlujoInv(); });
 }
 // Meses en que cae un movimiento a mano (con su monto, o el ajustado para ese mes)
 function ocurrenciasFlujoInv(it, hasta) {
@@ -18556,7 +18557,8 @@ function calcularFlujoInv() {
   };
   const cosechaFila = () => {
     const vals = vacio();
-    const sub = planesCosechaInv().filter(planCompletoInv).map(p => { const v = vacio(); Object.entries(pagosCosechaInv(p, meses)).forEach(([k, n]) => { v[k] += n; vals[k] += n; }); return { it: p, vals: v }; });
+    const sub = planesCosechaInv().filter(p => planCompletoInv(p) || p.sinPlan || p.activo !== false).map(p => { const v = vacio(), ok = planCompletoInv(p); if (ok) Object.entries(pagosCosechaInv(p, meses)).forEach(([k, n]) => { v[k] += n; vals[k] += n; }); return { it: p, vals: v, ok }; })
+      .sort((a, b) => (b.ok ? 1 : 0) - (a.ok ? 1 : 0));
     return { key: 'cosecha', tipo: 'ing', t: 'Ventas de cosecha', vals, sub, cosecha: true };
   };
   const ing = [cosechaFila(), ...['ventas', 'otros_ing'].map(manualFila)];
@@ -18568,6 +18570,83 @@ function calcularFlujoInv() {
   totIng.despues = suma(ing, 'despues'); totEgr.despues = suma(egr, 'despues');
   return { m0, meses, ing, egr, totIng, totEgr, neto, saldoIni, saldo };
 }
+// ─── 🌾 CULTIVOS Y SUPUESTOS ── superficie, rendimiento, precio y época de cosecha de cada cultivo y huerto (docs cos_* de flujo_caja).
+// Son los supuestos comerciales; el Flujo de caja solo usa el resultado (ventas de cosecha por mes).
+function redibujarFlujoInv() { const act = id => { const t = document.getElementById(id); return t && t.classList.contains('active'); }; if (act('tc-cont-flujo')) renderFlujoInv(); if (act('tc-cont-cultivos')) renderCultivosInv(); }
+window.irCultivosInv = function() { const d = document.getElementById('dte-elegir'); if (d) d.remove(); setTab('cont-cultivos', document.getElementById('tab-cont-cultivos')); window.scrollTo(0, 0); };
+function bloqueHectareasInv() {
+  const fmtHa = n => (Math.round((Number(n) || 0) * 100) / 100).toLocaleString('es-CL');
+
+      const det = detallePotrerosFlujoInv(), nOjo = det.filter(x => x.ojo).length, haTot = det.reduce((a, x) => a + (Number(x.ha) || 0), 0), haCont = det.filter(x => x.ha > 0).reduce((a, x) => a + x.ha, 0);
+      return `<details style="margin:0 0 8px;font-size:12px"${nOjo ? '' : ''}><summary style="cursor:pointer;font-weight:700">🔎 De dónde salen las hectáreas · ${det.length} potreros y lotes, ${fmtHa(haCont)} ha${nOjo ? ` <span style="color:#B45309">· ${nOjo} por revisar</span>` : ''}</summary>
+        <div style="color:var(--acero);margin:6px 0">Vienen de <strong>Campo → Config. Potreros</strong>: los huertos por su especie y sus hectáreas; los potreros anuales por sus lotes de ${new Date().getFullYear()} (✂️ Dividir por año) o, si no están divididos, por la última siembra registrada y las hectáreas del potrero. Los nombres de cultivo se agrupan tal cual están escritos ("Avellano" y "Avellanos" serían dos cultivos). Lo que corrijas aquí en cada cultivo no cambia Campo.</div>
+        <div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;min-width:520px;font-size:12px">
+          <thead><tr>${['Potrero', 'Ha', 'Cultivo', 'Según', ''].map((t, i) => `<th style="text-align:${i === 1 ? 'right' : 'left'};padding:5px 6px;border-bottom:2px solid var(--borde);background:var(--fondo);color:var(--negro);text-transform:none;letter-spacing:0;font-size:12px;font-weight:800;font-family:inherit">${t}</th>`).join('')}</tr></thead>
+          <tbody>${det.map(x => `<tr${x.ojo ? ' style="background:#FFFBEB"' : ''}><td style="padding:4px 6px;border-bottom:1px solid var(--borde)">${x.tipo === 'Huerto' ? '🌳' : '🌾'} ${escA(x.potrero)}</td><td style="padding:4px 6px;border-bottom:1px solid var(--borde);text-align:right">${x.ha ? fmtHa(x.ha) : '–'}</td><td style="padding:4px 6px;border-bottom:1px solid var(--borde)">${escA(x.cultivo || '—')}</td><td style="padding:4px 6px;border-bottom:1px solid var(--borde);color:var(--acero)">${escA(x.segun)}</td><td style="padding:4px 6px;border-bottom:1px solid var(--borde);color:#B45309">${x.ojo ? '⚠️ ' + escA(x.ojo) : ''}</td></tr>`).join('')}</tbody>
+        </table></div>
+        ${haTot !== haCont ? '' : ''}
+      </details>`;
+}
+window.renderCultivosInv = function() {
+  const cont = document.getElementById('cont-cultivos-panel'); if (!cont) return;
+  const tit = '<div class="panel-title">🌾 Cultivos y supuestos</div>';
+  try {
+    if (!verValoresInv()) { cont.innerHTML = ''; return; }
+    suscribirFlujoInv();
+    if (flujoItemsInv === null) { cont.innerHTML = tit + '<div class="empty">Cargando…</div>'; return; }
+    cargarCampoFlujoInv(); buscarDolarHoyInv();
+    flujoPlanesInv = planesCosechaInv();
+    const P = flujoPlanesInv, ms = mesesFlujoInv(), fmtHa = n => (Math.round((Number(n) || 0) * 100) / 100).toLocaleString('es-CL'), nf = v => (Number(v) || 0).toLocaleString('es-CL');
+    const ok = P.filter(planCompletoInv), tot = ok.reduce((a, p) => a + ingresoCosechaInv(p), 0), haOk = ok.reduce((a, p) => a + (Number(p.ha) || 0), 0);
+    const falta = P.filter(p => !planCompletoInv(p) && (p.sinPlan || p.activo !== false)), sinConf = ok.filter(p => !p.haConfirmada).length;
+    const caja = (t, v, c, sub) => `<div style="flex:1;min-width:130px;background:var(--fondo);border-radius:8px;padding:8px"><div style="font-size:11px;color:var(--acero)">${t}</div><div style="font-weight:800;color:${c || 'var(--negro)'}">${v}</div>${sub ? `<div style="font-size:11px;color:var(--acero)">${sub}</div>` : ''}</div>`;
+    const TH = 'padding:7px 8px;text-align:right;border-bottom:2px solid var(--borde);background:var(--fondo);color:var(--negro);text-transform:none;letter-spacing:0;font-size:12px;font-weight:800;font-family:inherit;white-space:nowrap;';
+    const S = 'position:sticky;left:0;z-index:1;background:var(--blanco);', TD = 'padding:6px 8px;text-align:right;border-bottom:1px solid var(--borde);vertical-align:top;white-space:nowrap', TD0 = S + 'padding:6px 8px;text-align:left;border-bottom:1px solid var(--borde);vertical-align:top;min-width:130px;max-width:200px;white-space:normal';
+    const sub = (t, c) => `<div style="font-size:10.5px;color:${c || 'var(--acero)'};font-weight:600">${t}</div>`;
+    const fila = (p, i) => {
+      const esOk = planCompletoInv(p), excl = !esOk && p.activo === false && !p.sinPlan, uni = p.unidad === 'qqm' ? 'qqm' : p.unidad || 'kg', prod = (Number(p.ha) || 0) * (Number(p.rend) || 0);
+      const difiere = p.haCampo != null && Math.abs(Number(p.ha) - Number(p.haCampo)) > 0.01;
+      let precio = '–', cosecha = '–';
+      if (!p.sinPlan) {
+        if (p.moneda === 'FCZ') { const e = entregasCarozziInv(p, ms), e0 = e[0], ph = precioCarozziInv(p, 0, ms[0], true), pc = e0 ? precioCarozziInv(p, e0.i, e0.fEnt) : ph; precio = (p.fcz && p.fcz.ici > 0 ? `${pesoInv(pc.final)}/qqm` : '–') + sub(`fórmula Carozzi · ${escA((p.fcz || {}).lugar || 'Nos')}`); cosecha = e.map(x => `${MESES_ABR_INV[x.mes - 1]} ${x.q === '1' ? '1ª q.' : x.q === '2' ? '2ª q.' : ''}${e.length > 1 ? ' ' + x.pct + '%' : ''}`).join(', ') + sub(e.map(x => `pago ~${fmtFechaInv(x.fPago).slice(0, 5)}`).join(', ')); }
+        else if (Number(p.precio) > 0) { precio = (p.moneda === 'USD' ? `US$ ${nf(p.precio)}` : pesoInv(p.precio)) + `/${uni}` + sub(p.moneda === 'USD' ? 'en dólares' : p.moneda === 'COM' ? `commodity${Number(p.varIntl) ? ' ' + (p.varIntl > 0 ? '+' : '') + nf(p.varIntl) + '%' : ''}` : 'fijo en pesos'); }
+        if (p.moneda !== 'FCZ' && (p.cosecha || []).length) cosecha = (p.cosecha || []).map(c => MESES_ABR_INV[c.mes - 1] + ((p.cosecha || []).length > 1 ? ' ' + c.pct + '%' : '')).join(', ') + sub(Number(p.desfase) ? `pago +${p.desfase} mes${Number(p.desfase) === 1 ? '' : 'es'}` : 'pago al cosechar');
+      }
+      const ingreso = esOk ? `<strong style="color:var(--verde)">${pesoInv(ingresoCosechaInv(p))}</strong>` + sub('📋 ver supuestos', 'var(--verde)') : excl ? sub('No incluido') : `<strong style="color:#B45309">Completar ✏️</strong>` + sub('aún no suma', '#B45309');
+      return `<tr style="cursor:pointer${excl ? ';opacity:.6' : ''}" onclick="${esOk ? 'flujoSupuestosInv' : 'flujoCosechaInv'}(${i})">
+        <td style="${TD0}"><strong>${p.frutal ? '🌳' : '🌾'} ${escA(p.cultivo)}</strong>${p.sinPlan ? sub('según Campo, sin plan', '#B45309') : ''}</td>
+        <td style="${TD}">${fmtHa(p.ha)}${p.sinPlan ? sub('por confirmar', '#B45309') : p.haConfirmada ? sub('✓ confirmadas', 'var(--verde)') : sub('por confirmar', '#B45309')}${difiere ? sub('Campo: ' + fmtHa(p.haCampo), '#B45309') : ''}</td>
+        <td style="${TD}">${Number(p.rend) > 0 ? nf(p.rend) + ' ' + uni : '–'}</td>
+        <td style="${TD}">${prod > 0 ? Math.round(prod).toLocaleString('es-CL') + ' ' + uni : '–'}</td>
+        <td style="${TD}">${precio}</td>
+        <td style="${TD};text-align:left">${cosecha}</td>
+        <td style="${TD}">${ingreso}</td></tr>`;
+    };
+    const d0 = dolarMesInv(0), d11 = dolarMesInv(11);
+    cont.innerHTML = `${tit}
+      <div style="font-size:12px;color:var(--acero);margin-bottom:8px">Los supuestos comerciales de cada cultivo y huerto: superficie, rendimiento, precio y época de cosecha y pago. De aquí sale lo que el <a href="#" onclick="setTab('cont-flujo', document.getElementById('tab-cont-flujo'));return false" style="color:var(--verde);font-weight:700">📈 Flujo de caja</a> estima como ventas de cosecha. Toca un cultivo para ver cómo se calcula o cambiarlo.</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
+        ${caja('Ventas estimadas (12 meses)', pesoInv(tot), 'var(--verde)', `${ok.length} cultivo${ok.length === 1 ? '' : 's'} con plan`)}
+        ${caja('Superficie en el flujo', fmtHa(haOk) + ' ha', '', sinConf ? `<span style="color:#B45309">${sinConf} sin confirmar</span>` : ok.length ? '✓ confirmadas' : '')}
+        ${caja('Por completar', String(falta.length), falta.length ? '#B45309' : '', falta.length ? 'aún no suman al flujo' : 'todo completo')}
+        ${caja('Dólar usado', `${pesoInv(d0)} → ${pesoInv(d11)}`, '', 'hoy → en 11 meses (se ajusta en el Flujo de caja)')}
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px"><button class="btn-add" style="flex:1;min-width:160px;padding:9px;justify-content:center" onclick="flujoCosechaInv('nuevo')">➕ Agregar cultivo o huerto</button></div>
+      ${flujoCampoInv !== true ? '<div style="font-size:12px;color:var(--acero);margin-bottom:6px">⏳ Leyendo Campo…</div>' : ''}
+      <div style="overflow-x:auto;border:1px solid var(--borde);border-radius:10px;-webkit-overflow-scrolling:touch;margin-bottom:10px">
+        <table style="border-collapse:separate;border-spacing:0;font-size:12px;min-width:100%">
+          <thead><tr><th style="${TH}${S}text-align:left;z-index:2;background:var(--fondo)">Cultivo</th><th style="${TH}">Ha</th><th style="${TH}">Rend./ha</th><th style="${TH}">Producción</th><th style="${TH}">Precio</th><th style="${TH}text-align:left">Cosecha</th><th style="${TH}">Ventas 12 m</th></tr></thead>
+          <tbody>${P.map(fila).join('') || `<tr><td colspan="7" style="padding:12px;color:var(--acero)">No hay potreros con cultivo en Campo. Agrega los cultivos a mano.</td></tr>`}
+            ${ok.length ? `<tr><td style="${TD0};font-weight:800;background:#F7F7F2">Total en el flujo</td><td style="${TD};font-weight:800;background:#F7F7F2">${fmtHa(haOk)}</td><td style="${TD};background:#F7F7F2" colspan="4"></td><td style="${TD};font-weight:800;background:#F7F7F2">${pesoInv(tot)}</td></tr>` : ''}</tbody>
+        </table>
+      </div>
+      <div style="font-size:12px;color:var(--acero);margin-bottom:8px">Las hectáreas salen de Campo (huertos por su especie; potreros anuales por los lotes de esta temporada o su última siembra). Lo que corrijas aquí no cambia Campo. Si un cultivo no aparece (sin siembra de esta temporada u otro nombre), agrégalo con ➕.</div>
+      ${bloqueHectareasInv()}`;
+  } catch (e) {
+    console.error('cultivos', e);
+    cont.innerHTML = `${tit}<div class="empty" style="color:#B91C1C">No se pudo armar la sección: ${escA(e.message || String(e))}<br><span style="font-size:12px;color:var(--acero)">Mándale este mensaje a Claude.</span></div>`;
+  }
+};
 window.renderFlujoInv = function() {
   try { renderFlujoInternoInv(); }
   catch (e) {
@@ -18583,36 +18662,11 @@ function renderFlujoInternoInv() {
   if (flujoItemsInv === null) { cont.innerHTML = '<div class="panel-title">📈 Flujo de caja</div><div class="empty">Cargando…</div>'; return; }
   if (flujoErrorInv) { cont.innerHTML = `<div class="panel-title">📈 Flujo de caja</div><div class="empty" style="color:#B91C1C">No se pudo leer el flujo de caja de la base de datos: ${escA(flujoErrorInv)}</div>`; flujoErrorInv = ''; return; }
   cargarCampoFlujoInv(); buscarDolarHoyInv();
-  flujoPlanesInv = planesCosechaInv();
+  flujoPlanesInv = planesCosechaInv(); buscarFuturosTrigoInv();
   const F = calcularFlujoInv(), { meses } = F, sum12 = o => meses.reduce((a, k) => a + (o[k] || 0), 0);
   const fmtHa = n => (Math.round((Number(n) || 0) * 100) / 100).toLocaleString('es-CL');
-  const tarjetaCos = (p, i) => {
-    const ok = planCompletoInv(p), uni = p.unidad === 'qqm' ? 'qqm' : p.unidad || 'kg';
-    const difiere = !p.sinPlan && p.haCampo != null && Math.abs(Number(p.ha) - Number(p.haCampo)) > 0.01;
-    return `<div class="config-item" style="flex-direction:column;align-items:stretch;gap:2px;cursor:pointer" onclick="${ok ? 'flujoSupuestosInv' : 'flujoCosechaInv'}(${i})">
-      <div style="display:flex;justify-content:space-between;gap:8px"><strong style="min-width:0;overflow-wrap:anywhere">${p.frutal ? '🌳' : '🌾'} ${escA(p.cultivo)}</strong><strong style="white-space:nowrap;color:${ok ? 'var(--verde)' : p.activo === false ? 'var(--acero)' : '#B45309'}">${ok ? pesoInv(ingresoCosechaInv(p)) : p.activo === false && !p.sinPlan ? 'No incluido' : 'Completar ✏️'}</strong></div>
-      <div style="font-size:12px;color:var(--acero)">${fmtHa(p.ha)} ha ${p.sinPlan ? '<span style="color:#B45309">· según Campo, por confirmar</span>' : p.haConfirmada ? '<span style="color:var(--verde)">✓ confirmadas</span>' : '<span style="color:#B45309">· por confirmar</span>'}${difiere ? ` · <span style="color:#B45309">Campo dice ${fmtHa(p.haCampo)} ha</span>` : ''}</div>
-      ${p.sinPlan ? '' : `<div style="font-size:12px;color:var(--acero)">${(Number(p.rend) || 0).toLocaleString('es-CL')} ${uni}/ha · ${p.moneda === 'FCZ' ? (() => { const ms = mesesFlujoInv(), c0 = (p.cosecha || [])[0], e0 = entregasCarozziInv(p, ms)[0], ph = precioCarozziInv(p, 0, ms[0], true), pc = e0 ? precioCarozziInv(p, e0.i, e0.fEnt) : ph; return `fórmula Carozzi: cosecha <strong>${pesoInv(pc.final)}</strong>/qqm (${escA((p.fcz || {}).lugar || 'Nos')}; ref. hoy ${pesoInv(ph.final)})`; })() : (p.moneda === 'USD' ? 'US$ ' + (Number(p.precio) || 0).toLocaleString('es-CL') : pesoInv(p.precio)) + '/' + uni}${p.moneda === 'FCZ' ? '' : p.moneda === 'COM' ? ` hoy (commodity${Number(p.varIntl) ? ', ' + (p.varIntl > 0 ? '+' : '') + p.varIntl + '%' : ''})` : p.moneda === 'CLP' || !p.moneda ? ' fijo' : ''} · cosecha ${(p.cosecha || []).map(c => MESES_ABR_INV[c.mes - 1] + ((p.cosecha || []).length > 1 ? ' ' + c.pct + '%' : '')).join(', ')} · ${p.moneda === 'FCZ' ? entregasCarozziInv(p, mesesFlujoInv()).map(e => `entrega ${nomQuincenaInv(e.q).replace('quincena', 'quinc.')} ${MESES_ABR_INV[e.mes - 1].toLowerCase()} → pago ~${fmtFechaInv(e.fPago).slice(0, 5)}`).join(' · ') : 'pago ' + (Number(p.desfase) ? '+' + p.desfase + ' mes' + (Number(p.desfase) === 1 ? '' : 'es') : 'al cosechar')}</div>`}
-    </div>`;
-  };
-  const totCos = flujoPlanesInv.filter(planCompletoInv).reduce((a, p) => a + ingresoCosechaInv(p), 0), nFalta = flujoPlanesInv.filter(p => p.sinPlan).length;
-  const bloqueCosecha = `<details ${flujoPlanesInv.some(planCompletoInv) && !nFalta ? '' : 'open'} style="border:1px solid var(--borde);border-radius:10px;padding:8px 10px;margin-bottom:10px">
-    <summary style="font-weight:800;cursor:pointer">🌾 Ingresos por cosecha · ${pesoInv(totCos)}${nFalta ? ` <span style="font-weight:600;color:#B45309;font-size:12px">(${nFalta} por completar)</span>` : ''}</summary>
-    <div style="font-size:12px;color:var(--acero);margin:6px 0">Las hectáreas salen de Campo: huertos por su especie y potreros anuales por los lotes de esta temporada o su última siembra. Confírmalas o corrígelas, y completa rendimiento, precio, meses de cosecha y cuándo pagan.${flujoCampoInv !== true ? ' ⏳ Leyendo Campo…' : ''}</div>
-    ${(() => {
-      const det = detallePotrerosFlujoInv(), nOjo = det.filter(x => x.ojo).length, haTot = det.reduce((a, x) => a + (Number(x.ha) || 0), 0), haCont = det.filter(x => x.ha > 0).reduce((a, x) => a + x.ha, 0);
-      return `<details style="margin:0 0 8px;font-size:12px"${nOjo ? '' : ''}><summary style="cursor:pointer;font-weight:700">🔎 De dónde salen las hectáreas · ${det.length} potreros y lotes, ${fmtHa(haCont)} ha${nOjo ? ` <span style="color:#B45309">· ${nOjo} por revisar</span>` : ''}</summary>
-        <div style="color:var(--acero);margin:6px 0">Vienen de <strong>Campo → Config. Potreros</strong>: los huertos por su especie y sus hectáreas; los potreros anuales por sus lotes de ${new Date().getFullYear()} (✂️ Dividir por año) o, si no están divididos, por la última siembra registrada y las hectáreas del potrero. Los nombres de cultivo se agrupan tal cual están escritos ("Avellano" y "Avellanos" serían dos cultivos). Lo que corrijas aquí en cada cultivo no cambia Campo.</div>
-        <div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;min-width:520px;font-size:12px">
-          <thead><tr>${['Potrero', 'Ha', 'Cultivo', 'Según', ''].map((t, i) => `<th style="text-align:${i === 1 ? 'right' : 'left'};padding:5px 6px;border-bottom:2px solid var(--borde);background:var(--fondo);color:var(--negro);text-transform:none;letter-spacing:0;font-size:12px;font-weight:800;font-family:inherit">${t}</th>`).join('')}</tr></thead>
-          <tbody>${det.map(x => `<tr${x.ojo ? ' style="background:#FFFBEB"' : ''}><td style="padding:4px 6px;border-bottom:1px solid var(--borde)">${x.tipo === 'Huerto' ? '🌳' : '🌾'} ${escA(x.potrero)}</td><td style="padding:4px 6px;border-bottom:1px solid var(--borde);text-align:right">${x.ha ? fmtHa(x.ha) : '–'}</td><td style="padding:4px 6px;border-bottom:1px solid var(--borde)">${escA(x.cultivo || '—')}</td><td style="padding:4px 6px;border-bottom:1px solid var(--borde);color:var(--acero)">${escA(x.segun)}</td><td style="padding:4px 6px;border-bottom:1px solid var(--borde);color:#B45309">${x.ojo ? '⚠️ ' + escA(x.ojo) : ''}</td></tr>`).join('')}</tbody>
-        </table></div>
-        ${haTot !== haCont ? '' : ''}
-      </details>`;
-    })()}
-    ${flujoPlanesInv.map(tarjetaCos).join('') || '<div class="empty">No hay potreros con cultivo en Campo.</div>'}
-    <button class="btn-add" style="width:100%;margin-top:6px;padding:8px;background:var(--fondo);color:var(--negro)" onclick="flujoCosechaInv('nuevo')">➕ Agregar otro cultivo</button>
-  </details>`;
+  const okCos = flujoPlanesInv.filter(planCompletoInv), totCos = okCos.reduce((a, p) => a + ingresoCosechaInv(p), 0), nFalta = flujoPlanesInv.filter(p => !planCompletoInv(p) && (p.sinPlan || p.activo !== false)).length;
+  const bloqueCosecha = `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;border:1px solid var(--borde);border-radius:10px;padding:8px 10px;margin-bottom:10px;cursor:pointer;font-size:13px" onclick="irCultivosInv()"><span>🌾 <strong>Ventas de cosecha:</strong> ${pesoInv(totCos)} en 12 meses · ${okCos.length} cultivo${okCos.length === 1 ? '' : 's'}${nFalta ? ` <span style="color:#B45309">· ${nFalta} por completar (aún no suman)</span>` : ''}</span><span style="color:var(--verde);font-weight:700;white-space:nowrap">🌾 Cultivos y supuestos ›</span></div>`;
   const fmt = n => { n = Math.round(n || 0); if (!n) return '<span style="color:#C4C4BC">–</span>'; const v = flujoMilesInv ? Math.round(n / 1000) : n; return (v < 0 ? '−' : '') + Math.abs(v).toLocaleString('es-CL'); };
   const hayS = flujoCfgInv.saldo != null && flujoCfgInv.saldo !== '';
   const minK = meses.reduce((a, k) => F.saldo[k] < F.saldo[a] ? k : a, meses[0]), negK = meses.find(k => F.saldo[k] < 0);
@@ -18621,11 +18675,12 @@ function renderFlujoInternoInv() {
   const S = 'position:sticky;left:0;z-index:1;background:var(--blanco);', TD = 'padding:5px 8px;text-align:right;border-bottom:1px solid var(--borde)', TD0 = S + 'padding:5px 8px;text-align:left;border-bottom:1px solid var(--borde);white-space:normal;min-width:150px;max-width:210px';
   const celdas = (vals, onclick, estilo) => meses.map(k => `<td style="${TD};${estilo || ''}${onclick && vals[k] ? ';cursor:pointer' : ''}" ${onclick && vals[k] ? `onclick="${onclick(k)}"` : ''}>${fmt(vals[k])}</td>`).join('') + `<td style="${TD};font-weight:700;background:#F7F7F2;${estilo || ''}">${fmt(sum12(vals))}</td><td style="${TD};color:var(--acero);${estilo || ''}">${fmt(vals.despues)}</td>`;
   const filaCat = f => {
-    const abierta = flujoAbiertosInv.has(f.key), nSub = f.auto ? 0 : f.sub.length;
+    const abierta = flujoAbiertosInv.has(f.key), nSub = f.auto ? 0 : f.cosecha ? f.sub.filter(s => s.ok).length : f.sub.length;
     const titulo = `<td style="${TD0};font-weight:700;cursor:pointer" onclick="flujoToggleInv('${f.key}')">${f.auto ? '🔗' : abierta ? '▾' : '▸'} ${escA(f.t)}${nSub ? ` <span style="font-weight:400;color:var(--acero)">(${nSub})</span>` : ''}${f.auto && f.vencido.n ? `<div style="font-size:10px;font-weight:600;color:#B91C1C">incluye ${pesoInv(f.vencido.monto)} vencido</div>` : ''}</td>`;
     let h = `<tr>${titulo}${celdas(f.vals, f.auto ? k => `flujoDetalleAutoInv('${f.key}','${k}')` : null, 'font-weight:700')}</tr>`;
     if (!f.auto && abierta) {
-      if (f.cosecha) h += f.sub.map(s => { const i = flujoPlanesInv.findIndex(p => normNom(p.cultivo) === normNom(s.it.cultivo)); return `<tr><td style="${TD0};padding-left:20px;font-size:11.5px"><a href="#" onclick="flujoSupuestosInv(${i});return false" style="color:var(--negro);text-decoration:none">${s.it.frutal ? '🌳' : '🌾'} ${escA(s.it.cultivo)} <span style="color:var(--acero)">· ${fmtHa(s.it.ha)} ha</span><div style="font-size:10.5px;color:var(--verde);font-weight:700">📋 ver supuestos</div></a></td>${celdas(s.vals, k => `flujoSupuestosInv(${i},'${k}')`, 'font-size:11.5px')}</tr>`; }).join('');
+      if (f.cosecha) h += f.sub.filter(s => s.ok).map(s => { const i = flujoPlanesInv.findIndex(p => normNom(p.cultivo) === normNom(s.it.cultivo)); return `<tr><td style="${TD0};padding-left:20px;font-size:11.5px"><a href="#" onclick="${s.ok ? 'flujoSupuestosInv' : 'flujoCosechaInv'}(${i});return false" style="color:var(--negro);text-decoration:none">${s.it.frutal ? '🌳' : '🌾'} ${escA(s.it.cultivo)} <span style="color:var(--acero)">· ${fmtHa(s.it.ha)} ha</span><div style="font-size:10.5px;font-weight:700;color:${s.ok ? 'var(--verde)' : '#B45309'}">${s.ok ? '📋 ver supuestos' : '✏️ completar: aún no suma'}</div></a></td>${celdas(s.vals, k => `flujoSupuestosInv(${i},'${k}')`, 'font-size:11.5px')}</tr>`; }).join('')
+        + `<tr><td style="${TD0};padding-left:20px"><a href="#" onclick="irCultivosInv();return false" style="font-size:11.5px;color:${f.sub.some(s => !s.ok) ? '#B45309' : 'var(--verde)'};font-weight:700">${f.sub.some(s => !s.ok) ? `⚠️ ${f.sub.filter(s => !s.ok).length} por completar (no suman) ›` : 'Cultivos y supuestos ›'}</a></td>${meses.map(() => `<td style="${TD}"></td>`).join('')}<td style="${TD};background:#F7F7F2"></td><td style="${TD}"></td></tr>`;
       else h += f.sub.map(s => `<tr><td style="${TD0};padding-left:20px;font-size:11.5px"><a href="#" onclick="flujoItemInv('${s.it.id}');return false" style="color:var(--negro);text-decoration:none">${escA(s.it.concepto || '(sin concepto)')}${s.it.cultivo ? ` <span style="color:var(--acero)">· ${escA(s.it.cultivo)}</span>` : ''}${Number(s.it.repetir) ? ` <span style="color:var(--acero)">↻</span>` : ''} ✏️</a></td>${celdas(s.vals, k => `flujoCeldaInv('${s.it.id}','${k}')`, 'font-size:11.5px')}</tr>`).join('');
       if (!f.cosecha) h += `<tr><td style="${TD0};padding-left:20px"><a href="#" onclick="flujoItemInv('','${f.key}');return false" style="font-size:11.5px;color:var(--verde);font-weight:700">+ Agregar en ${escA(f.t.toLowerCase())}</a></td>${meses.map(() => `<td style="${TD}"></td>`).join('')}<td style="${TD};background:#F7F7F2"></td><td style="${TD}"></td></tr>`;
     }
@@ -18638,6 +18693,7 @@ function renderFlujoInternoInv() {
   cont.innerHTML = `<div class="panel-title">📈 Flujo de caja</div>
     <div style="font-size:12px;color:var(--acero);margin-bottom:8px">Los 12 meses desde este mes. Lo de Cuentas por pagar entra solo (🔗), con lo vencido sumado al mes actual. Lo demás lo agregas tú, una vez o repetido.</div>
     ${bloqueDolarFlujoInv()}
+    ${bloquePreciosFlujoInv()}
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
       <div style="flex:1;min-width:120px;background:var(--fondo);border-radius:8px;padding:8px;cursor:pointer" onclick="flujoSaldoInv()"><div style="font-size:11px;color:var(--acero)">Saldo en banco ✏️</div><div style="font-weight:800">${hayS ? (flujoCfgInv.saldo < 0 ? '−' : '') + pesoInv(Math.abs(flujoCfgInv.saldo)) : '<span style="color:#B45309">Ingrésalo</span>'}</div><div style="font-size:11px;color:var(--acero)">${hayS && flujoCfgInv.saldoFecha ? 'al ' + fmtFechaInv(flujoCfgInv.saldoFecha) : 'toca para cambiarlo'}</div></div>
       ${caja('Ingresos 12 meses', sum12(F.totIng), 'var(--verde)')}${caja('Egresos 12 meses', sum12(F.totEgr), '#B91C1C')}${caja('Saldo en 12 meses', F.saldo[meses[11]], F.saldo[meses[11]] < 0 ? '#B91C1C' : '')}${caja('Mes más bajo', F.saldo[minK], F.saldo[minK] < 0 ? '#B91C1C' : '', nomMesCxpInv(minK))}
@@ -18646,7 +18702,7 @@ function renderFlujoInternoInv() {
     ${!hayS ? `<div style="background:#FFFBEB;color:#92400E;border-radius:8px;padding:8px 10px;font-size:13px;margin-bottom:8px">Para que el saldo sea real, ingresa cuánto hay hoy en el banco: toca "Saldo en banco".</div>` : ''}
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px"><button class="btn-add" style="flex:1;min-width:140px;padding:9px;justify-content:center" onclick="flujoItemInv('','otros_ing')">➕ Otro ingreso</button><button class="btn-add" style="flex:1;min-width:140px;padding:9px;justify-content:center;background:#FEF2F2;color:#B91C1C" onclick="flujoItemInv('','fijos')">➖ Egreso</button><button class="btn-add" style="flex:1;min-width:140px;padding:9px;justify-content:center;background:var(--fondo);color:var(--negro)" onclick="flujoExcelInv()">⬇️ Excel</button></div>
     ${bloqueCosecha}
-    ${sinNada ? `<div style="font-size:12px;color:var(--acero);margin-bottom:8px">Para empezar: completa arriba los <strong>ingresos por cosecha</strong> de cada cultivo, y agrega los <strong>gastos fijos</strong> (sueldos, imposiciones, luz: se repiten solos), los <strong>impuestos</strong> y las <strong>compras</strong> de la temporada que aún no se facturan.</div>` : ''}
+    ${sinNada ? `<div style="font-size:12px;color:var(--acero);margin-bottom:8px">Para empezar: completa los cultivos en <strong>🌾 Cultivos y supuestos</strong> (de ahí salen las ventas de cosecha), y agrega los <strong>gastos fijos</strong> (sueldos, imposiciones, luz: se repiten solos), los <strong>impuestos</strong> y las <strong>compras</strong> de la temporada que aún no se facturan.</div>` : ''}
     <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin:0 2px 4px;font-size:11px;color:var(--acero)"><span>Cifras en ${flujoMilesInv ? 'miles de pesos (M$)' : 'pesos'}. Toca un valor para ver el detalle o cambiarlo.</span><a href="#" onclick="flujoMilesSetInv(${!flujoMilesInv});return false" style="color:var(--verde);font-weight:700;white-space:nowrap">${flujoMilesInv ? 'Ver en pesos' : 'Ver en miles'}</a></div>
     <div style="overflow-x:auto;border:1px solid var(--borde);border-radius:10px;-webkit-overflow-scrolling:touch">
       <table style="border-collapse:separate;border-spacing:0;font-size:12px;white-space:nowrap;min-width:100%">
@@ -18793,7 +18849,7 @@ window.flujoExcelInv = function() {
   const F = calcularFlujoInv(), { meses } = F, cab = ['Concepto', ...meses.map(nomMesCxpInv), 'Total 12 meses', 'Después'];
   const fila = (t, o) => [t, ...meses.map(k => Math.round(o[k] || 0)), Math.round(meses.reduce((a, k) => a + (o[k] || 0), 0)), o.despues === undefined ? '' : Math.round(o.despues || 0)];
   const filas = [cab, fila('Saldo al inicio del mes', { ...F.saldoIni, despues: undefined }), ['INGRESOS']];
-  const cat = f => { filas.push(fila(f.t, f.vals)); if (!f.auto) f.sub.forEach(s => filas.push(fila('   ' + (f.cosecha ? `${s.it.cultivo} (${s.it.ha} ha × ${s.it.rend} ${s.it.unidad}/ha × $${s.it.precio})` : (s.it.concepto || '') + (s.it.cultivo ? ' · ' + s.it.cultivo : '')), s.vals))); };
+  const cat = f => { filas.push(fila(f.t, f.vals)); if (!f.auto) f.sub.filter(s => !f.cosecha || s.ok).forEach(s => filas.push(fila('   ' + (f.cosecha ? `${s.it.cultivo} (${s.it.ha} ha × ${s.it.rend} ${s.it.unidad}/ha × ${s.it.moneda === 'FCZ' ? 'fórmula Carozzi' : (s.it.moneda === 'USD' ? 'US$' : '$') + s.it.precio})` : (s.it.concepto || '') + (s.it.cultivo ? ' · ' + s.it.cultivo : '')), s.vals))); };
   F.ing.forEach(cat); filas.push(fila('Total ingresos', F.totIng), ['EGRESOS']); F.egr.forEach(cat);
   filas.push(fila('Total egresos', F.totEgr), fila('Flujo del mes', { ...F.neto, despues: undefined }), fila('Saldo al final del mes', { ...F.saldo, despues: undefined }));
   const wb = XLSX.utils.book_new(), ws = XLSX.utils.aoa_to_sheet(filas); ws['!cols'] = [{ wch: 42 }, ...meses.map(() => ({ wch: 14 })), { wch: 16 }, { wch: 14 }];
@@ -18806,7 +18862,7 @@ const MESES_ABR_INV = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', '
 let flujoCampoInv = false, flujoPlanesInv = [];
 function cargarCampoFlujoInv() {
   if (flujoCampoInv) return; flujoCampoInv = 'cargando';
-  Promise.all([cargarCultivosActualesPotreros(), cargarLotesTemporada()]).catch(e => console.warn('campo flujo', e)).then(() => { flujoCampoInv = true; const tc = document.getElementById('tc-cont-flujo'); if (tc && tc.classList.contains('active')) renderFlujoInv(); });
+  Promise.all([cargarCultivosActualesPotreros(), cargarLotesTemporada()]).catch(e => console.warn('campo flujo', e)).then(() => { flujoCampoInv = true; const tc = document.getElementById('tc-cont-flujo'); redibujarFlujoInv(); });
 }
 // Hectáreas por cultivo según Campo: huertos por su especie; potreros anuales por sus lotes de esta temporada o su última siembra
 function haPorCultivoCampoInv() {
@@ -18863,7 +18919,7 @@ function dolarMesInv(i) {
 // si la encuesta es más nueva que la guardada, la reemplaza sola. Si no está configurada, el dólar de hoy sale de mindicador.cl.
 function buscarDolarHoyInv() {
   if (flujoDolarHoyInv || flujoDolarBuscandoInv) return; flujoDolarBuscandoInv = true;
-  const redibujar = () => { const tc = document.getElementById('tc-cont-flujo'); if (tc && tc.classList.contains('active')) renderFlujoInv(); };
+  const redibujar = () => { const tc = document.getElementById('tc-cont-flujo'); redibujarFlujoInv(); };
   fetch('/api/dolar').then(r => r.ok || r.status === 502 ? r.json() : Promise.reject(new Error('sin función'))).then(j => {
     if (!j || !j.ok) { flujoDolarEstadoInv = j && j.codigo === 'SIN_CLAVE' ? 'sinclave' : 'error: ' + ((j && j.error) || ''); throw new Error('bcch'); }
     flujoDolarEstadoInv = 'bcch';
@@ -18896,6 +18952,64 @@ function bloqueDolarFlujoInv() {
     </div>
   </div>`;
 }
+// Arriba del flujo, junto al dólar: precio de cada cultivo hoy y el estimado a la cosecha/pago, y los futuros del trigo (CME)
+let flujoTrigoEstadoInv = '', flujoTrigoBuscandoInv = false, flujoTrigoErrorTsInv = 0;
+function buscarFuturosTrigoInv() {
+  if (flujoTrigoBuscandoInv || (flujoTrigoInv && Date.now() - flujoTrigoInv.ts < 3 * 3600000) || Date.now() - flujoTrigoErrorTsInv < 15 * 60000 || !(flujoPlanesInv || []).some(p => p.moneda === 'FCZ')) return;
+  flujoTrigoBuscandoInv = true;
+  fetch('/api/trigo').then(r => r.json()).then(j => { if (!j || !j.ok) throw new Error((j && j.error) || 'sin datos'); flujoTrigoInv = j; flujoTrigoEstadoInv = 'ok'; })
+    .catch(e => { flujoTrigoEstadoInv = 'error'; flujoTrigoErrorTsInv = Date.now(); console.warn('futuros trigo', e); })
+    .then(() => { flujoTrigoBuscandoInv = false; redibujarFlujoInv(); });
+}
+// Contrato de futuros del trigo para el mes de entrega k (el primero que vence ese mes o después) y su variación contra el contrato más cercano
+function futuroTrigoParaInv(k) {
+  const T = flujoTrigoInv; if (!T || !T.frente || !(T.contratos || []).length) return null;
+  const c = T.contratos.find(x => x.mes >= k) || T.contratos[T.contratos.length - 1];
+  return { c, fr: T.frente, v: Math.round((c.centavosBushel / T.frente.centavosBushel - 1) * 1000) / 10 };
+}
+function preciosCultivoInv(p, ms) {
+  const uni = p.unidad === 'qqm' ? 'qqm' : p.unidad || 'kg';
+  if (p.moneda === 'FCZ') {
+    const e = entregasCarozziInv(p, ms), sp = e.reduce((a, x) => a + x.pct, 0) || 1, hoy = precioCarozziInv(p, 0, ms[0], true).final;
+    const prs = e.map(x => precioCarozziInv(p, x.i, x.fEnt)), fut = e.reduce((a, x, j) => a + x.pct * prs[j].final, 0) / sp;
+    return { uni: 'qqm', hoy, fut, minimo: prs.some(x => x.minimo), minHoy: precioCarozziInv(p, 0, ms[0], true).minimo, cuando: e.map(x => `${x.q === '1' ? '1ª q. ' : x.q === '2' ? '2ª q. ' : ''}${MESES_ABR_INV[x.mes - 1].toLowerCase()}`).join(', '), base: `fórmula Carozzi · ICI ${pesoInv((p.fcz || {}).ici)} · trigo ${(Number((p.fcz || {}).varIntl) || 0) > 0 ? '+' : ''}${(Number((p.fcz || {}).varIntl) || 0).toLocaleString('es-CL')}%` };
+  }
+  const des = Number(p.desfase) || 0, pagos = (p.cosecha || []).map(c => { const mp = ((Number(c.mes) - 1 + des) % 12) + 1; return { i: ms.findIndex(x => Number(x.slice(5, 7)) === mp), pct: Number(c.pct) || 0 }; }).filter(x => x.i >= 0);
+  const sp = pagos.reduce((a, x) => a + x.pct, 0) || 1, pr = Number(p.precio) || 0;
+  const hoy = p.moneda === 'USD' ? pr * dolarMesInv(0) : pr, fut = pagos.length ? pagos.reduce((a, x) => a + x.pct * pr * factorPrecioInv(p, x.i), 0) / sp : hoy;
+  return { uni, hoy, fut, cuando: pagos.map(x => nomMesCortoInv(ms[x.i]).toLowerCase()).join(', '), base: p.moneda === 'USD' ? `US$ ${pr.toLocaleString('es-CL')}/${uni} × dólar` : p.moneda === 'COM' ? `commodity · dólar y mercado ${(Number(p.varIntl) || 0) > 0 ? '+' : ''}${(Number(p.varIntl) || 0).toLocaleString('es-CL')}%` : 'precio fijo en pesos' };
+}
+function bloquePreciosFlujoInv() {
+  const ms = mesesFlujoInv(), planes = (flujoPlanesInv || []).filter(planCompletoInv);
+  const td = 'padding:4px 8px;border-bottom:1px solid var(--borde);text-align:right;white-space:nowrap;vertical-align:top', td0 = 'padding:4px 8px 4px 0;border-bottom:1px solid var(--borde);vertical-align:top;min-width:105px', th = 'padding:4px 8px;border-bottom:2px solid var(--borde);background:transparent;color:var(--acero);text-transform:none;letter-spacing:0;font-size:11px;font-weight:700;font-family:inherit;text-align:right;white-space:nowrap';
+  const varTxt = v => !isFinite(v) || Math.abs(v) < 0.05 ? '<span style="color:var(--acero)">=</span>' : `<span style="color:${v > 0 ? 'var(--verde)' : '#B91C1C'};font-weight:700">${v > 0 ? '▲ +' : '▼ '}${v.toLocaleString('es-CL', { maximumFractionDigits: 1 })}%</span>`;
+  const filas = planes.map(p => { const i = flujoPlanesInv.indexOf(p), x = preciosCultivoInv(p, ms), v = x.hoy > 0 ? (x.fut / x.hoy - 1) * 100 : NaN;
+    return `<tr style="cursor:pointer" onclick="flujoSupuestosInv(${i})"><td style="${td0}"><strong>${p.frutal ? '🌳' : '🌾'} ${escA(p.cultivo)}</strong><div style="font-size:10.5px;color:var(--acero)">${escA(x.base)}</div></td><td style="${td}">${pesoInv(x.hoy)}<span style="color:var(--acero);font-size:11px">/${x.uni}</span></td><td style="${td};font-weight:800">${pesoInv(x.fut)}<span style="color:var(--acero);font-size:11px;font-weight:400">/${x.uni}</span><div style="font-size:10.5px;color:var(--acero);font-weight:400">${escA(x.cuando)}</div><div style="font-weight:400">${varTxt(v)}</div>${x.minimo ? '<div style="font-size:10.5px;color:#B45309;font-weight:600;white-space:normal">rige el mínimo del contrato</div>' : ''}</td></tr>`; }).join('');
+  // Futuros del trigo (CME): referencia del ICI de ODEPA
+  const pf = planes.find(p => p.moneda === 'FCZ'); let fut = '';
+  if (pf) {
+    const e0 = entregasCarozziInv(pf, ms)[0], k = e0 ? ms[e0.i] : ms[0], f = futuroTrigoParaInv(k), vPlan = Number((pf.fcz || {}).varIntl) || 0;
+    if (f) fut = `<tr><td style="${td0}"><strong>📈 Trigo HRW Kansas (CME)</strong><div style="font-size:10.5px;color:var(--acero)">futuros, referencia del ICI · ${escA(fmtFechaInv(f.fr.fecha))}</div></td><td style="${td}">${f.fr.centavosBushel.toLocaleString('es-CL')} <span style="color:var(--acero);font-size:11px">¢/bu</span><div style="font-size:10.5px;color:var(--acero)">US$ ${f.fr.usTon.toLocaleString('es-CL')}/t</div></td><td style="${td};font-weight:800">${f.c.centavosBushel.toLocaleString('es-CL')} <span style="color:var(--acero);font-size:11px;font-weight:400">¢/bu</span><div style="font-size:10.5px;color:var(--acero);font-weight:400">contrato ${nomMesCortoInv(f.c.mes).toLowerCase()}</div><div style="font-weight:400">${varTxt(f.v)}</div>${Math.abs(f.v - vPlan) >= 0.5 ? `<div><a href="#" onclick="flujoAplicarFuturosInv();return false" style="font-size:10.5px;color:var(--verde);font-weight:700">usar en el trigo</a></div><div style="font-size:10px;color:var(--acero);font-weight:400">(hoy usa ${vPlan > 0 ? '+' : ''}${vPlan.toLocaleString('es-CL')}%)</div>` : ''}</td></tr>`;
+    else fut = `<tr><td colspan="3" style="padding:4px 0;font-size:11px;color:var(--acero)">📈 Futuros del trigo (CME): ${flujoTrigoBuscandoInv || !flujoTrigoEstadoInv ? '⏳ consultando…' : '⚠️ no disponibles (revisa que trigo.mjs esté en netlify/functions); el trigo usa ' + ((Number((pf.fcz || {}).varIntl) || 0) > 0 ? '+' : '') + (Number((pf.fcz || {}).varIntl) || 0).toLocaleString('es-CL') + '%'}</td></tr>`;
+  }
+  return `<div style="border:1px solid var(--borde);border-radius:10px;padding:8px 12px;margin-bottom:8px">
+    <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:baseline;margin-bottom:4px"><strong style="font-size:13px">📊 Precios: hoy y estimado al pago</strong><a href="#" onclick="irCultivosInv();return false" style="font-size:12px;color:var(--verde);font-weight:700">🌾 Cultivos y supuestos ›</a></div>
+    ${planes.length ? `<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;min-width:0;font-size:12px"><thead><tr style="background:transparent"><th style="${th};text-align:left;padding-left:0">Cultivo</th><th style="${th}">Hoy</th><th style="${th}">Estimado al pago</th></tr></thead><tbody>${filas}${fut}</tbody></table></div>`
+      : `<div style="font-size:12px;color:var(--acero)">Todavía no hay cultivos con su plan completo. Complétalos en <a href="#" onclick="irCultivosInv();return false" style="color:var(--verde);font-weight:700">🌾 Cultivos y supuestos</a>.</div>`}
+  </div>`;
+}
+// Pasa la variación de los futuros del trigo a los planes con fórmula Carozzi
+window.flujoAplicarFuturosInv = async function() {
+  const ms = mesesFlujoInv(), planes = (flujoPlanesInv || []).filter(p => p.moneda === 'FCZ' && p.id);
+  try {
+    for (const p of planes) {
+      const e0 = entregasCarozziInv(p, ms)[0], f = futuroTrigoParaInv(e0 ? ms[e0.i] : ms[0]); if (!f) continue;
+      const nota = `✓ Futuro ${nomMesCortoInv(f.c.mes).toLowerCase()} ${f.c.centavosBushel.toLocaleString('es-CL')} ¢/bu (US$ ${f.c.usTon.toLocaleString('es-CL')}/t) vs. hoy ${f.fr.centavosBushel.toLocaleString('es-CL')} ¢/bu: ${f.v > 0 ? '+' : ''}${f.v.toLocaleString('es-CL')}% · ${flujoTrigoInv.fuente}, ${fmtFechaInv(f.fr.fecha)}`;
+      await updateDoc(doc(dbInv, 'flujo_caja', p.id), { fcz: { ...(p.fcz || {}), varIntl: f.v, futNota: nota } });
+    }
+    toast('✓ Trigo actualizado con los futuros');
+  } catch (e) { toast('No se pudo actualizar: ' + e.message, false); }
+};
 window.flujoDolarInv = function() {
   const d = dolarCfgInv(), inp = 'width:100%;box-sizing:border-box;margin-bottom:8px', L = t => `<label style="font-size:12px;text-transform:none;letter-spacing:0;font-weight:600">${t}</label>`;
   modalElegirDteInv('💵 Dólar para el flujo', `Hoy: <strong>${d.hoy ? pesoInv(d.hoy.valor) : 'sin dato'}</strong>${d.hoy && d.hoy.fecha ? ` (dólar observado del ${fmtFechaInv(d.hoy.fecha)}, se actualiza solo)` : ''}. Para los meses que vienen se usa lo que esperan los economistas en la encuesta mensual del Banco Central, o un valor fijo.`, [`
@@ -19123,7 +19237,8 @@ window.flujoCosechaPrevInv = function() {
   const qx = document.getElementById('fc-quin-box'); if (qx) qx.style.display = x.moneda === 'FCZ' ? 'block' : 'none';
   const pb = document.getElementById('fc-precio-box'); if (pb) pb.style.visibility = x.moneda === 'FCZ' ? 'hidden' : 'visible';
   if (x.moneda === 'FCZ') {
-    const us = document.getElementById('fc-unidad'); if (us && !['qqm', 'kg', 'ton'].includes(us.value)) us.value = 'qqm';
+    // La fórmula es por qqm: si la unidad quedó en kg con un rendimiento de qqm (menos de 300 por ha), se pasa a qqm
+    const us = document.getElementById('fc-unidad'); if (us && (!['qqm', 'kg', 'ton'].includes(us.value) || (us.value === 'kg' && !(x.rend >= 300)))) { us.value = 'qqm'; x.unidad = 'qqm'; }
     if (!(x.fcz.ici > 0) || x.fcz.tasa === '' || !(x.ha > 0) || !(x.rend > 0) || !x.cosecha.length) { el.innerHTML = '<span style="color:var(--acero)">Completa hectáreas, rendimiento, meses de cosecha, el ICI de hoy y la tasa para ver el precio.</span>'; return; }
     const ms = mesesFlujoInv(), pg = pagosCosechaInv(x, ms), total = Object.values(pg).reduce((a, b) => a + b, 0), b = bonosCarozziInv(x), N = v => '$' + Math.round(v).toLocaleString('es-CL');
     const c0 = x.cosecha[0], i0 = ms.findIndex(k => Number(k.slice(5, 7)) === Number(c0.mes)), kMes = i0 >= 0 ? ms[i0] : mesMasInv(ms[0], (Number(c0.mes) - Number(ms[0].slice(5, 7)) + 12) % 12);
@@ -19318,7 +19433,7 @@ function renderDteRecibidosInv(soloLista) {
   cont.style.display = '';
   { const tb = document.getElementById('tab-cont-docs'); if (tb) tb.textContent = `📨 Facturas y guías${pendientesDteInv() ? ` (${pendientesDteInv()} por ingresar)` : ''}`; }
   try { etiquetaCxpInv(); const tc = document.getElementById('tc-cont-pagar'); if (tc && tc.classList.contains('active')) renderCxpInv(); } catch (e) { console.warn('cxp', e); }
-  try { const tf = document.getElementById('tc-cont-flujo'); if (tf && tf.classList.contains('active')) renderFlujoInv(); } catch (e) { console.warn('flujo', e); }
+  try { redibujarFlujoInv(); } catch (e) { console.warn('flujo', e); }
   const cuenta = g => dteRecibidosInv.filter(d => grupoDteInv(d) === g).length;
   const q = normNom(String(dteBuscarInv || '').replace(/\./g, '')).trim();
   const porDespachar = d => { const e = estadoRecepcionInv(d); return !!e && (e.k === 'espera' || e.k === 'parcial'); };
@@ -20414,6 +20529,7 @@ tbody td{padding:10px 12px;vertical-align:middle;}
     <button class="tab" id="tab-cont-docs" style="display:none" onclick="setTab('cont-docs',this)">📨 Facturas y guías</button>
     <button class="tab" id="tab-cont-pagar" style="display:none" onclick="setTab('cont-pagar',this)">💳 Cuentas por pagar</button>
     <button class="tab" id="tab-cont-flujo" style="display:none" onclick="setTab('cont-flujo',this)">📈 Flujo de caja</button>
+    <button class="tab" id="tab-cont-cultivos" style="display:none" onclick="setTab('cont-cultivos',this)">🌾 Cultivos y supuestos</button>
     <button class="tab" id="tab-cont-rend" style="display:none" onclick="setTab('cont-rend',this)">💵 Rendición de cajas</button>
     <button class="tab" id="tab-cont-config" style="display:none" onclick="setTab('cont-config',this)">⚙️ Configuración</button>
     <button class="tab" id="tab-inv-inventario" style="display:none" onclick="setTab('inv-inventario',this)">📦 Inventario</button>
@@ -21562,6 +21678,9 @@ tbody td{padding:10px 12px;vertical-align:middle;}
 
     <div id="tc-cont-flujo" class="tab-content">
       <div id="cont-flujo-panel" class="panel"></div>
+    </div>
+    <div id="tc-cont-cultivos" class="tab-content">
+      <div id="cont-cultivos-panel" class="panel"></div>
     </div>
 
     <div id="tc-cont-rend" class="tab-content">
